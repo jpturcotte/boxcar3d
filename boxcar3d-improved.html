@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BoxCar3D Evolution - Enhanced</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #fff;
+            overflow: hidden;
+        }
+        
+        #canvas {
+            display: block;
+            cursor: grab;
+        }
+        
+        #canvas:active {
+            cursor: grabbing;
+        }
+        
+        .panel {
+            position: absolute;
+            background: rgba(10, 10, 10, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(20px);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+        }
+        
+        #controls {
+            top: 20px;
+            left: 20px;
+            width: 320px;
+            max-height: calc(100vh - 40px);
+            overflow-y: auto;
+        }
+        
+        #controls::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        #controls::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 4px;
+        }
+        
+        #controls::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+        }
+        
+        #stats {
+            top: 20px;
+            right: 20px;
+            min-width: 280px;
+        }
+        
+        #performance {
+            bottom: 20px;
+            right: 20px;
+            min-width: 200px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        
+        h2, h3 {
+            margin: 0 0 16px 0;
+            font-weight: 600;
+        }
+        
+        h2 {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-size: 28px;
+        }
+        
+        h3 {
+            color: #818cf8;
+            font-size: 20px;
+        }
+        
+        .control-group {
+            margin-bottom: 24px;
+            padding: 16px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        .control-group h4 {
+            margin: 0 0 12px 0;
+            color: #c7d2fe;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .control-row {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+        
+        label {
+            flex: 1;
+            font-size: 13px;
+            color: #a5b4fc;
+        }
+        
+        input[type="range"] {
+            width: 120px;
+            margin: 0 12px;
+        }
+        
+        input[type="number"] {
+            width: 70px;
+            padding: 6px 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 13px;
+        }
+        
+        .value-display {
+            min-width: 45px;
+            text-align: right;
+            font-size: 13px;
+            color: #10b981;
+            font-weight: 600;
+        }
+        
+        button {
+            width: 100%;
+            padding: 12px;
+            margin: 6px 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px -5px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        button.secondary {
+            background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);
+        }
+        
+        button.secondary:hover {
+            box-shadow: 0 10px 20px -5px rgba(6, 182, 212, 0.4);
+        }
+        
+        .stat-item {
+            margin: 12px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .stat-label {
+            color: #a5b4fc;
+            font-size: 14px;
+        }
+        
+        .stat-value {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        
+        .best-score {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .generation-number {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+        }
+        
+        .loader {
+            width: 60px;
+            height: 60px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
+            margin: 0 auto 24px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+            margin: 8px 0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    
+    <div id="loading">
+        <div class="loader"></div>
+        <p>Initializing Evolution Engine...</p>
+    </div>
+    
+    <div id="controls" class="panel" style="display: none;">
+        <h2>BoxCar3D Evolution</h2>
+        
+        <div class="control-group">
+            <button id="startBtn">Start Evolution</button>
+            <button id="pauseBtn" class="secondary">Pause</button>
+            <button id="resetBtn" class="secondary">Reset Simulation</button>
+        </div>
+        
+        <div class="control-group">
+            <h4>Genetic Algorithm</h4>
+            <div class="control-row">
+                <label>Population</label>
+                <input type="number" id="populationSize" value="20" min="5" max="50">
+            </div>
+            <div class="control-row">
+                <label>Mutation Rate</label>
+                <input type="range" id="mutationRate" value="0.05" min="0" max="0.3" step="0.01">
+                <span class="value-display" id="mutationRateValue">5%</span>
+            </div>
+            <div class="control-row">
+                <label>Elite Count</label>
+                <input type="number" id="eliteCount" value="2" min="0" max="10">
+            </div>
+        </div>
+        
+        <div class="control-group">
+            <h4>Vehicle Configuration</h4>
+            <div class="control-row">
+                <label>Max Wheels</label>
+                <input type="range" id="maxWheels" value="4" min="2" max="6" step="1">
+                <span class="value-display" id="maxWheelsValue">4</span>
+            </div>
+            <div class="control-row">
+                <label>Gravity</label>
+                <input type="range" id="gravity" value="20" min="5" max="40" step="1">
+                <span class="value-display" id="gravityValue">-20</span>
+            </div>
+            <div class="control-row">
+                <label>Speed</label>
+                <input type="range" id="timeScale" value="1" min="0.5" max="3" step="0.1">
+                <span class="value-display" id="timeScaleValue">1.0x</span>
+            </div>
+        </div>
+        
+        <div class="control-group">
+            <h4>Camera</h4>
+            <button id="followBestBtn" class="secondary">Follow Best</button>
+            <button id="freeCamBtn" class="secondary">Free Camera</button>
+        </div>
+    </div>
+    
+    <div id="stats" class="panel" style="display: none;">
+        <h3>Evolution Statistics</h3>
+        <div class="stat-item">
+            <span class="stat-label">Generation</span>
+            <span class="stat-value generation-number" id="generation">0</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Best Distance</span>
+            <span class="stat-value best-score" id="currentBest">0.0m</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">All-Time Best</span>
+            <span class="stat-value best-score" id="allTimeBest">0.0m</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Average Fitness</span>
+            <span class="stat-value" id="avgFitness">0.0m</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Active Vehicles</span>
+            <span class="stat-value" id="activeVehicles">0/0</span>
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="generationProgress" style="width: 0%"></div>
+        </div>
+    </div>
+    
+    <div id="performance" class="panel" style="display: none;">
+        <div>FPS: <span id="fps">60</span></div>
+        <div>Physics: <span id="physicsTime">0</span>ms</div>
+        <div>Bodies: <span id="bodyCount">0</span></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+    <script>
+        // Configuration
+        var CONFIG = {
+            TRACK_LENGTH: 300,
+            TRACK_WIDTH: 30,
+            SPAWN_X: -50,
+            SPAWN_HEIGHT: 5,  // Lower spawn height for flat terrain
+            MAX_LIFETIME: 20000,
+            MIN_MOVEMENT: 0.1,
+            STUCK_TIME: 2000,
+            PHYSICS_TIMESTEP: 1/60,
+            GROUP_GROUND: 1,
+            GROUP_VEHICLE: 2,
+            GROUP_WHEEL: 4
+        };
+        
+        // State
+        var state = {
+            scene: null,
+            camera: null,
+            renderer: null,
+            world: null,
+            vehicles: [],
+            generation: 0,
+            bestEverScore: 0,
+            isRunning: false,
+            isPaused: false,
+            cameraMode: 'follow',
+            startTime: 0,
+            stats: {
+                fps: 60,
+                physicsTime: 0
+            }
+        };
+        
+        // Parameters
+        var params = {
+            populationSize: 20,
+            mutationRate: 0.05,
+            eliteCount: 2,
+            maxWheels: 4,
+            gravity: 20,
+            timeScale: 1
+        };
+        
+        // Vehicle class
+        function Vehicle(genes) {
+            this.genes = genes || this.generateRandomGenes();
+            this.fitness = 0;
+            this.alive = true;
+            this.age = 0;
+            this.stuckTime = 0;
+            this.lastPosition = new CANNON.Vec3();
+            
+            this.group = new THREE.Group();
+            this.chassisBody = null;
+            this.wheels = [];
+            this.constraints = [];
+            
+            this.build();
+        }
+        
+        Vehicle.prototype.generateRandomGenes = function() {
+            var genes = [];
+            // Chassis genes + wheel genes
+            for (var i = 0; i < 30; i++) {
+                genes.push(Math.random());
+            }
+            return genes;
+        };
+        
+        Vehicle.prototype.build = function() {
+            // Create chassis first
+            this.createChassis();
+            
+            // Create wheels
+            var wheelCount = Math.floor(this.genes[8] * params.maxWheels) + 1;
+            for (var i = 0; i < wheelCount; i++) {
+                this.createWheel(i);
+            }
+            
+            state.scene.add(this.group);
+        };
+        
+        Vehicle.prototype.createChassis = function() {
+            // Generate chassis shape
+            var vertices = [];
+            var numVertices = 6;
+            
+            for (var i = 0; i < numVertices; i++) {
+                var angle = (i / numVertices) * Math.PI * 2;
+                var radius = this.genes[i] * 2 + 0.5;
+                vertices.push(new THREE.Vector2(
+                    Math.cos(angle) * radius,
+                    Math.sin(angle) * radius
+                ));
+            }
+            
+            // Create visual
+            var shape = new THREE.Shape(vertices);
+            var geometry = new THREE.ExtrudeGeometry(shape, {
+                depth: 0.8,
+                bevelEnabled: false
+            });
+            geometry.center();
+            
+            var hue = this.genes[0] * 360;
+            var material = new THREE.MeshLambertMaterial({
+                color: new THREE.Color().setHSL(hue / 360, 0.6, 0.5)
+            });
+            
+            var mesh = new THREE.Mesh(geometry, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            this.group.add(mesh);
+            
+            // Create physics body
+            this.chassisBody = new CANNON.Body({
+                mass: 10,
+                position: new CANNON.Vec3(0, 0, 0)
+            });
+            
+            // Add a simple box shape for the chassis
+            var chassisBox = new CANNON.Box(new CANNON.Vec3(1.5, 0.4, 1));
+            this.chassisBody.addShape(chassisBox);
+            
+            // Prevent sleeping during simulation
+            this.chassisBody.allowSleep = false;
+            
+            state.world.add(this.chassisBody);
+        };
+        
+        Vehicle.prototype.createWheel = function(index) {
+            var geneOffset = 10 + index * 4;
+            if (geneOffset + 3 >= this.genes.length) return;
+            
+            var radius = this.genes[geneOffset] * 0.5 + 0.2;
+            var posX = (this.genes[geneOffset + 1] - 0.5) * 3;
+            var posZ = (this.genes[geneOffset + 2] - 0.5) * 3;
+            var motorPower = this.genes[geneOffset + 3] * 500;
+            
+            // Visual wheel
+            var wheelGeometry = new THREE.CylinderGeometry(radius, radius, 0.3, 16);
+            var wheelMaterial = new THREE.MeshLambertMaterial({ color: 0x222222 });
+            var wheelMesh = new THREE.Mesh(wheelGeometry, wheelMaterial);
+            wheelMesh.rotation.z = Math.PI / 2;
+            wheelMesh.castShadow = true;
+            this.group.add(wheelMesh);
+            
+            // Physics wheel
+            var wheelBody = new CANNON.Body({
+                mass: 5,
+                position: new CANNON.Vec3(
+                    this.chassisBody.position.x + posX,
+                    this.chassisBody.position.y - 0.5,
+                    this.chassisBody.position.z + posZ
+                ),
+                collisionFilterGroup: CONFIG.GROUP_WHEEL,
+                collisionFilterMask: CONFIG.GROUP_GROUND,
+                material: new CANNON.Material('wheel')
+            });
+            
+            var wheelShape = new CANNON.Sphere(radius);
+            wheelBody.addShape(wheelShape);
+            
+            // Prevent sleeping
+            wheelBody.allowSleep = false;
+            wheelBody.sleepSpeedLimit = 0.1;
+            wheelBody.sleepTimeLimit = 1.0;
+            
+            state.world.add(wheelBody);
+            
+            // Create constraint
+            var constraint = new CANNON.PointToPointConstraint(
+                this.chassisBody,
+                new CANNON.Vec3(posX, -0.3, posZ),
+                wheelBody,
+                new CANNON.Vec3(0, 0, 0)
+            );
+            
+            state.world.addConstraint(constraint);
+            
+            this.wheels.push({
+                mesh: wheelMesh,
+                body: wheelBody,
+                constraint: constraint,
+                motorPower: motorPower,
+                localPosition: new CANNON.Vec3(posX, -0.3, posZ)
+            });
+            
+            this.constraints.push(constraint);
+        };
+        
+        Vehicle.prototype.setPosition = function(x, y, z) {
+            // Set chassis position
+            this.chassisBody.position.set(x, y, z);
+            this.chassisBody.velocity.set(0, 0, 0);
+            this.chassisBody.angularVelocity.set(0, 0, 0);
+            this.chassisBody.force.set(0, 0, 0);
+            this.chassisBody.torque.set(0, 0, 0);
+            
+            // Wake up the body
+            if (this.chassisBody.sleepState !== undefined) {
+                this.chassisBody.sleepState = 0;  // AWAKE state
+            }
+            
+            // Set wheel positions
+            for (var i = 0; i < this.wheels.length; i++) {
+                var wheel = this.wheels[i];
+                if (wheel.localPosition) {
+                    wheel.body.position.set(
+                        x + wheel.localPosition.x,
+                        y + wheel.localPosition.y,
+                        z + wheel.localPosition.z
+                    );
+                    wheel.body.velocity.set(0, 0, 0);
+                    wheel.body.angularVelocity.set(0, 0, 0);
+                    wheel.body.force.set(0, 0, 0);
+                    wheel.body.torque.set(0, 0, 0);
+                    
+                    // Wake up wheel bodies
+                    if (wheel.body.sleepState !== undefined) {
+                        wheel.body.sleepState = 0;  // AWAKE state
+                    }
+                }
+            }
+            
+            this.lastPosition.copy(this.chassisBody.position);
+        };
+        
+        Vehicle.prototype.update = function(deltaTime) {
+            if (!this.alive) return;
+            
+            this.age += deltaTime;
+            
+            // Apply motor forces with wheel rotation around correct axis
+            for (var i = 0; i < this.wheels.length; i++) {
+                var wheel = this.wheels[i];
+                // Rotate wheel around X axis (rolling forward)
+                wheel.body.angularVelocity.set(
+                    -10 * (wheel.motorPower / 500) * params.timeScale,
+                    0,
+                    0
+                );
+            }
+            
+            // Update visual positions
+            this.group.position.copy(this.chassisBody.position);
+            this.group.quaternion.copy(this.chassisBody.quaternion);
+            
+            for (var j = 0; j < this.wheels.length; j++) {
+                var w = this.wheels[j];
+                w.mesh.position.x = w.body.position.x - this.group.position.x;
+                w.mesh.position.y = w.body.position.y - this.group.position.y;
+                w.mesh.position.z = w.body.position.z - this.group.position.z;
+                w.mesh.quaternion.copy(w.body.quaternion);
+            }
+            
+            // Calculate fitness
+            var distance = this.chassisBody.position.x - CONFIG.SPAWN_X;
+            this.fitness = Math.max(this.fitness, distance);
+            
+            // Check if stuck
+            var movement = this.chassisBody.position.distanceTo(this.lastPosition);
+            if (movement < CONFIG.MIN_MOVEMENT) {
+                this.stuckTime += deltaTime;
+                if (this.stuckTime > CONFIG.STUCK_TIME) {
+                    this.alive = false;
+                }
+            } else {
+                this.stuckTime = 0;
+                this.lastPosition.copy(this.chassisBody.position);
+            }
+            
+            // Check bounds - more lenient Y check
+            if (this.chassisBody.position.y < -5 ||  // Fell below ground
+                this.chassisBody.position.y > 50 ||   // Flew too high
+                Math.abs(this.chassisBody.position.z) > CONFIG.TRACK_WIDTH + 10 ||  // Off track sides
+                this.age > CONFIG.MAX_LIFETIME) {
+                this.alive = false;
+            }
+        };
+        
+        Vehicle.prototype.destroy = function() {
+            state.scene.remove(this.group);
+            state.world.remove(this.chassisBody);
+            
+            for (var i = 0; i < this.wheels.length; i++) {
+                state.world.remove(this.wheels[i].body);
+            }
+            
+            for (var j = 0; j < this.constraints.length; j++) {
+                state.world.removeConstraint(this.constraints[j]);
+            }
+            
+            var self = this;
+            this.group.traverse(function(child) {
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) child.material.dispose();
+            });
+        };
+        
+        Vehicle.prototype.clone = function() {
+            var clonedGenes = [];
+            for (var i = 0; i < this.genes.length; i++) {
+                clonedGenes.push(this.genes[i]);
+            }
+            return new Vehicle(clonedGenes);
+        };
+        
+        Vehicle.prototype.mutate = function() {
+            for (var i = 0; i < this.genes.length; i++) {
+                if (Math.random() < params.mutationRate) {
+                    var mutation = (Math.random() - 0.5) * 0.3;
+                    this.genes[i] = Math.max(0, Math.min(1, this.genes[i] + mutation));
+                }
+            }
+        };
+        
+        Vehicle.prototype.crossover = function(partner) {
+            var child = new Vehicle();
+            var crossPoint = Math.floor(Math.random() * this.genes.length);
+            
+            for (var i = 0; i < this.genes.length; i++) {
+                if (i < crossPoint) {
+                    child.genes[i] = this.genes[i];
+                } else {
+                    child.genes[i] = partner.genes[i];
+                }
+            }
+            
+            return child;
+        };
+        
+        // Terrain generation
+        function generateTerrain() {
+            var length = CONFIG.TRACK_LENGTH;
+            var width = CONFIG.TRACK_WIDTH;
+            
+            // Visual terrain
+            var geometry = new THREE.PlaneGeometry(length, width, 50, 10);
+            geometry.rotateX(-Math.PI / 2);
+            
+            var vertices = geometry.attributes.position;
+            for (var i = 0; i < vertices.count; i++) {
+                var x = vertices.getX(i);
+                var z = vertices.getZ(i);
+                var y = Math.sin(x * 0.05) * 2 + Math.cos(z * 0.1) * 1;
+                vertices.setY(i, y);
+            }
+            geometry.computeVertexNormals();
+            
+            var material = new THREE.MeshLambertMaterial({ color: 0x4a7c4a });
+            var mesh = new THREE.Mesh(geometry, material);
+            mesh.position.set(0, 0, 0);  // Center the terrain mesh
+            mesh.receiveShadow = true;
+            state.scene.add(mesh);
+            
+            // Create a large base ground for safety
+            var baseGroundShape = new CANNON.Box(new CANNON.Vec3(length * 2, 30, width * 2));
+            var baseGroundBody = new CANNON.Body({
+                mass: 0,
+                shape: baseGroundShape,
+                collisionFilterGroup: CONFIG.GROUP_GROUND,
+                collisionFilterMask: CONFIG.GROUP_VEHICLE | CONFIG.GROUP_WHEEL,
+                type: CANNON.Body.STATIC  // Explicitly set as static
+            });
+            baseGroundBody.position.set(0, -30, 0);
+            state.world.add(baseGroundBody);
+            
+            // Add collision boxes following the terrain surface - with overlap to prevent gaps
+            var gridSize = 8;  // Smaller grid
+            for (var gx = -length/2 - gridSize; gx <= length/2 + gridSize; gx += gridSize) {
+                for (var gz = -width/2 - gridSize; gz <= width/2 + gridSize; gz += gridSize) {
+                    // Calculate terrain height at this position
+                    var height = Math.sin(gx * 0.05) * 2 + Math.cos(gz * 0.1) * 1;
+                    
+                    // Make boxes slightly larger than grid size to ensure overlap
+                    var boxShape = new CANNON.Box(new CANNON.Vec3(gridSize * 0.6, 15, gridSize * 0.6));
+                    var boxBody = new CANNON.Body({
+                        mass: 0,
+                        shape: boxShape,
+                        collisionFilterGroup: CONFIG.GROUP_GROUND,
+                        collisionFilterMask: CONFIG.GROUP_VEHICLE | CONFIG.GROUP_WHEEL,
+                        type: CANNON.Body.STATIC  // Explicitly set as static
+                    });
+                    // Position the collision box so its top surface matches the terrain
+                    boxBody.position.set(gx, height - 15, gz);
+                    state.world.add(boxBody);
+                }
+            }
+            
+            // Add side barriers to keep vehicles on track
+            var barrierShape = new CANNON.Box(new CANNON.Vec3(length / 2, 20, 2));
+            
+            var leftBarrier = new CANNON.Body({
+                mass: 0,
+                shape: barrierShape,
+                collisionFilterGroup: CONFIG.GROUP_GROUND,
+                collisionFilterMask: CONFIG.GROUP_VEHICLE | CONFIG.GROUP_WHEEL,
+                type: CANNON.Body.STATIC  // Explicitly set as static
+            });
+            leftBarrier.position.set(0, 10, -width/2 - 2);
+            state.world.add(leftBarrier);
+            
+            var rightBarrier = new CANNON.Body({
+                mass: 0,
+                shape: barrierShape,
+                collisionFilterGroup: CONFIG.GROUP_GROUND,
+                collisionFilterMask: CONFIG.GROUP_VEHICLE | CONFIG.GROUP_WHEEL,
+                type: CANNON.Body.STATIC  // Explicitly set as static
+            });
+            rightBarrier.position.set(0, 10, width/2 + 2);
+            state.world.add(rightBarrier);
+            
+            // Add visual barriers
+            var barrierGeo = new THREE.BoxGeometry(length, 10, 2);
+            var barrierMat = new THREE.MeshLambertMaterial({ 
+                color: 0x8b4513,
+                transparent: true,
+                opacity: 0.8
+            });
+            
+            var leftBarrierMesh = new THREE.Mesh(barrierGeo, barrierMat);
+            leftBarrierMesh.position.set(0, 5, -width/2 - 2);
+            leftBarrierMesh.castShadow = true;
+            state.scene.add(leftBarrierMesh);
+            
+            var rightBarrierMesh = new THREE.Mesh(barrierGeo, barrierMat);
+            rightBarrierMesh.position.set(0, 5, width/2 + 2);
+            rightBarrierMesh.castShadow = true;
+            state.scene.add(rightBarrierMesh);
+            
+            // Add some obstacles
+            for (var j = 0; j < 10; j++) {
+                var x = Math.random() * (length - 100) - (length/2 - 50);  // Avoid spawn area
+                var z = (Math.random() - 0.5) * width * 0.6;
+                var size = Math.random() * 2 + 1;
+                var height = Math.sin(x * 0.05) * 2 + Math.cos(z * 0.1) * 1;
+                
+                var obstacleGeo = new THREE.BoxGeometry(size, size, size);
+                var obstacleMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+                var obstacleMesh = new THREE.Mesh(obstacleGeo, obstacleMat);
+                obstacleMesh.position.set(x, height + size / 2, z);
+                obstacleMesh.castShadow = true;
+                state.scene.add(obstacleMesh);
+                
+                var obstacleShape = new CANNON.Box(new CANNON.Vec3(size / 2, size / 2, size / 2));
+                var obstacleBody = new CANNON.Body({
+                    mass: 0,
+                    shape: obstacleShape,
+                    collisionFilterGroup: CONFIG.GROUP_GROUND,
+                    collisionFilterMask: CONFIG.GROUP_VEHICLE | CONFIG.GROUP_WHEEL,
+                    type: CANNON.Body.STATIC  // Explicitly set as static
+                });
+                obstacleBody.position.set(x, height + size / 2, z);
+                state.world.add(obstacleBody);
+            }
+            
+            // Add distance markers
+            for (var m = 0; m <= length; m += 50) {
+                var markerGeo = new THREE.BoxGeometry(1, 10, width);
+                var markerMat = new THREE.MeshLambertMaterial({
+                    color: m === 0 ? 0x00ff00 : (m === length ? 0xff0000 : 0xffff00),
+                    transparent: true,
+                    opacity: 0.3
+                });
+                
+                var markerMesh = new THREE.Mesh(markerGeo, markerMat);
+                markerMesh.position.set(m - length/2, 5, 0);
+                state.scene.add(markerMesh);
+            }
+        }
+        
+        // Genetic Algorithm
+        function evolve() {
+            // Sort by fitness
+            state.vehicles.sort(function(a, b) {
+                return b.fitness - a.fitness;
+            });
+            
+            // Update best
+            if (state.vehicles[0] && state.vehicles[0].fitness > state.bestEverScore) {
+                state.bestEverScore = state.vehicles[0].fitness;
+            }
+            
+            var newPopulation = [];
+            
+            // Elite selection
+            for (var i = 0; i < params.eliteCount && i < state.vehicles.length; i++) {
+                newPopulation.push(state.vehicles[i].clone());
+            }
+            
+            // Fill rest with offspring
+            while (newPopulation.length < params.populationSize) {
+                var parent1 = tournamentSelect();
+                var parent2 = tournamentSelect();
+                var child = parent1.crossover(parent2);
+                child.mutate();
+                newPopulation.push(child);
+            }
+            
+            // Clean up old generation
+            for (var j = 0; j < state.vehicles.length; j++) {
+                state.vehicles[j].destroy();
+            }
+            
+            state.vehicles = newPopulation;
+            positionVehicles();
+            state.generation++;
+            state.startTime = Date.now();
+        }
+        
+        function tournamentSelect() {
+            var tournamentSize = 3;
+            var best = null;
+            
+            for (var i = 0; i < tournamentSize; i++) {
+                var index = Math.floor(Math.random() * state.vehicles.length);
+                var candidate = state.vehicles[index];
+                
+                if (!best || candidate.fitness > best.fitness) {
+                    best = candidate;
+                }
+            }
+            
+            return best;
+        }
+        
+        function positionVehicles() {
+            for (var i = 0; i < state.vehicles.length; i++) {
+                var vehicle = state.vehicles[i];
+                var row = Math.floor(i / 5);
+                var col = i % 5;
+                
+                var x = CONFIG.SPAWN_X - row * 5;
+                var z = (col - 2) * 3;
+                var y = CONFIG.SPAWN_HEIGHT;  // Use flat spawn height
+                
+                vehicle.setPosition(x, y, z);
+            }
+        }
+        
+        // Initialize Three.js
+        function initGraphics() {
+            state.scene = new THREE.Scene();
+            state.scene.fog = new THREE.Fog(0x87CEEB, 50, 500);
+            
+            state.camera = new THREE.PerspectiveCamera(
+                60,
+                window.innerWidth / window.innerHeight,
+                0.1,
+                1000
+            );
+            state.camera.position.set(-30, 20, 30);
+            state.camera.lookAt(0, 0, 0);
+            
+            state.renderer = new THREE.WebGLRenderer({
+                canvas: document.getElementById('canvas'),
+                antialias: true
+            });
+            state.renderer.setSize(window.innerWidth, window.innerHeight);
+            state.renderer.shadowMap.enabled = true;
+            state.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Lighting
+            var ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+            state.scene.add(ambientLight);
+            
+            var directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+            directionalLight.position.set(50, 50, 25);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 500;
+            directionalLight.shadow.camera.left = -50;
+            directionalLight.shadow.camera.right = 50;
+            directionalLight.shadow.camera.top = 50;
+            directionalLight.shadow.camera.bottom = -50;
+            state.scene.add(directionalLight);
+            
+            // Sky
+            var skyGeometry = new THREE.SphereGeometry(400, 32, 15);
+            var skyMaterial = new THREE.MeshBasicMaterial({
+                color: 0x87CEEB,
+                side: THREE.BackSide
+            });
+            var sky = new THREE.Mesh(skyGeometry, skyMaterial);
+            state.scene.add(sky);
+        }
+        
+        // Initialize physics
+        function initPhysics() {
+            state.world = new CANNON.World();
+            state.world.gravity.set(0, -params.gravity, 0);
+            
+            // Use NaiveBroadphase for reliability
+            state.world.broadphase = new CANNON.NaiveBroadphase();
+            
+            // Higher solver iterations for better stability
+            state.world.solver.iterations = 20;
+            state.world.solver.tolerance = 0.0001;
+            
+            // Set default contact material
+            state.world.defaultContactMaterial.friction = 0.6;
+            state.world.defaultContactMaterial.restitution = 0.3;
+            state.world.defaultContactMaterial.contactEquationStiffness = 1e8;
+            state.world.defaultContactMaterial.contactEquationRelaxation = 3;
+            
+            console.log('Physics world initialized');
+        }
+        
+        // Animation loop
+        var lastTime = performance.now();
+        var frameCount = 0;
+        var fpsTime = 0;
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            var currentTime = performance.now();
+            var deltaTime = Math.min((currentTime - lastTime) / 1000, 0.1);
+            lastTime = currentTime;
+            
+            // Update FPS
+            frameCount++;
+            fpsTime += deltaTime;
+            if (fpsTime >= 1) {
+                state.stats.fps = Math.round(frameCount / fpsTime);
+                frameCount = 0;
+                fpsTime = 0;
+                document.getElementById('fps').textContent = state.stats.fps;
+            }
+            
+            if (state.isRunning && !state.isPaused) {
+                // Fixed timestep physics
+                var physicsStart = performance.now();
+                var fixedTimeStep = CONFIG.PHYSICS_TIMESTEP;
+                var maxSubSteps = 5;  // Increased substeps for better collision
+                
+                // Step physics with interpolation
+                state.world.step(fixedTimeStep, deltaTime * params.timeScale, maxSubSteps);
+                
+                state.stats.physicsTime = performance.now() - physicsStart;
+                
+                // Update vehicles
+                var aliveCount = 0;
+                for (var i = 0; i < state.vehicles.length; i++) {
+                    state.vehicles[i].update(deltaTime * 1000);
+                    if (state.vehicles[i].alive) aliveCount++;
+                }
+                
+                // Check generation end
+                var generationTime = Date.now() - state.startTime;
+                var progress = Math.min(generationTime / CONFIG.MAX_LIFETIME * 100, 100);
+                
+                if ((aliveCount === 0 || generationTime > CONFIG.MAX_LIFETIME) && state.vehicles.length > 0) {
+                    evolve();
+                }
+                
+                updateStats(aliveCount, progress);
+                updateCamera();
+            }
+            
+            // Update performance stats
+            if (frameCount % 30 === 0) {
+                document.getElementById('physicsTime').textContent = state.stats.physicsTime.toFixed(1);
+                document.getElementById('bodyCount').textContent = state.world.bodies.length;
+            }
+            
+            state.renderer.render(state.scene, state.camera);
+        }
+        
+        // Update camera
+        function updateCamera() {
+            if (state.cameraMode === 'follow' && state.vehicles.length > 0) {
+                var best = state.vehicles[0];
+                for (var i = 1; i < state.vehicles.length; i++) {
+                    if (state.vehicles[i].fitness > best.fitness) {
+                        best = state.vehicles[i];
+                    }
+                }
+                
+                if (best && best.chassisBody) {
+                    var targetPos = best.chassisBody.position;
+                    var idealPos = new THREE.Vector3(
+                        targetPos.x - 15,
+                        targetPos.y + 10,
+                        targetPos.z + 15
+                    );
+                    
+                    state.camera.position.lerp(idealPos, 0.1);
+                    state.camera.lookAt(targetPos.x, targetPos.y, targetPos.z);
+                }
+            }
+        }
+        
+        // Update stats
+        function updateStats(aliveCount, progress) {
+            document.getElementById('generation').textContent = state.generation;
+            document.getElementById('generationProgress').style.width = progress + '%';
+            
+            if (state.vehicles.length > 0) {
+                var best = 0;
+                var sum = 0;
+                for (var i = 0; i < state.vehicles.length; i++) {
+                    var fitness = state.vehicles[i].fitness;
+                    if (fitness > best) best = fitness;
+                    sum += fitness;
+                }
+                var avg = sum / state.vehicles.length;
+                
+                document.getElementById('currentBest').textContent = best.toFixed(1) + 'm';
+                document.getElementById('avgFitness').textContent = avg.toFixed(1) + 'm';
+                document.getElementById('activeVehicles').textContent = aliveCount + '/' + state.vehicles.length;
+            }
+            
+            document.getElementById('allTimeBest').textContent = state.bestEverScore.toFixed(1) + 'm';
+        }
+        
+        // Setup controls
+        function setupControls() {
+            document.getElementById('startBtn').addEventListener('click', function() {
+                if (!state.isRunning) {
+                    startSimulation();
+                }
+            });
+            
+            document.getElementById('pauseBtn').addEventListener('click', function() {
+                state.isPaused = !state.isPaused;
+                document.getElementById('pauseBtn').textContent = state.isPaused ? 'Resume' : 'Pause';
+            });
+            
+            document.getElementById('resetBtn').addEventListener('click', function() {
+                resetSimulation();
+            });
+            
+            // Sliders
+            var sliders = [
+                { id: 'mutationRate', param: 'mutationRate', format: function(v) { return Math.round(v * 100) + '%'; }},
+                { id: 'maxWheels', param: 'maxWheels', format: function(v) { return v; }},
+                { id: 'gravity', param: 'gravity', format: function(v) { return '-' + v; }},
+                { id: 'timeScale', param: 'timeScale', format: function(v) { return v.toFixed(1) + 'x'; }}
+            ];
+            
+            for (var i = 0; i < sliders.length; i++) {
+                (function(slider) {
+                    var element = document.getElementById(slider.id);
+                    var display = document.getElementById(slider.id + 'Value');
+                    
+                    element.addEventListener('input', function(e) {
+                        var value = parseFloat(e.target.value);
+                        params[slider.param] = value;
+                        display.textContent = slider.format(value);
+                        
+                        if (slider.param === 'gravity' && state.world) {
+                            state.world.gravity.set(0, -value, 0);
+                        }
+                    });
+                    
+                    display.textContent = slider.format(params[slider.param]);
+                })(sliders[i]);
+            }
+            
+            // Number inputs
+            document.getElementById('populationSize').addEventListener('change', function(e) {
+                params.populationSize = parseInt(e.target.value);
+            });
+            
+            document.getElementById('eliteCount').addEventListener('change', function(e) {
+                params.eliteCount = parseInt(e.target.value);
+            });
+            
+            // Camera buttons
+            document.getElementById('followBestBtn').addEventListener('click', function() {
+                state.cameraMode = 'follow';
+            });
+            
+            document.getElementById('freeCamBtn').addEventListener('click', function() {
+                state.cameraMode = 'free';
+                setupFreeCameraControls();
+            });
+            
+            // Window resize
+            window.addEventListener('resize', function() {
+                state.camera.aspect = window.innerWidth / window.innerHeight;
+                state.camera.updateProjectionMatrix();
+                state.renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+        
+        // Free camera controls
+        function setupFreeCameraControls() {
+            var canvas = document.getElementById('canvas');
+            var mouseDown = false;
+            var mouseX = 0;
+            var mouseY = 0;
+            
+            canvas.addEventListener('mousedown', function(e) {
+                if (state.cameraMode === 'free') {
+                    mouseDown = true;
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                }
+            });
+            
+            canvas.addEventListener('mouseup', function() {
+                mouseDown = false;
+            });
+            
+            canvas.addEventListener('mousemove', function(e) {
+                if (mouseDown && state.cameraMode === 'free') {
+                    var deltaX = e.clientX - mouseX;
+                    var deltaY = e.clientY - mouseY;
+                    
+                    var spherical = new THREE.Spherical();
+                    spherical.setFromVector3(state.camera.position);
+                    spherical.theta -= deltaX * 0.01;
+                    spherical.phi += deltaY * 0.01;
+                    spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+                    state.camera.position.setFromSpherical(spherical);
+                    
+                    mouseX = e.clientX;
+                    mouseY = e.clientY;
+                }
+            });
+            
+            canvas.addEventListener('wheel', function(e) {
+                if (state.cameraMode === 'free') {
+                    var scale = e.deltaY > 0 ? 1.1 : 0.9;
+                    state.camera.position.multiplyScalar(scale);
+                }
+            });
+        }
+        
+        // Start simulation
+        function startSimulation() {
+            state.isRunning = true;
+            state.isPaused = false;
+            state.startTime = Date.now();
+            
+            console.log('Starting simulation...');
+            
+            // Generate terrain first
+            generateTerrain();
+            
+            // Step physics a few times to let it settle
+            for (var s = 0; s < 10; s++) {
+                state.world.step(CONFIG.PHYSICS_TIMESTEP);
+            }
+            
+            // Create initial population
+            for (var i = 0; i < params.populationSize; i++) {
+                state.vehicles.push(new Vehicle());
+            }
+            
+            positionVehicles();
+            
+            console.log('Created ' + state.vehicles.length + ' vehicles');
+            if (state.vehicles.length > 0) {
+                console.log('First vehicle at:', 
+                    'x:', state.vehicles[0].chassisBody.position.x.toFixed(2),
+                    'y:', state.vehicles[0].chassisBody.position.y.toFixed(2),
+                    'z:', state.vehicles[0].chassisBody.position.z.toFixed(2)
+                );
+            }
+        }
+        
+        // Reset simulation
+        function resetSimulation() {
+            // Clear vehicles
+            for (var i = 0; i < state.vehicles.length; i++) {
+                state.vehicles[i].destroy();
+            }
+            state.vehicles = [];
+            
+            state.generation = 0;
+            state.bestEverScore = 0;
+            state.isRunning = false;
+            state.isPaused = false;
+            
+            // Clear scene meshes
+            var toRemove = [];
+            state.scene.traverse(function(child) {
+                if (child.isMesh) {
+                    toRemove.push(child);
+                }
+            });
+            
+            for (var j = 0; j < toRemove.length; j++) {
+                state.scene.remove(toRemove[j]);
+                if (toRemove[j].geometry) toRemove[j].geometry.dispose();
+                if (toRemove[j].material) toRemove[j].material.dispose();
+            }
+            
+            // Clear physics world
+            while (state.world.constraints.length > 0) {
+                state.world.removeConstraint(state.world.constraints[0]);
+            }
+            
+            while (state.world.bodies.length > 0) {
+                state.world.remove(state.world.bodies[0]);
+            }
+            
+            // Reinitialize
+            initPhysics();
+            updateStats(0, 0);
+        }
+        
+        // Initialize
+        function init() {
+            initGraphics();
+            initPhysics();
+            setupControls();
+            
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('controls').style.display = 'block';
+            document.getElementById('stats').style.display = 'block';
+            document.getElementById('performance').style.display = 'block';
+            
+            animate();
+        }
+        
+        // Start when loaded
+        window.addEventListener('load', function() {
+            if (typeof THREE === 'undefined' || typeof CANNON === 'undefined') {
+                alert('Failed to load 3D libraries. Please refresh the page.');
+                return;
+            }
+            init();
+        });
+    </script>
+</body>
+</html>

@@ -77,15 +77,15 @@ Phase 1: Core Physics & Terrain Migration (Target: 1 Week)
 
 Goal: Get a stable Rapier.js world running with a robust terrain system.
 
-    [ ] Task 1.1: Project Setup: Initialize a new project using Vite. Install dependencies: three, @dimforge/rapier3d-compat.
+    [x] Task 1.1: Project Setup: Initialize a new project using Vite. Install dependencies: three, @dimforge/rapier3d-compat.
 
-    [ ] Task 1.2: Implement Architecture: Create the directory structure and placeholder files outlined above.
+    [x] Task 1.2: Implement Architecture: Create the directory structure and placeholder files outlined above.
 
-    [ ] Task 1.3: Asynchronous Loading: Implement the async startup flow in main.js to correctly load and initialize the Rapier.js WASM module.
+    [x] Task 1.3: Asynchronous Loading: Implement the async startup flow in main.js to correctly load and initialize the Rapier.js WASM module.
 
-    [ ] Task 1.4: Terrain System: In TerrainFactory.js, replace the grid-of-boxes with a single, efficient Rapier.Heightfield collider.
+    [x] Task 1.4: Terrain System: In TerrainFactory.js, replace the grid-of-boxes with a single, efficient Rapier.Heightfield collider.
 
-    [ ] Task 1.5: Validation: Implement Test 1 (Terrain Integrity Test). Success is 0/100 spheres falling through the terrain.
+    [x] Task 1.5: Validation: Implement Test 1 (Terrain Integrity Test). Success is 0/100 spheres falling through the terrain.
 
 Phase 2: Vehicle & Joint System Redesign (Target: 1 Week)
 

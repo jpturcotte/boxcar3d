@@ -1,2 +1,2 @@
-// BoxCar3D-Rapier: Main Application Entry Point
+// BoxCar3D: Main Application Entry Point
 console.log("Hello, BoxCar3D-Rapier!");

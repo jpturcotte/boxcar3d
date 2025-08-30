@@ -1,6 +1,7 @@
 // BoxCar3D: Main Application Entry Point
 import RAPIER from '@dimforge/rapier3d-compat';
 import { PhysicsController } from './physics/PhysicsController.js';
+import { VehicleFactory } from './physics/VehicleFactory.js';
 
 const runSimulation = async () => {
     try {
@@ -9,6 +10,13 @@ const runSimulation = async () => {
 
         const physicsController = new PhysicsController(RAPIER);
         physicsController.initialize();
+
+        // --- Task 2.1 Validation: Create a single vehicle chassis ---
+        console.log('Attempting to create a vehicle chassis...');
+        const { rigidBodyDesc, colliderDesc } = VehicleFactory.createChassis(RAPIER);
+        const chassisBody = physicsController.createRigidBody(rigidBodyDesc, colliderDesc);
+        console.log('Vehicle chassis created successfully.', chassisBody);
+        // --- End Validation ---
 
         // Game loop
         setInterval(() => {

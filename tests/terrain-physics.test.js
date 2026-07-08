@@ -60,11 +60,12 @@ describe('corridor realized in Rapier (provisional Step-1a catch gate)', () => {
       expect(p.y).toBeGreaterThan(-50); // safety-plane gate (no physical catcher below)
       const surfaceY = surfaceYAt(p.x, p.z);
       expect(surfaceY).not.toBeNull();
-      // A resting sphere's center is at surfaceY + R; it can never sit BELOW the
-      // surface under it. Allow only ~1 mm of contact-solver penetration (a
-      // tunnelled body would be metres below surfaceY, not a millimetre).
-      // Upper bound leaves room for residual roll/bounce on slopes.
-      expect(p.y).toBeGreaterThan(surfaceY - 1e-3);
+      // The sphere's lowest point is directly below its center at this exact
+      // (x,z), so no-penetration forces center.y >= surfaceY + R (minus a little
+      // contact-solver slop) — slope-independent. A half-sunk body (center near
+      // surfaceY) must FAIL, not just a fully-tunnelled one. Upper bound leaves
+      // room for roll/bounce and gentle slopes. (Codex review.)
+      expect(p.y).toBeGreaterThan(surfaceY + R - 0.1);
       expect(p.y).toBeLessThan(surfaceY + R + 0.6);
     }
     world.free();
@@ -93,8 +94,11 @@ describe('corridor realized in Rapier (provisional Step-1a catch gate)', () => {
 
     for (const body of bodies) {
       const p = body.translation();
-      // Never escapes past a wall (inner face at |z| = halfWid; center stops ~R short).
-      expect(Math.abs(p.z)).toBeLessThan(halfWid + R);
+      // Inner wall face is at |z| = halfWid, so a contained sphere's CENTER stops
+      // ~R short of it: assert |z| < halfWid - R (+ slop), not halfWid + R — the
+      // latter would pass a sphere sitting a full radius past the inner face.
+      // (Codex review.)
+      expect(Math.abs(p.z)).toBeLessThan(halfWid - R + 0.1);
       expect(p.y).toBeGreaterThan(-50); // still in play, not launched out or tunnelled
     }
     world.free();

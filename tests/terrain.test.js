@@ -19,6 +19,17 @@ function fingerprintHeights(heights) {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+// FNV-1a straight over raw bytes (zone materials are already bytes — no
+// endianness concern). Same locked-constant discipline as fingerprintHeights.
+function fingerprintBytes(bytes) {
+  let h = 0x811c9dc5;
+  for (const b of bytes) {
+    h ^= b;
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 // FNV-1a over float64 LE values in a documented fixed order — for descriptor
 // fingerprints (craters, features). Same locked-constant discipline as
 // fingerprintHeights: adding/reordering serialized fields is a deliberate
@@ -58,6 +69,13 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     const t = generateCorridorTerrain({ seed: 20260708 });
     const fields = t.craters.flatMap((c) => [c.x, c.z, c.radius, c.depth]);
     expect(fingerprintFloat64s(fields)).toBe('b9e05cf7');
+  });
+
+  test('locked DEFAULT-config zones fingerprint: seed 20260708, forever', () => {
+    // First-time lock (Step 1b): raw material bytes in column-major cell order.
+    // 198 SAND + 66 MUD of 1320 eligible cells = the exact 0.15/0.05 quantiles.
+    const t = generateCorridorTerrain({ seed: 20260708 });
+    expect(fingerprintBytes(t.zones.materials)).toBe('903a3d5f');
   });
 
   test('same seed -> identical heights; different seed -> different heights', () => {

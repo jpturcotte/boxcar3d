@@ -32,3 +32,36 @@ export async function createPhysics({ deterministic = false } = {}) {
   world.timestep = FIXED_DT;
   return { RAPIER, world };
 }
+
+// --- Terrain realization: the ONLY place that constructs Rapier terrain
+// colliders. Callers (terrain generator output, main render) pass plain data;
+// RAPIER is injected, never imported here beyond createPhysics.
+
+// Static heightfield floor. A parentless collider is fixed, so no rigid body is
+// needed. `heights` is column-major and `scale` a plain {x,y,z} per [V1].
+export function addHeightfield(RAPIER, world, { rows, cols, heights, scale, friction = 1 }) {
+  const desc = RAPIER.ColliderDesc.heightfield(rows, cols, heights, scale).setFriction(friction);
+  return world.createCollider(desc);
+}
+
+// Static box (corridor wall), positioned by its own translation.
+export function addStaticBox(RAPIER, world, { half, pos, restitution = 0.1, friction = 0.8 }) {
+  const desc = RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
+    .setTranslation(pos.x, pos.y, pos.z)
+    .setRestitution(restitution)
+    .setFriction(friction);
+  return world.createCollider(desc);
+}
+
+// Realize a generated corridor (floor heightfield + the two walls) into a world.
+export function addCorridor(RAPIER, world, terrain) {
+  const floor = addHeightfield(RAPIER, world, {
+    rows: terrain.rows,
+    cols: terrain.cols,
+    heights: terrain.heights,
+    scale: terrain.scale,
+    friction: terrain.floorFriction,
+  });
+  const walls = terrain.walls.map((w) => addStaticBox(RAPIER, world, w));
+  return { floor, walls };
+}

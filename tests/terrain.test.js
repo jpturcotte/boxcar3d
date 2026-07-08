@@ -1,0 +1,145 @@
+import { describe, test, expect } from 'vitest';
+import { generateCorridorTerrain, indexToLocalXZ, startEnvelope } from '../src/sim/terrain.js';
+
+// Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
+// catch gate live in tests/terrain-physics.test.js.
+
+// FNV-1a over an explicit LITTLE-ENDIAN float32 serialization of the heights
+// buffer — host-byte-order independent, captures the exact stored field. If this
+// changes, generated terrain changed: seed-sharing / replays break. Do NOT update
+// without a seed-format version bump.
+function fingerprintHeights(heights) {
+  const view = new DataView(new ArrayBuffer(heights.length * 4));
+  for (let i = 0; i < heights.length; i++) view.setFloat32(i * 4, heights[i], true); // LE
+  let h = 0x811c9dc5;
+  for (let b = 0; b < view.byteLength; b++) {
+    h ^= view.getUint8(b);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+describe('corridor terrain generator (pure, deterministic)', () => {
+  test('locked heights fingerprint: seed 20260708 reproduces the field, forever', () => {
+    const t = generateCorridorTerrain({ seed: 20260708 });
+    expect(fingerprintHeights(t.heights)).toBe('e2157c82');
+  });
+
+  test('same seed -> identical heights; different seed -> different heights', () => {
+    const a = generateCorridorTerrain({ seed: 7 }).heights;
+    const b = generateCorridorTerrain({ seed: 7 }).heights;
+    const c = generateCorridorTerrain({ seed: 8 }).heights;
+    expect(Array.from(a)).toEqual(Array.from(b));
+    expect(Array.from(a)).not.toEqual(Array.from(c));
+  });
+
+  test('grid dimensions and column-major buffer length are consistent', () => {
+    const t = generateCorridorTerrain({ seed: 1, length: 120, width: 12, cellSize: 1 });
+    expect(t.rows).toBe(12); // Z cells
+    expect(t.cols).toBe(120); // X cells
+    expect(t.heights.length).toBe((t.rows + 1) * (t.cols + 1));
+    expect(t.version).toBe(1);
+    expect(t.scale).toEqual({ x: 120, y: 1, z: 12 });
+  });
+
+  test('indexToLocalXZ maps corners and center per the [V1] convention', () => {
+    const t = generateCorridorTerrain({ seed: 1 });
+    expect(indexToLocalXZ(0, 0, t)).toEqual({ x: -60, z: -6 }); // col0->-X, row0->-Z
+    expect(indexToLocalXZ(t.rows, t.cols, t)).toEqual({ x: 60, z: 6 }); // far corner
+    expect(indexToLocalXZ(t.rows / 2, t.cols / 2, t)).toEqual({ x: 0, z: 0 }); // centre
+  });
+
+  test('start envelope: flat 0 over the pad, monotone through the blend, 1 after', () => {
+    const cfg = { length: 120, startFlatLength: 4, startBlendLength: 6 };
+    const at = (x) => startEnvelope(x, cfg);
+    // Flat pad: x in [-60, -56] (d in [0,4]) is exactly 0.
+    expect(at(-60)).toBe(0);
+    expect(at(-58)).toBe(0);
+    expect(at(-56)).toBe(0);
+    // Blend: strictly increasing across (-56, -50).
+    const blend = [-55, -54, -53, -52, -51].map(at);
+    for (let i = 1; i < blend.length; i++) {
+      expect(blend[i]).toBeGreaterThan(blend[i - 1]);
+      expect(blend[i]).toBeGreaterThan(0);
+      expect(blend[i]).toBeLessThan(1);
+    }
+    // Full terrain: x >= -50 (d >= 10) is exactly 1.
+    expect(at(-50)).toBe(1);
+    expect(at(0)).toBe(1);
+    expect(at(60)).toBe(1);
+  });
+
+  test('flat pad has zero elevation; full terrain appears beyond the blend', () => {
+    const t = generateCorridorTerrain({ seed: 42 });
+    // cols 0..4 -> x in [-60,-56] (flat pad) -> every height exactly 0.
+    for (let col = 0; col <= 4; col++) {
+      for (let row = 0; row <= t.rows; row++) {
+        expect(t.heights[col * (t.rows + 1) + row]).toBe(0);
+      }
+    }
+    // Beyond the blend (cols >= 11 -> x >= -49) real elevation exists.
+    let maxAbs = 0;
+    for (let col = 11; col <= t.cols; col++) {
+      for (let row = 0; row <= t.rows; row++) {
+        maxAbs = Math.max(maxAbs, Math.abs(t.heights[col * (t.rows + 1) + row]));
+      }
+    }
+    expect(maxAbs).toBeGreaterThan(0.1);
+  });
+
+  test('two walls sized to terrain bounds, inner faces flush at z = ±width/2', () => {
+    const t = generateCorridorTerrain({ seed: 3, width: 12, wallThickness: 0.5, length: 120 });
+    expect(t.walls).toHaveLength(2);
+    const [neg, pos] = t.walls;
+    // Placement: flush inner faces, spanning the full length.
+    expect(neg.pos.z).toBeCloseTo(-(12 / 2 + 0.5 / 2), 10);
+    expect(pos.pos.z).toBeCloseTo(12 / 2 + 0.5 / 2, 10);
+    expect(pos.half.x).toBe(60);
+    expect(pos.half.z).toBe(0.25);
+    expect(pos.restitution).toBe(0.1);
+    // Height spans below the lowest dip and above the highest peak (clearance).
+    const bottom = pos.pos.y - pos.half.y;
+    const top = pos.pos.y + pos.half.y;
+    expect(bottom).toBeCloseTo(t.bounds.minY - 1, 10); // wallEmbed
+    expect(top).toBeCloseTo(t.bounds.maxY + 4, 10); // wallClearance
+    expect(bottom).toBeLessThan(t.bounds.minY);
+    expect(top).toBeGreaterThan(t.bounds.maxY);
+  });
+
+  describe('config validation (fail loud on degenerate input)', () => {
+    test('rejects non-positive cellSize / length / width', () => {
+      // cellSize=0 would otherwise RangeError on Float32Array(Infinity).
+      expect(() => generateCorridorTerrain({ cellSize: 0 })).toThrow(/cellSize/);
+      expect(() => generateCorridorTerrain({ cellSize: -1 })).toThrow(/cellSize/);
+      // length<=0 would otherwise RangeError on a negative typed-array length.
+      expect(() => generateCorridorTerrain({ length: -10 })).toThrow(/length and width/);
+      expect(() => generateCorridorTerrain({ width: 0 })).toThrow(/length and width/);
+    });
+
+    test('rejects bad wall params', () => {
+      expect(() => generateCorridorTerrain({ wallThickness: 0 })).toThrow(/wallThickness/);
+      expect(() => generateCorridorTerrain({ wallClearance: -1 })).toThrow(/wallClearance and wallEmbed/);
+      expect(() => generateCorridorTerrain({ wallEmbed: -1 })).toThrow(/wallClearance and wallEmbed/);
+    });
+
+    test('rejects negative start lengths and a pad longer than the corridor', () => {
+      expect(() => generateCorridorTerrain({ startFlatLength: -1 })).toThrow(/start lengths/);
+      expect(() => generateCorridorTerrain({ startBlendLength: -1 })).toThrow(/start lengths/);
+      expect(() => generateCorridorTerrain({ startFlatLength: 100, startBlendLength: 100, length: 120 })).toThrow(/cannot exceed length/);
+    });
+
+    test('rejects config that rounds to fewer than one cell per axis', () => {
+      // width 0.3 with cellSize 1 -> rows = round(0.3) = 0.
+      expect(() => generateCorridorTerrain({ width: 0.3, cellSize: 1 })).toThrow(/fewer than one cell/);
+    });
+
+    test('bad noise octaves propagate to a throw (closes the NaN terrain path)', () => {
+      expect(() => generateCorridorTerrain({ macroOctaves: 0 })).toThrow(/octaves/);
+      expect(() => generateCorridorTerrain({ microOctaves: -2 })).toThrow(/octaves/);
+    });
+
+    test('default config is accepted', () => {
+      expect(() => generateCorridorTerrain({ seed: 1 })).not.toThrow();
+    });
+  });
+});

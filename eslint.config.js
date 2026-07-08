@@ -11,7 +11,7 @@ const DETERMINISM_MESSAGE =
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**', 'docs/**'],
+    ignores: ['dist/**', 'node_modules/**', 'docs/**', 'legacy/**'],
   },
   {
     files: ['**/*.js'],

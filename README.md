@@ -22,17 +22,37 @@ npm run build    # production bundle in dist/
 
 Requires Node 20.19+ (built and verified on Node 22).
 
-## Put it on GitHub
+## Land it on your existing private repo
+
+This scaffold is designed to become the next commit of your existing private
+`boxcar3d` repo (its 2025 snapshot is preserved under `legacy/`), keeping your
+history:
 
 ```bash
-git remote add origin git@github.com:<you>/boxcar3d.git
-git push -u origin main
+# 1. Clone your private repo — its history stays intact throughout
+git clone git@github.com:<you>/boxcar3d.git && cd boxcar3d
+
+# 2. Clear the old working tree (files only; history is safe in .git)
+git rm -rq .
+
+# 3. Copy the scaffold in — after removing ITS bundled .git,
+#    so your repo's history is never touched
+rm -rf /path/to/scaffold/.git
+cp -r /path/to/scaffold/. .
+
+# 4. Commit and push
+git add -A
+git commit -m "v2: verified Vite+Rapier scaffold; 2025 code preserved in legacy/"
+git push
 ```
 
-Then in the repo settings: **Settings → Pages → Source: GitHub Actions.**
-Every push to `main` runs lint + tests + build and deploys `dist/` to
-`https://<you>.github.io/boxcar3d/`. The Vite base path is derived from the
-repo name automatically, so renaming the repo needs no config change.
+(If you'd rather start clean, the scaffold is already an initialized repo —
+just add your remote and push.) Then in the repo settings:
+**Settings → Pages → Source: GitHub Actions.** Every push to `main` runs
+lint + tests + build and deploys `dist/` to `https://<you>.github.io/boxcar3d/`.
+The Vite base path is derived from the repo name automatically. Note: GitHub
+Pages on a **private** repo requires a plan that supports it — otherwise flip
+the repo to public or skip Pages and use `npm run preview` locally.
 
 ## Working on this with Claude Code
 

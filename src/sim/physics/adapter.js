@@ -19,12 +19,16 @@
 
 export const FIXED_DT = 1 / 60;
 
+// Legacy-tuned feel: the original ran double Earth gravity on purpose
+// (legacy/SALVAGE.md). Keep it as the known-good default; it is a knob.
+export const GRAVITY = 20;
+
 export async function createPhysics({ deterministic = false } = {}) {
   const RAPIER = deterministic
     ? (await import('@dimforge/rapier3d-deterministic-compat')).default
     : (await import('@dimforge/rapier3d-compat')).default;
   await RAPIER.init(); // note: compat pkg prints an upstream deprecation warning internally — cosmetic
-  const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+  const world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
   world.timestep = FIXED_DT;
   return { RAPIER, world };
 }

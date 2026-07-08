@@ -12,6 +12,11 @@ Canonical design docs live in `docs/` — **read before structural work**:
 - `boxcar3d-phase0-refresh-2026-07.md` — Rapier/Three migration mapping, Phase 1 checklist, [V1]–[V9] verification items.
 - `boxcar3d-red-team-2026-07.md` — why these rules exist (findings F1–F18).
 
+`legacy/` holds the recovered 2025 private-repo snapshot: the last single-file
+build, a stalled Rapier/Vite attempt, and `legacy/SALVAGE.md` — recovered gene
+mappings, tuned defaults (gravity 20, population 20, mutation 0.05), and
+evidence notes. Reference only; never import from `legacy/`.
+
 ## Hard rules
 
 1. **IMPORTANT — Determinism (D7).** The ONLY randomness source in `src/sim`
@@ -23,7 +28,10 @@ Canonical design docs live in `docs/` — **read before structural work**:
 2. **IMPORTANT — Sim-time purity (F3).** Fitness, termination, stuck detection,
    and motor scheduling count fixed physics steps. Never `performance.now()`,
    `Date`, or frame deltas inside simulation logic. Time scale = more steps per
-   frame at `FIXED_DT = 1/60`, never a larger dt.
+   frame at `FIXED_DT = 1/60`, never a larger dt — and `timeScale` must never
+   appear inside any force, velocity, or fitness expression (the legacy build
+   multiplied motor velocity by it, silently changing the physics; see
+   `legacy/SALVAGE.md`).
 3. **Tests first, seeds declared.** Every physics/GA feature lands with seeded
    Vitest tests. Statistical tests state their seed and sample size. CI must
    stay green; never weaken an assertion to make it pass.

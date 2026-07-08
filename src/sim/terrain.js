@@ -64,11 +64,30 @@ function fullElevation(x, z, cfg, macroSeed, microSeed) {
   return macro + micro;
 }
 
+// Fail loud on config that would otherwise yield degenerate terrain, Infinity,
+// NaN, or a RangeError from the Float32Array allocation (review A.1).
+function validateConfig(cfg) {
+  if (!(cfg.cellSize > 0)) throw new Error('generateCorridorTerrain: cellSize must be > 0');
+  if (!(cfg.length > 0) || !(cfg.width > 0)) throw new Error('generateCorridorTerrain: length and width must be > 0');
+  if (!(cfg.wallThickness > 0)) throw new Error('generateCorridorTerrain: wallThickness must be > 0');
+  if (cfg.wallClearance < 0 || cfg.wallEmbed < 0) throw new Error('generateCorridorTerrain: wallClearance and wallEmbed must be >= 0');
+  if (cfg.startFlatLength < 0 || cfg.startBlendLength < 0) throw new Error('generateCorridorTerrain: start lengths must be >= 0');
+  if (cfg.startFlatLength + cfg.startBlendLength > cfg.length) {
+    throw new Error('generateCorridorTerrain: startFlatLength + startBlendLength cannot exceed length');
+  }
+}
+
 export function generateCorridorTerrain(options = {}) {
   const cfg = { ...DEFAULTS, ...options };
+  validateConfig(cfg);
   const { seed, length, width, cellSize } = cfg;
   const rows = Math.round(width / cellSize); // Z cells  (row i -> +Z)
   const cols = Math.round(length / cellSize); // X cells  (col j -> +X)
+  // Positive length/width can still round to zero cells (e.g. width < cellSize/2);
+  // a heightfield needs at least one cell per axis.
+  if (rows < 1 || cols < 1) {
+    throw new Error('generateCorridorTerrain: length/width round to fewer than one cell — increase them or decrease cellSize');
+  }
   const scale = { x: length, y: 1, z: width }; // y=1 -> heights are literal metres
   const heights = new Float32Array((rows + 1) * (cols + 1));
   // `walls` is the composite seam for Step 1a. The composite-from-day-one rule

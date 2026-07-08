@@ -105,4 +105,41 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     expect(bottom).toBeLessThan(t.bounds.minY);
     expect(top).toBeGreaterThan(t.bounds.maxY);
   });
+
+  describe('config validation (fail loud on degenerate input)', () => {
+    test('rejects non-positive cellSize / length / width', () => {
+      // cellSize=0 would otherwise RangeError on Float32Array(Infinity).
+      expect(() => generateCorridorTerrain({ cellSize: 0 })).toThrow(/cellSize/);
+      expect(() => generateCorridorTerrain({ cellSize: -1 })).toThrow(/cellSize/);
+      // length<=0 would otherwise RangeError on a negative typed-array length.
+      expect(() => generateCorridorTerrain({ length: -10 })).toThrow(/length and width/);
+      expect(() => generateCorridorTerrain({ width: 0 })).toThrow(/length and width/);
+    });
+
+    test('rejects bad wall params', () => {
+      expect(() => generateCorridorTerrain({ wallThickness: 0 })).toThrow(/wallThickness/);
+      expect(() => generateCorridorTerrain({ wallClearance: -1 })).toThrow(/wallClearance and wallEmbed/);
+      expect(() => generateCorridorTerrain({ wallEmbed: -1 })).toThrow(/wallClearance and wallEmbed/);
+    });
+
+    test('rejects negative start lengths and a pad longer than the corridor', () => {
+      expect(() => generateCorridorTerrain({ startFlatLength: -1 })).toThrow(/start lengths/);
+      expect(() => generateCorridorTerrain({ startBlendLength: -1 })).toThrow(/start lengths/);
+      expect(() => generateCorridorTerrain({ startFlatLength: 100, startBlendLength: 100, length: 120 })).toThrow(/cannot exceed length/);
+    });
+
+    test('rejects config that rounds to fewer than one cell per axis', () => {
+      // width 0.3 with cellSize 1 -> rows = round(0.3) = 0.
+      expect(() => generateCorridorTerrain({ width: 0.3, cellSize: 1 })).toThrow(/fewer than one cell/);
+    });
+
+    test('bad noise octaves propagate to a throw (closes the NaN terrain path)', () => {
+      expect(() => generateCorridorTerrain({ macroOctaves: 0 })).toThrow(/octaves/);
+      expect(() => generateCorridorTerrain({ microOctaves: -2 })).toThrow(/octaves/);
+    });
+
+    test('default config is accepted', () => {
+      expect(() => generateCorridorTerrain({ seed: 1 })).not.toThrow();
+    });
+  });
 });

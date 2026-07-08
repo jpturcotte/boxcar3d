@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BoxCar3D</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #11151a; overflow: hidden; }
+      #app { position: fixed; inset: 0; }
+      #hud {
+        position: fixed; left: 12px; bottom: 10px; z-index: 2;
+        font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: #9fb8a6; letter-spacing: 0.02em; user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="hud">booting…</div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

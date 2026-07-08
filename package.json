@@ -1,0 +1,25 @@
+{
+  "name": "boxcar3d",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Evolving 3D vehicles in a corridor world — a genetic algorithm sandbox inspired by BoxCar2D.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@dimforge/rapier3d-compat": "0.19.3",
+    "@dimforge/rapier3d-deterministic-compat": "0.19.3",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

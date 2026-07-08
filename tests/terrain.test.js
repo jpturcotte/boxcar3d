@@ -20,8 +20,12 @@ function fingerprintHeights(heights) {
 }
 
 describe('corridor terrain generator (pure, deterministic)', () => {
-  test('locked heights fingerprint: seed 20260708 reproduces the field, forever', () => {
-    const t = generateCorridorTerrain({ seed: 20260708 });
+  test('locked BASE-field fingerprint: seed 20260708 + craterDensity 0 reproduces e2157c82, forever (Step-1a guard)', () => {
+    // Permanent regression guard for the Step-1a base field: with craters off,
+    // the generator must be a byte-exact no-op over the 1a pipeline. The
+    // constant survives from Step 1a — pinning craterDensity: 0 here is NOT a
+    // re-lock. The default config (craters on) gets its own lock below.
+    const t = generateCorridorTerrain({ seed: 20260708, craterDensity: 0 });
     expect(fingerprintHeights(t.heights)).toBe('e2157c82');
   });
 

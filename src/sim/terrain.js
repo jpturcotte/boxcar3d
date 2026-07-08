@@ -68,6 +68,51 @@ export function startEnvelope(worldX, { length, startFlatLength, startBlendLengt
   return smootherstep((d - startFlatLength) / startBlendLength);
 }
 
+// Analytic total crater depression (metres, >= 0) at local (x, z) — the single
+// source of the crater profile: depth * (1 - smootherstep(r/radius)) inside the
+// radius, exactly zero at and beyond it (C1 at both ends; max slope
+// 1.875*depth/radius at mid-radius). The bake stamps exactly this, so tests can
+// compare field-vs-analytic vertex by vertex. Overlapping craters sum.
+// Math.sqrt, not Math.hypot: sqrt is IEEE-754 correctly rounded (bit-exact
+// across engines); hypot is implementation-approximated (ruling D7).
+export function craterDepthAt(x, z, craters) {
+  let d = 0;
+  for (const c of craters) {
+    const dx = x - c.x;
+    const dz = z - c.z;
+    const r = Math.sqrt(dx * dx + dz * dz);
+    if (r >= c.radius) continue;
+    d += c.depth * (1 - smootherstep(r / c.radius));
+  }
+  return d;
+}
+
+// Bake craters into the heightfield, IN INDEX ORDER, each over its clamped cell
+// bounding box only. Zero craters => this never touches the buffer — the
+// e2157c82 byte-identity guard is structural, not IEEE-edge-case reasoning
+// (never rewrite this as a per-cell sum-over-craters pass). Float32 accumulation
+// is order-sensitive in the last bit where craters overlap: never sort or
+// filter the crater list between generation and baking.
+function bakeCraters(terrain, craters) {
+  const { rows, cols, heights, scale } = terrain;
+  for (const c of craters) {
+    const colMin = Math.max(0, Math.ceil(((c.x - c.radius) / scale.x + 0.5) * cols));
+    const colMax = Math.min(cols, Math.floor(((c.x + c.radius) / scale.x + 0.5) * cols));
+    const rowMin = Math.max(0, Math.ceil(((c.z - c.radius) / scale.z + 0.5) * rows));
+    const rowMax = Math.min(rows, Math.floor(((c.z + c.radius) / scale.z + 0.5) * rows));
+    for (let col = colMin; col <= colMax; col++) {
+      for (let row = rowMin; row <= rowMax; row++) {
+        const { x, z } = indexToLocalXZ(row, col, terrain);
+        const dx = x - c.x;
+        const dz = z - c.z;
+        const r = Math.sqrt(dx * dx + dz * dz);
+        if (r >= c.radius) continue;
+        heights[col * (rows + 1) + row] -= c.depth * (1 - smootherstep(r / c.radius));
+      }
+    }
+  }
+}
+
 // Crater descriptors from the dedicated 'crat' stream. Placement only — baking
 // into the heightfield is a separate pass. Count is a pure function of config
 // (never an RNG draw), over the POST-ENVELOPE area only, so density means what
@@ -131,7 +176,10 @@ export function generateCorridorTerrain(options = {}) {
   // and a `zones` map (sand/mud) — those are DELIBERATELY omitted here, not
   // forgotten: they land with the composite-terrain step (see CLAUDE.md
   // next-steps), added as sibling keys alongside `walls`.
-  const terrain = { version: 1, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [] };
+  // version 2: craters bake into the default heights (same seed, different
+  // bytes than v1) and the composite sibling keys land — the seed-format bump
+  // the locked-fingerprint rule requires.
+  const terrain = { version: 2, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [] };
 
   // Independent macro/micro seeds from the base seed by integer mixing (not a
   // shared stream — order-independent, replay-safe). BYTE-FROZEN: these two
@@ -142,8 +190,6 @@ export function generateCorridorTerrain(options = {}) {
   // (fork reads only the original seed), so these never disturb the base field.
   const root = new Rng(seed);
 
-  let minY = Infinity;
-  let maxY = -Infinity;
   for (let col = 0; col <= cols; col++) {
     for (let row = 0; row <= rows; row++) {
       const { x, z } = indexToLocalXZ(row, col, terrain);
@@ -152,17 +198,25 @@ export function generateCorridorTerrain(options = {}) {
       // Flat pad is exactly +0 (guard avoids IEEE -0 from negative*+0, and skips
       // the noise evaluation there).
       heights[k] = env === 0 ? 0 : fullElevation(x, z, cfg, macroSeed, microSeed) * env;
-      // Bounds are the WORLD height the collider produces (heights[k]*scale.y),
-      // using the float32 round-trip so wall sizing matches what the collider
-      // sees. scale.y is 1 today, but keep the multiply so a future scale.y
-      // can't silently desync the walls from the floor.
-      const worldY = heights[k] * scale.y;
-      if (worldY < minY) minY = worldY;
-      if (worldY > maxY) maxY = worldY;
     }
   }
-  terrain.craters = generateCraters(cfg, root.fork(STREAM_CRATERS));
 
+  terrain.craters = generateCraters(cfg, root.fork(STREAM_CRATERS));
+  bakeCraters(terrain, terrain.craters);
+
+  // Bounds are computed AFTER the crater bake (a crater floor can undercut the
+  // base field's minimum — walls sized from pre-crater bounds would leave a gap
+  // underneath). They are the WORLD height the collider produces
+  // (heights[k]*scale.y), read back from the Float32Array so wall sizing matches
+  // what the collider sees; scale.y is 1 today, but keep the multiply so a
+  // future scale.y can't silently desync the walls from the floor.
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let k = 0; k < heights.length; k++) {
+    const worldY = heights[k] * scale.y;
+    if (worldY < minY) minY = worldY;
+    if (worldY > maxY) maxY = worldY;
+  }
   terrain.bounds = { length, width, minY, maxY };
 
   // Walls sized to the terrain's own bounds: base below the lowest dip, top

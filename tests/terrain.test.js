@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { generateCorridorTerrain, indexToLocalXZ, startEnvelope } from '../src/sim/terrain.js';
+import { generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt } from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
 // catch gate live in tests/terrain-physics.test.js.
@@ -42,7 +42,9 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     expect(t.rows).toBe(12); // Z cells
     expect(t.cols).toBe(120); // X cells
     expect(t.heights.length).toBe((t.rows + 1) * (t.cols + 1));
-    expect(t.version).toBe(1);
+    // Deliberate re-lock 1 -> 2 (Step 1b): craters bake into default heights, so
+    // the same seed produces different bytes than v1 — the seed-format bump.
+    expect(t.version).toBe(2);
     expect(t.scale).toEqual({ x: 120, y: 1, z: 12 });
   });
 
@@ -146,6 +148,54 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       const c = generateCorridorTerrain({ seed: 8 }).craters;
       expect(a).toEqual(b);
       expect(a).not.toEqual(c);
+    });
+  });
+
+  describe('crater bake (heights = base field minus the analytic depression)', () => {
+    test('craterDepthAt profile: full depth at center, 0 at/beyond rim, smootherstep midpoint, monotone, flat tangents', () => {
+      const craters = [{ x: 0, z: 0, radius: 4, depth: 1 }];
+      expect(craterDepthAt(0, 0, craters)).toBeCloseTo(1, 12);
+      expect(craterDepthAt(4, 0, craters)).toBe(0); // exactly zero at the rim
+      expect(craterDepthAt(6, 0, craters)).toBe(0); // zero support outside the radius
+      expect(craterDepthAt(2, 0, craters)).toBeCloseTo(0.5, 12); // smootherstep(0.5) = 0.5
+      // Monotone non-increasing from center to rim.
+      let prev = Infinity;
+      for (let t = 0; t <= 1.0001; t += 0.05) {
+        const d = craterDepthAt(4 * t, 0, craters);
+        expect(d).toBeLessThanOrEqual(prev + 1e-12);
+        prev = d;
+      }
+      // C1 profile: numerically flat tangent at both the center and the rim
+      // (kills a cliff-walled bake; max slope lives at mid-radius).
+      const h = 0.01;
+      expect(Math.abs(craterDepthAt(h, 0, craters) - craterDepthAt(0, 0, craters)) / h).toBeLessThan(0.01);
+      expect(Math.abs(craterDepthAt(4 - h, 0, craters) - craterDepthAt(4, 0, craters)) / h).toBeLessThan(0.01);
+    });
+
+    test('vertex-exact bake: default field = craterDensity-0 twin minus craterDepthAt, everywhere', () => {
+      const cratered = generateCorridorTerrain({ seed: 20260708 });
+      const flat = generateCorridorTerrain({ seed: 20260708, craterDensity: 0 });
+      let touched = 0;
+      for (let col = 0; col <= cratered.cols; col++) {
+        for (let row = 0; row <= cratered.rows; row++) {
+          const k = col * (cratered.rows + 1) + row;
+          const { x, z } = indexToLocalXZ(row, col, cratered);
+          const expected = craterDepthAt(x, z, cratered.craters);
+          expect(flat.heights[k] - cratered.heights[k]).toBeCloseTo(expected, 5);
+          if (expected > 0) touched++;
+        }
+      }
+      expect(touched).toBeGreaterThan(0); // the bake actually happened
+    });
+
+    test('bounds and walls follow post-crater heights (seed 20260708)', () => {
+      const cratered = generateCorridorTerrain({ seed: 20260708 });
+      const flat = generateCorridorTerrain({ seed: 20260708, craterDensity: 0 });
+      // A crater floor undercuts the base field's global minimum at this seed —
+      // walls sized from pre-crater bounds would leave a gap underneath.
+      expect(cratered.bounds.minY).toBeLessThan(flat.bounds.minY);
+      const [, pos] = cratered.walls;
+      expect(pos.pos.y - pos.half.y).toBeCloseTo(cratered.bounds.minY - 1, 10); // wallEmbed tracks new minY
     });
   });
 

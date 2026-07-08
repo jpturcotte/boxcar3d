@@ -19,6 +19,21 @@ function fingerprintHeights(heights) {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+// FNV-1a over float64 LE values in a documented fixed order — for descriptor
+// fingerprints (craters, features). Same locked-constant discipline as
+// fingerprintHeights: adding/reordering serialized fields is a deliberate
+// re-lock, never a silent update.
+function fingerprintFloat64s(values) {
+  const view = new DataView(new ArrayBuffer(values.length * 8));
+  values.forEach((v, i) => view.setFloat64(i * 8, v, true)); // LE
+  let h = 0x811c9dc5;
+  for (let b = 0; b < view.byteLength; b++) {
+    h ^= view.getUint8(b);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 describe('corridor terrain generator (pure, deterministic)', () => {
   test('locked BASE-field fingerprint: seed 20260708 + craterDensity 0 reproduces e2157c82, forever (Step-1a guard)', () => {
     // Permanent regression guard for the Step-1a base field: with craters off,
@@ -27,6 +42,22 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     // re-lock. The default config (craters on) gets its own lock below.
     const t = generateCorridorTerrain({ seed: 20260708, craterDensity: 0 });
     expect(fingerprintHeights(t.heights)).toBe('e2157c82');
+  });
+
+  test('locked DEFAULT-config heights fingerprint: seed 20260708 (craters baked), forever', () => {
+    // First-time lock (Step 1b, terrain v2): the composite default field —
+    // base noise plus baked craters. Do NOT update without a version bump.
+    const t = generateCorridorTerrain({ seed: 20260708 });
+    expect(fingerprintHeights(t.heights)).toBe('48177e22');
+  });
+
+  test('locked DEFAULT-config craters fingerprint: seed 20260708, forever', () => {
+    // First-time lock (Step 1b). Serialization order per crater: x, z, radius,
+    // depth (f64 LE). Isolates crater-stream drift from base-noise drift, which
+    // the heights fingerprint alone would conflate.
+    const t = generateCorridorTerrain({ seed: 20260708 });
+    const fields = t.craters.flatMap((c) => [c.x, c.z, c.radius, c.depth]);
+    expect(fingerprintFloat64s(fields)).toBe('b9e05cf7');
   });
 
   test('same seed -> identical heights; different seed -> different heights', () => {

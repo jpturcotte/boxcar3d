@@ -81,6 +81,30 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     expect(fingerprintBytes(t.zones.materials)).toBe('903a3d5f');
   });
 
+  test('locked DEFAULT-config features fingerprint: seed 20260708, forever', () => {
+    // First-time lock (Step 1b). Serialization per feature, in array order:
+    // u8 type id (FEATURE_TYPES index), f64 LE x, z, y, yaw.cos, yaw.sin,
+    // then dims in fixed per-type order (boulder: radius; ramp: length, width,
+    // height; log: radius, length), then u32 LE seed. Adding or reordering
+    // fields is a deliberate re-lock; new fields append after `seed`.
+    const t = generateCorridorTerrain({ seed: 20260708 });
+    let h = 0x811c9dc5;
+    for (const f of t.features) {
+      const dims = f.type === 'boulder' ? [f.dims.radius]
+        : f.type === 'ramp' ? [f.dims.length, f.dims.width, f.dims.height]
+        : [f.dims.radius, f.dims.length];
+      const view = new DataView(new ArrayBuffer(1 + 8 * (5 + dims.length) + 4));
+      view.setUint8(0, FEATURE_TYPES.indexOf(f.type));
+      [f.x, f.z, f.y, f.yaw.cos, f.yaw.sin, ...dims].forEach((v, i) => view.setFloat64(1 + i * 8, v, true));
+      view.setUint32(1 + 8 * (5 + dims.length), f.seed, true);
+      for (let b = 0; b < view.byteLength; b++) {
+        h ^= view.getUint8(b);
+        h = Math.imul(h, 0x01000193);
+      }
+    }
+    expect(((h >>> 0).toString(16)).padStart(8, '0')).toBe('f3f86cbc');
+  });
+
   test('same seed -> identical heights; different seed -> different heights', () => {
     const a = generateCorridorTerrain({ seed: 7 }).heights;
     const b = generateCorridorTerrain({ seed: 7 }).heights;
@@ -445,6 +469,16 @@ describe('corridor terrain generator (pure, deterministic)', () => {
         expect([g.type, g.x, g.z, g.yaw.cos, g.yaw.sin, g.seed]).toEqual([f.type, f.x, f.z, f.yaw.cos, f.yaw.sin, f.seed]);
         expect(g.dims).toEqual(f.dims);
       });
+    });
+
+    test('feature y is sampled AFTER the crater bake (declared seed 1)', () => {
+      // Seed 1 places a feature inside a crater (craterDepthAt > 0.05 there),
+      // so its y must drop relative to the craterDensity-0 twin at the same
+      // (x, z) — proving y reads the baked surface, not the base field.
+      const cratered = generateCorridorTerrain({ seed: 1 });
+      const flat = generateCorridorTerrain({ seed: 1, craterDensity: 0 });
+      const drops = cratered.features.map((f, i) => flat.features[i].y - f.y);
+      expect(Math.max(...drops)).toBeGreaterThan(0.04);
     });
 
     test('same seed -> identical features; different seed -> different', () => {

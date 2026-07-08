@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt } from '../src/sim/terrain.js';
+import { generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt, zoneAt, MATERIALS } from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
 // catch gate live in tests/terrain-physics.test.js.
@@ -227,6 +227,64 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       expect(cratered.bounds.minY).toBeLessThan(flat.bounds.minY);
       const [, pos] = cratered.walls;
       expect(pos.pos.y - pos.half.y).toBeCloseTo(cratered.bounds.minY - 1, 10); // wallEmbed tracks new minY
+    });
+  });
+
+  describe('zones (per-cell material grid — own stream, exact-quantile coverage)', () => {
+    test('one cell per heightfield cell, column-major, legal material IDs only', () => {
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      expect(t.zones.rows).toBe(t.rows);
+      expect(t.zones.cols).toBe(t.cols);
+      expect(t.zones.materials).toBeInstanceOf(Uint8Array);
+      expect(t.zones.materials.length).toBe(t.rows * t.cols);
+      const legal = new Set(Object.values(MATERIALS));
+      for (const m of t.zones.materials) expect(legal.has(m)).toBe(true);
+      // Grid dimensions are a function of geometry only — stable across seeds
+      // and coverage knobs.
+      const other = generateCorridorTerrain({ seed: 99, sandCoverage: 0.5, mudCoverage: 0.3 });
+      expect(other.zones.rows).toBe(t.zones.rows);
+      expect(other.zones.cols).toBe(t.zones.cols);
+    });
+
+    test('coverage 0 -> all FIRM; sandCoverage 1 -> every post-envelope cell SAND', () => {
+      const firm = generateCorridorTerrain({ seed: 11, sandCoverage: 0, mudCoverage: 0 });
+      expect(firm.zones.materials.every((m) => m === MATERIALS.FIRM)).toBe(true);
+
+      const sandy = generateCorridorTerrain({ seed: 11, sandCoverage: 1, mudCoverage: 0 });
+      const cfg = { length: 120, startFlatLength: 4, startBlendLength: 6 };
+      let sandCells = 0;
+      for (let col = 0; col < sandy.cols; col++) {
+        for (let row = 0; row < sandy.rows; row++) {
+          const { x } = indexToLocalXZ(row + 0.5, col + 0.5, sandy); // cell center
+          const expected = startEnvelope(x, cfg) === 1 ? MATERIALS.SAND : MATERIALS.FIRM;
+          expect(sandy.zones.materials[col * sandy.rows + row]).toBe(expected);
+          if (expected === MATERIALS.SAND) sandCells++;
+        }
+      }
+      expect(sandCells).toBeGreaterThan(0); // never vacuous
+    });
+
+    test('exact-quantile counts, capped so rounding cannot overflow a tiny grid', () => {
+      // 3 eligible cells (1x13 grid, envelope covers the first 10 m), coverage
+      // 0.5 + 0.5: naive round(1.5) + round(1.5) = 4 > 3 would overflow; the
+      // capped sequential rule gives MUD 2, SAND 1, total exactly n.
+      const t = generateCorridorTerrain({
+        seed: 13, length: 13, width: 1, cellSize: 1,
+        sandCoverage: 0.5, mudCoverage: 0.5, craterDensity: 0, featureDensity: 0,
+      });
+      const counts = { [MATERIALS.FIRM]: 0, [MATERIALS.SAND]: 0, [MATERIALS.MUD]: 0 };
+      for (const m of t.zones.materials) counts[m]++;
+      expect(counts[MATERIALS.MUD]).toBe(2); // min(3, round(0.5*3)=2)
+      expect(counts[MATERIALS.SAND]).toBe(1); // min(3-2, round(0.5*3)=2) = 1
+      expect(counts[MATERIALS.FIRM]).toBe(t.zones.materials.length - 3);
+    });
+
+    test('same seed -> identical zones; different seed -> different', () => {
+      const a = generateCorridorTerrain({ seed: 7 }).zones.materials;
+      const b = generateCorridorTerrain({ seed: 7 }).zones.materials;
+      const c = generateCorridorTerrain({ seed: 8 }).zones.materials;
+      expect(Array.from(a)).toEqual(Array.from(b));
+      expect(Array.from(a)).not.toEqual(Array.from(c));
     });
   });
 

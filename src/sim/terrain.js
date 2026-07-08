@@ -20,6 +20,11 @@ import { Rng } from './prng.js';
 // stream.fork(i), so a draw added to item i can never shift item i+1, and
 // skipping item i perturbs nothing else (rule 1: order-independent streams).
 const STREAM_CRATERS = 0x63726174; // 'crat'
+const STREAM_ZONES = 0x7a6f6e65; // 'zone'
+
+// Zone material IDs. FIRM must stay 0 (a zero-filled grid is all-firm and the
+// coverage-0 config degenerates cleanly); WATER is the spec's roadmap slot.
+export const MATERIALS = Object.freeze({ FIRM: 0, SAND: 1, MUD: 2 });
 
 const DEFAULTS = {
   seed: 0,
@@ -43,6 +48,10 @@ const DEFAULTS = {
   craterDensity: 0.5, // craters per 100 m² of post-envelope area (0 = Step-1a base field)
   craterRadiusRange: [2, 5], // metres
   craterDepthRatioRange: [0.08, 0.22], // depth = ratio*radius; max slope 1.875*ratio <= 0.41 (drivable)
+  zoneFrequency: 0.05, // cycles per metre of the zone noise field (~20 m patches)
+  zoneOctaves: 2,
+  sandCoverage: 0.15, // exact fraction of post-envelope cells (quantile-assigned)
+  mudCoverage: 0.05, // ditto; mud takes the highest-noise band (cores inside sand)
 };
 
 const smootherstep = (t) => t * t * t * (t * (t * 6 - 15) + 10);
@@ -139,6 +148,37 @@ function generateCraters(cfg, craterRng) {
   return craters;
 }
 
+// Zone material grid: one byte per heightfield CELL (not vertex), column-major
+// k = col*rows + row, mirroring the [V1] convention. Materials come from a
+// dedicated hash-noise field (spatial, order-independent — never a sequential
+// per-cell stream) sampled at cell centers, with coverage assigned by EXACT
+// QUANTILE over the eligible (post-envelope) cells: fbm output is bell-ish, so
+// a raw threshold would not deliver the configured fraction; ranking does.
+// Counts are capped sequentially so rounding can never assign more cells than
+// exist. Start pad + blend cells are forced FIRM (fair starts). Pure data —
+// the physics response table (friction/drag/torque per material, spec §4)
+// samples this at wheel contacts in a later PR.
+function generateZones(cfg, terrain, zoneSeed) {
+  const { rows, cols } = terrain;
+  const materials = new Uint8Array(rows * cols);
+  const eligible = []; // {k, n} for post-envelope cells
+  for (let col = 0; col < cols; col++) {
+    for (let row = 0; row < rows; row++) {
+      const { x, z } = indexToLocalXZ(row + 0.5, col + 0.5, terrain); // cell center
+      if (startEnvelope(x, cfg) !== 1) continue; // start region stays FIRM (0)
+      const n = fbm2D(x * cfg.zoneFrequency, z * cfg.zoneFrequency, zoneSeed, { octaves: cfg.zoneOctaves });
+      eligible.push({ k: col * rows + row, n });
+    }
+  }
+  // Highest noise first; index ascending breaks (rare) exact ties deterministically.
+  eligible.sort((a, b) => b.n - a.n || a.k - b.k);
+  const mudCount = Math.min(eligible.length, Math.round(cfg.mudCoverage * eligible.length));
+  const sandCount = Math.min(eligible.length - mudCount, Math.round(cfg.sandCoverage * eligible.length));
+  for (let i = 0; i < mudCount; i++) materials[eligible[i].k] = MATERIALS.MUD;
+  for (let i = mudCount; i < mudCount + sandCount; i++) materials[eligible[i].k] = MATERIALS.SAND;
+  return { rows, cols, materials };
+}
+
 function fullElevation(x, z, cfg, macroSeed, microSeed) {
   const macro = cfg.macroAmp * (fbm2D(x * cfg.macroFrequency, z * cfg.macroFrequency, macroSeed, { octaves: cfg.macroOctaves }) * 2 - 1);
   const micro = cfg.microAmp * (fbm2D(x * cfg.microFrequency, z * cfg.microFrequency, microSeed, { octaves: cfg.microOctaves }) * 2 - 1);
@@ -179,7 +219,7 @@ export function generateCorridorTerrain(options = {}) {
   // version 2: craters bake into the default heights (same seed, different
   // bytes than v1) and the composite sibling keys land — the seed-format bump
   // the locked-fingerprint rule requires.
-  const terrain = { version: 2, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [] };
+  const terrain = { version: 2, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [], zones: null };
 
   // Independent macro/micro seeds from the base seed by integer mixing (not a
   // shared stream — order-independent, replay-safe). BYTE-FROZEN: these two
@@ -230,5 +270,7 @@ export function generateCorridorTerrain(options = {}) {
     friction: cfg.wallFriction,
   });
   terrain.walls = [wall(-1), wall(1)]; // -Z wall, +Z wall (inner faces flush at z = ±width/2)
+
+  terrain.zones = generateZones(cfg, terrain, root.fork(STREAM_ZONES).seed);
   return terrain;
 }

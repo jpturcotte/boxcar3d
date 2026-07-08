@@ -1,11 +1,14 @@
-// src/sim/terrain.js — pure corridor-floor generator (NO Rapier).
+// src/sim/terrain.js — pure composite-corridor generator (NO Rapier).
 //
 // Deterministic function of the seed: a base heightfield from layered value
-// noise (macro elevation + micro roughness), a flat start pad that smootherstep-
-// blends into full terrain, and the two physical corridor walls sized to the
-// terrain's own bounds. Realization into a Rapier world lives in
-// physics/adapter.js (the only Rapier seam); this module is pure data, so it
-// runs headless and is trivially testable.
+// noise (macro elevation + micro roughness) with a flat start pad that
+// smootherstep-blends into full terrain, craters baked in as smootherstep
+// depressions, two physical corridor walls sized to the POST-crater bounds,
+// a per-cell firm/sand/mud zone map, and boulder/ramp/log feature descriptors
+// (composite from day one — spec §4 / red-team F13). Realization into a Rapier
+// world lives in physics/adapter.js (the only Rapier seam); this module is
+// pure data, so it runs headless and is trivially testable. Zones and features
+// are data-only until PR #8 (colliders, collision groups, material response).
 //
 // Layout convention PROVEN by [V1] (tests/heightfield-layout.test.js):
 //   * COLUMN-MAJOR heights, flat index k = col*(rows+1) + row
@@ -21,10 +24,15 @@ import { Rng } from './prng.js';
 // skipping item i perturbs nothing else (rule 1: order-independent streams).
 const STREAM_CRATERS = 0x63726174; // 'crat'
 const STREAM_ZONES = 0x7a6f6e65; // 'zone'
+const STREAM_FEATURES = 0x66656174; // 'feat'
 
 // Zone material IDs. FIRM must stay 0 (a zero-filled grid is all-firm and the
 // coverage-0 config degenerates cleanly); WATER is the spec's roadmap slot.
 export const MATERIALS = Object.freeze({ FIRM: 0, SAND: 1, MUD: 2 });
+
+// Stamped-feature types. Array index doubles as the fingerprint type id —
+// append-only, never reorder (locked features fingerprint).
+export const FEATURE_TYPES = Object.freeze(['boulder', 'ramp', 'log']);
 
 const DEFAULTS = {
   seed: 0,
@@ -52,6 +60,14 @@ const DEFAULTS = {
   zoneOctaves: 2,
   sandCoverage: 0.15, // exact fraction of post-envelope cells (quantile-assigned)
   mudCoverage: 0.05, // ditto; mud takes the highest-noise band (cores inside sand)
+  featureDensity: 0.4, // features per 100 m² of post-envelope area
+  featureTypeWeights: { boulder: 3, ramp: 1, log: 2 }, // relative; replaced wholesale by user config
+  boulderRadiusRange: [0.4, 1.1], // metres
+  rampLengthRange: [4, 8], // metres, along the ramp's local +X
+  rampWidthRange: [2.5, 4],
+  rampHeightRange: [0.6, 1.6], // rise over the length
+  logRadiusRange: [0.25, 0.45],
+  logLengthRange: [3, 7], // capsule axis length (caps extend by radius)
 };
 
 const smootherstep = (t) => t * t * t * (t * (t * 6 - 15) + 10);
@@ -76,6 +92,25 @@ export function zoneAt(x, z, terrain) {
   const col = Math.min(zones.cols - 1, Math.max(0, Math.floor((x / scale.x + 0.5) * zones.cols)));
   const row = Math.min(zones.rows - 1, Math.max(0, Math.floor((z / scale.z + 0.5) * zones.rows)));
   return zones.materials[col * zones.rows + row];
+}
+
+// World-space surface height at local (x, z): bilinear interpolation over the
+// height grid via the [V1] convention, clamped into the field. PLACEMENT-grade,
+// not collision-grade — Rapier triangulates each cell, so mid-cell values can
+// deviate slightly from the collider surface (castRay tests use bands). Feature
+// seating/embedding against the true triangle surface is PR #8's job.
+export function heightAtLocal(x, z, terrain) {
+  const { rows, cols, heights, scale } = terrain;
+  const fc = Math.min(cols, Math.max(0, (x / scale.x + 0.5) * cols));
+  const fr = Math.min(rows, Math.max(0, (z / scale.z + 0.5) * rows));
+  const c0 = Math.min(cols - 1, Math.floor(fc));
+  const r0 = Math.min(rows - 1, Math.floor(fr));
+  const u = fc - c0;
+  const v = fr - r0;
+  const h = (row, col) => heights[col * (rows + 1) + row];
+  const top = h(r0, c0) * (1 - u) + h(r0, c0 + 1) * u;
+  const bot = h(r0 + 1, c0) * (1 - u) + h(r0 + 1, c0 + 1) * u;
+  return (top * (1 - v) + bot * v) * scale.y;
 }
 
 // Flat-then-blend start envelope in [0, 1]: exactly 0 across the flat pad,
@@ -190,6 +225,89 @@ function generateZones(cfg, terrain, zoneSeed) {
   return { rows, cols, materials };
 }
 
+// Feature descriptors from the dedicated 'feat' stream — pure data; colliders
+// and collision groups are PR #8. Count is a pure function of config over the
+// post-envelope area (like craters). Placement margins use each type's MAX
+// half-extent from config (conservative — the drawn dims always fit), so the
+// per-feature draw order stays fixed: type, x, z, yaw, dims, seed. The trailing
+// per-feature seed is PR #8's handle for hull-vertex jitter etc. (boulders are
+// convex hulls per spec §4) without re-deriving streams; new fields append
+// after it. y samples the POST-crater surface — features are generated last.
+//
+// Yaw is a unit {cos, sin} heading, generated trig-free: Marsaglia disk
+// rejection + Math.sqrt (IEEE-exact; the ESLint trig ban stays intact, and
+// PR #8 builds the quaternion via half-angle sqrt identities — no trig module
+// ever). The rejection loop's variable draw count is safe ONLY because it runs
+// on the feature's own fork. Ramps instead take a small lateral jitter around
+// +X so they read as ramps, not walls.
+function generateFeatures(cfg, terrain, featureRng) {
+  const { length, width, startFlatLength, startBlendLength } = cfg;
+  const envelopeEndX = -length / 2 + startFlatLength + startBlendLength;
+  const count = Math.round((cfg.featureDensity * (length - startFlatLength - startBlendLength) * width) / 100);
+  const weights = FEATURE_TYPES.map((type) => cfg.featureTypeWeights[type] || 0);
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  const maxHalf = {
+    boulder: cfg.boulderRadiusRange[1],
+    ramp: Math.sqrt((cfg.rampLengthRange[1] / 2) ** 2 + (cfg.rampWidthRange[1] / 2) ** 2),
+    log: cfg.logLengthRange[1] / 2 + cfg.logRadiusRange[1],
+  };
+  const features = [];
+  for (let i = 0; i < count; i++) {
+    if (totalWeight <= 0) break;
+    const f = featureRng.fork(i);
+    // Fixed draw order (seed-format contract): type, x, z, yaw, dims, seed.
+    let pick = f.nextFloat() * totalWeight;
+    let ti = 0;
+    while (ti < weights.length - 1 && pick >= weights[ti]) {
+      pick -= weights[ti];
+      ti++;
+    }
+    const type = FEATURE_TYPES[ti];
+    const half = maxHalf[type];
+    const xMin = envelopeEndX + half;
+    const xMax = length / 2 - half;
+    const zMin = -width / 2 + half;
+    const zMax = width / 2 - half;
+    if (xMin > xMax || zMin > zMax) continue; // no room for this type
+    const x = f.range(xMin, xMax);
+    const z = f.range(zMin, zMax);
+    let yaw;
+    if (type === 'ramp') {
+      const jitter = f.range(-0.35, 0.35);
+      const inv = 1 / Math.sqrt(1 + jitter * jitter);
+      yaw = { cos: inv, sin: jitter * inv };
+    } else {
+      for (;;) {
+        const u = f.range(-1, 1);
+        const v = f.range(-1, 1);
+        const m = u * u + v * v;
+        if (m > 1 || m < 1e-12) continue;
+        const inv = 1 / Math.sqrt(m);
+        yaw = { cos: u * inv, sin: v * inv };
+        break;
+      }
+    }
+    let dims;
+    if (type === 'boulder') {
+      dims = { radius: f.range(cfg.boulderRadiusRange[0], cfg.boulderRadiusRange[1]) };
+    } else if (type === 'ramp') {
+      dims = {
+        length: f.range(cfg.rampLengthRange[0], cfg.rampLengthRange[1]),
+        width: f.range(cfg.rampWidthRange[0], cfg.rampWidthRange[1]),
+        height: f.range(cfg.rampHeightRange[0], cfg.rampHeightRange[1]),
+      };
+    } else {
+      dims = {
+        radius: f.range(cfg.logRadiusRange[0], cfg.logRadiusRange[1]),
+        length: f.range(cfg.logLengthRange[0], cfg.logLengthRange[1]),
+      };
+    }
+    const seed = f.nextUint32();
+    features.push({ type, x, z, y: heightAtLocal(x, z, terrain), yaw, dims, seed });
+  }
+  return features;
+}
+
 function fullElevation(x, z, cfg, macroSeed, microSeed) {
   const macro = cfg.macroAmp * (fbm2D(x * cfg.macroFrequency, z * cfg.macroFrequency, macroSeed, { octaves: cfg.macroOctaves }) * 2 - 1);
   const micro = cfg.microAmp * (fbm2D(x * cfg.microFrequency, z * cfg.microFrequency, microSeed, { octaves: cfg.microOctaves }) * 2 - 1);
@@ -222,15 +340,14 @@ export function generateCorridorTerrain(options = {}) {
   }
   const scale = { x: length, y: 1, z: width }; // y=1 -> heights are literal metres
   const heights = new Float32Array((rows + 1) * (cols + 1));
-  // `walls` is the composite seam for Step 1a. The composite-from-day-one rule
-  // (spec §4 / red-team F13) also wants `features` (craters/boulders/ramps/logs)
-  // and a `zones` map (sand/mud) — those are DELIBERATELY omitted here, not
-  // forgotten: they land with the composite-terrain step (see CLAUDE.md
-  // next-steps), added as sibling keys alongside `walls`.
+  // The composite seam (spec §4 / red-team F13), complete as data: `walls`,
+  // `craters` (baked into `heights`; descriptors kept as ground truth), `zones`
+  // (per-cell material grid), `features` (boulder/ramp/log descriptors —
+  // colliders and collision groups are the NEXT step, PR #8).
   // version 2: craters bake into the default heights (same seed, different
   // bytes than v1) and the composite sibling keys land — the seed-format bump
   // the locked-fingerprint rule requires.
-  const terrain = { version: 2, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [], zones: null };
+  const terrain = { version: 2, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [], zones: null, features: [] };
 
   // Independent macro/micro seeds from the base seed by integer mixing (not a
   // shared stream — order-independent, replay-safe). BYTE-FROZEN: these two
@@ -283,5 +400,6 @@ export function generateCorridorTerrain(options = {}) {
   terrain.walls = [wall(-1), wall(1)]; // -Z wall, +Z wall (inner faces flush at z = ±width/2)
 
   terrain.zones = generateZones(cfg, terrain, root.fork(STREAM_ZONES).seed);
+  terrain.features = generateFeatures(cfg, terrain, root.fork(STREAM_FEATURES));
   return terrain;
 }

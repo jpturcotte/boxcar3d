@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'vitest';
-import { generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt, zoneAt, MATERIALS } from '../src/sim/terrain.js';
+import {
+  generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt,
+  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal,
+} from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
 // catch gate live in tests/terrain-physics.test.js.
@@ -346,6 +349,110 @@ describe('corridor terrain generator (pure, deterministic)', () => {
           }
         }
       }
+    });
+  });
+
+  describe('features (boulder/ramp/log descriptors — data only, colliders are PR #8)', () => {
+    // Yaw-safe conservative footprint per type (matches the placement margins).
+    const halfExtent = (f) =>
+      f.type === 'boulder' ? f.dims.radius
+      : f.type === 'ramp' ? Math.sqrt((f.dims.length / 2) ** 2 + (f.dims.width / 2) ** 2)
+      : f.dims.length / 2 + f.dims.radius; // log capsule: half axis + cap
+
+    test('featureDensity 0 -> empty; default -> at least one of the known types', () => {
+      expect(generateCorridorTerrain({ seed: 5, featureDensity: 0 }).features).toEqual([]);
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      expect(t.features.length).toBeGreaterThanOrEqual(1);
+      for (const f of t.features) expect(FEATURE_TYPES).toContain(f.type);
+    });
+
+    test('per-type schema: finite fields, dims in configured ranges, unit yaw, u32 seed', () => {
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      for (const f of t.features) {
+        expect(Number.isFinite(f.x)).toBe(true);
+        expect(Number.isFinite(f.z)).toBe(true);
+        expect(Number.isFinite(f.y)).toBe(true);
+        expect(Math.abs(f.yaw.cos ** 2 + f.yaw.sin ** 2 - 1)).toBeLessThan(1e-12);
+        expect(Number.isInteger(f.seed)).toBe(true);
+        expect(f.seed).toBeGreaterThanOrEqual(0);
+        expect(f.seed).toBeLessThan(2 ** 32);
+        if (f.type === 'boulder') {
+          expect(f.dims.radius).toBeGreaterThanOrEqual(0.4);
+          expect(f.dims.radius).toBeLessThanOrEqual(1.1);
+        } else if (f.type === 'ramp') {
+          expect(f.dims.length).toBeGreaterThanOrEqual(4);
+          expect(f.dims.length).toBeLessThanOrEqual(8);
+          expect(f.dims.width).toBeGreaterThanOrEqual(2.5);
+          expect(f.dims.width).toBeLessThanOrEqual(4);
+          expect(f.dims.height).toBeGreaterThanOrEqual(0.6);
+          expect(f.dims.height).toBeLessThanOrEqual(1.6);
+          // Ramps roughly face +X (drivable up-corridor), never sideways/backwards.
+          expect(f.yaw.cos).toBeGreaterThan(0.9);
+        } else {
+          expect(f.dims.radius).toBeGreaterThanOrEqual(0.25);
+          expect(f.dims.radius).toBeLessThanOrEqual(0.45);
+          expect(f.dims.length).toBeGreaterThanOrEqual(3);
+          expect(f.dims.length).toBeLessThanOrEqual(7);
+        }
+      }
+    });
+
+    test('no feature reaches the start envelope, the corridor end, or the walls', () => {
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      const envelopeEndX = -120 / 2 + 4 + 6; // -50
+      for (const f of t.features) {
+        const h = halfExtent(f);
+        expect(f.x - h).toBeGreaterThanOrEqual(envelopeEndX);
+        expect(f.x + h).toBeLessThanOrEqual(60);
+        expect(Math.abs(f.z) + h).toBeLessThanOrEqual(6);
+      }
+    });
+
+    test('heightAtLocal: exact at vertices, corner-mean at cell centers (pins the sampler)', () => {
+      const t = generateCorridorTerrain({ seed: 42 });
+      const h = (row, col) => t.heights[col * (t.rows + 1) + row] * t.scale.y;
+      // Exact at a spread of vertices, including the far corner.
+      for (const [row, col] of [[0, 0], [3, 17], [t.rows, t.cols], [7, 60]]) {
+        const { x, z } = indexToLocalXZ(row, col, t);
+        expect(heightAtLocal(x, z, t)).toBeCloseTo(h(row, col), 12);
+      }
+      // Bilinear identity at a cell center: mean of the 4 corners.
+      const { x: cx, z: cz } = indexToLocalXZ(4.5, 30.5, t);
+      const mean = (h(4, 30) + h(4, 31) + h(5, 30) + h(5, 31)) / 4;
+      expect(heightAtLocal(cx, cz, t)).toBeCloseTo(mean, 12);
+    });
+
+    test('feature y is the post-crater ground height at its (x, z)', () => {
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      for (const f of t.features) {
+        expect(f.y).toBeCloseTo(heightAtLocal(f.x, f.z, t), 12);
+      }
+    });
+
+    test('stream isolation: knobs of one subsystem never leak into another', () => {
+      const base = generateCorridorTerrain({ seed: 20260708 });
+      // Heights are invariant to zone/feature knobs...
+      const knobbed = generateCorridorTerrain({ seed: 20260708, sandCoverage: 0.9, featureDensity: 2 });
+      expect(fingerprintHeights(knobbed.heights)).toBe(fingerprintHeights(base.heights));
+      // ...zones are invariant to craterDensity...
+      const flat = generateCorridorTerrain({ seed: 20260708, craterDensity: 0 });
+      expect(Array.from(flat.zones.materials)).toEqual(Array.from(base.zones.materials));
+      // ...and features keep identical draws (x, z, yaw, dims, seed) with craters
+      // off — only y (sampled from the baked surface) may move.
+      expect(flat.features.length).toBe(base.features.length);
+      base.features.forEach((f, i) => {
+        const g = flat.features[i];
+        expect([g.type, g.x, g.z, g.yaw.cos, g.yaw.sin, g.seed]).toEqual([f.type, f.x, f.z, f.yaw.cos, f.yaw.sin, f.seed]);
+        expect(g.dims).toEqual(f.dims);
+      });
+    });
+
+    test('same seed -> identical features; different seed -> different', () => {
+      const a = generateCorridorTerrain({ seed: 7 }).features;
+      const b = generateCorridorTerrain({ seed: 7 }).features;
+      const c = generateCorridorTerrain({ seed: 8 }).features;
+      expect(a).toEqual(b);
+      expect(a).not.toEqual(c);
     });
   });
 

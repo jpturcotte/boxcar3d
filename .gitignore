@@ -2,3 +2,4 @@ node_modules/
 dist/
 CLAUDE.local.md
 .DS_Store
+ods_config.json

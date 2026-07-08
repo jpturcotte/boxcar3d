@@ -520,6 +520,39 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     test('bad noise octaves propagate to a throw (closes the NaN terrain path)', () => {
       expect(() => generateCorridorTerrain({ macroOctaves: 0 })).toThrow(/octaves/);
       expect(() => generateCorridorTerrain({ microOctaves: -2 })).toThrow(/octaves/);
+      expect(() => generateCorridorTerrain({ zoneOctaves: 0 })).toThrow(/octaves/);
+    });
+
+    test('rejects negative or non-finite densities', () => {
+      expect(() => generateCorridorTerrain({ craterDensity: -1 })).toThrow(/craterDensity/);
+      expect(() => generateCorridorTerrain({ craterDensity: Infinity })).toThrow(/craterDensity/);
+      expect(() => generateCorridorTerrain({ featureDensity: -1 })).toThrow(/featureDensity/);
+    });
+
+    test('rejects malformed [min, max] range keys (inverted, zero/negative min, wrong shape)', () => {
+      expect(() => generateCorridorTerrain({ craterRadiusRange: [5, 2] })).toThrow(/craterRadiusRange/);
+      expect(() => generateCorridorTerrain({ craterRadiusRange: [0, 3] })).toThrow(/craterRadiusRange/);
+      expect(() => generateCorridorTerrain({ craterDepthRatioRange: [-0.1, 0.2] })).toThrow(/craterDepthRatioRange/);
+      expect(() => generateCorridorTerrain({ craterDepthRatioRange: [0.3, 0.1] })).toThrow(/craterDepthRatioRange/);
+      expect(() => generateCorridorTerrain({ boulderRadiusRange: [2, 1] })).toThrow(/boulderRadiusRange/);
+      expect(() => generateCorridorTerrain({ logLengthRange: 5 })).toThrow(/logLengthRange/);
+    });
+
+    test('rejects coverages outside [0, 1] or summing past 1', () => {
+      expect(() => generateCorridorTerrain({ sandCoverage: -0.1 })).toThrow(/coverage/i);
+      expect(() => generateCorridorTerrain({ sandCoverage: 1.5 })).toThrow(/coverage/i);
+      expect(() => generateCorridorTerrain({ mudCoverage: 2 })).toThrow(/coverage/i);
+      expect(() => generateCorridorTerrain({ sandCoverage: 0.7, mudCoverage: 0.5 })).toThrow(/coverage/i);
+    });
+
+    test('rejects bad featureTypeWeights: unknown type, negative weight, all-zero with features requested', () => {
+      // Unknown key must throw — { asteroid: 1 } has positive total but would
+      // produce no known feature type.
+      expect(() => generateCorridorTerrain({ featureTypeWeights: { asteroid: 1 } })).toThrow(/featureTypeWeights/);
+      expect(() => generateCorridorTerrain({ featureTypeWeights: { boulder: -1, ramp: 1 } })).toThrow(/featureTypeWeights/);
+      expect(() => generateCorridorTerrain({ featureTypeWeights: { boulder: 0 } })).toThrow(/featureTypeWeights/);
+      // ...but an all-zero weight table is fine when no features are requested.
+      expect(() => generateCorridorTerrain({ featureTypeWeights: { boulder: 0 }, featureDensity: 0 })).not.toThrow();
     });
 
     test('default config is accepted', () => {

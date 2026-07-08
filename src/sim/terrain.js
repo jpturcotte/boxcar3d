@@ -325,6 +325,48 @@ function validateConfig(cfg) {
   if (cfg.startFlatLength + cfg.startBlendLength > cfg.length) {
     throw new Error('generateCorridorTerrain: startFlatLength + startBlendLength cannot exceed length');
   }
+  for (const key of ['craterDensity', 'featureDensity']) {
+    if (!Number.isFinite(cfg[key]) || cfg[key] < 0) {
+      throw new Error(`generateCorridorTerrain: ${key} must be a finite number >= 0`);
+    }
+  }
+  for (const key of [
+    'craterRadiusRange', 'craterDepthRatioRange', 'boulderRadiusRange',
+    'rampLengthRange', 'rampWidthRange', 'rampHeightRange', 'logRadiusRange', 'logLengthRange',
+  ]) {
+    const r = cfg[key];
+    if (!Array.isArray(r) || r.length !== 2 || !Number.isFinite(r[0]) || !Number.isFinite(r[1]) || !(r[0] > 0) || !(r[0] <= r[1])) {
+      throw new Error(`generateCorridorTerrain: ${key} must be [min, max] with 0 < min <= max`);
+    }
+  }
+  for (const key of ['sandCoverage', 'mudCoverage']) {
+    if (!Number.isFinite(cfg[key]) || cfg[key] < 0 || cfg[key] > 1) {
+      throw new Error(`generateCorridorTerrain: ${key} must be a coverage fraction within [0, 1]`);
+    }
+  }
+  if (cfg.sandCoverage + cfg.mudCoverage > 1) {
+    throw new Error('generateCorridorTerrain: sandCoverage + mudCoverage cannot exceed 1');
+  }
+  const weights = cfg.featureTypeWeights;
+  if (typeof weights !== 'object' || weights === null) {
+    throw new Error('generateCorridorTerrain: featureTypeWeights must be an object of type -> weight');
+  }
+  let totalWeight = 0;
+  for (const [type, w] of Object.entries(weights)) {
+    // Unknown keys throw: { asteroid: 1 } would otherwise pass a total-weight
+    // check while producing no known feature type.
+    if (!FEATURE_TYPES.includes(type)) {
+      throw new Error(`generateCorridorTerrain: featureTypeWeights has unknown feature type '${type}'`);
+    }
+    if (!Number.isFinite(w) || w < 0) {
+      throw new Error(`generateCorridorTerrain: featureTypeWeights.${type} must be a finite number >= 0`);
+    }
+    totalWeight += w;
+  }
+  const featureCount = Math.round((cfg.featureDensity * (cfg.length - cfg.startFlatLength - cfg.startBlendLength) * cfg.width) / 100);
+  if (totalWeight <= 0 && featureCount > 0) {
+    throw new Error('generateCorridorTerrain: featureTypeWeights total must be > 0 when features are requested');
+  }
 }
 
 export function generateCorridorTerrain(options = {}) {

@@ -88,9 +88,13 @@ export function generateCorridorTerrain(options = {}) {
       // Flat pad is exactly +0 (guard avoids IEEE -0 from negative*+0, and skips
       // the noise evaluation there).
       heights[k] = env === 0 ? 0 : fullElevation(x, z, cfg, macroSeed, microSeed) * env;
-      const stored = heights[k]; // float32 round-trip — what the collider sees
-      if (stored < minY) minY = stored;
-      if (stored > maxY) maxY = stored;
+      // Bounds are the WORLD height the collider produces (heights[k]*scale.y),
+      // using the float32 round-trip so wall sizing matches what the collider
+      // sees. scale.y is 1 today, but keep the multiply so a future scale.y
+      // can't silently desync the walls from the floor.
+      const worldY = heights[k] * scale.y;
+      if (worldY < minY) minY = worldY;
+      if (worldY > maxY) maxY = worldY;
     }
   }
   terrain.bounds = { length, width, minY, maxY };

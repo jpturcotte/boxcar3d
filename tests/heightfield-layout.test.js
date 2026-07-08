@@ -38,6 +38,7 @@ const RAY_Y = 50; // cast origin, well above the tallest peak (6 m)
 const idx = (i, j) => j * (NROWS + 1) + i;
 
 let world;
+let heights;
 
 // Surface height at world (x,z): cast a unit ray straight down; because dir is
 // unit length, timeOfImpact IS the world distance, so hitY = RAY_Y - toi.
@@ -53,7 +54,7 @@ describe('[V1] Rapier heightfield layout (column-major, col->+X, row->+Z)', () =
     world = new RAPIER.World({ x: 0, y: 0, z: 0 }); // static probe: no dynamics
     world.timestep = 1 / 60;
 
-    const heights = new Float32Array((NROWS + 1) * (NCOLS + 1)); // all 0
+    heights = new Float32Array((NROWS + 1) * (NCOLS + 1)); // all 0
     // Plateau A: 2x2 vertices rows{2,3} x cols{7,8} = 1.0  (flat cell -> y=6)
     for (const i of [2, 3]) for (const j of [7, 8]) heights[idx(i, j)] = 1.0;
     // Plateau B: 2x2 vertices rows{4,5} x cols{2,3} = 0.5  (flat cell -> y=3)
@@ -69,7 +70,8 @@ describe('[V1] Rapier heightfield layout (column-major, col->+X, row->+Z)', () =
   afterAll(() => world && world.free());
 
   test('heights buffer length is (nrows+1)*(ncols+1)', () => {
-    expect((NROWS + 1) * (NCOLS + 1)).toBe(77);
+    expect(heights.length).toBe((NROWS + 1) * (NCOLS + 1));
+    expect(heights.length).toBe(77);
   });
 
   test('plateau A sits at world (x=+2.5, z=-0.5), height 6', () => {

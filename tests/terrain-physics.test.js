@@ -57,9 +57,11 @@ describe('corridor realized in Rapier (provisional Step-1a catch gate)', () => {
       expect(p.y).toBeGreaterThan(-50); // safety-plane gate (no physical catcher below)
       const surfaceY = surfaceYAt(p.x, p.z);
       expect(surfaceY).not.toBeNull();
-      // Resting sphere center sits at surfaceY + R; allow slight penetration and
-      // residual roll/bounce, but a tunnelled body would be far below surfaceY.
-      expect(p.y).toBeGreaterThan(surfaceY - 0.1);
+      // A resting sphere's center is at surfaceY + R; it can never sit BELOW the
+      // surface under it. Allow only ~1 mm of contact-solver penetration (a
+      // tunnelled body would be metres below surfaceY, not a millimetre).
+      // Upper bound leaves room for residual roll/bounce on slopes.
+      expect(p.y).toBeGreaterThan(surfaceY - 1e-3);
       expect(p.y).toBeLessThan(surfaceY + R + 0.6);
     }
     world.free();

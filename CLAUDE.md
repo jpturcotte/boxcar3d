@@ -62,17 +62,38 @@ evidence notes. Reference only; never import from `legacy/`.
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
 - `src/ui/` — controls panel (BoxCar2D-style options; see spec §5).
 - `tests/` — `prng.test.js` (locked stream), `physics-smoke.test.js` (both
-  Rapier flavors, headless, run-to-run identical).
+  Rapier flavors, headless, run-to-run identical), `heightfield-layout.test.js`
+  ([V1] layout proof), `noise.test.js` + `terrain.test.js` (locked determinism
+  fingerprints), `terrain-physics.test.js` (provisional floor/wall catch gate).
 
 ## Current state & next steps (Phase 1)
 
-Scaffold complete and verified: tests green, lint canary fires, build green,
-[V8] verified, [V7] both flavors resolve. Known cosmetic issue: Rapier compat
-prints a deprecation warning from its own internal init — ignore.
+Scaffold complete and verified. **Step 1a (corridor floor) landed:**
+- **[V1] proven** (`tests/heightfield-layout.test.js`): Rapier heightfield is
+  column-major (`k = col*(rows+1)+row`), col j → world +X, row i → world +Z,
+  origin-centered, `y = height*scale.y`; `castRay` needs one `world.step()`
+  first (hit distance `.timeOfImpact`). Every terrain path relies on this.
+- **`src/sim/noise.js`** — deterministic hash-based 2D value noise (no trig;
+  built on `prng.js` `splitmix32`), locked fingerprint `52f40f90`.
+- **`src/sim/terrain.js`** — pure `generateCorridorTerrain` (macro fBm + micro
+  roughness heightfield, flat start pad that smootherstep-blends into terrain,
+  two walls sized to `bounds`), locked heights fingerprint `e2157c82`. Exports
+  `indexToLocalXZ` + `startEnvelope` (single source of the [V1] transform).
+- **`physics/adapter.js`** — seam helpers `addHeightfield` / `addStaticBox` /
+  `addCorridor` (the only place that builds Rapier terrain colliders).
+- **`tests/terrain-physics.test.js`** — *provisional* Step-1a catch gate (20
+  seeded spheres rest on the local surface band; walls contain). This is a
+  smoke gate, **not** the canonical 1,000-spawn criterion.
+- **`src/main.js`** renders the corridor (mesh via `indexToLocalXZ`, walls,
+  seeded debris). `npm run lint && npm test && npm run build` all green; the
+  Rapier init deprecation warning is still cosmetic — ignore.
 
 Next, in order (details in phase0-refresh §6 + spec §7):
-1. Composite corridor terrain to spec R2: heightfield ([V1] layout test FIRST)
-   + walls + stamped features + zone map. 2. Static obstacles + collision
-   groups. 3. Chassis drop tests (1,000-spawn fall-through gate). 4. Assembly
-   compiler + repair pass (spec §3). 5. Axle modules S0 → S1 → S2, each behind
-   its own test gate. 6. Worker sharding with the 1-vs-4-workers equality test.
+1. Finish composite terrain to R2 (floor + walls done): craters as radial
+   depressions baked into the heightfield, stamped features (boulders/ramps/
+   logs as separate colliders), and the sand/mud zone map. 2. Static obstacles
+   + collision groups (0x0001 ground, 0x0002 chassis, 0x0004 wheels). 3. Chassis
+   drop tests — the canonical 1,000-spawn fall-through gate (Phase 0 success #1),
+   superseding the provisional 20-sphere smoke gate. 4. Assembly compiler +
+   repair pass (spec §3). 5. Axle modules S0 → S1 → S2, each behind its own test
+   gate. 6. Worker sharding with the 1-vs-4-workers equality test.

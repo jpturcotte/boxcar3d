@@ -71,6 +71,11 @@ export function generateCorridorTerrain(options = {}) {
   const cols = Math.round(length / cellSize); // X cells  (col j -> +X)
   const scale = { x: length, y: 1, z: width }; // y=1 -> heights are literal metres
   const heights = new Float32Array((rows + 1) * (cols + 1));
+  // `walls` is the composite seam for Step 1a. The composite-from-day-one rule
+  // (spec §4 / red-team F13) also wants `features` (craters/boulders/ramps/logs)
+  // and a `zones` map (sand/mud) — those are DELIBERATELY omitted here, not
+  // forgotten: they land with the composite-terrain step (see CLAUDE.md
+  // next-steps), added as sibling keys alongside `walls`.
   const terrain = { version: 1, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction };
 
   // Independent macro/micro seeds from the base seed by integer mixing (not a

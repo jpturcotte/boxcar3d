@@ -88,12 +88,23 @@ Scaffold complete and verified. **Step 1a (corridor floor) landed:**
   seeded debris). `npm run lint && npm test && npm run build` all green; the
   Rapier init deprecation warning is still cosmetic — ignore.
 
+Deferred by decision (documented so they aren't lost, not scoped into 1a):
+- The terrain object keeps only `walls` as its composite seam for now. The
+  `features` (craters/boulders/ramps/logs) and `zones` (sand/mud) keys the
+  composite-from-day-one rule (§4 / F13) wants are added in step 1 below, as
+  sibling keys — intentionally omitted today.
+- The provisional catch gate (`terrain-physics.test.js`) runs the default Rapier
+  flavor only (the field is pure JS, so flavor-independent). The canonical
+  1,000-spawn gate (step 3) should run both flavors, like `physics-smoke.test.js`.
+
 Next, in order (details in phase0-refresh §6 + spec §7):
 1. Finish composite terrain to R2 (floor + walls done): craters as radial
    depressions baked into the heightfield, stamped features (boulders/ramps/
-   logs as separate colliders), and the sand/mud zone map. 2. Static obstacles
+   logs as separate colliders), and the sand/mud zone map — surfaced as
+   `terrain.features` / `terrain.zones` alongside `walls`. 2. Static obstacles
    + collision groups (0x0001 ground, 0x0002 chassis, 0x0004 wheels). 3. Chassis
    drop tests — the canonical 1,000-spawn fall-through gate (Phase 0 success #1),
-   superseding the provisional 20-sphere smoke gate. 4. Assembly compiler +
-   repair pass (spec §3). 5. Axle modules S0 → S1 → S2, each behind its own test
-   gate. 6. Worker sharding with the 1-vs-4-workers equality test.
+   run on both Rapier flavors, superseding the provisional 20-sphere smoke gate.
+   4. Assembly compiler + repair pass (spec §3). 5. Axle modules S0 → S1 → S2,
+   each behind its own test gate. 6. Worker sharding with the 1-vs-4-workers
+   equality test.

@@ -11,6 +11,9 @@ import { Rng } from '../src/sim/prng.js';
 // NOTE: this is a PROVISIONAL Step-1a floor/wall smoke gate — NOT the canonical
 // terrain fall-through criterion. That remains the 1,000-spawn chassis-only drop
 // test (Phase 0 success #1, checklist step 1b/3), landing with real chassis.
+// This smoke gate runs the default flavor only (the field is pure JS, so it is
+// flavor-independent); the canonical 1,000-spawn gate SHOULD exercise both
+// flavors, the way physics-smoke.test.js does.
 
 const R = 0.5;
 const STEPS = 300; // 5 s at 1/60

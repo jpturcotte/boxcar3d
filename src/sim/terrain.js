@@ -67,6 +67,17 @@ export function indexToLocalXZ(row, col, terrain) {
   };
 }
 
+// Material at world (x, z) — the exact inverse of the indexToLocalXZ cell
+// mapping, clamped to the edge cells so out-of-bounds queries (a wheel scraping
+// a wall) return the nearest material instead of throwing. O(1); the wheel-
+// contact response loop samples this every step in a later PR.
+export function zoneAt(x, z, terrain) {
+  const { scale, zones } = terrain;
+  const col = Math.min(zones.cols - 1, Math.max(0, Math.floor((x / scale.x + 0.5) * zones.cols)));
+  const row = Math.min(zones.rows - 1, Math.max(0, Math.floor((z / scale.z + 0.5) * zones.rows)));
+  return zones.materials[col * zones.rows + row];
+}
+
 // Flat-then-blend start envelope in [0, 1]: exactly 0 across the flat pad,
 // smootherstep 0->1 across the blend, then 1. `worldX` measured from the start
 // line at x = -length/2.

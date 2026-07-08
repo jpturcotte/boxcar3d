@@ -286,6 +286,49 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       expect(Array.from(a)).toEqual(Array.from(b));
       expect(Array.from(a)).not.toEqual(Array.from(c));
     });
+
+    test('zoneAt mirrors indexToLocalXZ: exhaustive cell-center round-trip on a small grid', () => {
+      // Small enough to check every cell by hand; wide coverage so most cells
+      // are non-FIRM and the round-trip is not vacuously all-zeros.
+      const t = generateCorridorTerrain({
+        seed: 21, length: 8, width: 4, cellSize: 1,
+        startFlatLength: 1, startBlendLength: 1, sandCoverage: 0.5, mudCoverage: 0.3,
+        craterDensity: 0,
+      });
+      for (let col = 0; col < t.cols; col++) {
+        for (let row = 0; row < t.rows; row++) {
+          const { x, z } = indexToLocalXZ(row + 0.5, col + 0.5, t); // cell center
+          expect(zoneAt(x, z, t)).toBe(t.zones.materials[col * t.rows + row]);
+        }
+      }
+      const mats = new Set(t.zones.materials);
+      expect(mats.size).toBeGreaterThan(1); // round-trip saw real variety
+    });
+
+    test('zoneAt clamps: field-edge corners and far out-of-bounds map to edge cells', () => {
+      const t = generateCorridorTerrain({ seed: 21, sandCoverage: 0.5, mudCoverage: 0.3 });
+      const { rows, cols, materials } = t.zones;
+      // Exact +corner (x = +length/2, z = +width/2) hits the last cell.
+      expect(zoneAt(60, 6, t)).toBe(materials[(cols - 1) * rows + (rows - 1)]);
+      // Exact -corner hits cell (0, 0).
+      expect(zoneAt(-60, -6, t)).toBe(materials[0]);
+      // Far out of bounds clamps to the nearest edge cell (never throws).
+      expect(zoneAt(1e6, 0, t)).toBe(zoneAt(60 - 0.5, 0, t));
+      expect(zoneAt(0, -1e6, t)).toBe(zoneAt(0, -6 + 0.5, t));
+    });
+
+    test('start pad and blend are FIRM under the default config', () => {
+      const t = generateCorridorTerrain({ seed: 20260708 });
+      const cfg = { length: 120, startFlatLength: 4, startBlendLength: 6 };
+      for (let col = 0; col < t.cols; col++) {
+        for (let row = 0; row < t.rows; row++) {
+          const { x, z } = indexToLocalXZ(row + 0.5, col + 0.5, t);
+          if (startEnvelope(x, cfg) < 1) {
+            expect(zoneAt(x, z, t)).toBe(MATERIALS.FIRM);
+          }
+        }
+      }
+    });
   });
 
   describe('config validation (fail loud on degenerate input)', () => {

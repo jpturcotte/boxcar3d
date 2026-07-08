@@ -68,43 +68,56 @@ evidence notes. Reference only; never import from `legacy/`.
 
 ## Current state & next steps (Phase 1)
 
-Scaffold complete and verified. **Step 1a (corridor floor) landed:**
+Scaffold + corridor floor verified. **Step 1b slice 1 (the pure R2
+composite-terrain data contract) landed — `terrain.version` is now 2:**
 - **[V1] proven** (`tests/heightfield-layout.test.js`): Rapier heightfield is
   column-major (`k = col*(rows+1)+row`), col j → world +X, row i → world +Z,
   origin-centered, `y = height*scale.y`; `castRay` needs one `world.step()`
   first (hit distance `.timeOfImpact`). Every terrain path relies on this.
 - **`src/sim/noise.js`** — deterministic hash-based 2D value noise (no trig;
-  built on `prng.js` `splitmix32`), locked fingerprint `52f40f90`.
-- **`src/sim/terrain.js`** — pure `generateCorridorTerrain` (macro fBm + micro
-  roughness heightfield, flat start pad that smootherstep-blends into terrain,
-  two walls sized to `bounds`), locked heights fingerprint `e2157c82`. Exports
-  `indexToLocalXZ` + `startEnvelope` (single source of the [V1] transform).
-- **`physics/adapter.js`** — seam helpers `addHeightfield` / `addStaticBox` /
-  `addCorridor` (the only place that builds Rapier terrain colliders).
-- **`tests/terrain-physics.test.js`** — *provisional* Step-1a catch gate (20
-  seeded spheres rest on the local surface band; walls contain). This is a
-  smoke gate, **not** the canonical 1,000-spawn criterion.
-- **`src/main.js`** renders the corridor (mesh via `indexToLocalXZ`, walls,
-  seeded debris). `npm run lint && npm test && npm run build` all green; the
-  Rapier init deprecation warning is still cosmetic — ignore.
-
-Deferred by decision (documented so they aren't lost, not scoped into 1a):
-- The terrain object keeps only `walls` as its composite seam for now. The
-  `features` (craters/boulders/ramps/logs) and `zones` (sand/mud) keys the
-  composite-from-day-one rule (§4 / F13) wants are added in step 1 below, as
-  sibling keys — intentionally omitted today.
-- The provisional catch gate (`terrain-physics.test.js`) runs the default Rapier
-  flavor only (the field is pure JS, so flavor-independent). The canonical
-  1,000-spawn gate (step 3) should run both flavors, like `physics-smoke.test.js`.
+  built on `prng.js` `splitmix32`), locked fingerprint `52f40f90` (unchanged).
+- **`src/sim/terrain.js`** — pure composite generator. Base heightfield (macro
+  fBm + micro roughness, flat start pad) plus, all from dedicated ASCII-tagged
+  `Rng.fork` streams ('crat'/'zone'/'feat', per-item `fork(i)`; the macro/micro
+  integer-mix seed lines are byte-frozen):
+  - **Craters** baked as smootherstep depressions (`craterDepthAt` is the
+    analytic profile; depth = ratio×radius keeps rims drivable; fully inside
+    the corridor, clear of the start envelope; overlaps sum in index order).
+    `terrain.craters` descriptors kept as ground truth. Bounds and walls are
+    sized **after** the bake (a crater can undercut the base minimum).
+  - **Zones** — `terrain.zones`: per-heightfield-cell firm/sand/mud grid
+    (`MATERIALS`, exact-quantile coverage with capped counts, start region
+    forced firm) + `zoneAt(x, z)`, the clamped inverse cell mapping.
+  - **Features** — `terrain.features`: boulder/ramp/log descriptors with
+    trig-free unit `{cos, sin}` yaw (Marsaglia + sqrt; PR #8 builds quaternions
+    via half-angle sqrt identities — no trig module ever), post-crater `y` via
+    the bilinear `heightAtLocal` export, and a trailing per-feature `seed` for
+    PR #8 hull-vertex jitter.
+  - Zones and features are **data only** — no colliders, not rendered yet.
+    Craters show through the rendered heightfield mesh automatically.
+- **Locked fingerprints** (seed 20260708): base field `e2157c82` — pinned via
+  `craterDensity: 0`, the permanent Step-1a byte-identity guard; default-config
+  heights `48177e22`, craters `b9e05cf7`, zones `903a3d5f`, features
+  `f3f86cbc`. Any change is a deliberate re-lock + seed-format version bump.
+- **`tests/terrain-physics.test.js`** — the 20-sphere smoke gate is pinned to
+  `craterDensity: 0` (byte-identical to the terrain its assertions were
+  reviewed against); crater'd ground is covered by the new castRay crater probe
+  (twin heightfields in one world, band assertions) and a crater settle test.
+  Still the provisional gate, default flavor only — **not** the canonical
+  1,000-spawn criterion, which must run both flavors.
+- ESLint determinism ban now also covers `Math.hypot`/`cbrt` (implementation-
+  approximated; `Math.sqrt` is correctly-rounded and stays allowed).
+- `npm run lint && npm test && npm run build` all green; the Rapier init
+  deprecation warning is still cosmetic — ignore.
 
 Next, in order (details in phase0-refresh §6 + spec §7):
-1. Finish composite terrain to R2 (floor + walls done): craters as radial
-   depressions baked into the heightfield, stamped features (boulders/ramps/
-   logs as separate colliders), and the sand/mud zone map — surfaced as
-   `terrain.features` / `terrain.zones` alongside `walls`. 2. Static obstacles
-   + collision groups (0x0001 ground, 0x0002 chassis, 0x0004 wheels). 3. Chassis
-   drop tests — the canonical 1,000-spawn fall-through gate (Phase 0 success #1),
-   run on both Rapier flavors, superseding the provisional 20-sphere smoke gate.
-   4. Assembly compiler + repair pass (spec §3). 5. Axle modules S0 → S1 → S2,
-   each behind its own test gate. 6. Worker sharding with the 1-vs-4-workers
-   equality test.
+1. **PR #8 — realize the features:** boulder (convex hull seeded by the
+   per-feature `seed`) / ramp (cuboid) / log (capsule) colliders through the
+   adapter seam, collision groups (0x0001 ground, 0x0002 chassis, 0x0004
+   wheels), render zones + features. 2. Chassis drop tests — the canonical
+   1,000-spawn fall-through gate (Phase 0 success #1), run on both Rapier
+   flavors, superseding the provisional 20-sphere smoke gate. 3. Assembly
+   compiler + repair pass (spec §3). 4. Axle modules S0 → S1 → S2, each behind
+   its own test gate; zone material response (friction/drag/torque per
+   `zoneAt` sample) lands with wheels. 5. Worker sharding with the
+   1-vs-4-workers equality test.

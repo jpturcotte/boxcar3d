@@ -57,4 +57,25 @@ describe('value noise (deterministic, hash-based — ruling D7 / red-team F4)', 
       expect(fb).toBeLessThan(1);
     }
   });
+
+  describe('fbm2D config guards (fail loud instead of returning NaN)', () => {
+    test('octaves < 1 or non-integer throws (would divide by zero -> NaN)', () => {
+      expect(() => fbm2D(0.5, 0.5, 1, { octaves: 0 })).toThrow(/octaves/);
+      expect(() => fbm2D(0.5, 0.5, 1, { octaves: -3 })).toThrow(/octaves/);
+      expect(() => fbm2D(0.5, 0.5, 1, { octaves: 2.5 })).toThrow(/octaves/);
+    });
+
+    test('non-positive lacunarity / gain / frequency throw', () => {
+      expect(() => fbm2D(0.5, 0.5, 1, { lacunarity: 0 })).toThrow(/lacunarity/);
+      expect(() => fbm2D(0.5, 0.5, 1, { gain: -1 })).toThrow(/gain/); // gain=-1 would also make norm 0
+      expect(() => fbm2D(0.5, 0.5, 1, { frequency: 0 })).toThrow(/frequency/);
+    });
+
+    test('valid defaults still produce a finite value in [0, 1)', () => {
+      const v = fbm2D(0.5, 0.5, 1);
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    });
+  });
 });

@@ -52,6 +52,13 @@ export function valueNoise2D(x, y, seed) {
 // INDEPENDENT integer seed (never a shared, order-dependent stream). The result
 // is the amplitude-weighted average of [0,1) octaves, so it stays in [0, 1).
 export function fbm2D(x, y, seed, { octaves = 4, lacunarity = 2, gain = 0.5, frequency = 1 } = {}) {
+  // Config guards: octaves < 1 leaves norm = 0 -> sum/norm = NaN, and a
+  // non-positive gain can also drive norm to 0. These are misconfiguration, so
+  // fail loud rather than return NaN.
+  if (!Number.isInteger(octaves) || octaves < 1) throw new Error('fbm2D: octaves must be a positive integer');
+  if (lacunarity <= 0) throw new Error('fbm2D: lacunarity must be > 0');
+  if (gain <= 0) throw new Error('fbm2D: gain must be > 0');
+  if (frequency <= 0) throw new Error('fbm2D: frequency must be > 0');
   let amp = 1;
   let freq = frequency;
   let sum = 0;

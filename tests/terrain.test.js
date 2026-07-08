@@ -110,6 +110,45 @@ describe('corridor terrain generator (pure, deterministic)', () => {
     expect(top).toBeGreaterThan(t.bounds.maxY);
   });
 
+  describe('craters (descriptors — dedicated stream, envelope-clear, drivable)', () => {
+    test('craterDensity 0 -> empty craters array; default -> at least one', () => {
+      expect(generateCorridorTerrain({ seed: 5, craterDensity: 0 }).craters).toEqual([]);
+      expect(generateCorridorTerrain({ seed: 20260708 }).craters.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('descriptors in range, fully inside the corridor, clear of the start envelope', () => {
+      const cfg = { seed: 20260708 };
+      const t = generateCorridorTerrain(cfg);
+      const { length, width, startFlatLength, startBlendLength, craterRadiusRange, craterDepthRatioRange } = {
+        length: 120, width: 12, startFlatLength: 4, startBlendLength: 6,
+        craterRadiusRange: [2, 5], craterDepthRatioRange: [0.08, 0.22],
+      };
+      const envelopeEndX = -length / 2 + startFlatLength + startBlendLength; // -50
+      for (const c of t.craters) {
+        expect(c.radius).toBeGreaterThanOrEqual(craterRadiusRange[0]);
+        expect(c.radius).toBeLessThanOrEqual(craterRadiusRange[1]);
+        const ratio = c.depth / c.radius;
+        expect(ratio).toBeGreaterThanOrEqual(craterDepthRatioRange[0]);
+        expect(ratio).toBeLessThanOrEqual(craterDepthRatioRange[1]);
+        // Drivability: max slope of the smootherstep profile is 1.875*depth/radius.
+        expect((1.875 * c.depth) / c.radius).toBeLessThanOrEqual(0.5);
+        // Fully inside the corridor (no wall-clipped rims until PR #8).
+        expect(Math.abs(c.z) + c.radius).toBeLessThanOrEqual(width / 2);
+        expect(c.x + c.radius).toBeLessThanOrEqual(length / 2);
+        // Never intersects the flat pad or the blend.
+        expect(c.x - c.radius).toBeGreaterThanOrEqual(envelopeEndX);
+      }
+    });
+
+    test('same seed -> identical craters; different seed -> different', () => {
+      const a = generateCorridorTerrain({ seed: 7 }).craters;
+      const b = generateCorridorTerrain({ seed: 7 }).craters;
+      const c = generateCorridorTerrain({ seed: 8 }).craters;
+      expect(a).toEqual(b);
+      expect(a).not.toEqual(c);
+    });
+  });
+
   describe('config validation (fail loud on degenerate input)', () => {
     test('rejects non-positive cellSize / length / width', () => {
       // cellSize=0 would otherwise RangeError on Float32Array(Infinity).

@@ -13,6 +13,13 @@
 //   * field centered on the origin;  y = height*scale.y  (scale.y = 1 -> metres)
 
 import { fbm2D } from './noise.js';
+import { Rng } from './prng.js';
+
+// Named fork stream IDs (ASCII tags) — the seed-format contract for the
+// composite-terrain streams. Never renumber. Per-item parameters come from
+// stream.fork(i), so a draw added to item i can never shift item i+1, and
+// skipping item i perturbs nothing else (rule 1: order-independent streams).
+const STREAM_CRATERS = 0x63726174; // 'crat'
 
 const DEFAULTS = {
   seed: 0,
@@ -33,6 +40,9 @@ const DEFAULTS = {
   wallRestitution: 0.1, // "firm nudge back into play", not a pinball bumper (spec §4)
   wallFriction: 0.8,
   floorFriction: 1,
+  craterDensity: 0.5, // craters per 100 m² of post-envelope area (0 = Step-1a base field)
+  craterRadiusRange: [2, 5], // metres
+  craterDepthRatioRange: [0.08, 0.22], // depth = ratio*radius; max slope 1.875*ratio <= 0.41 (drivable)
 };
 
 const smootherstep = (t) => t * t * t * (t * (t * 6 - 15) + 10);
@@ -56,6 +66,32 @@ export function startEnvelope(worldX, { length, startFlatLength, startBlendLengt
   if (d <= startFlatLength) return 0;
   if (d >= startFlatLength + startBlendLength) return 1;
   return smootherstep((d - startFlatLength) / startBlendLength);
+}
+
+// Crater descriptors from the dedicated 'crat' stream. Placement only — baking
+// into the heightfield is a separate pass. Count is a pure function of config
+// (never an RNG draw), over the POST-ENVELOPE area only, so density means what
+// it says on the region craters may actually occupy. Craters sit fully inside
+// the corridor and never touch the flat pad or the blend; a radius too big for
+// the remaining room skips that crater (per-crater forks keep the rest stable).
+function generateCraters(cfg, craterRng) {
+  const { length, width, startFlatLength, startBlendLength } = cfg;
+  const envelopeEndX = -length / 2 + startFlatLength + startBlendLength;
+  const count = Math.round((cfg.craterDensity * (length - startFlatLength - startBlendLength) * width) / 100);
+  const craters = [];
+  for (let i = 0; i < count; i++) {
+    const c = craterRng.fork(i);
+    // Fixed draw order (seed-format contract): radius, depthRatio, x, z.
+    const radius = c.range(cfg.craterRadiusRange[0], cfg.craterRadiusRange[1]);
+    const depth = radius * c.range(cfg.craterDepthRatioRange[0], cfg.craterDepthRatioRange[1]);
+    const xMin = envelopeEndX + radius;
+    const xMax = length / 2 - radius;
+    const zMin = -width / 2 + radius;
+    const zMax = width / 2 - radius;
+    if (xMin > xMax || zMin > zMax) continue; // no room for this radius
+    craters.push({ x: c.range(xMin, xMax), z: c.range(zMin, zMax), radius, depth });
+  }
+  return craters;
 }
 
 function fullElevation(x, z, cfg, macroSeed, microSeed) {
@@ -95,12 +131,16 @@ export function generateCorridorTerrain(options = {}) {
   // and a `zones` map (sand/mud) — those are DELIBERATELY omitted here, not
   // forgotten: they land with the composite-terrain step (see CLAUDE.md
   // next-steps), added as sibling keys alongside `walls`.
-  const terrain = { version: 1, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction };
+  const terrain = { version: 1, seed, rows, cols, heights, scale, walls: [], bounds: null, floorFriction: cfg.floorFriction, craters: [] };
 
   // Independent macro/micro seeds from the base seed by integer mixing (not a
-  // shared stream — order-independent, replay-safe).
+  // shared stream — order-independent, replay-safe). BYTE-FROZEN: these two
+  // lines are part of the Step-1a seed format (locked fingerprint e2157c82).
   const macroSeed = (Math.imul(seed >>> 0, 0x2c1b3c6d) ^ 0x9e3779b9) >>> 0;
   const microSeed = (Math.imul(seed >>> 0, 0x297a2d39) ^ 0x85ebca6b) >>> 0;
+  // Composite-terrain streams fork from the root by named ID — order-independent
+  // (fork reads only the original seed), so these never disturb the base field.
+  const root = new Rng(seed);
 
   let minY = Infinity;
   let maxY = -Infinity;
@@ -121,6 +161,8 @@ export function generateCorridorTerrain(options = {}) {
       if (worldY > maxY) maxY = worldY;
     }
   }
+  terrain.craters = generateCraters(cfg, root.fork(STREAM_CRATERS));
+
   terrain.bounds = { length, width, minY, maxY };
 
   // Walls sized to the terrain's own bounds: base below the lowest dip, top

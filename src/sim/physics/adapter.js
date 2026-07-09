@@ -55,6 +55,22 @@ export const WHEEL_GROUPS = packGroups(GROUP_WHEEL, GROUP_GROUND);
 // (legacy/SALVAGE.md). Keep it as the known-good default; it is a knob.
 export const GRAVITY = 20;
 
+// --- Dynamic-body CCD policy (PR #9 finding — read before building vehicles).
+//
+// Hard CCD (RigidBodyDesc.setCcdEnabled) is INERT against the heightfield in
+// rapier 0.19.3: the chassis-drop gate proved that CCD'd cuboids AND balls
+// tunnel the floor from ~23 m/s up with exactly the same failure set as
+// non-CCD bodies (9/9 identical spawns, tests/chassis-drop.test.js hunt,
+// 2026-07-09). What actually catches fast bodies on the floor is soft CCD —
+// RigidBodyDesc.setSoftCcdPrediction(distance) — whose predictive contacts
+// don't depend on the shape-cast path that fails on heightfields. Policy:
+// every dynamic chassis/wheel body sets BOTH
+//   .setCcdEnabled(true)                       // shape-cast CCD: convex-vs-convex cover
+//   .setSoftCcdPrediction(SOFT_CCD_PREDICTION) // the one that catches the floor
+// 1 m of prediction covers one FIXED_DT step at 60 m/s — far beyond any
+// speed the corridor can produce; larger values only grow broad-phase cost.
+export const SOFT_CCD_PREDICTION = 1;
+
 export async function createPhysics({ deterministic = false } = {}) {
   const RAPIER = deterministic
     ? (await import('@dimforge/rapier3d-deterministic-compat')).default

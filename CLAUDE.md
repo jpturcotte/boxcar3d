@@ -69,7 +69,8 @@ evidence notes. Reference only; never import from `legacy/`.
   fingerprints), `terrain-physics.test.js` (provisional floor/wall catch gate),
   `features.test.js` (pure geometry contract + locked hull fingerprint),
   `feature-physics.test.js` (feature colliders + collision groups, BOTH
-  flavors via `describe.each` × `createPhysics`).
+  flavors via `describe.each` × `createPhysics`), `chassis-drop.test.js`
+  (the canonical 1,000-spawn chassis fall-through gate, both flavors).
 
 ## Current state & next steps (Phase 1)
 
@@ -139,17 +140,45 @@ feature colliders + collision groups + dev-scene rendering:**
   isolated boulder, solver group matrix (positive, fall-through negative,
   ghost-ghost coexistence, filterGroups query arg, ungrouped-legacy), realized
   poses run-to-run identical per flavor, adapter knob negatives. The 20-sphere
-  gate in `terrain-physics.test.js` is untouched (still the provisional gate,
-  default flavor only — **not** the canonical 1,000-spawn criterion).
+  gate in `terrain-physics.test.js` stays as a fast smoke check (default
+  flavor only), superseded as the criterion by PR #9's canonical gate.
+
+**PR #9 landed — the canonical 1,000-spawn chassis fall-through gate (Phase 0
+success #1), and a load-bearing physics finding:**
+- **`tests/chassis-drop.test.js`** — BOTH flavors × 20 batches × 50 chassis
+  cuboids (half extents 0.9/0.25/0.45, `CHASSIS_GROUPS`, fresh world per
+  batch, seeds declared: terrain 20260708, spawns 20260709). Per batch: 40
+  rest drops (post-envelope corridor x ∈ [−49, 52], random yaw + ≤ ~22° tilt,
+  impact ≈ 23–28 m/s) + 10 high-velocity CCD probes (`setLinvel` 40–50 m/s ≈
+  0.68–0.87 m/step > the 0.5 m box thickness — speeds rest drops physically
+  cannot reach, so a CCD regression actually fails the gate; feature-clear by
+  bounded rejection). After 360 steps every body must be: finite, contained
+  (`|z| < 5.9`, `|x| < 59.5` — the x-ends are open), above the −50 free-fall
+  net, and inside the center-clearance band — `p.y ≥ floorY + 0.10` against a
+  floor-only ray (slope-independent burial teeth; the topmost surface would
+  false-fail under ramp overhangs) and `p.y ≤ surfaceY + 1.2` against the
+  `filterGroups = CHASSIS_GROUPS` topmost ray (tightened from a looser 2.6 —
+  observed max is 0.935, so a body perched/bridged high now fails) — and at
+  rest (velocities inside the settle band). Violations report
+  seed/batch/index/spawn/pose/surface diagnostics. Calibrated extremes over
+  all 2,000 landings are recorded in the file header band comment.
+- **The finding — hard CCD is INERT against the heightfield in rapier 0.19.3:**
+  CCD'd cuboids AND balls tunnel the floor from ~23 m/s up with the identical
+  failure set as non-CCD bodies. What catches fast bodies is **soft CCD**
+  (`RigidBodyDesc.setSoftCcdPrediction`). Adapter policy export
+  `SOFT_CCD_PREDICTION = 1` (metre; covers 60 m/s per step): every dynamic
+  chassis/wheel body MUST set `.setCcdEnabled(true)` (convex-vs-convex cover)
+  AND `.setSoftCcdPrediction(SOFT_CCD_PREDICTION)`. The assembly compiler
+  (next PR) must apply both to every body it emits.
+- Terrain/features/fingerprints untouched (adapter gained only the constant +
+  policy comment); teeth verified both ways locally: gate fails with soft-CCD
+  removed and with a GROUND-less filter.
 - `npm run lint && npm test && npm run build` all green; the Rapier init
   deprecation warning is still cosmetic — ignore.
 
 Next, in order (details in phase0-refresh §6 + spec §7):
-1. **PR #9 — chassis drop tests:** the canonical 1,000-spawn fall-through gate
-   (Phase 0 success #1) over the full composite terrain (features realized),
-   run on both Rapier flavors, superseding the provisional 20-sphere smoke
-   gate; chassis bodies use `CHASSIS_GROUPS` + CCD. 2. Assembly compiler +
-   repair pass (spec §3). 3. Axle modules S0 → S1 → S2, each behind its own
-   test gate; zone material response (friction/drag/torque per `zoneAt`
-   sample) lands with wheels, using `WHEEL_GROUPS`. 4. Worker sharding with
-   the 1-vs-4-workers equality test.
+1. **Assembly compiler + repair pass** (spec §3); every emitted body carries
+   `CHASSIS_GROUPS`/`WHEEL_GROUPS` + the dual CCD policy above. 2. Axle
+   modules S0 → S1 → S2, each behind its own test gate; zone material response
+   (friction/drag/torque per `zoneAt` sample) lands with wheels, using
+   `WHEEL_GROUPS`. 3. Worker sharding with the 1-vs-4-workers equality test.

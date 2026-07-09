@@ -6,15 +6,16 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, PR #8 landed. `npm run dev` renders the full composite
-corridor — deterministic heightfield floor with baked craters, physical walls,
-seeded debris, and the sand/mud zone map (add `?zones` to tint it). The
-boulder/ramp/log features are physically real: static Rapier colliders
-(convex-hull boulders, cuboid ramps, capsule logs) seated against the true
-surface via castRay, under a ground/chassis/wheels collision-group scheme, and
-rendered from the same realized poses. Next is PR #9 — the canonical
-1,000-spawn chassis fall-through gate. The design docs in `docs/` define
-everything that comes after.
+**Status:** Phase 1, PR #9 landed. The canonical 1,000-spawn chassis
+fall-through gate (Phase 0 success criterion #1) passes on both Rapier
+flavors: 2,000 seeded chassis drops over the full composite corridor — floor,
+craters, walls, and feature colliders — including high-velocity probes at
+40–50 m/s that cross the box's own thickness per physics step. The gate
+exposed that hard CCD is inert against heightfields in Rapier 0.19.3; dynamic
+bodies now carry the adapter's soft-CCD policy (`SOFT_CCD_PREDICTION`), which
+is what actually catches them. `npm run dev` still renders the full composite
+corridor (add `?zones` to tint the zone map). Next is the assembly compiler +
+repair pass. The design docs in `docs/` define everything that comes after.
 
 ## Quickstart
 

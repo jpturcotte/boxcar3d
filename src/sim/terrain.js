@@ -330,6 +330,16 @@ function validateConfig(cfg) {
       throw new Error(`generateCorridorTerrain: ${key} must be a finite number >= 0`);
     }
   }
+  // Frequency knobs are multiplied into the noise coordinates BEFORE fbm2D
+  // (not passed as its `frequency` option), so fbm2D's own frequency guard
+  // never sees them. A 0/NaN/Infinity frequency silently collapses or poisons
+  // the field (every cell ties, so the zone quantile degenerates to index
+  // order) instead of failing loud — validate here for all three noise fields.
+  for (const key of ['macroFrequency', 'microFrequency', 'zoneFrequency']) {
+    if (!Number.isFinite(cfg[key]) || cfg[key] <= 0) {
+      throw new Error(`generateCorridorTerrain: ${key} must be a finite number > 0`);
+    }
+  }
   for (const key of [
     'craterRadiusRange', 'craterDepthRatioRange', 'boulderRadiusRange',
     'rampLengthRange', 'rampWidthRange', 'rampHeightRange', 'logRadiusRange', 'logLengthRange',

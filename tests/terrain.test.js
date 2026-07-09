@@ -523,6 +523,17 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       expect(() => generateCorridorTerrain({ zoneOctaves: 0 })).toThrow(/octaves/);
     });
 
+    test('rejects non-positive or non-finite frequency knobs (bypass fbm2D guard)', () => {
+      // zoneFrequency/macro/micro are multiplied into the coords before fbm2D,
+      // so its own frequency guard never fires — these must fail loud here or
+      // they silently poison the field (zone quantile degenerates to index order).
+      expect(() => generateCorridorTerrain({ zoneFrequency: 0 })).toThrow(/zoneFrequency/);
+      expect(() => generateCorridorTerrain({ zoneFrequency: NaN })).toThrow(/zoneFrequency/);
+      expect(() => generateCorridorTerrain({ zoneFrequency: Infinity })).toThrow(/zoneFrequency/);
+      expect(() => generateCorridorTerrain({ macroFrequency: 0 })).toThrow(/macroFrequency/);
+      expect(() => generateCorridorTerrain({ microFrequency: -1 })).toThrow(/microFrequency/);
+    });
+
     test('rejects negative or non-finite densities', () => {
       expect(() => generateCorridorTerrain({ craterDensity: -1 })).toThrow(/craterDensity/);
       expect(() => generateCorridorTerrain({ craterDensity: Infinity })).toThrow(/craterDensity/);

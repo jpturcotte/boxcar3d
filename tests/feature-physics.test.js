@@ -117,7 +117,23 @@ describe.each([
         // their lowest sampled underside must graze the surface — embedded or
         // within 5 cm above (the true contact corner sits (t/2)·sinφ inside
         // the ramp's end sample, which accounts for the slack).
-        if (f.type !== 'boulder') expect(Math.min(...deltas)).toBeLessThanOrEqual(0.05);
+        if (f.type !== 'boulder') {
+          expect(Math.min(...deltas)).toBeLessThanOrEqual(0.05);
+        } else {
+          // A boulder's lowest hull vertex is generally NOT beneath any sampled
+          // column (an up-ray can't measure it — hence the exclusion above),
+          // but seating is analytic: every support sample carries
+          // bottomOffset = minHullY, so bodyY = maxSurfaceY − minHullY − embed
+          // exactly. Assert that identity from the realized record — this
+          // catches a floating OR buried boulder without a roll-prone sphere.
+          let minHullY = Infinity;
+          for (let i = 1; i < r.points.length; i += 3) minHullY = Math.min(minHullY, r.points[i]);
+          let maxSurfaceY = -Infinity;
+          for (const s of featureGeometry(f).supportSamples) {
+            maxSurfaceY = Math.max(maxSurfaceY, downOnto(RAPIER, world, f.x + s.dx, f.z + s.dz, floor));
+          }
+          expect(r.position.y + minHullY).toBeCloseTo(maxSurfaceY - EMBED, 2); // lowest vertex sits embedDepth under the governing support, ±5 mm
+        }
       }
     } finally {
       world.free();
@@ -292,27 +308,34 @@ describe.each([
     }
   });
 
-  test('adapter knobs fail loud (NaN / non-finite / out-of-range) before the world is touched', async () => {
+  test('adapter knobs fail loud (NaN / non-finite / out-of-range) before the world is stepped', async () => {
     const { RAPIER, world } = await createPhysics({ deterministic });
+    // Count real world.step() calls: contract 1 says addFeatures validates
+    // EVERY knob before its statics-only BVH step. A body-count proxy is blind
+    // here (a premature step on a bodiless world adds nothing); an own-property
+    // stub shadows World.step on both Rapier flavors and observes it directly.
+    const realStep = world.step.bind(world);
+    let steps = 0;
+    world.step = (...args) => {
+      steps++;
+      return realStep(...args);
+    };
     try {
       const terrain = generateCorridorTerrain({ seed: SEED });
       const { floor } = addCorridor(RAPIER, world, terrain);
-      const stepsBefore = () => world.bodies.len(); // cheap world-untouched proxy
-      const before = stepsBefore();
-      for (const bad of [NaN, -0.1, 0.25, Infinity]) {
-        expect(() => addFeatures(RAPIER, world, terrain, floor, { embedDepth: bad })).toThrow(/embedDepth/);
-      }
-      for (const bad of [NaN, -1, Infinity]) {
-        expect(() => addFeatures(RAPIER, world, terrain, floor, { friction: bad })).toThrow(/friction/);
-      }
-      for (const bad of [NaN, -0.1, 1.5, Infinity]) {
-        expect(() => addFeatures(RAPIER, world, terrain, floor, { restitution: bad })).toThrow(/restitution/);
-      }
-      // Geometry knobs are validated in features.js but must still fail loud
-      // through the adapter path, before any collider is created:
-      expect(() => addFeatures(RAPIER, world, terrain, floor, { boulderVertexCount: 3 })).toThrow(/boulderVertexCount/);
-      expect(before).toBe(stepsBefore());
+      const throwsWithoutStepping = (opts, re) => {
+        const before = steps;
+        expect(() => addFeatures(RAPIER, world, terrain, floor, opts)).toThrow(re);
+        expect(steps).toBe(before); // no world.step() before the validation throw
+      };
+      for (const bad of [NaN, -0.1, 0.25, Infinity]) throwsWithoutStepping({ embedDepth: bad }, /embedDepth/);
+      for (const bad of [NaN, -1, Infinity]) throwsWithoutStepping({ friction: bad }, /friction/);
+      for (const bad of [NaN, -0.1, 1.5, Infinity]) throwsWithoutStepping({ restitution: bad }, /restitution/);
+      // Geometry knobs are validated in features.js, which runs BEFORE the step
+      // in the correct code, so a bad one must also throw with zero steps:
+      throwsWithoutStepping({ boulderVertexCount: 3 }, /boulderVertexCount/);
     } finally {
+      world.step = realStep;
       world.free();
     }
   });

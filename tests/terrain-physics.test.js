@@ -8,12 +8,12 @@ import { Rng } from '../src/sim/prng.js';
 // compat) flavor via createPhysics(), matching src/main.js. GRAVITY (=20) and
 // FIXED_DT come from the adapter.
 //
-// NOTE: this is a PROVISIONAL Step-1a floor/wall smoke gate — NOT the canonical
-// terrain fall-through criterion. That remains the 1,000-spawn chassis-only drop
-// test (Phase 0 success #1, checklist step 1b/3), landing with real chassis.
-// This smoke gate runs the default flavor only (the field is pure JS, so it is
-// flavor-independent); the canonical 1,000-spawn gate SHOULD exercise both
-// flavors, the way physics-smoke.test.js does.
+// NOTE: this is a fast Step-1a floor/wall smoke gate — NOT the canonical
+// terrain fall-through criterion. That gate lives in tests/chassis-drop.test.js
+// (PR #9): 1,000 chassis spawns per flavor over the full composite terrain,
+// BOTH Rapier flavors, superseding this file as Phase 0 success #1. This smoke
+// gate stays for cheap early signal (default flavor only — the field is pure
+// JS, so it is flavor-independent).
 
 const R = 0.5;
 const STEPS = 300; // 5 s at 1/60

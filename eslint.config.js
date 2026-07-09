@@ -38,7 +38,9 @@ export default [
       'no-restricted-properties': [
         'error',
         ...banMath(
-          ['random', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'pow', 'exp', 'log'],
+          // hypot/cbrt are implementation-approximated too (unlike sqrt, which
+          // IEEE 754 requires to be correctly rounded).
+          ['random', 'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2', 'pow', 'exp', 'log', 'hypot', 'cbrt'],
           DETERMINISM_MESSAGE
         ),
       ],

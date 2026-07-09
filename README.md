@@ -6,15 +6,19 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** verified toolchain scaffold (Phase 1, step 1). `npm run dev` shows
-a physics smoke scene; the design docs in `docs/` define everything that comes
-next.
+**Status:** Phase 1, step 1b slice 1. `npm run dev` renders the corridor —
+deterministic heightfield floor with baked craters, physical walls, seeded
+debris. The composite-terrain *data* contract is complete: the sand/mud zone
+map and boulder/ramp/log feature descriptors are generated and tested, but not
+yet realized as colliders or rendered — that lands next (PR #8: static feature
+colliders + collision groups). The design docs in `docs/` define everything
+that comes after.
 
 ## Quickstart
 
 ```bash
 npm install
-npm run dev      # smoke scene at http://localhost:5173
+npm run dev      # corridor terrain scene at http://localhost:5173
 npm test         # PRNG determinism + headless Rapier (both flavors)
 npm run lint     # includes the determinism ban on src/sim
 npm run build    # production bundle in dist/

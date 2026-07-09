@@ -24,6 +24,7 @@ export default [
         console: 'readonly',
         performance: 'readonly',
         requestAnimationFrame: 'readonly',
+        URLSearchParams: 'readonly',
         process: 'readonly',
       },
     },

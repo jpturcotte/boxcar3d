@@ -95,7 +95,13 @@ export function quatMultiply(a, b) {
   return { x: x * inv, y: y * inv, z: z * inv, w: w * inv };
 }
 
-// Yaw {cos, sin} (unit heading about +Y) -> quaternion {x, y, z, w}.
+// Yaw {cos, sin} (unit heading in world XZ) -> quaternion {x, y, z, w} that
+// rotates local +X onto that heading: rot(q, +X) == (cos, 0, sin). This is the
+// convention the support samples and render both assume (a feature's length
+// axis points along its heading vector). It is a rotation about +Y by −θ in the
+// right-handed Y-up frame, because a right-handed +Y rotation carries +X toward
+// −Z; the negated y-term is what sends +X toward +sin·Z instead. Locked by the
+// heading discriminator test in tests/features.test.js.
 // Throws on a non-unit heading: a corrupt yaw would silently tilt a collider.
 export function yawToQuaternion({ cos, sin } = {}) {
   if (!Number.isFinite(cos) || !Number.isFinite(sin) || Math.abs(cos * cos + sin * sin - 1) > 1e-9) {
@@ -103,7 +109,7 @@ export function yawToQuaternion({ cos, sin } = {}) {
   }
   return {
     x: 0,
-    y: sgn(sin) * Math.sqrt(Math.max(0, (1 - cos) / 2)),
+    y: -sgn(sin) * Math.sqrt(Math.max(0, (1 - cos) / 2)),
     z: 0,
     w: Math.sqrt(Math.max(0, (1 + cos) / 2)),
   };
@@ -119,9 +125,13 @@ const zRotationQuaternion = (cos, sin) => ({
   w: Math.sqrt(Math.max(0, (1 + cos) / 2)),
 });
 
-// Rolls the capsule's local +Y axis onto +X: 90° about Z, half-angle sqrt(1/2)
-// exactly (no trig, no drift). Composed with yaw, the axis follows the heading.
-const LOG_ROLL = Object.freeze({ x: 0, y: 0, z: Math.sqrt(0.5), w: Math.sqrt(0.5) });
+// Rolls the capsule's local +Y axis onto +X: −90° about Z, half-angle sqrt(1/2)
+// exactly (no trig, no drift). Composed with the yaw (which carries +X onto the
+// heading), the capsule axis then lies along the heading — same convention as
+// the ramp's length axis. The capsule is axis-symmetric, so only the sign of
+// the roll's z-term distinguishes this from the +90° roll; −90° is the one that
+// sends +Y to +X (not −X).
+const LOG_ROLL = Object.freeze({ x: 0, y: 0, z: -Math.sqrt(0.5), w: Math.sqrt(0.5) });
 
 // Descriptor -> pure realization geometry. The adapter builds the collider
 // from `shape`/`quat` and seats it by casting rays at `supportSamples`

@@ -91,16 +91,18 @@ describe.each([
     }
   });
 
-  test('seating: no support point buried past embedDepth; ramps/logs touch the surface', { timeout: 20000 }, async () => {
+  test('seating: real collider never buried past embedDepth, and the seating rule embeds the governing support exactly', { timeout: 20000 }, async () => {
     const { RAPIER, world, floor, features } = await realize(deterministic);
     try {
       for (const r of features) {
         const f = r.feature;
         const deltas = [];
+        const modeledGaps = []; // bodyY + bottomOffset_i − floorY_i, the analytic underside vs terrain
         for (const s of featureGeometry(f).supportSamples) {
           const bottom = upOnto(RAPIER, world, f.x + s.dx, f.z + s.dz, r.collider);
           const floorY = downOnto(RAPIER, world, f.x + s.dx, f.z + s.dz, floor);
           expect(floorY).not.toBeNull();
+          modeledGaps.push(r.position.y + s.bottomOffset - floorY);
           // A lopsided boulder hull may not cover an outer compass sample —
           // an upward ray that misses proves nothing either way. The center
           // ray must hit for every type (the collider exists where placed).
@@ -111,28 +113,24 @@ describe.each([
           deltas.push(bottom - floorY);
         }
         expect(deltas.length).toBeGreaterThan(0);
-        // Never buried deeper than the deliberate embed (max-support rule):
+        // The REAL collider (up-ray) is never buried past the deliberate embed:
         for (const d of deltas) expect(d).toBeGreaterThanOrEqual(-(EMBED + 0.02));
-        // Elongated shapes have exact bottom offsets at their samples, so
-        // their lowest sampled underside must graze the surface — embedded or
-        // within 5 cm above (the true contact corner sits (t/2)·sinφ inside
-        // the ramp's end sample, which accounts for the slack).
-        if (f.type !== 'boulder') {
-          expect(Math.min(...deltas)).toBeLessThanOrEqual(0.05);
-        } else {
-          // A boulder's lowest hull vertex is generally NOT beneath any sampled
-          // column (an up-ray can't measure it — hence the exclusion above),
-          // but seating is analytic: every support sample carries
-          // bottomOffset = minHullY, so bodyY = maxSurfaceY − minHullY − embed
-          // exactly. Assert that identity from the realized record — this
-          // catches a floating OR buried boulder without a roll-prone sphere.
+        // The seating RULE, checked exactly: bodyY = max_i(floorY_i − bottomOffset_i)
+        // − embed, so min_i(bodyY + bottomOffset_i − floorY_i) == −embed. This one
+        // identity catches a floating seat (bodyY too high → value too high) AND an
+        // over-sunk seat (too low), for every type — no fragile per-sample up-ray,
+        // no thick-slab projection error. (Elongated features still bridge dips:
+        // their true lowest footprint corner may embed deeper than embedDepth on a
+        // slope — accepted terrain character, verified separately by the footprint
+        // scan in the design notes, not asserted here as a per-sample bound.)
+        expect(Math.min(...modeledGaps)).toBeCloseTo(-EMBED, 2);
+        if (f.type === 'boulder') {
+          // Extra tie for boulders: the sample bottomOffset must equal the lowest
+          // vertex of the REALIZED hull record (not just a fresh featureGeometry
+          // call), proving render/collider consume the same points.
           let minHullY = Infinity;
           for (let i = 1; i < r.points.length; i += 3) minHullY = Math.min(minHullY, r.points[i]);
-          let maxSurfaceY = -Infinity;
-          for (const s of featureGeometry(f).supportSamples) {
-            maxSurfaceY = Math.max(maxSurfaceY, downOnto(RAPIER, world, f.x + s.dx, f.z + s.dz, floor));
-          }
-          expect(r.position.y + minHullY).toBeCloseTo(maxSurfaceY - EMBED, 2); // lowest vertex sits embedDepth under the governing support, ±5 mm
+          expect(featureGeometry(f).supportSamples[0].bottomOffset).toBeCloseTo(minHullY, 12);
         }
       }
     } finally {

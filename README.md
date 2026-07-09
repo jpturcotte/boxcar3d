@@ -6,13 +6,15 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, step 1b slice 1. `npm run dev` renders the corridor —
-deterministic heightfield floor with baked craters, physical walls, seeded
-debris. The composite-terrain *data* contract is complete: the sand/mud zone
-map and boulder/ramp/log feature descriptors are generated and tested, but not
-yet realized as colliders or rendered — that lands next (PR #8: static feature
-colliders + collision groups). The design docs in `docs/` define everything
-that comes after.
+**Status:** Phase 1, PR #8 landed. `npm run dev` renders the full composite
+corridor — deterministic heightfield floor with baked craters, physical walls,
+seeded debris, and the sand/mud zone map (add `?zones` to tint it). The
+boulder/ramp/log features are physically real: static Rapier colliders
+(convex-hull boulders, cuboid ramps, capsule logs) seated against the true
+surface via castRay, under a ground/chassis/wheels collision-group scheme, and
+rendered from the same realized poses. Next is PR #9 — the canonical
+1,000-spawn chassis fall-through gate. The design docs in `docs/` define
+everything that comes after.
 
 ## Quickstart
 

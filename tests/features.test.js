@@ -25,33 +25,73 @@ function marsagliaYaw(rng) {
   }
 }
 
-// Unit yaw headings used across tests. cos/sin pairs are exact IEEE values
-// (0, ±1, ±sqrt(0.5)) so expected quaternions are computable by hand from the
-// half-angle identities: w = sqrt((1+cos)/2), y = sign(sin)*sqrt((1-cos)/2).
+// Unit yaw headings used across tests. yawToQuaternion rotates local +X onto
+// the heading (cos, 0, sin) — the invariant the discriminator test below locks.
+// Components follow the half-angle identities with a negated y-term:
+// w = sqrt((1+cos)/2), y = -sign(sin)*sqrt((1-cos)/2).
 const SQRT_HALF = Math.sqrt(0.5);
 
+// Rotate vector v by unit quaternion q: v' = v + 2·q_w·(q×v) + 2·q×(q×v).
+const rotate = (q, v) => {
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+  };
+};
+
 describe('yawToQuaternion (half-angle sqrt identities, no trig)', () => {
-  test('identity yaw {cos:1, sin:0} -> unit quaternion (0,0,0,1)', () => {
-    const q = yawToQuaternion({ cos: 1, sin: 0 });
-    expect(q).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+  // THE load-bearing invariant. The quaternion must rotate local +X onto the
+  // heading (cos, 0, sin), so collider orientation, render mesh, and seating
+  // support samples all agree. A mirrored yaw (y not negated) passes every
+  // unit-norm / component check yet fails HERE — this is the test that catches
+  // the collider-vs-support-sample lateral disagreement on sloped terrain.
+  test('rotates local +X onto the heading (cos, 0, sin) — exact cases + seeded sweep', () => {
+    const cases = [
+      { cos: 1, sin: 0 }, { cos: -1, sin: 0 }, { cos: 0, sin: 1 }, { cos: 0, sin: -1 },
+      { cos: SQRT_HALF, sin: SQRT_HALF }, { cos: 0.6, sin: 0.8 }, { cos: -0.6, sin: 0.8 },
+    ];
+    const rng = new Rng(0xfea70003);
+    for (let i = 0; i < 100; i++) cases.push(marsagliaYaw(rng.fork(i)));
+    for (const yaw of cases) {
+      const h = rotate(yawToQuaternion(yaw), { x: 1, y: 0, z: 0 });
+      expect(h.x).toBeCloseTo(yaw.cos, 12);
+      expect(h.y).toBeCloseTo(0, 12);
+      expect(h.z).toBeCloseTo(yaw.sin, 12);
+    }
   });
 
-  test('90° yaw {cos:0, sin:1} -> (0, sqrt(1/2), 0, sqrt(1/2))', () => {
+  test('identity yaw {cos:1, sin:0} -> unit quaternion (0, ±0, 0, 1)', () => {
+    const q = yawToQuaternion({ cos: 1, sin: 0 });
+    expect(q.x).toBe(0);
+    expect(q.y).toBeCloseTo(0, 15); // ±0 (−sgn(0)·0); both are the identity
+    expect(q.z).toBe(0);
+    expect(q.w).toBe(1);
+  });
+
+  test('90° heading {cos:0, sin:1} -> (0, -sqrt(1/2), 0, sqrt(1/2)): −90° about +Y sends +X to +Z', () => {
     const q = yawToQuaternion({ cos: 0, sin: 1 });
     expect(q.x).toBe(0);
     expect(q.z).toBe(0);
-    expect(q.y).toBeCloseTo(SQRT_HALF, 15);
+    expect(q.y).toBeCloseTo(-SQRT_HALF, 15);
     expect(q.w).toBeCloseTo(SQRT_HALF, 15);
   });
 
-  test('180° yaw {cos:-1, sin:0} takes the sgn(0)=+1 branch -> (0,1,0,0)', () => {
+  test('180° heading {cos:-1, sin:0} takes the sgn(0)=+1 branch -> (0,-1,0,0) ≡ (0,1,0,0) [double cover]', () => {
     const q = yawToQuaternion({ cos: -1, sin: 0 });
-    expect(q).toEqual({ x: 0, y: 1, z: 0, w: 0 });
+    expect(q.x).toBe(0);
+    expect(q.z).toBe(0);
+    expect(q.w).toBeCloseTo(0, 15);
+    expect(Math.abs(q.y)).toBeCloseTo(1, 15); // q and −q are the same rotation
+    expect(rotate(q, { x: 1, y: 0, z: 0 }).x).toBeCloseTo(-1, 12); // and it genuinely faces −X
   });
 
-  test('negative sin flips the y sign: -90° -> (0, -sqrt(1/2), 0, sqrt(1/2))', () => {
+  test('negative sin flips the heading to -Z: {cos:0, sin:-1} -> y = +sqrt(1/2)', () => {
     const q = yawToQuaternion({ cos: 0, sin: -1 });
-    expect(q.y).toBeCloseTo(-SQRT_HALF, 15);
+    expect(q.y).toBeCloseTo(SQRT_HALF, 15);
     expect(q.w).toBeCloseTo(SQRT_HALF, 15);
   });
 
@@ -61,7 +101,7 @@ describe('yawToQuaternion (half-angle sqrt identities, no trig)', () => {
     const q = yawToQuaternion({ cos: 1 + Number.EPSILON, sin: 0 });
     expect(Number.isFinite(q.y)).toBe(true);
     expect(Number.isFinite(q.w)).toBe(true);
-    expect(q.y).toBe(0);
+    expect(q.y).toBeCloseTo(0, 15); // ±0
     expect(quatNorm(q)).toBeCloseTo(1, 12);
   });
 
@@ -89,11 +129,11 @@ describe('quatMultiply', () => {
     expect(quatMultiply(id, q)).toEqual(q);
   });
 
-  test('two 90° yaws compose to the 180° yaw', () => {
+  test('two 90° yaws compose to the 180° yaw (|y|≈1, w≈0; double cover)', () => {
     const q90 = yawToQuaternion({ cos: 0, sin: 1 });
     const q180 = quatMultiply(q90, q90);
     expect(q180.x).toBeCloseTo(0, 15);
-    expect(q180.y).toBeCloseTo(1, 15);
+    expect(Math.abs(q180.y)).toBeCloseTo(1, 15); // ±(0,1,0,0) — same rotation
     expect(q180.z).toBeCloseTo(0, 15);
     expect(q180.w).toBeCloseTo(0, 15);
   });
@@ -123,16 +163,18 @@ describe('featureGeometry: log (capsule laid on its side)', () => {
     expect(g.points).toBeNull();
   });
 
-  test('identity yaw -> pure roll (0, 0, sqrt(1/2), sqrt(1/2)): Y capsule axis onto X', () => {
+  test('identity yaw -> pure roll (0, 0, -sqrt(1/2), sqrt(1/2)): capsule +Y axis onto +X', () => {
     const g = featureGeometry(log());
     expect(g.quat.x).toBe(0);
     expect(g.quat.y).toBeCloseTo(0, 15);
-    expect(g.quat.z).toBeCloseTo(SQRT_HALF, 15);
+    expect(g.quat.z).toBeCloseTo(-SQRT_HALF, 15);
     expect(g.quat.w).toBeCloseTo(SQRT_HALF, 15);
+    // the roll genuinely sends the local +Y capsule axis onto +X:
+    expect(rotate(g.quat, { x: 0, y: 1, z: 0 }).x).toBeCloseTo(1, 12);
   });
 
   test('support samples: center + both axis ends along the yaw heading, bottom = -radius', () => {
-    const yaw = { cos: 0, sin: 1 }; // axis along +Z after yaw
+    const yaw = { cos: 0, sin: 1 };
     const g = featureGeometry(log({ yaw }));
     expect(g.supportSamples).toEqual([
       { dx: 0, dz: 0, bottomOffset: -0.3 },
@@ -140,6 +182,9 @@ describe('featureGeometry: log (capsule laid on its side)', () => {
       { dx: 0, dz: 2.5, bottomOffset: -0.3 },
     ]);
     expect(quatNorm(g.quat)).toBeCloseTo(1, 12);
+    // capsule axis follows +heading (+Z here); it is symmetric, so the ±half
+    // end samples both lie on the axis line either way:
+    expect(rotate(g.quat, { x: 0, y: 1, z: 0 }).z).toBeCloseTo(1, 12);
   });
 });
 
@@ -175,6 +220,24 @@ describe('featureGeometry: ramp (pitched cuboid slab)', () => {
     expect(center.bottomOffset).toBeLessThan(high.bottomOffset);
     // The slab's global minimum offset IS the low-end support: -(hyp/2)sinφ - (t/2)cosφ.
     expect(low.bottomOffset).toBeCloseTo(-(5 / 2) * 0.6 - (0.3 / 2) * 0.8, 15);
+  });
+
+  // Consistency lock (the ramp half of the mirrored-yaw bug): the collider's
+  // rotated length axis (local +X, the raised HIGH end) must point the SAME
+  // horizontal direction as the high-end support sample. If the yaw quaternion
+  // is mirrored, the seating ray samples the terrain on the wrong side of the
+  // slab and mis-seats on any Z-varying ground.
+  test('rotated collider high end and the high-end support sample share a heading', () => {
+    for (const yaw of [{ cos: 0.6, sin: 0.8 }, { cos: -0.6, sin: 0.8 }, { cos: SQRT_HALF, sin: -SQRT_HALF }]) {
+      const g = featureGeometry(ramp({ yaw }));
+      const axis = rotate(g.quat, { x: 1, y: 0, z: 0 }); // local +X = high end
+      const high = g.supportSamples[2];
+      // horizontal parts are parallel and same-signed (dot of unit dirs ≈ 1)
+      const axisLen = Math.sqrt(axis.x * axis.x + axis.z * axis.z);
+      const sampLen = Math.sqrt(high.dx * high.dx + high.dz * high.dz);
+      const dot = (axis.x * high.dx + axis.z * high.dz) / (axisLen * sampLen);
+      expect(dot).toBeCloseTo(1, 6);
+    }
   });
 });
 

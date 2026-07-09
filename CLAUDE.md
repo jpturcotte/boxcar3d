@@ -73,6 +73,11 @@ evidence notes. Reference only; never import from `legacy/`.
 
 ## Current state & next steps (Phase 1)
 
+> **Landing a PR updates two handoffs, not one:** this section AND the README
+> **Status** paragraph. They drift independently — external review caught a
+> stale README on PR #7 and again on PR #8 — so treat "does the README still
+> describe reality?" as part of every PR's done criteria.
+
 Scaffold + corridor floor + composite data contract (`terrain.version` 2)
 verified. **PR #8 landed — the composite terrain is physically real: static
 feature colliders + collision groups + dev-scene rendering:**
@@ -91,7 +96,12 @@ feature colliders + collision groups + dev-scene rendering:**
   version bump.
 - **`src/sim/features.js`** (new, pure, under the ESLint sim ban) — the single
   source of descriptor→geometry: quaternions via half-angle sqrt identities
-  (clamped radicands, `sgn(0)=+1` — no trig module ever), boulder hull points
+  (clamped radicands, `sgn(0)=+1` — no trig module ever) under one convention —
+  `rot(yawToQuaternion(yaw), +X) == (cos, 0, sin)`, so a feature's length/roll
+  axis points along its heading and the collider, render mesh, and seating
+  support samples cannot disagree laterally (locked by a heading discriminator
+  test; a mirrored yaw passes every norm/component check but fails it). Boulder
+  hull points
   from `new Rng(feature.seed).fork(i)` (Marsaglia directions × radial jitter,
   `Math.fround`-quantized once so collider f32 and render mesh share exact
   vertices), per-type `shape` params and `supportSamples` with per-sample

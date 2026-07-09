@@ -5,10 +5,12 @@
 // smootherstep-blends into full terrain, craters baked in as smootherstep
 // depressions, two physical corridor walls sized to the POST-crater bounds,
 // a per-cell firm/sand/mud zone map, and boulder/ramp/log feature descriptors
-// (composite from day one — spec §4 / red-team F13). Realization into a Rapier
-// world lives in physics/adapter.js (the only Rapier seam); this module is
-// pure data, so it runs headless and is trivially testable. Zones and features
-// are data-only until PR #8 (colliders, collision groups, material response).
+// (composite from day one — spec §4 / red-team F13). This module emits pure
+// data only, so it runs headless and is trivially testable; realization into
+// a Rapier world — feature colliders, castRay seating, collision groups —
+// lives in physics/adapter.js (the only Rapier seam), with the descriptor →
+// geometry derivation in features.js. Zone material response (friction/drag/
+// torque per wheel contact) still lands with wheels.
 //
 // Layout convention PROVEN by [V1] (tests/heightfield-layout.test.js):
 //   * COLUMN-MAJOR heights, flat index k = col*(rows+1) + row
@@ -98,7 +100,9 @@ export function zoneAt(x, z, terrain) {
 // height grid via the [V1] convention, clamped into the field. PLACEMENT-grade,
 // not collision-grade — Rapier triangulates each cell, so mid-cell values can
 // deviate slightly from the collider surface (castRay tests use bands). Feature
-// seating/embedding against the true triangle surface is PR #8's job.
+// seating/embedding against the true triangle surface is the adapter's job
+// (addFeatures re-seats every feature by castRay; the descriptor y is never
+// the realized height).
 export function heightAtLocal(x, z, terrain) {
   const { rows, cols, heights, scale } = terrain;
   const fc = Math.min(cols, Math.max(0, (x / scale.x + 0.5) * cols));
@@ -225,14 +229,23 @@ function generateZones(cfg, terrain, zoneSeed) {
   return { rows, cols, materials };
 }
 
-// Feature descriptors from the dedicated 'feat' stream — pure data; colliders
-// and collision groups are PR #8. Count is a pure function of config over the
-// post-envelope area (like craters). Placement margins use each type's MAX
-// half-extent from config (conservative — the drawn dims always fit), so the
-// per-feature draw order stays fixed: type, x, z, yaw, dims, seed. The trailing
-// per-feature seed is PR #8's handle for hull-vertex jitter etc. (boulders are
-// convex hulls per spec §4) without re-deriving streams; new fields append
-// after it. y samples the POST-crater surface — features are generated last.
+// Feature descriptors from the dedicated 'feat' stream — pure data; the
+// adapter realizes them as colliders (convex-hull boulders / cuboid ramps /
+// capsule logs, ground collision group, castRay-seated). Count is a pure
+// function of config over the post-envelope area (like craters). Placement
+// margins use each type's MAX half-extent from config (conservative — the
+// drawn dims always fit), so the per-feature draw order stays fixed: type, x,
+// z, yaw, dims, seed. The trailing per-feature seed feeds hull-vertex jitter
+// (features.js) without re-deriving streams; new fields append after it.
+// y samples the POST-crater surface — features are generated last.
+//
+// Features are placed independently and MAY overlap each other — a deliberate
+// PR #8 ruling: overlapping STATIC colliders coexist without solver drama, a
+// cluster reads as a rock pile, and at default density (~5 features per
+// corridor) overlaps are rare anyway. Deterministic overlap rejection would
+// change which features exist for every shared seed (the locked features
+// fingerprint f3f86cbc); if it is ever wanted, it lands as its own deliberate
+// re-lock + seed-format version bump, never as a drive-by.
 //
 // Yaw is a unit {cos, sin} heading, generated trig-free: Marsaglia disk
 // rejection + Math.sqrt (IEEE-exact; the ESLint trig ban stays intact, and
@@ -398,7 +411,7 @@ export function generateCorridorTerrain(options = {}) {
   // The composite seam (spec §4 / red-team F13), complete as data: `walls`,
   // `craters` (baked into `heights`; descriptors kept as ground truth), `zones`
   // (per-cell material grid), `features` (boulder/ramp/log descriptors —
-  // colliders and collision groups are the NEXT step, PR #8).
+  // realized as seated, grouped colliders by adapter addFeatures).
   // version 2: craters bake into the default heights (same seed, different
   // bytes than v1) and the composite sibling keys land — the seed-format bump
   // the locked-fingerprint rule requires.

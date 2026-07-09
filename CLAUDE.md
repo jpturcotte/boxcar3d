@@ -54,9 +54,11 @@ evidence notes. Reference only; never import from `legacy/`.
 
 ## Architecture map
 
-- `src/sim/` — deterministic core: `prng.js`, `physics/adapter.js` (the only
-  Rapier seam), later: terrain gen, genotype + assembly compiler, GA operators.
-  Must run headless in Node (tests and future CI evolution runs depend on it).
+- `src/sim/` — deterministic core: `prng.js`, `noise.js`, `terrain.js` (pure
+  composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
+  support samples), `physics/adapter.js` (the only Rapier seam: realization,
+  seating, collision groups), later: genotype + assembly compiler, GA
+  operators. Must run headless in Node (tests and CI depend on it).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -64,60 +66,80 @@ evidence notes. Reference only; never import from `legacy/`.
 - `tests/` — `prng.test.js` (locked stream), `physics-smoke.test.js` (both
   Rapier flavors, headless, run-to-run identical), `heightfield-layout.test.js`
   ([V1] layout proof), `noise.test.js` + `terrain.test.js` (locked determinism
-  fingerprints), `terrain-physics.test.js` (provisional floor/wall catch gate).
+  fingerprints), `terrain-physics.test.js` (provisional floor/wall catch gate),
+  `features.test.js` (pure geometry contract + locked hull fingerprint),
+  `feature-physics.test.js` (feature colliders + collision groups, BOTH
+  flavors via `describe.each` × `createPhysics`).
 
 ## Current state & next steps (Phase 1)
 
-Scaffold + corridor floor verified. **Step 1b slice 1 (the pure R2
-composite-terrain data contract) landed — `terrain.version` is now 2:**
+Scaffold + corridor floor + composite data contract (`terrain.version` 2)
+verified. **PR #8 landed — the composite terrain is physically real: static
+feature colliders + collision groups + dev-scene rendering:**
 - **[V1] proven** (`tests/heightfield-layout.test.js`): Rapier heightfield is
   column-major (`k = col*(rows+1)+row`), col j → world +X, row i → world +Z,
   origin-centered, `y = height*scale.y`; `castRay` needs one `world.step()`
   first (hit distance `.timeOfImpact`). Every terrain path relies on this.
-- **`src/sim/noise.js`** — deterministic hash-based 2D value noise (no trig;
-  built on `prng.js` `splitmix32`), locked fingerprint `52f40f90` (unchanged).
-- **`src/sim/terrain.js`** — pure composite generator. Base heightfield (macro
-  fBm + micro roughness, flat start pad) plus, all from dedicated ASCII-tagged
-  `Rng.fork` streams ('crat'/'zone'/'feat', per-item `fork(i)`; the macro/micro
-  integer-mix seed lines are byte-frozen):
-  - **Craters** baked as smootherstep depressions (`craterDepthAt` is the
-    analytic profile; depth = ratio×radius keeps rims drivable; fully inside
-    the corridor, clear of the start envelope; overlaps sum in index order).
-    `terrain.craters` descriptors kept as ground truth. Bounds and walls are
-    sized **after** the bake (a crater can undercut the base minimum).
-  - **Zones** — `terrain.zones`: per-heightfield-cell firm/sand/mud grid
-    (`MATERIALS`, exact-quantile coverage with capped counts, start region
-    forced firm) + `zoneAt(x, z)`, the clamped inverse cell mapping.
-  - **Features** — `terrain.features`: boulder/ramp/log descriptors with
-    trig-free unit `{cos, sin}` yaw (Marsaglia + sqrt; PR #8 builds quaternions
-    via half-angle sqrt identities — no trig module ever), post-crater `y` via
-    the bilinear `heightAtLocal` export, and a trailing per-feature `seed` for
-    PR #8 hull-vertex jitter.
-  - Zones and features are **data only** — no colliders, not rendered yet.
-    Craters show through the rendered heightfield mesh automatically.
-- **Locked fingerprints** (seed 20260708): base field `e2157c82` — pinned via
-  `craterDensity: 0`, the permanent Step-1a byte-identity guard; default-config
-  heights `48177e22`, craters `b9e05cf7`, zones `903a3d5f`, features
-  `f3f86cbc`. Any change is a deliberate re-lock + seed-format version bump.
-- **`tests/terrain-physics.test.js`** — the 20-sphere smoke gate is pinned to
-  `craterDensity: 0` (byte-identical to the terrain its assertions were
-  reviewed against); crater'd ground is covered by the new castRay crater probe
-  (twin heightfields in one world, band assertions) and a crater settle test.
-  Still the provisional gate, default flavor only — **not** the canonical
-  1,000-spawn criterion, which must run both flavors.
-- ESLint determinism ban now also covers `Math.hypot`/`cbrt` (implementation-
-  approximated; `Math.sqrt` is correctly-rounded and stays allowed).
+- **`src/sim/terrain.js`** — pure composite generator, UNCHANGED by PR #8
+  beyond comments (fingerprints prove it): base heightfield (macro fBm + micro
+  roughness, flat start pad; `src/sim/noise.js`, locked `52f40f90`), craters
+  baked as smootherstep depressions, `terrain.zones` firm/sand/mud cell grid +
+  `zoneAt`, `terrain.features` boulder/ramp/log descriptors (trig-free
+  `{cos, sin}` yaw, trailing per-feature `seed`). **Features may overlap each
+  other — deliberate ruling** (clusters read as rock piles; static colliders
+  coexist fine); overlap rejection, if ever wanted, is its own re-lock +
+  version bump.
+- **`src/sim/features.js`** (new, pure, under the ESLint sim ban) — the single
+  source of descriptor→geometry: quaternions via half-angle sqrt identities
+  (clamped radicands, `sgn(0)=+1` — no trig module ever), boulder hull points
+  from `new Rng(feature.seed).fork(i)` (Marsaglia directions × radial jitter,
+  `Math.fround`-quantized once so collider f32 and render mesh share exact
+  vertices), per-type `shape` params and `supportSamples` with per-sample
+  `bottomOffset` (ramp sign table locked by an ordering test: pitch +φ about
+  Z, local +X uphill, low end faces −yaw). Geometry knobs
+  (`boulderVertexCount`/`boulderJitterRange`/`rampThickness`) validated
+  fail-loud.
+- **`src/sim/physics/adapter.js`** — collision groups defined once:
+  `GROUP_GROUND 0x0001` / `GROUP_CHASSIS 0x0002` / `GROUP_WHEEL 0x0004`,
+  unsigned `packGroups`, policy constants `GROUND_GROUPS`/`CHASSIS_GROUPS`/
+  `WHEEL_GROUPS` (+ documented ghost-vehicle matrix for PR #9 — chassis/wheels
+  filter GROUND only; primitives `addHeightfield`/`addStaticBox` stay
+  group-free). `addFeatures(RAPIER, world, terrain, floor, options)`: validates
+  every knob (`embedDepth`/`friction`/`restitution` + geometry pass-through)
+  BEFORE its single statics-only `world.step()` ([V1] BVH), then seats each
+  feature on its HIGHEST castRay support sample (floor-handle predicate — never
+  walls or other features) embedded by `embedDepth`, and builds convexHull /
+  cuboid / capsule colliders; a degenerate hull throws the F16 diagnosis.
+  `addCorridorWithFeatures` = corridor + features; returns realized records
+  `{feature, collider, position, rotation, points, shape}` — render MUST use
+  these (the seated pose does not exist in `terrain.features`).
+- **`src/main.js`** — renders seated features from the realized records
+  (ConvexGeometry from the same hull points / Box / Capsule), plus a zone
+  debug overlay behind the repo's first dev flag (`?zones` URL param).
+  Verified live: everything seated, ramp low edges face the start line.
+- **Locked fingerprints** (seed 20260708): base field `e2157c82` (permanent
+  Step-1a byte-identity guard via `craterDensity: 0`); default-config heights
+  `48177e22`, craters `b9e05cf7`, zones `903a3d5f`, features `f3f86cbc` — all
+  five UNCHANGED by PR #8; new: boulder hull points `06f5fca4`
+  (`tests/features.test.js`). Any change is a deliberate re-lock + seed-format
+  version bump.
+- **`tests/feature-physics.test.js`** — BOTH Rapier flavors
+  (`describe.each` × `createPhysics`): group wiring readback, no-burial /
+  tight-seating castRay bounds, presence bands, blocked-drop proof on an
+  isolated boulder, solver group matrix (positive, fall-through negative,
+  ghost-ghost coexistence, filterGroups query arg, ungrouped-legacy), realized
+  poses run-to-run identical per flavor, adapter knob negatives. The 20-sphere
+  gate in `terrain-physics.test.js` is untouched (still the provisional gate,
+  default flavor only — **not** the canonical 1,000-spawn criterion).
 - `npm run lint && npm test && npm run build` all green; the Rapier init
   deprecation warning is still cosmetic — ignore.
 
 Next, in order (details in phase0-refresh §6 + spec §7):
-1. **PR #8 — realize the features:** boulder (convex hull seeded by the
-   per-feature `seed`) / ramp (cuboid) / log (capsule) colliders through the
-   adapter seam, collision groups (0x0001 ground, 0x0002 chassis, 0x0004
-   wheels), render zones + features. 2. Chassis drop tests — the canonical
-   1,000-spawn fall-through gate (Phase 0 success #1), run on both Rapier
-   flavors, superseding the provisional 20-sphere smoke gate. 3. Assembly
-   compiler + repair pass (spec §3). 4. Axle modules S0 → S1 → S2, each behind
-   its own test gate; zone material response (friction/drag/torque per
-   `zoneAt` sample) lands with wheels. 5. Worker sharding with the
-   1-vs-4-workers equality test.
+1. **PR #9 — chassis drop tests:** the canonical 1,000-spawn fall-through gate
+   (Phase 0 success #1) over the full composite terrain (features realized),
+   run on both Rapier flavors, superseding the provisional 20-sphere smoke
+   gate; chassis bodies use `CHASSIS_GROUPS` + CCD. 2. Assembly compiler +
+   repair pass (spec §3). 3. Axle modules S0 → S1 → S2, each behind its own
+   test gate; zone material response (friction/drag/torque per `zoneAt`
+   sample) lands with wheels, using `WHEEL_GROUPS`. 4. Worker sharding with
+   the 1-vs-4-workers equality test.

@@ -74,10 +74,11 @@ export const SOFT_CCD_PREDICTION = 1;
 // Per-body additional solver iterations for vehicle chassis (spec §2:
 // evolved assemblies multiply joints, and the chassis is the explosion-prone
 // body; phase0-refresh [V2]). Rapier applies the extra iterations to the body
-// AND everything interacting with it through contacts or joints, so PR #11's
-// wheels inherit the budget via the chassis joint island — wheels don't set
-// it separately. 4 additional passes (~2× the solver default) is the
-// standard articulated-body guidance and costs one body's worth per vehicle.
+// AND everything interacting with it through contacts or joints, so the S0
+// wheels inherit the budget via the chassis joint island — realizeS0Vehicle
+// deliberately does NOT set it per wheel body. 4 additional passes (~2× the
+// solver default) is the standard articulated-body guidance and costs one
+// body's worth per vehicle.
 // [V2] VERIFIED locally (2026-07-09) against the installed 0.19.3 typings of
 // BOTH flavors: RigidBodyDesc.setAdditionalSolverIterations(iters) is
 // chainable and RigidBody.additionalSolverIterations() reads it back
@@ -347,4 +348,267 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
     throw err;
   }
   return { body, colliders };
+}
+
+// --- S0 wheel/joint/motor kernel (spec §3.2/§3.4) --------------------------
+//
+// One dynamic cylinder body per IR wheel, one chassis-to-wheel revolute joint
+// on the lateral axis, native joint motors — the only sanctioned drive path
+// (never setAngvel / direct impulses / pose writes; movement is joint-motor
+// causality or nothing).
+//
+// MOTOR RULING (measured, tests/s0-motor.test.js): Rapier's motor "factor" is
+// a velocity-servo GAIN, not a torque — raw law: torque = factor × (targetVel
+// − ω). The realizer derives the gain from the IR torque,
+//     gain = driveTorque / |targetAngvel|
+// so stall torque = gain × |targetAngvel| = driveTorque EXACTLY and the
+// torque–speed law is τ = driveTorque × (1 − ω/targetAngvel): driveTorque is
+// a literal stall-torque budget, falling linearly to zero at the target
+// speed, and thrust stays proportional to each wheel's share of the global
+// power budget. ForceBased is required for that reading: on an airborne
+// bench, the same driveTorque on wheels of 5.06× inertia produced a 4.86×
+// first-step spin ratio under ForceBased (a real torque) but 1.000 under
+// AccelerationBased (the solver normalizes effective inertia away — its
+// factor is NOT a torque, and wheel size would silently rescale thrust).
+// Resolved per flavor from RAPIER.MotorModel by NAME — a bare numeric would
+// couple this policy to the enum's current representation, and a Rapier bump
+// that drops/renames the member must fail loud, never silently re-map.
+export const S0_MOTOR_MODEL_NAME = 'ForceBased';
+
+// Signed motor target (rad/s) about the local +Z axle. NEGATIVE spins wheels
+// for +X travel: with the axle along +Z, the contact-point velocity is +ωR·x̂,
+// so forward needs ω < 0 (locked by the sign test in tests/s0-motor.test.js:
+// target −10 → dx +9.47 m, target +10 → the mirror). Magnitude is the legacy
+// SALVAGE default (~10 rad/s wheel target). This is the no-load speed; by the
+// gain conversion above, changing it does NOT rescale stall torque.
+export const MOTOR_TARGET_ANGVEL = -10;
+
+// Firm-baseline wheel-contact friction. Explicit because it is load-bearing
+// for traction: Rapier's silent collider default is 0.5, and the corridor
+// floor ships friction 1 (TERRAIN_DEFAULTS.floorFriction) — the witness teeth
+// are calibrated against this pairing. Zone-dependent friction (sand/mud) is
+// deferred to its own PR and will modulate per contact, not this constant.
+export const WHEEL_FRICTION = 1;
+
+// Rapier cylinders extend along LOCAL Y; the vehicle axle is local +Z. This
+// +90°-about-X quaternion (trig-free: half-angle of 90° has cos = sin = √.5)
+// maps the cylinder onto the axle and is applied to the COLLIDER ONLY. The
+// wheel RIGID BODY keeps the chassis' base rotation — Rapier's revolute axis
+// is ONE vector interpreted in EACH body's local frame, so the two hinge
+// frames agree in world space only while the bodies share a base orientation
+// (they do, by construction, at any spawn rotation).
+export const WHEEL_COLLIDER_ROTATION = Object.freeze({ x: Math.sqrt(0.5), y: 0, z: 0, w: Math.sqrt(0.5) });
+
+// The revolute (hinge/drive) axis: vehicle-local lateral +Z, same meaning in
+// the chassis and wheel frames because their base rotations are identical.
+export const REVOLUTE_AXIS = Object.freeze({ x: 0, y: 0, z: 1 });
+
+// Rotate v by unit quaternion q — the standard t = 2 q×v expansion (mul/add
+// only; sim-ban-safe). Callers guarantee q is unit (realizeS0Vehicle
+// validates spawn rotations to 1e-6).
+function rotateByQuat(q, v) {
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+  };
+}
+
+// Pure pose math for every wheel a compiled IR emits — no RAPIER, no state.
+// The chassis-local wheel center is {axle.posX, axle.mountY, wheel.z}; its
+// world center is the spawn translation plus that local point rotated by the
+// spawn quaternion. The local point doubles as the chassis-side joint anchor
+// (the wheel-side anchor is the wheel body's own origin). Exported so tests
+// prove the transform exactly and realizeS0Vehicle provably uses the same
+// numbers. Assumes a validated IR and a unit rotation; validation lives in
+// realizeS0Vehicle.
+export function s0WheelTransforms(ir, { position = { x: 0, y: 0, z: 0 }, rotation = { x: 0, y: 0, z: 0, w: 1 } } = {}) {
+  const out = [];
+  ir.axles.forEach((axle, axleIndex) => {
+    axle.wheels.forEach((wheel, wheelIndex) => {
+      const local = { x: axle.posX, y: axle.mountY, z: wheel.z };
+      const r = rotateByQuat(rotation, local);
+      out.push({
+        axleIndex,
+        wheelIndex,
+        local,
+        world: { x: position.x + r.x, y: position.y + r.y, z: position.z + r.z },
+      });
+    });
+  });
+  return out;
+}
+
+// Realize a compiled all-S0 assembly IR: the chassis (via realizeChassis)
+// plus one wheel body + revolute joint (+ motor when driven) per IR wheel.
+// The name states the supported suspension level — this is NOT a general
+// realizeVehicle; S1/S2 dispatch does not exist yet.
+//
+// Contract (mirrors realizeChassis, extended to a multi-body transaction):
+//   1. ALL validation runs before the world is touched. S1/S2 axles are
+//      rejected HERE — never in repair/compile, where they stay legal IR data
+//      (the 24cd0dd5 corpus lock and the every-suspension-type assertion
+//      depend on it) — so an S1/S2 module can never silently realize as a
+//      rigid axle.
+//   2. A failure after partial construction removes every joint and body this
+//      call created (joints first, reverse order, then wheel bodies, then the
+//      chassis) — world body/collider/joint counts provably unchanged.
+//   3. Wheel bodies carry WHEEL_GROUPS + dual CCD, the SAME base rotation as
+//      the chassis (the hinge-frame contract above), and the SAME spawn
+//      linvel (a chassis spawned moving with wheels at rest is step-0 joint
+//      violence). They do NOT get additional solver iterations — the chassis
+//      carries the joint-island budget ([V2] note at the constant).
+//   4. Driven wheels with driveTorque > 0 get the ForceBased motor with the
+//      documented gain conversion. Undriven or zero-torque wheels get no
+//      motor configuration at all — a driven wheel CAN legally carry
+//      driveTorque 0 (power gene 0, or a zero share), and a gain-0 motor is
+//      behaviorally identical to no motor at every speed, so skipping it is
+//      an equivalence, not a deviation from "driven ⇒ motor".
+//
+// Returns { chassis: { body, colliders }, wheels: [{ axleIndex, wheelIndex,
+// body, collider, joint, irWheel }] }. A zero-axle IR realizes chassis-only
+// with wheels: [] (the legal sled); zero driven wheels realize free-rolling.
+export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
+  const {
+    position = { x: 0, y: 0, z: 0 },
+    rotation = { x: 0, y: 0, z: 0, w: 1 },
+    linvel = { x: 0, y: 0, z: 0 },
+    targetAngvel = MOTOR_TARGET_ANGVEL,
+    wheelFriction = WHEEL_FRICTION,
+  } = options;
+
+  // --- Validation: everything before the world is touched -------------------
+  if (!ir || ir.version !== 1 || !Array.isArray(ir.axles)) {
+    throw new Error('realizeS0Vehicle: malformed IR (need version 1 and an axles array)');
+  }
+  // Resolve the motor model by name, fail-loud (the [V2] convention for
+  // Rapier bumps): a missing member means the motor API changed and the S0
+  // ruling must be re-verified, never silently re-mapped.
+  const motorModel = RAPIER.MotorModel ? RAPIER.MotorModel[S0_MOTOR_MODEL_NAME] : undefined;
+  if (typeof motorModel !== 'number') {
+    throw new Error(`realizeS0Vehicle: RAPIER.MotorModel.${S0_MOTOR_MODEL_NAME} is missing — re-verify the S0 motor ruling against this Rapier build`);
+  }
+  let anyMotor = false;
+  ir.axles.forEach((axle, i) => {
+    if (!axle || !Number.isFinite(axle.posX) || !Number.isFinite(axle.mountY)) {
+      throw new Error(`realizeS0Vehicle: axles[${i}] needs finite posX and mountY`);
+    }
+    const type = axle.suspension && axle.suspension.type;
+    if (type !== 'S0') {
+      throw new Error(`realizeS0Vehicle: axles[${i}].suspension.type '${String(type)}' — the S0 kernel realizes only S0; S1/S2 stay legal IR data and need their own realizer`);
+    }
+    if (!Array.isArray(axle.wheels) || axle.wheels.length === 0) {
+      throw new Error(`realizeS0Vehicle: axles[${i}].wheels must be a non-empty array`);
+    }
+    axle.wheels.forEach((w, j) => {
+      const at = `axles[${i}].wheels[${j}]`;
+      if (!w) throw new Error(`realizeS0Vehicle: ${at} is missing`);
+      for (const k of ['radius', 'width', 'density', 'mass']) {
+        if (!Number.isFinite(w[k]) || !(w[k] > 0)) {
+          throw new Error(`realizeS0Vehicle: ${at}.${k} must be a finite number > 0 (${String(w[k])})`);
+        }
+      }
+      if (!Number.isFinite(w.z)) throw new Error(`realizeS0Vehicle: ${at}.z must be finite (${String(w.z)})`);
+      if (typeof w.driven !== 'boolean') throw new Error(`realizeS0Vehicle: ${at}.driven must be a boolean (${String(w.driven)})`);
+      if (!Number.isFinite(w.driveTorque) || w.driveTorque < 0) {
+        throw new Error(`realizeS0Vehicle: ${at}.driveTorque must be a finite number >= 0 (${String(w.driveTorque)})`);
+      }
+      // The IR computes mass = π r² w ρ exactly (assembly.js wheelOf); a
+      // disagreement means hand-edited IR data whose density and mass would
+      // realize different physics than the schema promised.
+      const derived = Math.PI * w.radius * w.radius * w.width * w.density;
+      if (Math.abs(w.mass - derived) > 1e-9 * Math.max(1, w.mass)) {
+        throw new Error(`realizeS0Vehicle: ${at}.mass ${w.mass} disagrees with π·r²·width·density = ${derived}`);
+      }
+      if (w.driven && w.driveTorque > 0) anyMotor = true;
+    });
+  });
+  if (!finiteVec(position) || !finiteVec(linvel) || !finiteVec(rotation) || !Number.isFinite(rotation.w)) {
+    throw new Error('realizeS0Vehicle: non-finite spawn pose');
+  }
+  // Stricter than realizeChassis: wheel centers are computed by rotating
+  // local points with this quaternion, so a non-unit value would silently
+  // misplace every wheel relative to Rapier's internally normalized use.
+  const norm2 = rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z + rotation.w * rotation.w;
+  if (Math.abs(norm2 - 1) > 1e-6) {
+    throw new Error(`realizeS0Vehicle: spawn rotation must be a unit quaternion (|q|² = ${norm2})`);
+  }
+  if (!Number.isFinite(targetAngvel)) {
+    throw new Error(`realizeS0Vehicle: targetAngvel must be finite (${String(targetAngvel)})`);
+  }
+  // The gain conversion divides by |targetAngvel| — a zero-target motor
+  // request is rejected loud, never divided. A fully undriven IR accepts any
+  // finite target (nothing consumes it).
+  if (anyMotor && targetAngvel === 0) {
+    throw new Error('realizeS0Vehicle: targetAngvel 0 with driven wheels — the gain conversion needs a nonzero no-load speed');
+  }
+  if (!Number.isFinite(wheelFriction) || wheelFriction < 0) {
+    throw new Error(`realizeS0Vehicle: wheelFriction must be a finite number >= 0 (${String(wheelFriction)})`);
+  }
+
+  // --- Construction (transactional) -----------------------------------------
+  const placements = s0WheelTransforms(ir, { position, rotation });
+  const chassis = realizeChassis(RAPIER, world, ir, { position, rotation, linvel });
+  const wheels = [];
+  const createdBodies = [];
+  const createdJoints = [];
+  try {
+    for (const p of placements) {
+      const w = ir.axles[p.axleIndex].wheels[p.wheelIndex];
+      const body = world.createRigidBody(
+        RAPIER.RigidBodyDesc.dynamic()
+          .setTranslation(p.world.x, p.world.y, p.world.z)
+          .setRotation(rotation) // base rotation = chassis base rotation (hinge-frame contract)
+          .setLinvel(linvel.x, linvel.y, linvel.z)
+          .setCcdEnabled(true)
+          .setSoftCcdPrediction(SOFT_CCD_PREDICTION)
+      );
+      createdBodies.push(body);
+      const collider = world.createCollider(
+        RAPIER.ColliderDesc.cylinder(w.width / 2, w.radius) // Rapier wants the HALF-height
+          .setRotation(WHEEL_COLLIDER_ROTATION)
+          .setDensity(w.density)
+          .setFriction(wheelFriction)
+          .setCollisionGroups(WHEEL_GROUPS),
+        body
+      );
+      // Post-create sanity, fail-loud (the realizeChassis pattern). The 1e-3
+      // relative band vs the IR mass covers the collider's f32 storage.
+      const m = body.mass();
+      if (!Number.isFinite(m) || !(m > 0)) {
+        throw new Error(`realizeS0Vehicle: wheel mass ${m} is not finite and positive`);
+      }
+      if (Math.abs(m - w.mass) > 1e-3 * Math.max(1, w.mass)) {
+        throw new Error(`realizeS0Vehicle: realized wheel mass ${m} drifted from IR mass ${w.mass}`);
+      }
+      const inv = body.invPrincipalInertia();
+      if (![inv.x, inv.y, inv.z].every(Number.isFinite)) {
+        throw new Error('realizeS0Vehicle: non-finite wheel inertia');
+      }
+      const joint = world.createImpulseJoint(
+        RAPIER.JointData.revolute(p.local, { x: 0, y: 0, z: 0 }, REVOLUTE_AXIS),
+        chassis.body,
+        body,
+        true
+      );
+      createdJoints.push(joint);
+      if (w.driven && w.driveTorque > 0) {
+        joint.configureMotorModel(motorModel);
+        // stall torque = gain × |targetAngvel| = driveTorque (the ruling)
+        joint.configureMotorVelocity(targetAngvel, w.driveTorque / Math.abs(targetAngvel));
+      }
+      wheels.push({ axleIndex: p.axleIndex, wheelIndex: p.wheelIndex, body, collider, joint, irWheel: w });
+    }
+  } catch (err) {
+    // Unwind everything this call created: joints first (reverse), then
+    // wheel bodies (their colliders go with them), then the chassis.
+    for (let i = createdJoints.length - 1; i >= 0; i--) world.removeImpulseJoint(createdJoints[i], false);
+    for (let i = createdBodies.length - 1; i >= 0; i--) world.removeRigidBody(createdBodies[i]);
+    world.removeRigidBody(chassis.body);
+    throw err;
+  }
+  return { chassis, wheels };
 }

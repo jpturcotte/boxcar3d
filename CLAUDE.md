@@ -58,7 +58,8 @@ evidence notes. Reference only; never import from `legacy/`.
   composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
   support samples), `assembly.js` (the genome contract: genotype schema +
   compiler + repair v0), `physics/adapter.js` (the only Rapier seam:
-  realization, seating, collision groups, chassis), later: GA operators.
+  realization, seating, collision groups, chassis, the S0 wheel/joint/motor
+  kernel), later: GA operators.
   Must run headless in Node (tests and CI depend on it).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
@@ -75,7 +76,13 @@ evidence notes. Reference only; never import from `legacy/`.
   `assembly.test.js` (genome contract: repair identity/idempotence/
   no-mutation, per-rule corrections, symmetry, two locked fingerprints),
   `assembly-physics.test.js` (compiled chassis on the composite terrain,
-  both flavors, policy readback + negative teeth).
+  both flavors, policy readback + negative teeth), `s0-motor.test.js` (the
+  motor-model ruling at the raw Rapier level: inertia discriminator,
+  torque/target/speed teeth, sign lock, solver-pump finding),
+  `s0-kernel.test.js` (realizeS0Vehicle's creation-time contract: pure pose
+  math, readbacks, the S1/S2 gate, Proxy-induced transactional-cleanup
+  teeth, legal edge shapes), `s0-drive.test.js` (the forward-drive witness
+  on the declared flat-pad terrain + the residual-overlap witness).
 
 ## Current state & next steps (Phase 1)
 
@@ -298,54 +305,103 @@ ruled-out inputs now fail loud:**
 - [V2]/[V4] recorded in phase0-refresh's verification queue ([V4] = signature
   resolved; parameter ranges still bind at S1).
 
-Next — **narrowed by maintainer ruling, July 2026, which supersedes the
-older single-PR S0→S1→S2 plan.** THIS section is the live sequence; the
-phase0-refresh §6 "kickoff checklist" is a superseded July-2026 snapshot
-(its banner maps each step to what has since landed) — read it for the
-original rationale, not as the order of work. Design detail is in spec §7.
-1. **The S0 kernel ONLY** (spec §3.2): one dynamic cylinder body per IR
-   wheel; one chassis-to-wheel revolute joint per wheel on the lateral axis;
-   `WHEEL_GROUPS` + dual CCD (`setCcdEnabled(true)` AND
-   `setSoftCcdPrediction(SOFT_CCD_PREDICTION)`) on every wheel body; driven
-   wheels via `configureMotorVelocity` with the IR's precomputed
-   `driveTorque` as the factor; REALIZATION-TIME pre-world validation
-   rejects any axle whose `suspension.type !== 'S0'` — S1/S2 modules must
-   never silently realize as rigid axles. (Rejection lives in the wheel
-   realizer, NEVER in repair/compile: `SUSPENSION_TYPES` stays
-   `['S0','S1','S2']`, and the 24cd0dd5 corpus lock plus the
-   every-suspension-type corpus assertion require S1/S2 to stay legal as IR
-   data.) Transactional cleanup — a failed realization removes every joint
-   and body it created, world counts unchanged. Both Rapier flavors tested,
-   plus a driven-vs-undriven forward-drive witness on a DECLARED witness
-   terrain with a raised `startFlatLength`. **Measured fact:** at the locked
-   seed and defaults the pad is exactly flat for only `startFlatLength = 4`
-   m (`heightAtLocal` spans exactly 0 over the first 4 m at seed 20260708),
-   then the 6 m blend — too short a runway for a drive-distance witness; a
-   witness terrain with its own declared seed and a longer flat pad touches
-   NO locked default-config fingerprint. **Verified Rapier 0.19.3 facts for
-   that session** (checked against the installed rapier3d-compat typings):
-   `ColliderDesc.cylinder(halfHeight, radius)` — the cylinder axis is LOCAL
-   Y and halfHeight is a HALF-height, so IR wheel width w maps to w/2; the
-   Y→lateral-Z wheel rotation is the +90°-about-X quaternion
-   `(Math.sqrt(0.5), 0, 0, Math.sqrt(0.5))` — expressible under the sim trig
-   ban; `JointData.revolute(anchor1, anchor2, axis)` takes body-LOCAL
-   anchors and axis — prefer UNROTATED wheel bodies with the rotation
-   applied to the collider only, so axis `(0, 0, 1)` means the same thing in
-   both bodies' local frames; `configureMotorVelocity(targetVel, factor)`
-   exists AND `configureMotorModel(model)` exists — the MotorModel choice
-   (AccelerationBased vs ForceBased) decides whether `driveTorque` acts as a
-   true torque limit: a MANDATORY pre-code question for the S0 PR, with a
-   teeth test (same vehicle, doubled chassis mass, same driveTorque, expect
-   lower acceleration); `configureMotorPosition(targetPos, stiffness,
-   damping)` and `setLimits(min, max)` exist verbatim — [V4] signature
-   resolved (recorded in phase0-refresh), for the S1 PR.
-2. **Explicitly deferred — NOT in the S0 kernel:** zone material response
-   (its own later PR; `zoneAt(x, z, terrain)` is ready), the
-   suspension-parameter-range re-lock (binds to `configureMotorPosition` in
-   the S1 PR), the S1/S2 suspension modules themselves, GA operators (spec
-   §3.3: module-exchange crossover, structural vs parametric mutation) + the
-   population seeder (symmetry default-on bias lives there), worker sharding
-   with the 1-vs-4-workers equality test, and the full replay-determinism
-   criterion. Still owed from PR #10's review: revisit whether
-   visually-overlapping wheels (the repair cap's accepted residual) are
-   acceptable for evolution even though physics ignores them.
+**The S0 kernel PR landed — the mechanism proof (spec §3.2/§3.4): a
+repaired, all-S0 assembly IR realizes through Rapier's native
+cylinder/revolute/joint-motor path and propels a canonical vehicle toward
+world +X on declared flat terrain. Movement is joint-motor causality only —
+nothing anywhere calls setAngvel, applies impulses/forces, or writes poses
+after creation:**
+- **`realizeS0Vehicle(RAPIER, world, ir, {position, rotation, linvel,
+  targetAngvel, wheelFriction})`** (adapter) — one dynamic cylinder body per
+  IR wheel (`ColliderDesc.cylinder(width/2, radius)`), one chassis-to-wheel
+  revolute per wheel (`JointData.revolute(chassisLocalCenter, origin,
+  REVOLUTE_AXIS)`), `WHEEL_GROUPS` + dual CCD on every wheel body, NO
+  per-wheel solver iterations (the chassis carries the joint-island budget).
+  ALL validation is pre-world (axle/wheel domains, mass-vs-πr²wρ
+  consistency, unit spawn quaternion to 1e-6, finite options); S1/S2 axles
+  are rejected HERE — never in repair/compile (`SUSPENSION_TYPES` stays
+  `['S0','S1','S2']`; the 24cd0dd5 corpus lock and the every-suspension-type
+  assertion keep them legal as IR data). Transactional cleanup: a failure
+  after partial construction removes every created joint (reverse order),
+  every wheel body, then the chassis — counts provably unchanged
+  (Proxy-induced mid-construction throws in `tests/s0-kernel.test.js`).
+  Zero-axle IRs realize chassis-only sleds; zero-driven realize free-rolling.
+- **The pose/hinge-frame contract (supersedes the earlier "prefer UNROTATED
+  wheel bodies" advice, which was correct only at identity spawn):** Rapier's
+  revolute takes ONE axis vector interpreted in EACH body's local frame, so
+  the hinge frames agree in world space only while the bodies share a base
+  orientation. Therefore: wheel body base rotation = chassis spawn rotation
+  (every spawn), the +90°-about-X `WHEEL_COLLIDER_ROTATION`
+  `(√.5, 0, 0, √.5)` is applied to the COLLIDER only, chassis-local wheel
+  center = `{axle.posX, axle.mountY, wheel.z}` (exported pure math:
+  `s0WheelTransforms`), anchors = that local center / wheel origin, axis
+  `REVOLUTE_AXIS (0,0,1)` in both aligned frames. Validated at yaw-90:
+  creation anchor error ~4e-8 (f32 scale — readback tolerances must scale
+  with |coordinate|), ≤ 7.2e-3 over 600 driven steps.
+- **The motor ruling (measured; `tests/s0-motor.test.js`): ForceBased +
+  gain conversion.** Rapier's motor factor is a velocity-servo GAIN (no
+  JS-reachable max-force exists in 0.19.3), so the adapter derives
+  `gain = driveTorque / |targetAngvel|` ⇒ stall torque = driveTorque EXACTLY
+  and τ = driveTorque × (1 − ω/targetAngvel), zero at the target (no-load)
+  speed. Airborne discriminator: same driveTorque on wheels of 5.06× inertia
+  → first-step ω ratio 4.86 under ForceBased (a real torque) vs 1.000 under
+  AccelerationBased (inertia normalized away — REJECTED; its factor is not a
+  torque and wheel size would silently rescale thrust; note it is NOT
+  mass-insensitive at the vehicle level, where traction dynamics dominate —
+  the airborne rig is the discriminator). Teeth: torque doubling ×1.905,
+  target-speed invariance ±4%, α at half-target 0.523× (theory 0.5), vehicle
+  mass tooth 2.20× at 3.4× mass, T-vs-2T dx ratio 1.80. Policy constants:
+  `S0_MOTOR_MODEL_NAME = 'ForceBased'` (symbolic, resolved per flavor,
+  fail-loud if missing), `MOTOR_TARGET_ANGVEL = -10` rad/s (NEGATIVE about
+  local +Z drives +X — contact-point kinematics, locked by the sign test;
+  magnitude is the SALVAGE legacy default), `WHEEL_FRICTION = 1` (explicit —
+  Rapier's silent default is 0.5). `targetAngvel === 0` with any motorized
+  wheel is rejected pre-world (the conversion never divides by zero).
+- **The forward-drive witness** (`tests/s0-drive.test.js`, both flavors):
+  declared terrain seed 20260713, `startFlatLength: 80` (pad x ∈ [−60, +20],
+  exactly-zero elevation), craters/features/zones off per knob, default
+  amplitudes KEPT (real terrain beyond the pad; NO locked fingerprint
+  involved). Canonical repair-stable 2-paired-axle vehicle: driven +19.4 m
+  over 600 steps vs undriven −0.06 m; reversed target (+10, via the
+  `targetAngvel` option, spawned at x = 0 — the corridor x-ends are OPEN)
+  drives −19.2 m; |dz| ≤ 0.18; gain semantics through the shipped path
+  (target −5 vs −10: vx@15 within 0.2%, cruise cap halves; power-gene
+  doubling: vx@15 ×1.92). Residual-overlap witness: the R5 cap case (axle
+  spacing 0.195 m < combined radii 1.0 m) realizes, 300 steps finite, no
+  detach/explosion — whether visually-overlapping wheels are acceptable for
+  EVOLUTION is still the open schema-ruling question from PR #10's review.
+- **Findings for later PRs:** (1) solver-pump drift — an awake free-rolling
+  jointed vehicle under the chassis `ADDITIONAL_SOLVER_ITERATIONS` policy
+  self-accelerates to ~0.33 m/s on a flat cuboid and never sleeps (sign and
+  magnitude shift with contact rounding; soft CCD irrelevant; without the
+  extra iterations it settles); the motor teeth settle behind a parking
+  brake (native motor path, target 0) — GA fitness must not assume an
+  undriven vehicle holds still on cuboid ground (on the heightfield pad the
+  witness undriven twin DID sleep at rest). (2) Mixed-radius wheels under
+  the single shared `MOTOR_TARGET_ANGVEL` fight each other (disagreeing
+  no-load surface speeds — the dev scene's old fork(9) pick cannot move);
+  thrust/weight under ~6% stalls on the start-blend grade at gravity 20.
+  The dev scene now drives a declared hand-built all-S0 build (~23%
+  thrust/weight) ~46 m into the composite terrain, wheels rendered from the
+  same IR dims and synced as body rotation × `WHEEL_COLLIDER_ROTATION`.
+- All 254 tests green both flavors; every locked fingerprint byte-identical
+  (terrain paths untouched; assembly.js changes comment-only).
+
+Next — **the S1 PR: vertical spring-damper suspension** (spec §3.2's S1,
+via `configureMotorPosition(targetPos, stiffness, damping)` + `setLimits` on
+a prismatic joint — [V4] signature verified, recorded in phase0-refresh).
+It re-locks the PROVISIONAL suspension parameter ranges in
+`GENE_RANGES` (stiffness/damping/travel/restLength) when they bind to real
+physics — an expected corpus re-lock, documented in assembly.js. The S0
+kernel's realizer stays S0-only; S1 adds its own realizer or dispatch, and
+the S0 gate teeth in `tests/s0-kernel.test.js` keep S1/S2 from silently
+realizing as rigid axles until then.
+**Explicitly deferred beyond S1:** zone material response (its own later
+PR; `zoneAt(x, z, terrain)` is ready), S2 trailing arms, GA operators (spec
+§3.3: module-exchange crossover, structural vs parametric mutation) + the
+population seeder (symmetry default-on bias lives there), worker sharding
+with the 1-vs-4-workers equality test, and the full replay-determinism
+criterion. Open ruling question carried from PR #10 review (now with a
+measured witness): are visually-overlapping wheels acceptable for
+evolution? Physics ignores them (collision-inert, stable, no detach), but
+they read as one thick wheel on screen.

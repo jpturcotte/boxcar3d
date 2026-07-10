@@ -2,9 +2,10 @@
 //
 // Genotype -> repaired assembly IR, per the PR #10 schema ruling (the genome
 // contract: locked by fingerprint, versioned like the terrain seed format).
-// Realization of the chassis lives in physics/adapter.js (realizeChassis);
-// axle modules are decoded/bounded/snapped/repaired here as IR DATA ONLY —
-// S0 physical realization is PR #11.
+// Realization lives in physics/adapter.js — realizeChassis for the frame,
+// realizeS0Vehicle for the S0 wheel/joint/motor kernel; axle modules are
+// decoded/bounded/snapped/repaired here as IR DATA ONLY (S1/S2 realize in
+// their own later PRs).
 //
 // Contract headline: DOMAIN validation fails loud; PHYSICAL invalidity
 // repairs. A non-finite / out-of-[0,1] gene, wrong version, or wrong
@@ -88,7 +89,7 @@ export const GENE_RANGES = Object.freeze({
   wheelRadius: Object.freeze([0.2, 0.7]), // m — SALVAGE g*0.5+0.2 verbatim
   wheelWidth: Object.freeze([0.1, 0.5]), // m
   wheelDensity: Object.freeze([100, 1200]), // kg/m³ ([2,80] kg feasible for every r,w)
-  stiffness: Object.freeze([2000, 50000]), // N/m — provisional until PR #11 binds S1/S2
+  stiffness: Object.freeze([2000, 50000]), // N/m — provisional until the S1 PR binds S1/S2
   damping: Object.freeze([0, 5000]), // N·s/m — provisional
   travel: Object.freeze([0, 0.4]), // m — provisional
   restLength: Object.freeze([0.05, 0.5]), // m — provisional
@@ -515,7 +516,8 @@ function buildIR(repaired, cfg) {
   const symmetric = boolGene(repaired.symmetric);
   const P = affine(repaired.power, GENE_RANGES.power);
 
-  // Axle records (IR data only; PR #11 realizes). Symmetry gates the asym
+  // Axle records (IR data only; the adapter's S0 realizer consumes them,
+  // S1/S2 stay data until their PRs). Symmetry gates the asym
   // genes at BUILD time — the stored genes are never overwritten, so a later
   // symmetry flip re-expresses them (count-stable, non-destructive).
   const axles = repaired.axles.map((a, index) => {
@@ -547,7 +549,7 @@ function buildIR(repaired, cfg) {
     return {
       index,
       posX: a.posX01 * frame.span - frame.span / 2, // anchor ∈ [-span/2, +span/2] by construction
-      mountY: 0, // explicit so PR #11 can move the anchor without a schema change
+      mountY: 0, // explicit so the S1 PR can move the anchor without a schema change
       kind: paired ? 'paired' : 'single',
       trackHalf: paired ? trackHalf : null,
       centerOffset: paired ? null : centerOffset,

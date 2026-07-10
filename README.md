@@ -6,25 +6,29 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, PR #10 landed. The assembly compiler + repair pass v0
-turns `[0,1]` genotypes into physically sane vehicles: three frame families
-(spine, ladder, convex hull), default-on bilateral symmetry with asymmetry
-still expressible, axle modules carried as data, and a deterministic,
-exactly-idempotent repair pass — domain-invalid genotypes fail loud,
-physically invalid ones are clamped, separated, and re-seated. Compiled
-chassis realize as single dynamic bodies carrying the collision-group,
-dual-CCD, and per-body solver-iteration policy, and a both-flavors physics
-gate proves they stay caught by the composite terrain (with negatives
-proving the gate's teeth). The genome contract is locked by two fingerprints
-(corpus `24cd0dd5`, chassis geometry `39bcd6c4`). `npm run dev` drops one
-compiled, hue-tinted ladder chassis at the start line (add `?zones` to tint
-the zone map). A pre-S0 hardening pass makes every terrain config knob fail
-loud (programmatic domain sweep; seeds are canonical uint32), bans `Date`
-from simulation code, and puts the dev-scene debris on the dual-CCD policy —
-all locked fingerprints untouched. Next is S0: real cylinder wheels on rigid
-revolute joints, a deliberately narrow kernel; S1/S2 suspension, zone
-material response, and the GA land in their own later PRs. The design docs
-in `docs/` define everything that comes after.
+**Status:** Phase 1, the S0 kernel landed — vehicles drive. A repaired,
+all-S0 assembly IR now realizes through Rapier's native path: one dynamic
+cylinder body per wheel, one chassis-to-wheel revolute joint on the lateral
+axis, and real joint motors (`realizeS0Vehicle` in the adapter — validation
+all before world mutation, S1/S2 axles rejected at realization while staying
+legal IR data, transactional cleanup proven by induced mid-construction
+failures). The motor ruling is measured, not assumed: ForceBased with a gain
+conversion (`gain = driveTorque / |targetAngvel|`) so `driveTorque` is a
+literal stall-torque budget falling linearly to zero at the target speed —
+an airborne discriminator shows AccelerationBased normalizes wheel inertia
+away (ω ratio 1.000 vs the physical 4.86) and is rejected. Wheel bodies
+share the chassis' base rotation (Rapier's revolute axis is interpreted in
+each body's local frame) with the Y→Z rotation on the collider only, so the
+kernel works at any spawn yaw. A both-flavors forward-drive witness on a
+declared 80 m flat-pad terrain proves the mechanism: driven +19.4 m in 10 s,
+undriven twin stays put, reversed target drives −X; the R5 residual-overlap
+case realizes and stays stable. `npm run dev` now drives a declared all-S0
+vehicle ~46 m into the composite corridor, cylinder wheels rendered from the
+same IR dims the colliders use (add `?zones` to tint the zone map). All
+locked fingerprints byte-identical. Next is S1 vertical spring-damper
+suspension (re-locking the provisional suspension gene ranges); zone
+material response, S2, and the GA land in their own later PRs. The design
+docs in `docs/` define everything that comes after.
 
 ## Quickstart
 

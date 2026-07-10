@@ -336,8 +336,10 @@ after creation:**
   center = `{axle.posX, axle.mountY, wheel.z}` (exported pure math:
   `s0WheelTransforms`), anchors = that local center / wheel origin, axis
   `REVOLUTE_AXIS (0,0,1)` in both aligned frames. Validated at yaw-90:
-  creation anchor error ~4e-8 (f32 scale — readback tolerances must scale
-  with |coordinate|), ≤ 7.2e-3 over 600 driven steps.
+  creation anchor error ~1.5e-6 at the |x|≈45 spawn (f32 scale — one ULP
+  there is ~3.8e-6, so readback tolerances MUST scale with |coordinate|;
+  the ~4e-8 figure is the identity spawn at small coords, not yaw-90),
+  ≤ 7.2e-3 over 600 driven steps.
 - **The motor ruling (measured; `tests/s0-motor.test.js`): ForceBased +
   gain conversion.** Rapier's motor factor is a velocity-servo GAIN (no
   JS-reachable max-force exists in 0.19.3), so the adapter derives

@@ -49,6 +49,7 @@ import {
 } from '../src/sim/physics/adapter.js';
 import { generateCorridorTerrain } from '../src/sim/terrain.js';
 import { compileAssembly, repairGenotype } from '../src/sim/assembly.js';
+import { rotateVector } from './rotate-oracle.js';
 
 const WITNESS_SEED = 20260713; // declared; distinct from every other repo seed
 const WITNESS_CONFIG = Object.freeze({
@@ -69,7 +70,8 @@ const TUNNEL_Y = -50;
 const terrain = generateCorridorTerrain(WITNESS_CONFIG);
 
 // The canonical all-S0 genotype (shared shape with tests/s0-kernel.test.js;
-// repair-stable, asserted there).
+// repair-stability of the default is asserted below — the witness distances
+// only mean "these declared genes drove this far" if repair is a no-op).
 function canonicalS0Genotype({ driven = 1, power = 0.5 } = {}) {
   const node = () => ({ gap: 0.5, height: 0.5, halfWidth: 0.5, thickness: 0.5 });
   const axle = (posX01) => ({
@@ -92,16 +94,10 @@ function canonicalS0Genotype({ driven = 1, power = 0.5 } = {}) {
   };
 }
 
-function rotate(q, v) {
-  const tx = 2 * (q.y * v.z - q.z * v.y);
-  const ty = 2 * (q.z * v.x - q.x * v.z);
-  const tz = 2 * (q.x * v.y - q.y * v.x);
-  return {
-    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
-    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
-    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
-  };
-}
+// Independent quaternion sandwich oracle (see tests/rotate-oracle.js) — a
+// different formula from the adapter's expansion, so the anchor-error check
+// below is a genuine cross-check, not a copy of the code under test.
+const rotate = rotateVector;
 
 // Realize `ir` close to the pad surface (placed, not dropped) and run a fixed
 // step count while tracking anchor error, wheel lows, and peak speed.
@@ -163,6 +159,14 @@ async function witnessRun(deterministic, ir, { x, steps = STEPS, targetAngvel } 
     world.free();
   }
 }
+
+// Repair-stability of the witness fixture (pure, flavor-independent — outside
+// describe.each). The witness distances only mean "these declared genes drove
+// this far" if repair is a no-op on them.
+test('the witness fixture is repair-stable: its genes ARE the phenotype', () => {
+  const g = canonicalS0Genotype();
+  expect(repairGenotype(g)).toEqual(g);
+});
 
 describe.each([
   [false, 'default flavor'],
@@ -237,6 +241,10 @@ describe.each([
     expect(run.finite, diag).toBe(true);
     expect(run.maxAnchorErr, diag).toBeLessThan(ANCHOR_BAND); // no joint detach (measured 3.4e-3)
     expect(run.maxSpeed, diag).toBeLessThan(5); // no explosion (measured 0.11)
+    // Guard the floor ray before the tunneling band (the sibling test's idiom):
+    // without this, a null floorY coerces `null - 0.5` to -0.5 and the assert
+    // silently degrades to `minBodyY > -0.5` instead of failing loud.
+    expect(run.floorY, diag).not.toBeNull();
     expect(run.minBodyY, diag).toBeGreaterThan(run.floorY - 0.5); // nothing tunnels
   });
 });

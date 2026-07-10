@@ -113,6 +113,14 @@ const clamp01 = (v) => Math.min(1, Math.max(0, v));
 // instead of oscillating between two one-sided clamps.
 const fusedClamp = (g, lo, hi) => Math.min(hi, Math.max(g, Math.min(lo, hi)));
 
+// Solid-cylinder wheel mass — the ONE source for π·r²·w·ρ. wheelOf stores it
+// in the IR; the S0 realizer re-checks the stored mass against this to catch
+// hand-edited IR data (adapter.js realizeS0Vehicle). Single-sourced so the
+// two sites cannot silently diverge if the formula is ever revised — and the
+// realizer's guard still catches a tampered `mass` field, since only the
+// stored value (not the recomputed one) is corrupted there.
+export const wheelMass = (radius, width, density) => Math.PI * radius * radius * width * density;
+
 // --- Domain validation (fail-loud layer) -----------------------------------
 
 function fail(path, value) {
@@ -535,7 +543,7 @@ function buildIR(repaired, cfg) {
       radius,
       width: w,
       density: rho,
-      mass: Math.PI * radius * radius * w * rho,
+      mass: wheelMass(radius, w, rho),
       driven,
       shareFrac, // module share × side split; torque filled after Σ below
       driveTorque: 0,

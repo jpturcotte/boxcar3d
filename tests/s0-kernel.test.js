@@ -28,6 +28,7 @@ import {
   s0WheelTransforms,
 } from '../src/sim/physics/adapter.js';
 import { SUSPENSION_TYPES, compileAssembly, repairGenotype } from '../src/sim/assembly.js';
+import { rotateVector } from './rotate-oracle.js';
 
 // The canonical all-S0 fixture: the assembly.test.js validGenotype with
 // suspType 0 (S0) — chosen so NO repair rule bites (proven below), so the
@@ -73,18 +74,11 @@ function canonicalS0Genotype(overrides = {}) {
 
 const canonicalIR = () => compileAssembly(canonicalS0Genotype());
 
-// Local trig-free quaternion rotate (the adapter helper is private; this is
-// the same t = 2 q×v expansion, used to verify the exported transform).
-function rotate(q, v) {
-  const tx = 2 * (q.y * v.z - q.z * v.y);
-  const ty = 2 * (q.z * v.x - q.x * v.z);
-  const tz = 2 * (q.x * v.y - q.y * v.x);
-  return {
-    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
-    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
-    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
-  };
-}
+// The oracle is `rotateVector` (tests/rotate-oracle.js): the quaternion
+// sandwich, a DIFFERENT formula from the adapter's 2·q×v expansion, so a
+// sign/ordering slip in the kernel cannot hide by corrupting the oracle in
+// lockstep. Aliased to `rotate` at the existing call sites.
+const rotate = rotateVector;
 
 const YAW_90 = { x: 0, y: Math.sqrt(0.5), z: 0, w: Math.sqrt(0.5) }; // +90° about Y, trig-free
 const IDENTITY = { x: 0, y: 0, z: 0, w: 1 };

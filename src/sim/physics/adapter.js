@@ -18,6 +18,7 @@
 //   world.dispose()
 
 import { featureGeometry } from '../features.js';
+import { wheelMass } from '../assembly.js';
 
 export const FIXED_DT = 1 / 60;
 
@@ -516,10 +517,11 @@ export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
       if (!Number.isFinite(w.driveTorque) || w.driveTorque < 0) {
         throw new Error(`realizeS0Vehicle: ${at}.driveTorque must be a finite number >= 0 (${String(w.driveTorque)})`);
       }
-      // The IR computes mass = π r² w ρ exactly (assembly.js wheelOf); a
+      // The IR computes mass via assembly.js's wheelMass (the ONE π·r²·w·ρ
+      // source, shared so this guard can never drift from the formula); a
       // disagreement means hand-edited IR data whose density and mass would
       // realize different physics than the schema promised.
-      const derived = Math.PI * w.radius * w.radius * w.width * w.density;
+      const derived = wheelMass(w.radius, w.width, w.density);
       if (Math.abs(w.mass - derived) > 1e-9 * Math.max(1, w.mass)) {
         throw new Error(`realizeS0Vehicle: ${at}.mass ${w.mass} disagrees with π·r²·width·density = ${derived}`);
       }
@@ -575,8 +577,12 @@ export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
           .setCollisionGroups(WHEEL_GROUPS),
         body
       );
-      // Post-create sanity, fail-loud (the realizeChassis pattern). The 1e-3
-      // relative band vs the IR mass covers the collider's f32 storage.
+      // Post-create sanity, fail-loud — deliberately mirrors realizeChassis's
+      // guard (defense in depth). For a pre-validated cylinder it cannot fire
+      // today (Rapier derives the same density·π·r²·width, f32-bounded well
+      // under 1e-3), but the same-shaped guard on the chassis DOES catch the
+      // coplanar-hull zero-volume case, so the symmetry is kept, not dead
+      // code to prune. The 1e-3 relative band vs the IR mass covers f32.
       const m = body.mass();
       if (!Number.isFinite(m) || !(m > 0)) {
         throw new Error(`realizeS0Vehicle: wheel mass ${m} is not finite and positive`);

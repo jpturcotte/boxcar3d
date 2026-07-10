@@ -150,9 +150,17 @@ export function validateGenotype(genotype) {
   });
   const fam = seg.fam;
   if (typeof fam !== 'object' || fam === null) fail('fam', fam);
-  checkGene(fam.spine && fam.spine.beamWidthFrac, 'fam.spine.beamWidthFrac');
-  checkGene(fam.ladder && fam.ladder.crossFrac, 'fam.ladder.crossFrac');
-  checkGene(fam.hull && fam.hull.bulge, 'fam.hull.bulge');
+  // Explicit object checks per block: a falsy-but-valid-gene value
+  // (fam.spine = 0) would slip through a `fam.spine && fam.spine.gene`
+  // truthiness chain AS the gene 0, then clone to undefined and surface as
+  // NaN geometry — exactly the operator-bug class this layer exists to stop
+  // at the door (external review finding, PR #10).
+  if (typeof fam.spine !== 'object' || fam.spine === null) fail('fam.spine', fam.spine);
+  if (typeof fam.ladder !== 'object' || fam.ladder === null) fail('fam.ladder', fam.ladder);
+  if (typeof fam.hull !== 'object' || fam.hull === null) fail('fam.hull', fam.hull);
+  checkGene(fam.spine.beamWidthFrac, 'fam.spine.beamWidthFrac');
+  checkGene(fam.ladder.crossFrac, 'fam.ladder.crossFrac');
+  checkGene(fam.hull.bulge, 'fam.hull.bulge');
   if (!Array.isArray(genotype.axles)) fail('axles', genotype.axles);
   genotype.axles.forEach((a, i) => {
     if (typeof a !== 'object' || a === null) fail(`axles[${i}]`, a);

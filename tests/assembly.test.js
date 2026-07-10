@@ -474,6 +474,17 @@ describe('fail-loud negatives (domain-invalid throws; physical invalidity repair
       [(g) => { delete g.axles[0].radius; }, /radius/],
       [(g) => { delete g.axles[0].asym; }, /asym/],
       [(g) => { g.axles[0].asym.sizeBias = 2; }, /sizeBias/],
+      // Malformed family blocks — the truthy-chain hole (external review):
+      // 0 is falsy AND a valid gene value, so `fam.spine && fam.spine.gene`
+      // would evaluate to 0 and pass checkGene. Each non-object shape must
+      // throw with the block's own path, never validate as a gene.
+      [(g) => { g.frame.segments[0].fam = 0; }, /fam/],
+      [(g) => { g.frame.segments[0].fam.spine = 0; }, /fam\.spine/],
+      [(g) => { g.frame.segments[0].fam.spine = null; }, /fam\.spine/],
+      [(g) => { g.frame.segments[0].fam.spine = 'spine'; }, /fam\.spine/],
+      [(g) => { g.frame.segments[0].fam.spine = [0.5]; }, /beamWidthFrac/], // array passes typeof, gene lookup fails
+      [(g) => { g.frame.segments[0].fam.ladder = 0; }, /fam\.ladder/],
+      [(g) => { g.frame.segments[0].fam.hull = 0; }, /fam\.hull/],
     ];
     for (const [mutate, pattern] of cases) {
       const g = validGenotype();

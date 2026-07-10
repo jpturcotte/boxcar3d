@@ -198,7 +198,7 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   discipline; ≥2 nodes at distinct x ⇒ never degenerate from a valid
   genotype). Axles: variable-length module list (cap `maxAxles` 6 ⇒ ≤12
   wheels, the O1 default; corpus pinned to defaults), decoded/bounded/
-  snapped/repaired as **IR data only** — S0 realization is PR #11. Symmetry:
+  snapped/repaired as **IR data only** — S0 realization is the S0 kernel PR. Symmetry:
   core gene, neutral 0.5 decoder (default-on is the future population
   seeder's bias, NOT the decoder), expanded at build: paired modules mirror
   exactly, singles snap to centerline; flips are count-stable; the per-module

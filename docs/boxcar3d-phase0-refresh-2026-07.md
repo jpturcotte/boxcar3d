@@ -165,6 +165,13 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 
 ## 6. Phase 1 kickoff checklist (ordered)
 
+> **HISTORICAL — superseded snapshot (this is the July-2026 kickoff plan, not the current order of work).** The live sequence is CLAUDE.md's "Next" section. Reconciliation against what has since landed:
+> - **Steps 1–5 — done** (PRs #6–#11): scaffold + composite terrain + static feature colliders + the canonical 1,000-spawn chassis fall-through gate all landed. Note two rulings that overtook the original text: the physics backend is **Rapier only** (Cannon was deleted, ruling D4 — the `engine: cannon|rapier` flag is gone), and hard CCD on chassis bodies proved **inert against the heightfield** (PR #9), so the policy is **dual CCD** (`setCcdEnabled` + `setSoftCcdPrediction`), not "enable CCD".
+> - **Step 6 — Backend R dropped from scope** (ruling D3/O3: the ray-cast vehicle controller is out of scope). Only **Backend J** (joint-based vehicles) proceeds; there is no A/B harness.
+> - **Step 7 — done** (PR #10): the assembly compiler + repair pass v0 landed the genotype schema and IR; the "25-gene legacy → extended schema" framing is superseded by the schema in that PR.
+> - **Step 8 — full replay/determinism closure is DEFERRED** by the current ruling (the S0 kernel PR ships only a driven-vs-undriven forward-drive witness; the bit-exact-across-runs criterion lands later).
+> - **Current next: the narrow S0 kernel**, then S1. See CLAUDE.md's "Next".
+
 1. Scaffold the new single-file skeleton: import map (§2.1), async boot, `PhysicsAdapter` with `{engine: cannon|rapier}` × `{vehicles: joints|raycast}` flags.
 2. Port the test framework first (standing project rule) and wire `world.profilerEnabled` timings into the metrics schema.
 3. Heightfield terrain + **[V1]** known-peak layout test + safety plane at y = −50; enable CCD on chassis bodies.

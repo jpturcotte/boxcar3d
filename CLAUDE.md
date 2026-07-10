@@ -298,8 +298,11 @@ ruled-out inputs now fail loud:**
 - [V2]/[V4] recorded in phase0-refresh's verification queue ([V4] = signature
   resolved; parameter ranges still bind at S1).
 
-Next (details in phase0-refresh §6 + spec §7) — **narrowed by maintainer
-ruling, July 2026, which supersedes the older single-PR S0→S1→S2 plan:**
+Next — **narrowed by maintainer ruling, July 2026, which supersedes the
+older single-PR S0→S1→S2 plan.** THIS section is the live sequence; the
+phase0-refresh §6 "kickoff checklist" is a superseded July-2026 snapshot
+(its banner maps each step to what has since landed) — read it for the
+original rationale, not as the order of work. Design detail is in spec §7.
 1. **The S0 kernel ONLY** (spec §3.2): one dynamic cylinder body per IR
    wheel; one chassis-to-wheel revolute joint per wheel on the lateral axis;
    `WHEEL_GROUPS` + dual CCD (`setCcdEnabled(true)` AND

@@ -478,6 +478,10 @@ describe('frame families compile to valid IR', () => {
       expect(ir.chassis.massEstimate).toBeLessThanOrEqual(ASSEMBLY_RULES.chassisMass[1] + 1e-9);
       expect(ir.chassis.supports.minFace).toBeGreaterThanOrEqual(ASSEMBLY_RULES.minPartHalfExtent);
       expect(ir.chassis.supports.reach).toBeGreaterThan(ir.chassis.supports.minFace);
+      // Precision note: clearBound derives from the f64 gene-decoded frame
+      // height, but emitted hull-family points are Math.fround-quantized and
+      // can sit up to half an f32 ulp (~1.5e-8 m) above that height — below
+      // Rapier's own f32 numeric floor, and far inside the 1e-9 slack below.
       const clearBound = maxHalfHeightOf(repaired) + ASSEMBLY_RULES.clearance;
       for (const ax of ir.axles) {
         for (const w of ax.wheels) {
@@ -594,10 +598,10 @@ describe('fail-loud negatives (domain-invalid throws; physical invalidity repair
 
   test('every options knob validates fail-loud', () => {
     const g = validGenotype();
-    for (const corridorHalfWidth of [0, -1, NaN, 0.4]) {
+    for (const corridorHalfWidth of [0, -1, NaN, 0.4, Infinity, -Infinity]) {
       expect(() => compileAssembly(g, { corridorHalfWidth })).toThrow(/corridorHalfWidth/);
     }
-    for (const maxAxles of [-1, 1.5, NaN]) {
+    for (const maxAxles of [-1, 1.5, NaN, Infinity, -Infinity]) {
       expect(() => compileAssembly(g, { maxAxles })).toThrow(/maxAxles/);
     }
   });

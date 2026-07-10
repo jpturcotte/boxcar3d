@@ -18,8 +18,13 @@ gate proves they stay caught by the composite terrain (with negatives
 proving the gate's teeth). The genome contract is locked by two fingerprints
 (corpus `24cd0dd5`, chassis geometry `39bcd6c4`). `npm run dev` drops one
 compiled, hue-tinted ladder chassis at the start line (add `?zones` to tint
-the zone map). Next is S0: real cylinder wheels on rigid revolute joints.
-The design docs in `docs/` define everything that comes after.
+the zone map). A pre-S0 hardening pass makes every terrain config knob fail
+loud (programmatic domain sweep; seeds are canonical uint32), bans `Date`
+from simulation code, and puts the dev-scene debris on the dual-CCD policy —
+all locked fingerprints untouched. Next is S0: real cylinder wheels on rigid
+revolute joints, a deliberately narrow kernel; S1/S2 suspension, zone
+material response, and the GA land in their own later PRs. The design docs
+in `docs/` define everything that comes after.
 
 ## Quickstart
 

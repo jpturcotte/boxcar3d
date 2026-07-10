@@ -10,7 +10,7 @@
 
 import * as THREE from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
-import { createPhysics, addCorridorWithFeatures, realizeChassis, FIXED_DT } from './sim/physics/adapter.js';
+import { createPhysics, addCorridorWithFeatures, realizeChassis, FIXED_DT, SOFT_CCD_PREDICTION } from './sim/physics/adapter.js';
 import { MATERIALS, generateCorridorTerrain, indexToLocalXZ } from './sim/terrain.js';
 import { compileAssembly, randomGenotype } from './sim/assembly.js';
 import { Rng } from './sim/prng.js';
@@ -210,8 +210,15 @@ async function boot() {
     const z = s.range(-terrain.scale.z / 2 + 2, terrain.scale.z / 2 - 2);
     const y = s.range(7, 12);
     const size = s.range(0.3, 0.7);
+    // Dual-CCD policy covers EVERY dynamic body, dev debris included: hard
+    // CCD alone is inert against the heightfield (the PR #9 finding), and a
+    // 12 m drop into the deepest crater reaches ~23 m/s — the tunneling
+    // threshold.
     const body = world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z).setCcdEnabled(true)
+      RAPIER.RigidBodyDesc.dynamic()
+        .setTranslation(x, y, z)
+        .setCcdEnabled(true)
+        .setSoftCcdPrediction(SOFT_CCD_PREDICTION)
     );
     world.createCollider(RAPIER.ColliderDesc.cuboid(size, size, size), body);
     const mesh = new THREE.Mesh(

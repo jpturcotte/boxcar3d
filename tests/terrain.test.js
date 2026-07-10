@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt,
-  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal,
+  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal, TERRAIN_DEFAULTS, MAX_TERRAIN_VERTICES,
 } from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
@@ -568,6 +568,145 @@ describe('corridor terrain generator (pure, deterministic)', () => {
 
     test('default config is accepted', () => {
       expect(() => generateCorridorTerrain({ seed: 1 })).not.toThrow();
+    });
+
+    // ---- Programmatic scalar-knob domain sweep (pre-S0 hardening) ----
+    // NaN passes every `x < 0` / `!(x > 0)` comparison, and +Infinity passes
+    // `!(x > 0)` — the bug class the frequency block fixed once. This sweep
+    // enumerates the scalar knobs of TERRAIN_DEFAULTS programmatically so a
+    // future knob is swept automatically: a knob without a SCALAR_DOMAINS
+    // entry fails the set-equality test below until one is added.
+    //
+    // Domains (each knob's documented contract):
+    //   positive        finite and > 0
+    //   nonNegative     finite and >= 0 (0 legal — craterDensity 0 is the
+    //                   Step-1a byte-identity guard, featureDensity 0 legal)
+    //   unitInterval    finite within [0, 1] inclusive (coverages; restitution
+    //                   matches the adapter's feature-collider domain)
+    //   finite          any finite sign (amps: negative mirrors the noise)
+    //   uint32          integer within [0, 0xffffffff] — canonical seed form
+    //                   BY RULING: the PRNG canonicalizes with >>> 0 but
+    //                   terrain.seed stores the input verbatim, so -1 or 2^32
+    //                   would alias another world under a different identifier
+    //   positiveInteger integer >= 1 (octaves — diagnosed downstream by
+    //                   fbm2D's own guard, deliberately propagated)
+    // `pattern` overrides the default knob-name message match where the
+    // diagnostic names knobs jointly or comes from fbm2D.
+    const SCALAR_DOMAINS = {
+      seed: { domain: 'uint32' },
+      length: { domain: 'positive', pattern: /length and width/ },
+      width: { domain: 'positive', pattern: /length and width/ },
+      cellSize: { domain: 'positive', pattern: /cellSize must be/ },
+      startFlatLength: { domain: 'nonNegative', pattern: /start lengths/ },
+      startBlendLength: { domain: 'nonNegative', pattern: /start lengths/ },
+      macroAmp: { domain: 'finite' },
+      macroFrequency: { domain: 'positive' },
+      macroOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      microAmp: { domain: 'finite' },
+      microFrequency: { domain: 'positive' },
+      microOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      wallClearance: { domain: 'nonNegative', pattern: /wallClearance and wallEmbed/ },
+      wallEmbed: { domain: 'nonNegative', pattern: /wallClearance and wallEmbed/ },
+      wallThickness: { domain: 'positive' },
+      wallRestitution: { domain: 'unitInterval' },
+      wallFriction: { domain: 'nonNegative' },
+      floorFriction: { domain: 'nonNegative' },
+      craterDensity: { domain: 'nonNegative' },
+      zoneFrequency: { domain: 'positive' },
+      zoneOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      sandCoverage: { domain: 'unitInterval' },
+      mudCoverage: { domain: 'unitInterval' },
+      featureDensity: { domain: 'nonNegative' },
+    };
+
+    // Rejected values per domain (NaN/±Infinity always) and values that must
+    // stay legal. Legality probes are single-knob-safe only: sandCoverage 1
+    // alone trips the sum-with-default-mud check, so coverage-1 legality lives
+    // in the dedicated zones test above, not here.
+    const BAD_VALUES = {
+      positive: [0, -1],
+      nonNegative: [-1],
+      unitInterval: [-1, 1.5],
+      finite: [],
+      uint32: [-1, 1.5, 2 ** 32],
+      positiveInteger: [0, -1, 1.5],
+    };
+    const LEGAL_VALUES = {
+      positive: [],
+      nonNegative: [0],
+      unitInterval: [0],
+      finite: [0, -1],
+      uint32: [0, 0xffffffff],
+      positiveInteger: [],
+    };
+
+    test('TERRAIN_DEFAULTS is DEEP-frozen: root and every nested array/object (the public-contract claim)', () => {
+      // A shallow Object.freeze would leave the nested range arrays and the
+      // featureTypeWeights object mutable through the exported reference — a
+      // consumer could rewrite process-wide defaults. Lock the deep freeze.
+      expect(Object.isFrozen(TERRAIN_DEFAULTS)).toBe(true);
+      for (const [key, value] of Object.entries(TERRAIN_DEFAULTS)) {
+        if (value !== null && typeof value === 'object') {
+          expect(Object.isFrozen(value), `TERRAIN_DEFAULTS.${key} must be frozen`).toBe(true);
+        }
+      }
+    });
+
+    test('SCALAR_DOMAINS covers exactly the scalar numeric knobs of TERRAIN_DEFAULTS (add a domain entry when adding a knob)', () => {
+      const scalarKnobs = Object.keys(TERRAIN_DEFAULTS)
+        .filter((key) => typeof TERRAIN_DEFAULTS[key] === 'number')
+        .sort();
+      expect(Object.keys(SCALAR_DOMAINS).sort()).toEqual(scalarKnobs);
+    });
+
+    test('every scalar knob rejects NaN and ±Infinity plus its domain violations, with a named diagnostic', () => {
+      for (const [knob, { domain, pattern }] of Object.entries(SCALAR_DOMAINS)) {
+        const re = pattern || new RegExp(knob);
+        for (const bad of [NaN, Infinity, -Infinity, ...BAD_VALUES[domain]]) {
+          expect(() => generateCorridorTerrain({ seed: 1, [knob]: bad }), `${knob} = ${bad}`).toThrow(re);
+        }
+        for (const legal of LEGAL_VALUES[domain]) {
+          expect(() => generateCorridorTerrain({ seed: 1, [knob]: legal }), `${knob} = ${legal}`).not.toThrow();
+        }
+      }
+    });
+
+    test('seed is a canonical uint32: NaN must fail loud, never silently generate the seed-0 world', () => {
+      // Before this guard, seed NaN reached `seed >>> 0` and produced heights
+      // byte-identical to seed 0 while terrain.seed recorded NaN.
+      expect(() => generateCorridorTerrain({ seed: NaN })).toThrow(/seed/);
+    });
+
+    // ---- Resource-budget ceiling on the heightfield (external-review blocker) ----
+    // Finite-but-degenerate dimensions passed every scalar-knob check yet
+    // still exploded the Float32Array allocation (a tiny cellSize -> a raw
+    // "Invalid typed array length" RangeError; a huge length -> "Array buffer
+    // allocation failed") or silently over-allocated (an in-bounds-per-axis
+    // pair whose PRODUCT is enormous built a multi-MB grid with no complaint).
+    // MAX_TERRAIN_VERTICES turns all of those into one named diagnostic.
+    test('rejects finite grids over MAX_TERRAIN_VERTICES: tiny cellSize, huge dimension, or over-budget product', () => {
+      // Tiny cellSize: rows/cols explode past the per-axis arm.
+      expect(() => generateCorridorTerrain({ seed: 1, cellSize: 1e-9 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      // Huge single dimension (finite).
+      expect(() => generateCorridorTerrain({ seed: 1, length: 1e12 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      expect(() => generateCorridorTerrain({ seed: 1, width: 1e12 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      // Each dimension is modest (3000 < the ceiling) but the product is not:
+      // 3001*3001 ≈ 9.0M > 4.19M. This case BUILT silently before the guard.
+      expect(() => generateCorridorTerrain({ seed: 1, length: 3000, width: 3000 })).toThrow(/MAX_TERRAIN_VERTICES/);
+    });
+
+    test('accepts a grid exactly at MAX_TERRAIN_VERTICES, rejects one cell past it', () => {
+      // A 1-row corridor pins the vertex count to 2*(cols+1); length picks cols.
+      // startFlatLength = length (blend 0) makes the whole corridor flat pad, so
+      // this near-ceiling grid generates cheaply (no noise eval, no craters,
+      // empty zone set) — the boundary check without a heavy build.
+      const colsAt = MAX_TERRAIN_VERTICES / 2 - 1; // 2*(colsAt+1) === MAX
+      const atLimit = { seed: 1, width: 1, cellSize: 1, length: colsAt, startFlatLength: colsAt, startBlendLength: 0 };
+      expect(() => generateCorridorTerrain(atLimit)).not.toThrow();
+      const over = generateCorridorTerrain(atLimit); // exactly at the ceiling
+      expect((over.rows + 1) * (over.cols + 1)).toBe(MAX_TERRAIN_VERTICES);
+      // One more cell of length tips the vertex count past the ceiling.
+      expect(() => generateCorridorTerrain({ seed: 1, width: 1, cellSize: 1, length: colsAt + 1 })).toThrow(/MAX_TERRAIN_VERTICES/);
     });
   });
 });

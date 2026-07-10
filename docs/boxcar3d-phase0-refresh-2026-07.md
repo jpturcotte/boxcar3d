@@ -105,7 +105,7 @@ All of these landed after our 0.11.2 pin and directly serve the 50-vehicles-at-6
 | `linearDamping` / `angularDamping` | `setLinearDamping` / `setAngularDamping` |
 | `PointToPointConstraint` (wheel attach) | dual joints per wheel: `JointData.revolute` (axle+motor) + `JointData.prismatic` (suspension) — per original plan |
 | motor hack: `wheel.angularVelocity.set(...)` | `revolute.configureMotorVelocity(targetVel, factor)` — a real torque-limited motor |
-| suspension spring (didn't exist) | prismatic `configureMotorPosition(target, stiffness, damping)` + `setLimits(min,max)` → **[V4]** confirm signature |
+| suspension spring (didn't exist) | prismatic `configureMotorPosition(target, stiffness, damping)` + `setLimits(min,max)` → **[V4]** signature confirmed (ranges bind at S1) |
 | reads: `body.position/quaternion` | `rb.translation()` / `rb.rotation()` (copy into THREE.Vector3/Quaternion each frame) |
 | contact detection (collide events) | colliders opt in via `ActiveEvents.COLLISION_EVENTS`; drain `EventQueue` after each step |
 
@@ -165,6 +165,13 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 
 ## 6. Phase 1 kickoff checklist (ordered)
 
+> **HISTORICAL — superseded snapshot (this is the July-2026 kickoff plan, not the current order of work).** The live sequence is CLAUDE.md's "Next" section. Reconciliation against what has since landed:
+> - **Steps 1–5 — done** (PRs #6–#11): scaffold + composite terrain + static feature colliders + the canonical 1,000-spawn chassis fall-through gate all landed. Note two rulings that overtook the original text: the physics backend is **Rapier only** (Cannon was deleted, ruling D4 — the `engine: cannon|rapier` flag is gone), and hard CCD on chassis bodies proved **inert against the heightfield** (PR #9), so the policy is **dual CCD** (`setCcdEnabled` + `setSoftCcdPrediction`), not "enable CCD".
+> - **Step 6 — Backend R dropped from scope** (ruling D3/O3: the ray-cast vehicle controller is out of scope). Only **Backend J** (joint-based vehicles) proceeds; there is no A/B harness.
+> - **Step 7 — done** (PR #10): the assembly compiler + repair pass v0 landed the genotype schema and IR; the "25-gene legacy → extended schema" framing is superseded by the schema in that PR.
+> - **Step 8 — full replay/determinism closure is DEFERRED** by the current ruling (the S0 kernel PR ships only a driven-vs-undriven forward-drive witness; the bit-exact-across-runs criterion lands later).
+> - **Current next: the narrow S0 kernel**, then S1. See CLAUDE.md's "Next".
+
 1. Scaffold the new single-file skeleton: import map (§2.1), async boot, `PhysicsAdapter` with `{engine: cannon|rapier}` × `{vehicles: joints|raycast}` flags.
 2. Port the test framework first (standing project rule) and wire `world.profilerEnabled` timings into the metrics schema.
 3. Heightfield terrain + **[V1]** known-peak layout test + safety plane at y = −50; enable CCD on chassis bodies.
@@ -176,9 +183,9 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 
 ### Open verifications
 - **[V1]** Heightfield `heights` memory layout (row- vs column-major) — unit test with a single known peak.
-- **[V2]** Per-body additional solver iterations API name.
+- **[V2]** RESOLVED (PR #10): `RigidBodyDesc.setAdditionalSolverIterations` (chainable) + `additionalSolverIterations()` readback, verified against both installed 0.19.3 flavors' typings; `realizeChassis` applies it per chassis body.
 - **[V3]** `DynamicRayCastVehicleController` current parameter names/signatures.
-- **[V4]** Prismatic `configureMotorPosition(target, stiffness, damping)` signature for suspension springs.
+- **[V4]** SIGNATURE RESOLVED (pre-S0 hardening PR): `configureMotorPosition(target, stiffness, damping)` and `setLimits(min, max)` verified verbatim against the installed 0.19.3 typings (`@dimforge/rapier3d-compat/dynamics/impulse_joint.d.ts`). Parameter-RANGE calibration remains open until the S1 PR — the provisional suspension ranges re-lock when they bind to `configureMotorPosition`.
 - **[V5]** JS accessors for `contactNaturalFrequency` / normalized error params.
 - **[V6]** Trimesh internal-edge flags availability (only if trimesh obstacles are kept).
 

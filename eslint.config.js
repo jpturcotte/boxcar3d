@@ -48,6 +48,7 @@ export default [
       'no-restricted-globals': [
         'error',
         { name: 'performance', message: 'Sim time counts physics steps, never wall clock (red-team F3).' },
+        { name: 'Date', message: 'Sim time counts physics steps, never wall clock (red-team F3).' },
       ],
     },
   },

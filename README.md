@@ -16,7 +16,7 @@ chassis realize as single dynamic bodies carrying the collision-group,
 dual-CCD, and per-body solver-iteration policy, and a both-flavors physics
 gate proves they stay caught by the composite terrain (with negatives
 proving the gate's teeth). The genome contract is locked by two fingerprints
-(corpus `922d0458`, chassis geometry `39bcd6c4`). `npm run dev` drops one
+(corpus `24cd0dd5`, chassis geometry `39bcd6c4`). `npm run dev` drops one
 compiled, hue-tinted ladder chassis at the start line (add `?zones` to tint
 the zone map). Next is S0: real cylinder wheels on rigid revolute joints.
 The design docs in `docs/` define everything that comes after.

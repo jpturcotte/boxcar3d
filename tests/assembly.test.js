@@ -83,6 +83,16 @@ function spanOf(genotype) {
   return span;
 }
 
+// Max active-node half-height exactly as decodeFrame computes it — the
+// position-independent clearance bound every emitted wheel must beat.
+function maxHalfHeightOf(genotype) {
+  const seg = genotype.frame.segments[0];
+  const nodeCount = 2 + Math.min(4, Math.floor(seg.nodeCount * 5));
+  let maxH = -Infinity;
+  for (let i = 0; i < nodeCount; i++) maxH = Math.max(maxH, affine(seg.nodes[i].height, GENE_RANGES.nodeHeight));
+  return maxH;
+}
+
 function deepFreeze(o) {
   Object.freeze(o);
   for (const v of Object.values(o)) {
@@ -192,6 +202,80 @@ describe('repair rules — one targeted violating genotype per rule, exact minim
     const bound = (ASSEMBLY_RULES.wheelMass[1] / vol - GENE_RANGES.wheelDensity[0]) / (GENE_RANGES.wheelDensity[1] - GENE_RANGES.wheelDensity[0]);
     expect(r.axles[0].density).toBe(bound);
     expect(affine(bound, GENE_RANGES.wheelDensity) * vol).toBeCloseTo(80, 10);
+  });
+
+  test('R3b size-bias feasibility: a shrunken emitted wheel is raised to the exact clearance bound', () => {
+    // The external-review blocker: repair had enforced clearance on the BASE
+    // radius only, then buildIR emitted a 0.6× second wheel back inside the
+    // frame. R3b must raise the sizeBias gene to the exact fused bound.
+    const g = validGenotype();
+    g.symmetric = 0.1; // asymmetric — the bias expresses
+    g.frame.segments[0].nodes.forEach((n) => { n.height = 1; }); // tall frame
+    g.axles[0].radius = 0; // R2 raises the base wheel to the clearance bound
+    g.axles[0].asym.sizeBias = 0; // f = 0.6 -> emitted wheel inside the frame
+    const r = repairGenotype(g);
+    // Recompute the fused bound through the pipeline's own float ops.
+    const maxH = maxHalfHeightOf(g);
+    const rad = affine(r.axles[0].radius, GENE_RANGES.wheelRadius);
+    const wid = affine(g.axles[0].width, GENE_RANGES.wheelWidth);
+    const vol = Math.PI * rad * rad * wid;
+    const rho = affine(r.axles[0].density, GENE_RANGES.wheelDensity);
+    const fLo = Math.max((maxH + ASSEMBLY_RULES.clearance) / rad, Math.sqrt(ASSEMBLY_RULES.wheelMass[0] / (vol * rho)));
+    const biasLo = (fLo - GENE_RANGES.sizeBiasFactor[0]) / (GENE_RANGES.sizeBiasFactor[1] - GENE_RANGES.sizeBiasFactor[0]);
+    expect(r.axles[0].asym.sizeBias).toBe(Math.min(1, Math.max(0, biasLo)));
+    // and the vehicle actually emits a frame-clearing wheel now
+    const second = compileAssembly(g).axles[0].wheels[1];
+    expect(second.radius).toBeGreaterThanOrEqual(maxH + ASSEMBLY_RULES.clearance - 1e-9);
+  });
+
+  test('R3b: an enlarged emitted wheel cannot exceed 80 kg — sizeBias clamps to the exact sqrt bound', () => {
+    const g = validGenotype();
+    g.symmetric = 0.1;
+    g.axles[0].radius = 1; // 0.7 m
+    g.axles[0].width = 1; // 0.5 m
+    g.axles[0].density = 1; // R3 clamps the base wheel to exactly 80 kg
+    g.axles[0].asym.sizeBias = 1; // f = 1.4 -> 1.96 × 80 ≈ 156.8 kg emitted
+    const r = repairGenotype(g);
+    const rad = affine(1, GENE_RANGES.wheelRadius);
+    const wid = affine(1, GENE_RANGES.wheelWidth);
+    const vol = Math.PI * rad * rad * wid;
+    const mBase = vol * affine(r.axles[0].density, GENE_RANGES.wheelDensity);
+    const fHi = Math.sqrt(ASSEMBLY_RULES.wheelMass[1] / mBase);
+    const biasHi = (fHi - GENE_RANGES.sizeBiasFactor[0]) / (GENE_RANGES.sizeBiasFactor[1] - GENE_RANGES.sizeBiasFactor[0]);
+    expect(r.axles[0].asym.sizeBias).toBe(Math.min(1, Math.max(0, biasHi)));
+    expect(compileAssembly(g).axles[0].wheels[1].mass).toBeLessThanOrEqual(ASSEMBLY_RULES.wheelMass[1] + 1e-9);
+    // (No targeted low-mass twin: under v1 ranges the clearance term of the
+    // fused lower bound dominates √(2/mBase) everywhere reachable — the
+    // corpus property below still asserts the emitted 2 kg floor.)
+  });
+
+  test('R5 spaces by the EMITTED max radius; a latent bias never shapes the phenotype', () => {
+    const mk = (symmetric) => {
+      const g = validGenotype();
+      g.symmetric = symmetric;
+      g.axles.forEach((a) => {
+        a.posX01 = 0.5;
+        a.radius = 0.4; // r = 0.4 m exactly (R2 no-op at the default frame)
+        a.asym.sizeBias = 1; // f = 1.4 (feasible here: 80 kg band allows it)
+      });
+      return repairGenotype(g);
+    };
+    const span = spanOf(validGenotype());
+    // Asymmetric: both modules emit a 1.4× wheel — spacing uses r × f.
+    // (Radii/bias recomputed from the REPAIRED genes so the expectation
+    // tracks the pipeline even if R2/R3b nudged them by an ulp.)
+    const asym = mk(0.1);
+    const radA = affine(asym.axles[0].radius, GENE_RANGES.wheelRadius);
+    const f = affine(asym.axles[0].asym.sizeBias, GENE_RANGES.sizeBiasFactor);
+    const rEff = radA * Math.max(1, f);
+    expect(f).toBeCloseTo(1.4, 12); // the requested bias survived repair (feasible here)
+    expect(asym.axles[0].posX01).toBe(0.5);
+    expect(asym.axles[1].posX01).toBe(Math.min(1, 0.5 + (rEff + rEff + ASSEMBLY_RULES.wheelGap) / span));
+    // Symmetric twin: the SAME stored genes emit base-radius wheels — the
+    // dormant bias must not widen the spacing (expression is buildIR's gate).
+    const sym = mk(0.9);
+    const radS = affine(sym.axles[0].radius, GENE_RANGES.wheelRadius);
+    expect(sym.axles[1].posX01).toBe(Math.min(1, 0.5 + (radS + radS + ASSEMBLY_RULES.wheelGap) / span));
   });
 
   test('R4 track-width sanity: fat wheels raise trackHalf to clear each other; a narrow corridor clamps it down', () => {
@@ -316,12 +400,15 @@ describe('symmetry (core gene, compiler-expanded, count-stable)', () => {
   test('symmetric OFF: driveBias, sizeBias, and centerOffset all express (asymmetry is first-class)', () => {
     const g = validGenotype();
     g.symmetric = 0.1;
-    g.axles[0].asym = { driveBias: 0.9, sizeBias: 0.9, centerOffset: 0.5 };
+    // sizeBias 0.6 (f = 1.08) sits inside this module's R3b feasibility band
+    // (mBase ≈ 62 kg caps f at ~1.13), so the requested bias expresses as-is.
+    g.axles[0].asym = { driveBias: 0.9, sizeBias: 0.6, centerOffset: 0.5 };
     g.axles[1].paired = 0;
     g.axles[1].asym.centerOffset = 0.9; // +1.2 m off-center single wheel
     const ir = compileAssembly(g);
+    expect(ir.genotype.axles[0].asym.sizeBias).toBe(0.6); // survived repair unclamped
     const [l, r] = ir.axles[0].wheels;
-    expect(r.radius).toBe(l.radius * affine(0.9, GENE_RANGES.sizeBiasFactor));
+    expect(r.radius).toBe(l.radius * affine(0.6, GENE_RANGES.sizeBiasFactor));
     expect(l.driveTorque).toBeGreaterThan(r.driveTorque); // 0.9 : 0.1 split
     expect(ir.axles[1].wheels[0].z).toBe(affine(0.9, GENE_RANGES.centerOffset));
   });
@@ -381,16 +468,22 @@ describe('frame families compile to valid IR', () => {
     expect(corpus.some(({ repaired }) => repaired.axles.length === 0)).toBe(true);
   });
 
-  test('IR sanity corpus-wide: finite geometry, mass estimate inside the band, supports positive', () => {
-    for (const { ir } of corpus) {
+  test('IR sanity corpus-wide: EVERY emitted wheel honors clearance and the [2, 80] kg band (the R3b invariants)', () => {
+    // The external-review blocker's permanent teeth: repair promises hold for
+    // what the genotype EMITS — including the size-biased second wheel of an
+    // asymmetric paired module — not merely for the base genes.
+    for (const { repaired, ir } of corpus) {
       expect(Number.isFinite(ir.chassis.massEstimate)).toBe(true);
       expect(ir.chassis.massEstimate).toBeGreaterThanOrEqual(ASSEMBLY_RULES.chassisMass[0] - 1e-9);
       expect(ir.chassis.massEstimate).toBeLessThanOrEqual(ASSEMBLY_RULES.chassisMass[1] + 1e-9);
       expect(ir.chassis.supports.minFace).toBeGreaterThanOrEqual(ASSEMBLY_RULES.minPartHalfExtent);
       expect(ir.chassis.supports.reach).toBeGreaterThan(ir.chassis.supports.minFace);
+      const clearBound = maxHalfHeightOf(repaired) + ASSEMBLY_RULES.clearance;
       for (const ax of ir.axles) {
         for (const w of ax.wheels) {
-          expect(w.mass).toBeGreaterThanOrEqual(0); // sizeBias-shrunk side may undercut 2 kg — base wheel is band-checked
+          expect(w.radius).toBeGreaterThanOrEqual(clearBound - 1e-9); // wheels below frame, emitted
+          expect(w.mass).toBeGreaterThanOrEqual(ASSEMBLY_RULES.wheelMass[0] - 1e-9);
+          expect(w.mass).toBeLessThanOrEqual(ASSEMBLY_RULES.wheelMass[1] + 1e-9);
           expect(Number.isFinite(w.driveTorque)).toBe(true);
         }
       }
@@ -403,7 +496,12 @@ describe('locked fingerprints (deliberate re-lock + version bump required to cha
     // FNV-1a over the concatenated canonical serialization of every repaired
     // genotype in corpus order. Locks schema shape + decoder-driven repair
     // end-to-end at the genotype level (f64 — never mixed with the f32 IR
-    // lock below). First-time lock (PR #10).
+    // lock below). Locked during PR #10 review (superseding the pre-review
+    // 922d0458, which predated R3b size-bias feasibility + the R5 emitted-
+    // radius sweep — the external-review blocker; still schema version 1
+    // because the earlier hash never merged). The chassis-geometry lock
+    // below was UNCHANGED by that re-lock: colliders derive only from
+    // never-repaired frame genes — exactly the expected blast radius.
     let h = 0x811c9dc5;
     for (const { repaired } of corpus) {
       for (const b of serializeGenotype(repaired)) {
@@ -411,7 +509,7 @@ describe('locked fingerprints (deliberate re-lock + version bump required to cha
         h = Math.imul(h, 0x01000193);
       }
     }
-    expect(((h >>> 0).toString(16)).padStart(8, '0')).toBe('922d0458');
+    expect(((h >>> 0).toString(16)).padStart(8, '0')).toBe('24cd0dd5');
   });
 
   test('locked CHASSIS-GEOMETRY fingerprint: compiled IR colliders over the same corpus, forever', () => {

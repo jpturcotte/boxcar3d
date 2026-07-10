@@ -213,19 +213,28 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   gene, position-independent bounds (`maxHalfHeight`, never
   `heightAt(posX)` — that feedback loop is the known idempotence killer).
   Repair is exactly idempotent, proven corpus-wide by BYTE-equality of the
-  canonical flat encoding — that guard is non-negotiable. Rules in order:
-  axle-count cap → wheels-below-frame + clearance (radius up; mount at frame
-  vertical center, `mountY = 0` explicit in IR) → wheel mass [2, 80] kg
-  (density) → track/offset vs corridor walls → longitudinal non-overlap
-  (max-sweep capped at the frame end; residual overlap accepted —
+  canonical flat encoding — that guard is non-negotiable. Repair bounds the
+  EMITTED vehicle, not just base genes (external-review blocker, fixed
+  pre-merge): rules in order: axle-count cap → wheels-below-frame +
+  clearance (radius up; mount at frame vertical center, `mountY = 0`
+  explicit in IR) → wheel mass [2, 80] kg (density) → size-bias feasibility
+  (the sizeBias gene re-satisfies clearance + mass for the biased second
+  wheel a paired module emits; always feasible since f = 1 is in-band) →
+  track/offset vs corridor walls → longitudinal non-overlap (max-sweep by
+  the EMITTED max radius — expression-gated so a latent bias never shapes
+  the phenotype — capped at the frame end; residual overlap accepted —
   collision-inert because vehicle self-pairs filter GROUND only) → chassis
-  mass [5, 500] kg. Anchor validity holds by construction (posX = fraction
+  mass [5, 500] kg. Corpus tests assert clearance + mass band over EVERY
+  emitted wheel. Anchor validity holds by construction (posX = fraction
   of span). 0-axle / 0-driven genotypes are legal (sled, scores ~0).
 - **Two new locks @ seed 20260710, N=256** (`tests/assembly.test.js`):
-  repaired-genotype corpus `922d0458` (f64 LE, the documented
-  `serializeGenotype` walk — array order, never object keys) and
-  chassis-geometry `39bcd6c4` (IR colliders; hull points f32 LE). Changing
-  either is a deliberate re-lock + genotype-version bump. Suspension param
+  repaired-genotype corpus `24cd0dd5` (f64 LE, the documented
+  `serializeGenotype` walk — array order, never object keys; re-locked
+  in-review for the R3b/R5 fix, still version 1 — the pre-review hash never
+  merged) and chassis-geometry `39bcd6c4` (IR colliders; hull points f32
+  LE; UNCHANGED by the re-lock — colliders derive only from never-repaired
+  frame genes). Changing either is a deliberate re-lock + genotype-version
+  bump. Suspension param
   ranges (stiffness/damping/travel/restLength) are PROVISIONAL — PR #11
   binds them to `configureMotorPosition` (expected re-lock, documented).
 - **`realizeChassis(RAPIER, world, ir, {position, rotation, linvel})`**

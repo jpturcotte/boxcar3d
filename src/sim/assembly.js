@@ -31,6 +31,11 @@
 // bound is position-independent (maxHalfHeight over active nodes, never
 // heightAt(posX) — the posX->height->radius feedback loop is the known
 // idempotence killer, severed by construction).
+//
+// Repair bounds the EMITTED vehicle, not just base genes: a paired module's
+// second wheel is r × sizeBias-factor, so R3b re-derives clearance and the
+// mass band through the sizeBias gene and R5 spaces by the emitted max
+// radius (tests assert the invariants over every wheel the corpus emits).
 
 export const GENOTYPE_VERSION = 1;
 
@@ -397,6 +402,9 @@ export function repairGenotype(genotype, options = {}) {
   // every pass — the position-independence that keeps the pipeline a DAG.
   const frame = decodeFrame(g);
   const zLimit = cfg.corridorHalfWidth - ASSEMBLY_RULES.wallMargin;
+  // Expression gate for R5's emitted-radius sweep. Read-only: symmetric and
+  // paired are never repaired, so the gate cannot create a DAG back-edge.
+  const symmetric = boolGene(g.symmetric);
 
   // R2 — wheels-below-frame + ground clearance, fused on the radius gene.
   // Rest-pose model (S0 worst case): wheels mount at the frame vertical
@@ -414,6 +422,30 @@ export function repairGenotype(genotype, options = {}) {
     const dLo = clamp01(encode(ASSEMBLY_RULES.wheelMass[0] / vol, GENE_RANGES.wheelDensity));
     const dHi = clamp01(encode(ASSEMBLY_RULES.wheelMass[1] / vol, GENE_RANGES.wheelDensity));
     a.density = fusedClamp(a.density, dLo, dHi);
+
+    // R3b — size-bias feasibility. A paired module EMITS a second wheel of
+    // radius r × f, f = affine(sizeBias, [0.6, 1.4]) (buildIR), and repair
+    // must bound what the genotype emits, not just the base genes — an
+    // unrepaired bias re-broke clearance, the mass band, and the R5 spacing
+    // AFTER repair had finished (external review blocker, PR #10). Fused
+    // clamp on the sizeBias gene so the biased wheel also satisfies
+    //   clearance: r·f >= maxHalfHeight + clearance   ->  f >= fClear
+    //   mass:      f²·mBase ∈ [2, 80] kg              ->  f ∈ [√(2/m), √(80/m)]
+    // Always feasible: R2 gives fClear <= 1 (± ulp) and R3 gives mBase ∈
+    // [2, 80], so both bands bracket f = 1; the fused tie-break absorbs the
+    // ulp corner where r and mBase sit exactly on their bounds. Clamped
+    // UNCONDITIONALLY — the same treatment the wall clamp below already
+    // gives the latent centerOffset: repair bounds every asym gene's
+    // physical feasibility; expression stays buildIR's gate (A.3 ruling).
+    const mBase = vol * affine(a.density, GENE_RANGES.wheelDensity);
+    const fClear = (frame.maxHalfHeight + ASSEMBLY_RULES.clearance) / r;
+    const fLo = Math.max(fClear, Math.sqrt(ASSEMBLY_RULES.wheelMass[0] / mBase));
+    const fHi = Math.sqrt(ASSEMBLY_RULES.wheelMass[1] / mBase);
+    a.asym.sizeBias = fusedClamp(
+      a.asym.sizeBias,
+      clamp01(encode(fLo, GENE_RANGES.sizeBiasFactor)),
+      clamp01(encode(fHi, GENE_RANGES.sizeBiasFactor))
+    );
 
     // R4 — track-width sanity (paired: wheels clear each other and the wall;
     // single: the offset wheel clears the wall). Reads width + options only.
@@ -442,7 +474,16 @@ export function repairGenotype(genotype, options = {}) {
     let prevR = 0;
     for (const idx of order) {
       const a = g.axles[idx];
-      const r = affine(a.radius, GENE_RANGES.wheelRadius);
+      // EMITTED max longitudinal radius: an asymmetric paired module's second
+      // wheel is r × f (f finalized by R3b above — a forward DAG edge), so
+      // spacing must use the larger of the two; the base gene alone under-
+      // spaced enlarged wheels (external review). The gate matters the other
+      // way too: a symmetric or single module emits only r, and a LATENT
+      // bias must never shape the phenotype (A.3 — expression is buildIR's).
+      const base = affine(a.radius, GENE_RANGES.wheelRadius);
+      const r = symmetric || !boolGene(a.paired)
+        ? base
+        : base * Math.max(1, affine(a.asym.sizeBias, GENE_RANGES.sizeBiasFactor));
       if (cursor !== null) {
         const minGapGene = (prevR + r + ASSEMBLY_RULES.wheelGap) / frame.span;
         a.posX01 = Math.min(1, Math.max(a.posX01, cursor + minGapGene));

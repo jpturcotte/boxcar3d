@@ -105,7 +105,7 @@ All of these landed after our 0.11.2 pin and directly serve the 50-vehicles-at-6
 | `linearDamping` / `angularDamping` | `setLinearDamping` / `setAngularDamping` |
 | `PointToPointConstraint` (wheel attach) | dual joints per wheel: `JointData.revolute` (axle+motor) + `JointData.prismatic` (suspension) — per original plan |
 | motor hack: `wheel.angularVelocity.set(...)` | `revolute.configureMotorVelocity(targetVel, factor)` — a real torque-limited motor |
-| suspension spring (didn't exist) | prismatic `configureMotorPosition(target, stiffness, damping)` + `setLimits(min,max)` → **[V4]** confirm signature |
+| suspension spring (didn't exist) | prismatic `configureMotorPosition(target, stiffness, damping)` + `setLimits(min,max)` → **[V4]** signature confirmed (ranges bind at S1) |
 | reads: `body.position/quaternion` | `rb.translation()` / `rb.rotation()` (copy into THREE.Vector3/Quaternion each frame) |
 | contact detection (collide events) | colliders opt in via `ActiveEvents.COLLISION_EVENTS`; drain `EventQueue` after each step |
 
@@ -176,9 +176,9 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 
 ### Open verifications
 - **[V1]** Heightfield `heights` memory layout (row- vs column-major) — unit test with a single known peak.
-- **[V2]** Per-body additional solver iterations API name.
+- **[V2]** RESOLVED (PR #10): `RigidBodyDesc.setAdditionalSolverIterations` (chainable) + `additionalSolverIterations()` readback, verified against both installed 0.19.3 flavors' typings; `realizeChassis` applies it per chassis body.
 - **[V3]** `DynamicRayCastVehicleController` current parameter names/signatures.
-- **[V4]** Prismatic `configureMotorPosition(target, stiffness, damping)` signature for suspension springs.
+- **[V4]** SIGNATURE RESOLVED (pre-S0 hardening PR): `configureMotorPosition(target, stiffness, damping)` and `setLimits(min, max)` verified verbatim against the installed 0.19.3 typings (`@dimforge/rapier3d-compat/dynamics/impulse_joint.d.ts`). Parameter-RANGE calibration remains open until the S1 PR — the provisional suspension ranges re-lock when they bind to `configureMotorPosition`.
 - **[V5]** JS accessors for `contactNaturalFrequency` / normalized error params.
 - **[V6]** Trimesh internal-edge flags availability (only if trimesh obstacles are kept).
 

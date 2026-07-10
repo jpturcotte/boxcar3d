@@ -235,7 +235,7 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   LE; UNCHANGED by the re-lock — colliders derive only from never-repaired
   frame genes). Changing either is a deliberate re-lock + genotype-version
   bump. Suspension param
-  ranges (stiffness/damping/travel/restLength) are PROVISIONAL — PR #11
+  ranges (stiffness/damping/travel/restLength) are PROVISIONAL — the S1 PR
   binds them to `configureMotorPosition` (expected re-lock, documented).
 - **`realizeChassis(RAPIER, world, ir, {position, rotation, linvel})`**
   (adapter) — exactly ONE dynamic body per IR: `CHASSIS_GROUPS` on every
@@ -243,7 +243,7 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   ADDITIONAL_SOLVER_ITERATIONS = 4)` — [V2] resolved, verified locally
   against BOTH installed 0.19.3 flavors' typings (desc setter chainable +
   `additionalSolverIterations()` readback; wheels inherit the budget through
-  the chassis joint island, so PR #11 does not set it per wheel). Validates
+  the chassis joint island, so the S0 PR does not set it per wheel). Validates
   everything before touching the world; degenerate hulls fail loud and the
   half-built body is removed. **Finding:** a COPLANAR hull cloud does NOT
   fail 0.19.3 hull construction — it builds a zero-volume shape; the
@@ -262,16 +262,81 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   the start line, hue-tinted, meshes from the same IR colliders. Terrain
   paths and all five terrain fingerprints untouched.
 
-Next, in order (details in phase0-refresh §6 + spec §7):
-1. **Axle modules S0 → S1 → S2** (spec §3.2), each behind its own test gate;
-   every wheel body carries `WHEEL_GROUPS` + the dual CCD policy; the IR
-   already carries anchors (`posX`, `mountY`), wheel cylinders, suspension
-   params, and per-wheel `driveTorque`. PR #11 must also: re-lock the
-   provisional suspension ranges when they bind to `configureMotorPosition`,
-   and revisit whether visually-overlapping wheels (the repair cap's accepted
-   residual) are acceptable for evolution even though physics ignores them.
-   Zone material response (friction/drag/torque per `zoneAt` sample) lands
-   with wheels. 2. GA operators (spec §3.3: module-exchange crossover,
-   structural vs parametric mutation) + the population seeder (symmetry
-   default-on bias lives there). 3. Worker sharding with the 1-vs-4-workers
-   equality test.
+**Pre-S0 hardening PR landed — five external-review findings closed. Zero
+behavior change for in-domain project inputs (all seven locked fingerprints
+byte-identical); garbage and newly ruled-out inputs now fail loud:**
+- **`validateConfig` is function-wide** (`src/sim/terrain.js`): every scalar
+  knob carries `Number.isFinite` + its documented domain. The NaN/`!(x > 0)`
+  comparison bug class the frequency block had fixed once existed in every
+  older knob — NaN `startFlatLength` silently poisoned heights AND walls,
+  `length`/`width` Infinity died as a raw typed-array RangeError, and
+  `floorFriction` had no validation at all. Frictions are finite ≥ 0 with NO
+  upper bound (the addFeatures convention); `wallRestitution` within [0, 1]
+  (the adapter's restitution domain); amps finite, sign-free. **Seeds are
+  canonical uint32 BY RULING** (integer in [0, 0xffffffff]): the PRNG
+  canonicalizes with `>>> 0` but `terrain.seed` stores the input verbatim, so
+  −1 / 1.5 / 2³² silently aliased another world under a different identifier
+  (a NaN seed produced the seed-0 world byte-for-byte). `TERRAIN_DEFAULTS` is
+  the exported, DEEP-frozen public contract, enumerated programmatically by
+  the sweep in `tests/terrain.test.js` — `SCALAR_DOMAINS` must equal the
+  scalar knobs by exact set equality, so a new knob fails until it declares a
+  domain. Octaves stay validated downstream in fbm2D (deliberate; the sweep
+  locks the propagate path via `/octaves/`).
+- ESLint sim block bans `Date` alongside `performance` (hard rule 2 /
+  red-team F3); no sim file used it — teeth verified by stdin probe.
+- Dev-scene debris carries the dual-CCD policy (hard CCD alone is
+  heightfield-inert per the PR #9 finding; a 12 m drop into the deepest
+  crater reaches the ~23 m/s tunneling threshold).
+- Assembly options guards locked against ±Infinity; comment-only f32-ulp
+  precision note on the corpus clearance teeth.
+- [V2]/[V4] recorded in phase0-refresh's verification queue ([V4] = signature
+  resolved; parameter ranges still bind at S1).
+
+Next (details in phase0-refresh §6 + spec §7) — **narrowed by maintainer
+ruling, July 2026, which supersedes the older single-PR S0→S1→S2 plan:**
+1. **The S0 kernel ONLY** (spec §3.2): one dynamic cylinder body per IR
+   wheel; one chassis-to-wheel revolute joint per wheel on the lateral axis;
+   `WHEEL_GROUPS` + dual CCD (`setCcdEnabled(true)` AND
+   `setSoftCcdPrediction(SOFT_CCD_PREDICTION)`) on every wheel body; driven
+   wheels via `configureMotorVelocity` with the IR's precomputed
+   `driveTorque` as the factor; REALIZATION-TIME pre-world validation
+   rejects any axle whose `suspension.type !== 'S0'` — S1/S2 modules must
+   never silently realize as rigid axles. (Rejection lives in the wheel
+   realizer, NEVER in repair/compile: `SUSPENSION_TYPES` stays
+   `['S0','S1','S2']`, and the 24cd0dd5 corpus lock plus the
+   every-suspension-type corpus assertion require S1/S2 to stay legal as IR
+   data.) Transactional cleanup — a failed realization removes every joint
+   and body it created, world counts unchanged. Both Rapier flavors tested,
+   plus a driven-vs-undriven forward-drive witness on a DECLARED witness
+   terrain with a raised `startFlatLength`. **Measured fact:** at the locked
+   seed and defaults the pad is exactly flat for only `startFlatLength = 4`
+   m (`heightAtLocal` spans exactly 0 over the first 4 m at seed 20260708),
+   then the 6 m blend — too short a runway for a drive-distance witness; a
+   witness terrain with its own declared seed and a longer flat pad touches
+   NO locked default-config fingerprint. **Verified Rapier 0.19.3 facts for
+   that session** (checked against the installed rapier3d-compat typings):
+   `ColliderDesc.cylinder(halfHeight, radius)` — the cylinder axis is LOCAL
+   Y and halfHeight is a HALF-height, so IR wheel width w maps to w/2; the
+   Y→lateral-Z wheel rotation is the +90°-about-X quaternion
+   `(Math.sqrt(0.5), 0, 0, Math.sqrt(0.5))` — expressible under the sim trig
+   ban; `JointData.revolute(anchor1, anchor2, axis)` takes body-LOCAL
+   anchors and axis — prefer UNROTATED wheel bodies with the rotation
+   applied to the collider only, so axis `(0, 0, 1)` means the same thing in
+   both bodies' local frames; `configureMotorVelocity(targetVel, factor)`
+   exists AND `configureMotorModel(model)` exists — the MotorModel choice
+   (AccelerationBased vs ForceBased) decides whether `driveTorque` acts as a
+   true torque limit: a MANDATORY pre-code question for the S0 PR, with a
+   teeth test (same vehicle, doubled chassis mass, same driveTorque, expect
+   lower acceleration); `configureMotorPosition(targetPos, stiffness,
+   damping)` and `setLimits(min, max)` exist verbatim — [V4] signature
+   resolved (recorded in phase0-refresh), for the S1 PR.
+2. **Explicitly deferred — NOT in the S0 kernel:** zone material response
+   (its own later PR; `zoneAt(x, z, terrain)` is ready), the
+   suspension-parameter-range re-lock (binds to `configureMotorPosition` in
+   the S1 PR), the S1/S2 suspension modules themselves, GA operators (spec
+   §3.3: module-exchange crossover, structural vs parametric mutation) + the
+   population seeder (symmetry default-on bias lives there), worker sharding
+   with the 1-vs-4-workers equality test, and the full replay-determinism
+   criterion. Still owed from PR #10's review: revisit whether
+   visually-overlapping wheels (the repair cap's accepted residual) are
+   acceptable for evolution even though physics ignores them.

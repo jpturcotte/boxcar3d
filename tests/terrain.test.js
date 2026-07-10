@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt,
-  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal,
+  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal, TERRAIN_DEFAULTS,
 } from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
@@ -568,6 +568,101 @@ describe('corridor terrain generator (pure, deterministic)', () => {
 
     test('default config is accepted', () => {
       expect(() => generateCorridorTerrain({ seed: 1 })).not.toThrow();
+    });
+
+    // ---- Programmatic scalar-knob domain sweep (pre-S0 hardening) ----
+    // NaN passes every `x < 0` / `!(x > 0)` comparison, and +Infinity passes
+    // `!(x > 0)` — the bug class the frequency block fixed once. This sweep
+    // enumerates the scalar knobs of TERRAIN_DEFAULTS programmatically so a
+    // future knob is swept automatically: a knob without a SCALAR_DOMAINS
+    // entry fails the set-equality test below until one is added.
+    //
+    // Domains (each knob's documented contract):
+    //   positive        finite and > 0
+    //   nonNegative     finite and >= 0 (0 legal — craterDensity 0 is the
+    //                   Step-1a byte-identity guard, featureDensity 0 legal)
+    //   unitInterval    finite within [0, 1] inclusive (coverages; restitution
+    //                   matches the adapter's feature-collider domain)
+    //   finite          any finite sign (amps: negative mirrors the noise)
+    //   uint32          integer within [0, 0xffffffff] — canonical seed form
+    //                   BY RULING: the PRNG canonicalizes with >>> 0 but
+    //                   terrain.seed stores the input verbatim, so -1 or 2^32
+    //                   would alias another world under a different identifier
+    //   positiveInteger integer >= 1 (octaves — diagnosed downstream by
+    //                   fbm2D's own guard, deliberately propagated)
+    // `pattern` overrides the default knob-name message match where the
+    // diagnostic names knobs jointly or comes from fbm2D.
+    const SCALAR_DOMAINS = {
+      seed: { domain: 'uint32' },
+      length: { domain: 'positive', pattern: /length and width/ },
+      width: { domain: 'positive', pattern: /length and width/ },
+      cellSize: { domain: 'positive', pattern: /cellSize must be/ },
+      startFlatLength: { domain: 'nonNegative', pattern: /start lengths/ },
+      startBlendLength: { domain: 'nonNegative', pattern: /start lengths/ },
+      macroAmp: { domain: 'finite' },
+      macroFrequency: { domain: 'positive' },
+      macroOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      microAmp: { domain: 'finite' },
+      microFrequency: { domain: 'positive' },
+      microOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      wallClearance: { domain: 'nonNegative', pattern: /wallClearance and wallEmbed/ },
+      wallEmbed: { domain: 'nonNegative', pattern: /wallClearance and wallEmbed/ },
+      wallThickness: { domain: 'positive' },
+      wallRestitution: { domain: 'unitInterval' },
+      wallFriction: { domain: 'nonNegative' },
+      floorFriction: { domain: 'nonNegative' },
+      craterDensity: { domain: 'nonNegative' },
+      zoneFrequency: { domain: 'positive' },
+      zoneOctaves: { domain: 'positiveInteger', pattern: /octaves/ },
+      sandCoverage: { domain: 'unitInterval' },
+      mudCoverage: { domain: 'unitInterval' },
+      featureDensity: { domain: 'nonNegative' },
+    };
+
+    // Rejected values per domain (NaN/±Infinity always) and values that must
+    // stay legal. Legality probes are single-knob-safe only: sandCoverage 1
+    // alone trips the sum-with-default-mud check, so coverage-1 legality lives
+    // in the dedicated zones test above, not here.
+    const BAD_VALUES = {
+      positive: [0, -1],
+      nonNegative: [-1],
+      unitInterval: [-1, 1.5],
+      finite: [],
+      uint32: [-1, 1.5, 2 ** 32],
+      positiveInteger: [0, -1, 1.5],
+    };
+    const LEGAL_VALUES = {
+      positive: [],
+      nonNegative: [0],
+      unitInterval: [0],
+      finite: [0, -1],
+      uint32: [0, 0xffffffff],
+      positiveInteger: [],
+    };
+
+    test('SCALAR_DOMAINS covers exactly the scalar numeric knobs of TERRAIN_DEFAULTS (add a domain entry when adding a knob)', () => {
+      const scalarKnobs = Object.keys(TERRAIN_DEFAULTS)
+        .filter((key) => typeof TERRAIN_DEFAULTS[key] === 'number')
+        .sort();
+      expect(Object.keys(SCALAR_DOMAINS).sort()).toEqual(scalarKnobs);
+    });
+
+    test('every scalar knob rejects NaN and ±Infinity plus its domain violations, with a named diagnostic', () => {
+      for (const [knob, { domain, pattern }] of Object.entries(SCALAR_DOMAINS)) {
+        const re = pattern || new RegExp(knob);
+        for (const bad of [NaN, Infinity, -Infinity, ...BAD_VALUES[domain]]) {
+          expect(() => generateCorridorTerrain({ seed: 1, [knob]: bad }), `${knob} = ${bad}`).toThrow(re);
+        }
+        for (const legal of LEGAL_VALUES[domain]) {
+          expect(() => generateCorridorTerrain({ seed: 1, [knob]: legal }), `${knob} = ${legal}`).not.toThrow();
+        }
+      }
+    });
+
+    test('seed is a canonical uint32: NaN must fail loud, never silently generate the seed-0 world', () => {
+      // Before this guard, seed NaN reached `seed >>> 0` and produced heights
+      // byte-identical to seed 0 while terrain.seed recorded NaN.
+      expect(() => generateCorridorTerrain({ seed: NaN })).toThrow(/seed/);
     });
   });
 });

@@ -36,8 +36,13 @@ export const MATERIALS = Object.freeze({ FIRM: 0, SAND: 1, MUD: 2 });
 // append-only, never reorder (locked features fingerprint).
 export const FEATURE_TYPES = Object.freeze(['boulder', 'ramp', 'log']);
 
-const DEFAULTS = {
-  seed: 0,
+// The public config contract, exported so the scalar-knob domain sweep in
+// tests/terrain.test.js can enumerate every knob programmatically (a new knob
+// is swept automatically). DEEP-frozen — the nested ranges and the weight
+// table are shared by reference into every cfg spread, so a mutable export
+// would let any consumer silently rewrite process-wide defaults.
+export const TERRAIN_DEFAULTS = Object.freeze({
+  seed: 0, // canonical uint32 (validateConfig rejects anything else)
   length: 120, // metres along +X (corridor length)
   width: 12, // metres along Z (between the walls)
   cellSize: 1, // heightfield cell size in metres
@@ -56,21 +61,21 @@ const DEFAULTS = {
   wallFriction: 0.8,
   floorFriction: 1,
   craterDensity: 0.5, // craters per 100 m² of post-envelope area (0 = Step-1a base field)
-  craterRadiusRange: [2, 5], // metres
-  craterDepthRatioRange: [0.08, 0.22], // depth = ratio*radius; max slope 1.875*ratio <= 0.41 (drivable)
+  craterRadiusRange: Object.freeze([2, 5]), // metres
+  craterDepthRatioRange: Object.freeze([0.08, 0.22]), // depth = ratio*radius; max slope 1.875*ratio <= 0.41 (drivable)
   zoneFrequency: 0.05, // cycles per metre of the zone noise field (~20 m patches)
   zoneOctaves: 2,
   sandCoverage: 0.15, // exact fraction of post-envelope cells (quantile-assigned)
   mudCoverage: 0.05, // ditto; mud takes the highest-noise band (cores inside sand)
   featureDensity: 0.4, // features per 100 m² of post-envelope area
-  featureTypeWeights: { boulder: 3, ramp: 1, log: 2 }, // relative; replaced wholesale by user config
-  boulderRadiusRange: [0.4, 1.1], // metres
-  rampLengthRange: [4, 8], // metres, along the ramp's local +X
-  rampWidthRange: [2.5, 4],
-  rampHeightRange: [0.6, 1.6], // rise over the length
-  logRadiusRange: [0.25, 0.45],
-  logLengthRange: [3, 7], // capsule axis length (caps extend by radius)
-};
+  featureTypeWeights: Object.freeze({ boulder: 3, ramp: 1, log: 2 }), // relative; replaced wholesale by user config
+  boulderRadiusRange: Object.freeze([0.4, 1.1]), // metres
+  rampLengthRange: Object.freeze([4, 8]), // metres, along the ramp's local +X
+  rampWidthRange: Object.freeze([2.5, 4]),
+  rampHeightRange: Object.freeze([0.6, 1.6]), // rise over the length
+  logRadiusRange: Object.freeze([0.25, 0.45]),
+  logLengthRange: Object.freeze([3, 7]), // capsule axis length (caps extend by radius)
+});
 
 const smootherstep = (t) => t * t * t * (t * (t * 6 - 15) + 10);
 
@@ -329,14 +334,49 @@ function fullElevation(x, z, cfg, macroSeed, microSeed) {
 
 // Fail loud on config that would otherwise yield degenerate terrain, Infinity,
 // NaN, or a RangeError from the Float32Array allocation (review A.1).
+//
+// Every scalar knob carries an explicit Number.isFinite gate (pre-S0
+// hardening): `x < 0` and `!(x > 0)` comparisons are false for NaN, and
+// `!(x > 0)` is also false for +Infinity — the same bug class the frequency
+// block below fixed once. tests/terrain.test.js sweeps every scalar knob of
+// TERRAIN_DEFAULTS against these domains programmatically.
 function validateConfig(cfg) {
-  if (!(cfg.cellSize > 0)) throw new Error('generateCorridorTerrain: cellSize must be > 0');
-  if (!(cfg.length > 0) || !(cfg.width > 0)) throw new Error('generateCorridorTerrain: length and width must be > 0');
-  if (!(cfg.wallThickness > 0)) throw new Error('generateCorridorTerrain: wallThickness must be > 0');
-  if (cfg.wallClearance < 0 || cfg.wallEmbed < 0) throw new Error('generateCorridorTerrain: wallClearance and wallEmbed must be >= 0');
-  if (cfg.startFlatLength < 0 || cfg.startBlendLength < 0) throw new Error('generateCorridorTerrain: start lengths must be >= 0');
+  // Seeds are canonical uint32 BY RULING: the PRNG canonicalizes with `>>> 0`
+  // but terrain.seed stores the input verbatim, so a non-canonical seed (-1,
+  // 1.5, 2^32) would silently alias another world's streams while recording a
+  // different identifier — replay metadata stops being canonical. Reject.
+  if (!Number.isInteger(cfg.seed) || cfg.seed < 0 || cfg.seed > 0xffffffff) {
+    throw new Error('generateCorridorTerrain: seed must be an integer within [0, 4294967295] (canonical uint32)');
+  }
+  if (!Number.isFinite(cfg.cellSize) || cfg.cellSize <= 0) throw new Error('generateCorridorTerrain: cellSize must be a finite number > 0');
+  if (!Number.isFinite(cfg.length) || cfg.length <= 0 || !Number.isFinite(cfg.width) || cfg.width <= 0) {
+    throw new Error('generateCorridorTerrain: length and width must be finite numbers > 0');
+  }
+  if (!Number.isFinite(cfg.wallThickness) || cfg.wallThickness <= 0) throw new Error('generateCorridorTerrain: wallThickness must be a finite number > 0');
+  if (!Number.isFinite(cfg.wallClearance) || cfg.wallClearance < 0 || !Number.isFinite(cfg.wallEmbed) || cfg.wallEmbed < 0) {
+    throw new Error('generateCorridorTerrain: wallClearance and wallEmbed must be finite numbers >= 0');
+  }
+  if (!Number.isFinite(cfg.startFlatLength) || cfg.startFlatLength < 0 || !Number.isFinite(cfg.startBlendLength) || cfg.startBlendLength < 0) {
+    throw new Error('generateCorridorTerrain: start lengths must be finite numbers >= 0');
+  }
   if (cfg.startFlatLength + cfg.startBlendLength > cfg.length) {
     throw new Error('generateCorridorTerrain: startFlatLength + startBlendLength cannot exceed length');
+  }
+  for (const key of ['macroAmp', 'microAmp']) {
+    // Amplitude sign is free — a negative amp mirrors the noise
+    // deterministically; only non-finite values poison the field.
+    if (!Number.isFinite(cfg[key])) throw new Error(`generateCorridorTerrain: ${key} must be a finite number`);
+  }
+  for (const key of ['wallFriction', 'floorFriction']) {
+    // No upper bound: friction > 1 is legitimate (the addFeatures convention).
+    if (!Number.isFinite(cfg[key]) || cfg[key] < 0) {
+      throw new Error(`generateCorridorTerrain: ${key} must be a finite number >= 0`);
+    }
+  }
+  // Same restitution domain as the adapter's feature colliders (spec §4:
+  // walls nudge back into play, they don't power a pinball bumper).
+  if (!Number.isFinite(cfg.wallRestitution) || cfg.wallRestitution < 0 || cfg.wallRestitution > 1) {
+    throw new Error('generateCorridorTerrain: wallRestitution must be a finite number within [0, 1]');
   }
   for (const key of ['craterDensity', 'featureDensity']) {
     if (!Number.isFinite(cfg[key]) || cfg[key] < 0) {
@@ -396,7 +436,7 @@ function validateConfig(cfg) {
 }
 
 export function generateCorridorTerrain(options = {}) {
-  const cfg = { ...DEFAULTS, ...options };
+  const cfg = { ...TERRAIN_DEFAULTS, ...options };
   validateConfig(cfg);
   const { seed, length, width, cellSize } = cfg;
   const rows = Math.round(width / cellSize); // Z cells  (row i -> +Z)

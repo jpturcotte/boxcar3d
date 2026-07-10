@@ -71,6 +71,21 @@ export const GRAVITY = 20;
 // speed the corridor can produce; larger values only grow broad-phase cost.
 export const SOFT_CCD_PREDICTION = 1;
 
+// Per-body additional solver iterations for vehicle chassis (spec §2:
+// evolved assemblies multiply joints, and the chassis is the explosion-prone
+// body; phase0-refresh [V2]). Rapier applies the extra iterations to the body
+// AND everything interacting with it through contacts or joints, so PR #11's
+// wheels inherit the budget via the chassis joint island — wheels don't set
+// it separately. 4 additional passes (~2× the solver default) is the
+// standard articulated-body guidance and costs one body's worth per vehicle.
+// [V2] VERIFIED locally (2026-07-09) against the installed 0.19.3 typings of
+// BOTH flavors: RigidBodyDesc.setAdditionalSolverIterations(iters) is
+// chainable and RigidBody.additionalSolverIterations() reads it back
+// (node_modules/@dimforge/rapier3d{,-deterministic}-compat/dynamics/
+// rigid_body.d.ts). If a future Rapier bump drops it, realizeChassis fails
+// loud at the call site — never silently omit the policy.
+export const ADDITIONAL_SOLVER_ITERATIONS = 4;
+
 export async function createPhysics({ deterministic = false } = {}) {
   const RAPIER = deterministic
     ? (await import('@dimforge/rapier3d-deterministic-compat')).default
@@ -225,4 +240,111 @@ export function addCorridorWithFeatures(RAPIER, world, terrain, options = {}) {
   const { floor, walls } = addCorridor(RAPIER, world, terrain);
   const features = addFeatures(RAPIER, world, terrain, floor, options);
   return { floor, walls, features };
+}
+
+// --- Chassis realization (PR #10): compiled assembly IR -> ONE dynamic body.
+//
+// The only place a vehicle chassis enters a world. Applies the full dynamic-
+// body policy in one spot so the compiled population inherits exactly the
+// setup the chassis-drop gate proved: CHASSIS_GROUPS on every collider, dual
+// CCD (hard CCD for convex-vs-convex + soft CCD for the heightfield — the
+// PR #9 finding), and ADDITIONAL_SOLVER_ITERATIONS. Contract mirrors
+// addFeatures: ALL validation runs before the world is touched; a degenerate
+// hull throws the F16 diagnosis (both the null-desc and the lazy
+// createCollider paths) and removes the partly-built body so a throw never
+// leaves debris in the world.
+const finiteVec = (v) => v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+
+export function realizeChassis(RAPIER, world, ir, options = {}) {
+  const {
+    position = { x: 0, y: 0, z: 0 },
+    rotation = { x: 0, y: 0, z: 0, w: 1 },
+    linvel = { x: 0, y: 0, z: 0 },
+  } = options;
+  if (!ir || ir.version !== 1 || !ir.chassis || !Array.isArray(ir.chassis.colliders) || ir.chassis.colliders.length === 0) {
+    throw new Error('realizeChassis: malformed IR (need version 1 and a non-empty chassis.colliders)');
+  }
+  if (!Number.isFinite(ir.chassis.density) || !(ir.chassis.density > 0)) {
+    throw new Error('realizeChassis: chassis density must be a finite number > 0');
+  }
+  // Full pre-world shape validation (external review): a zero/negative half-
+  // extent, a missing/NaN rotation, or a ragged/non-finite hull cloud would
+  // otherwise reach Rapier as a crash or silent-garbage collider. Everything
+  // here runs BEFORE createRigidBody, so a rejected IR provably leaves the
+  // world untouched (body count asserted by the negatives).
+  for (const c of ir.chassis.colliders) {
+    if (c.kind === 'cuboid') {
+      if (![c.hx, c.hy, c.hz].every((h) => Number.isFinite(h) && h > 0) || ![c.cx, c.cy, c.cz].every(Number.isFinite)) {
+        throw new Error('realizeChassis: cuboid collider needs positive finite half-extents and a finite center');
+      }
+      if (!c.rot || ![c.rot.x, c.rot.y, c.rot.z, c.rot.w].every(Number.isFinite)) {
+        throw new Error('realizeChassis: cuboid collider needs a finite rotation quaternion');
+      }
+    } else if (c.kind === 'convexHull') {
+      const pts = c.points;
+      if ((!Array.isArray(pts) && !(pts instanceof Float32Array)) || pts.length < 12 || pts.length % 3 !== 0) {
+        throw new Error('realizeChassis: convexHull collider needs a flat 3n-length points array with >= 4 points');
+      }
+      for (let i = 0; i < pts.length; i++) {
+        if (!Number.isFinite(pts[i])) throw new Error('realizeChassis: non-finite convexHull point coordinate');
+      }
+    } else {
+      throw new Error(`realizeChassis: unknown collider kind '${c && c.kind}'`);
+    }
+  }
+  if (!finiteVec(position) || !finiteVec(linvel) || !finiteVec(rotation) || !Number.isFinite(rotation.w)) {
+    throw new Error('realizeChassis: non-finite spawn pose');
+  }
+
+  const body = world.createRigidBody(
+    RAPIER.RigidBodyDesc.dynamic()
+      .setTranslation(position.x, position.y, position.z)
+      .setRotation(rotation)
+      .setLinvel(linvel.x, linvel.y, linvel.z)
+      .setCcdEnabled(true)
+      .setSoftCcdPrediction(SOFT_CCD_PREDICTION)
+      .setAdditionalSolverIterations(ADDITIONAL_SOLVER_ITERATIONS)
+  );
+  const colliders = [];
+  try {
+    for (const c of ir.chassis.colliders) {
+      let desc;
+      if (c.kind === 'cuboid') {
+        desc = RAPIER.ColliderDesc.cuboid(c.hx, c.hy, c.hz)
+          .setTranslation(c.cx, c.cy, c.cz)
+          .setRotation(c.rot);
+      } else {
+        desc = RAPIER.ColliderDesc.convexHull(new Float32Array(c.points));
+        if (desc === null) throw new Error('realizeChassis: degenerate convex hull (F16)');
+      }
+      desc.setDensity(ir.chassis.density).setCollisionGroups(CHASSIS_GROUPS);
+      if (c.kind === 'convexHull') {
+        // 0.19.x computes the hull lazily inside createCollider — a
+        // degenerate cloud surfaces as an opaque wasm throw here, not as a
+        // null desc (the addFeatures F16 pattern).
+        try {
+          colliders.push(world.createCollider(desc, body));
+        } catch {
+          throw new Error('realizeChassis: degenerate convex hull (F16)');
+        }
+      } else {
+        colliders.push(world.createCollider(desc, body));
+      }
+    }
+    // Post-create sanity, fail-loud: density × collider volume must yield
+    // finite positive mass and finite principal inertia (a zero/NaN inertia
+    // body integrates to NaN poses steps later — catch it at the seam).
+    const m = body.mass();
+    if (!Number.isFinite(m) || !(m > 0)) {
+      throw new Error(`realizeChassis: chassis mass ${m} is not finite and positive`);
+    }
+    const inv = body.invPrincipalInertia();
+    if (![inv.x, inv.y, inv.z].every(Number.isFinite)) {
+      throw new Error('realizeChassis: non-finite chassis inertia');
+    }
+  } catch (err) {
+    world.removeRigidBody(body); // never leave a half-built chassis behind
+    throw err;
+  }
+  return { body, colliders };
 }

@@ -6,16 +6,20 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, PR #9 landed. The canonical 1,000-spawn chassis
-fall-through gate (Phase 0 success criterion #1) passes on both Rapier
-flavors: 2,000 seeded chassis drops over the full composite corridor — floor,
-craters, walls, and feature colliders — including high-velocity probes at
-40–50 m/s that cross the box's own thickness per physics step. The gate
-exposed that hard CCD is inert against heightfields in Rapier 0.19.3; dynamic
-bodies now carry the adapter's soft-CCD policy (`SOFT_CCD_PREDICTION`), which
-is what actually catches them. `npm run dev` still renders the full composite
-corridor (add `?zones` to tint the zone map). Next is the assembly compiler +
-repair pass. The design docs in `docs/` define everything that comes after.
+**Status:** Phase 1, PR #10 landed. The assembly compiler + repair pass v0
+turns `[0,1]` genotypes into physically sane vehicles: three frame families
+(spine, ladder, convex hull), default-on bilateral symmetry with asymmetry
+still expressible, axle modules carried as data, and a deterministic,
+exactly-idempotent repair pass — domain-invalid genotypes fail loud,
+physically invalid ones are clamped, separated, and re-seated. Compiled
+chassis realize as single dynamic bodies carrying the collision-group,
+dual-CCD, and per-body solver-iteration policy, and a both-flavors physics
+gate proves they stay caught by the composite terrain (with negatives
+proving the gate's teeth). The genome contract is locked by two fingerprints
+(corpus `24cd0dd5`, chassis geometry `39bcd6c4`). `npm run dev` drops one
+compiled, hue-tinted ladder chassis at the start line (add `?zones` to tint
+the zone map). Next is S0: real cylinder wheels on rigid revolute joints.
+The design docs in `docs/` define everything that comes after.
 
 ## Quickstart
 

@@ -56,9 +56,10 @@ evidence notes. Reference only; never import from `legacy/`.
 
 - `src/sim/` — deterministic core: `prng.js`, `noise.js`, `terrain.js` (pure
   composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
-  support samples), `physics/adapter.js` (the only Rapier seam: realization,
-  seating, collision groups), later: genotype + assembly compiler, GA
-  operators. Must run headless in Node (tests and CI depend on it).
+  support samples), `assembly.js` (the genome contract: genotype schema +
+  compiler + repair v0), `physics/adapter.js` (the only Rapier seam:
+  realization, seating, collision groups, chassis), later: GA operators.
+  Must run headless in Node (tests and CI depend on it).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -70,7 +71,11 @@ evidence notes. Reference only; never import from `legacy/`.
   `features.test.js` (pure geometry contract + locked hull fingerprint),
   `feature-physics.test.js` (feature colliders + collision groups, BOTH
   flavors via `describe.each` × `createPhysics`), `chassis-drop.test.js`
-  (the canonical 1,000-spawn chassis fall-through gate, both flavors).
+  (the canonical 1,000-spawn chassis fall-through gate, both flavors),
+  `assembly.test.js` (genome contract: repair identity/idempotence/
+  no-mutation, per-rule corrections, symmetry, two locked fingerprints),
+  `assembly-physics.test.js` (compiled chassis on the composite terrain,
+  both flavors, policy readback + negative teeth).
 
 ## Current state & next steps (Phase 1)
 
@@ -176,9 +181,97 @@ success #1), and a load-bearing physics finding:**
 - `npm run lint && npm test && npm run build` all green; the Rapier init
   deprecation warning is still cosmetic — ignore.
 
+**PR #10 landed — assembly compiler + repair pass v0 (spec §3 / §7 step 7):
+pure genotype → repaired assembly IR, chassis realization only. The genotype
+schema is a locked design ruling — treat it like the terrain seed format:**
+- **`src/sim/assembly.js`** (pure, no Rapier, under the sim ban) — the genome
+  contract. Genotype: integer `version` (O4) + `[0,1]` genes with affine
+  decoders (SALVAGE convention; `GENE_RANGES` is the single scaling table;
+  wheel radius `g·0.5+0.2` kept verbatim; `gene[0]=hue` kept as top-level
+  `hue` = canonical flat index 0; divergences D1–D7 documented in the module
+  header + schema comments). Frame: segment LIST (v1 requires exactly length
+  1) × FIXED 6 node slots (`nodeCount` gene selects the active prefix;
+  cumulative `gap` spacing makes node x monotone by construction; per-family
+  latent blocks make family flips non-destructive), families
+  spine/ladder/hull — compound cuboids for spine/ladder, one f32 convex hull
+  for `hull` (points `Math.fround`-quantized ONCE, the features.js vertex
+  discipline; ≥2 nodes at distinct x ⇒ never degenerate from a valid
+  genotype). Axles: variable-length module list (cap `maxAxles` 6 ⇒ ≤12
+  wheels, the O1 default; corpus pinned to defaults), decoded/bounded/
+  snapped/repaired as **IR data only** — S0 realization is PR #11. Symmetry:
+  core gene, neutral 0.5 decoder (default-on is the future population
+  seeder's bias, NOT the decoder), expanded at build: paired modules mirror
+  exactly, singles snap to centerline; flips are count-stable; the per-module
+  latent `asym` block ({driveBias, sizeBias, centerOffset}) is gated, never
+  erased. Per-wheel `driveTorque` is PRE-computed from the global power
+  budget (`g·500`, split by normalized shares) so the split never appears
+  inside a force/velocity expression later (the legacy timeScale bug class).
+- **Repair contract: domain-invalid throws (`{path, value}`); physical
+  invalidity repairs.** Every correction is a fused clamp on the target gene
+  (bounds inverted through the affine decoder once — the target never
+  round-trips decode→modify→re-encode) in a forward DAG: single writer per
+  gene, position-independent bounds (`maxHalfHeight`, never
+  `heightAt(posX)` — that feedback loop is the known idempotence killer).
+  Repair is exactly idempotent, proven corpus-wide by BYTE-equality of the
+  canonical flat encoding — that guard is non-negotiable. Repair bounds the
+  EMITTED vehicle, not just base genes (external-review blocker, fixed
+  pre-merge): rules in order: axle-count cap → wheels-below-frame +
+  clearance (radius up; mount at frame vertical center, `mountY = 0`
+  explicit in IR) → wheel mass [2, 80] kg (density) → size-bias feasibility
+  (the sizeBias gene re-satisfies clearance + mass for the biased second
+  wheel a paired module emits; always feasible since f = 1 is in-band) →
+  track/offset vs corridor walls → longitudinal non-overlap (max-sweep by
+  the EMITTED max radius — expression-gated so a latent bias never shapes
+  the phenotype — capped at the frame end; residual overlap accepted —
+  collision-inert because vehicle self-pairs filter GROUND only) → chassis
+  mass [5, 500] kg. Corpus tests assert clearance + mass band over EVERY
+  emitted wheel. Anchor validity holds by construction (posX = fraction
+  of span). 0-axle / 0-driven genotypes are legal (sled, scores ~0).
+- **Two new locks @ seed 20260710, N=256** (`tests/assembly.test.js`):
+  repaired-genotype corpus `24cd0dd5` (f64 LE, the documented
+  `serializeGenotype` walk — array order, never object keys; re-locked
+  in-review for the R3b/R5 fix, still version 1 — the pre-review hash never
+  merged) and chassis-geometry `39bcd6c4` (IR colliders; hull points f32
+  LE; UNCHANGED by the re-lock — colliders derive only from never-repaired
+  frame genes). Changing either is a deliberate re-lock + genotype-version
+  bump. Suspension param
+  ranges (stiffness/damping/travel/restLength) are PROVISIONAL — PR #11
+  binds them to `configureMotorPosition` (expected re-lock, documented).
+- **`realizeChassis(RAPIER, world, ir, {position, rotation, linvel})`**
+  (adapter) — exactly ONE dynamic body per IR: `CHASSIS_GROUPS` on every
+  collider, dual CCD, and `.setAdditionalSolverIterations(
+  ADDITIONAL_SOLVER_ITERATIONS = 4)` — [V2] resolved, verified locally
+  against BOTH installed 0.19.3 flavors' typings (desc setter chainable +
+  `additionalSolverIterations()` readback; wheels inherit the budget through
+  the chassis joint island, so PR #11 does not set it per wheel). Validates
+  everything before touching the world; degenerate hulls fail loud and the
+  half-built body is removed. **Finding:** a COPLANAR hull cloud does NOT
+  fail 0.19.3 hull construction — it builds a zero-volume shape; the
+  post-create mass/inertia sanity assertion is the fail-loud that catches it
+  (all-identical points still hit the F16 null-desc/lazy-throw path). Both
+  modes locked as negatives.
+- **`tests/assembly-physics.test.js`** — BOTH flavors: 14-IR corpus (all
+  three families, symmetric/asymmetric, one repaired-from-violating) + 3
+  high-velocity probes on the full composite terrain; the PR #9 teeth
+  generalized per-IR (floor-only ray ≥ 0.6·`supports.minFace`, topmost
+  `CHASSIS_GROUPS` ray ≤ `supports.reach` + 0.35 — measured extremes in the
+  header band comment); full policy readback; strip-soft-CCD and
+  strip-GROUND-filter negatives both lose the body. NOT a new 1,000-spawn
+  gate — PR #9 stays the canonical criterion.
+- Dev scene: one compiled ladder chassis (declared corpus fork 9) drops at
+  the start line, hue-tinted, meshes from the same IR colliders. Terrain
+  paths and all five terrain fingerprints untouched.
+
 Next, in order (details in phase0-refresh §6 + spec §7):
-1. **Assembly compiler + repair pass** (spec §3); every emitted body carries
-   `CHASSIS_GROUPS`/`WHEEL_GROUPS` + the dual CCD policy above. 2. Axle
-   modules S0 → S1 → S2, each behind its own test gate; zone material response
-   (friction/drag/torque per `zoneAt` sample) lands with wheels, using
-   `WHEEL_GROUPS`. 3. Worker sharding with the 1-vs-4-workers equality test.
+1. **Axle modules S0 → S1 → S2** (spec §3.2), each behind its own test gate;
+   every wheel body carries `WHEEL_GROUPS` + the dual CCD policy; the IR
+   already carries anchors (`posX`, `mountY`), wheel cylinders, suspension
+   params, and per-wheel `driveTorque`. PR #11 must also: re-lock the
+   provisional suspension ranges when they bind to `configureMotorPosition`,
+   and revisit whether visually-overlapping wheels (the repair cap's accepted
+   residual) are acceptable for evolution even though physics ignores them.
+   Zone material response (friction/drag/torque per `zoneAt` sample) lands
+   with wheels. 2. GA operators (spec §3.3: module-exchange crossover,
+   structural vs parametric mutation) + the population seeder (symmetry
+   default-on bias lives there). 3. Worker sharding with the 1-vs-4-workers
+   equality test.

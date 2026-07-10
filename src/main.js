@@ -10,11 +10,13 @@
 
 import * as THREE from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
-import { createPhysics, addCorridorWithFeatures, FIXED_DT } from './sim/physics/adapter.js';
+import { createPhysics, addCorridorWithFeatures, realizeChassis, FIXED_DT } from './sim/physics/adapter.js';
 import { MATERIALS, generateCorridorTerrain, indexToLocalXZ } from './sim/terrain.js';
+import { compileAssembly, randomGenotype } from './sim/assembly.js';
 import { Rng } from './sim/prng.js';
 
 const SEED = 20260708;
+const CHASSIS_SEED = 20260710; // the assembly-corpus seed family (PR #10)
 const hud = document.getElementById('hud');
 
 // Build a Three mesh from the heightfield using the SAME col->+X / row->+Z
@@ -108,6 +110,33 @@ function buildFeatureMesh(realized) {
   return mesh;
 }
 
+// One compiled chassis (PR #10: assembly compiler v0 — chassis only, no
+// wheels yet). Meshes are built from the SAME IR colliders the physics body
+// uses (BoxGeometry per cuboid / ConvexGeometry from the exact fround'd hull
+// points), tinted from gene[0] (hue) — the SALVAGE render-tint convention.
+function buildChassisMesh(ir) {
+  const material = new THREE.MeshLambertMaterial({
+    color: new THREE.Color().setHSL(ir.render.hue, 0.7, 0.55),
+  });
+  const group = new THREE.Group();
+  for (const c of ir.chassis.colliders) {
+    let mesh;
+    if (c.kind === 'cuboid') {
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(c.hx * 2, c.hy * 2, c.hz * 2), material);
+      mesh.position.set(c.cx, c.cy, c.cz);
+      mesh.quaternion.set(c.rot.x, c.rot.y, c.rot.z, c.rot.w);
+    } else {
+      const verts = [];
+      for (let i = 0; i < c.points.length; i += 3) {
+        verts.push(new THREE.Vector3(c.points[i], c.points[i + 1], c.points[i + 2]));
+      }
+      mesh = new THREE.Mesh(new ConvexGeometry(verts), material);
+    }
+    group.add(mesh);
+  }
+  return group;
+}
+
 async function boot() {
   const { RAPIER, world } = await createPhysics({ deterministic: false });
   const terrain = generateCorridorTerrain({ seed: SEED });
@@ -125,8 +154,8 @@ async function boot() {
   scene.fog = new THREE.Fog(bg, 45, 150); // far corridor fades into depth
 
   const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 400);
-  camera.position.set(-terrain.scale.x / 2 - 10, 15, 20); // behind-left of the start line
-  camera.lookAt(-terrain.scale.x / 2 + 30, 0, 0); // gaze down +X, the corridor length
+  camera.position.set(-terrain.scale.x / 2 - 12, 14, 16); // behind-left of the start line
+  camera.lookAt(-terrain.scale.x / 2 + 22, 0, 0); // gaze down +X, chassis spawn in frame
 
   scene.add(new THREE.HemisphereLight(0xbfd4e6, 0x1c2a1e, 1.1));
   const sun = new THREE.DirectionalLight(0xffffff, 2.4);
@@ -155,6 +184,17 @@ async function boot() {
   // --- Zone debug overlay (dev flag: append ?zones to the URL) ---
   const showZones = new URLSearchParams(window.location.search).has('zones');
   if (showZones) scene.add(buildZoneOverlay(terrain));
+
+  // --- One compiled chassis dropped near the start line (PR #10) ---
+  // fork(9) is a declared deterministic pick: a 7-collider ladder frame with
+  // 4 axle modules — visually unmistakable as a compiled frame (fork 0 is a
+  // single-cuboid 0-axle sled, which reads as just another feature box).
+  const chassisIR = compileAssembly(randomGenotype(new Rng(CHASSIS_SEED).fork(9)));
+  const { body: chassisBody } = realizeChassis(RAPIER, world, chassisIR, {
+    position: { x: -terrain.scale.x / 2 + 8, y: terrain.bounds.maxY + 6, z: 0 },
+  });
+  const chassisMesh = buildChassisMesh(chassisIR);
+  scene.add(chassisMesh);
 
   // --- Seeded debris: cubes dropped onto the corridor (deterministic layout) ---
   const rng = new Rng(0xb0c3d001);
@@ -200,8 +240,12 @@ async function boot() {
       mesh.position.set(p.x, p.y, p.z);
       mesh.quaternion.set(q.x, q.y, q.z, q.w);
     }
+    const cp = chassisBody.translation();
+    const cq = chassisBody.rotation();
+    chassisMesh.position.set(cp.x, cp.y, cp.z);
+    chassisMesh.quaternion.set(cq.x, cq.y, cq.z, cq.w);
 
-    hud.textContent = `corridor · seed ${SEED} · ${features.length} features${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
+    hud.textContent = `corridor · seed ${SEED} · ${features.length} features · chassis: ${chassisIR.chassis.family}${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
     renderer.render(scene, camera);
   });
 

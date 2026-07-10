@@ -125,12 +125,16 @@ function buildChassisMesh(ir) {
       mesh = new THREE.Mesh(new THREE.BoxGeometry(c.hx * 2, c.hy * 2, c.hz * 2), material);
       mesh.position.set(c.cx, c.cy, c.cz);
       mesh.quaternion.set(c.rot.x, c.rot.y, c.rot.z, c.rot.w);
-    } else {
+    } else if (c.kind === 'convexHull') {
       const verts = [];
       for (let i = 0; i < c.points.length; i += 3) {
         verts.push(new THREE.Vector3(c.points[i], c.points[i + 1], c.points[i + 2]));
       }
       mesh = new THREE.Mesh(new ConvexGeometry(verts), material);
+    } else {
+      // Explicit, like realizeChassis: a future collider kind must fail loud
+      // here, not silently render as a hull of undefined points.
+      throw new Error(`buildChassisMesh: unknown collider kind '${c && c.kind}'`);
     }
     group.add(mesh);
   }

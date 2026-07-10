@@ -267,14 +267,26 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
   if (!Number.isFinite(ir.chassis.density) || !(ir.chassis.density > 0)) {
     throw new Error('realizeChassis: chassis density must be a finite number > 0');
   }
+  // Full pre-world shape validation (external review): a zero/negative half-
+  // extent, a missing/NaN rotation, or a ragged/non-finite hull cloud would
+  // otherwise reach Rapier as a crash or silent-garbage collider. Everything
+  // here runs BEFORE createRigidBody, so a rejected IR provably leaves the
+  // world untouched (body count asserted by the negatives).
   for (const c of ir.chassis.colliders) {
     if (c.kind === 'cuboid') {
-      if (![c.hx, c.hy, c.hz, c.cx, c.cy, c.cz].every(Number.isFinite)) {
-        throw new Error('realizeChassis: non-finite cuboid collider fields');
+      if (![c.hx, c.hy, c.hz].every((h) => Number.isFinite(h) && h > 0) || ![c.cx, c.cy, c.cz].every(Number.isFinite)) {
+        throw new Error('realizeChassis: cuboid collider needs positive finite half-extents and a finite center');
+      }
+      if (!c.rot || ![c.rot.x, c.rot.y, c.rot.z, c.rot.w].every(Number.isFinite)) {
+        throw new Error('realizeChassis: cuboid collider needs a finite rotation quaternion');
       }
     } else if (c.kind === 'convexHull') {
-      if (!Array.isArray(c.points) && !(c.points instanceof Float32Array)) {
-        throw new Error('realizeChassis: convexHull collider needs a points array');
+      const pts = c.points;
+      if ((!Array.isArray(pts) && !(pts instanceof Float32Array)) || pts.length < 12 || pts.length % 3 !== 0) {
+        throw new Error('realizeChassis: convexHull collider needs a flat 3n-length points array with >= 4 points');
+      }
+      for (let i = 0; i < pts.length; i++) {
+        if (!Number.isFinite(pts[i])) throw new Error('realizeChassis: non-finite convexHull point coordinate');
       }
     } else {
       throw new Error(`realizeChassis: unknown collider kind '${c && c.kind}'`);

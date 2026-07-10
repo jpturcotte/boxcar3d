@@ -327,6 +327,24 @@ describe('negative teeth (default flavor — deterministic single spawns, tunnel
       expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: { density: NaN, colliders: ir.chassis.colliders } })).toThrow(/density/);
       expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: { density: 100, colliders: [{ kind: 'sphere' }] } })).toThrow(/unknown collider kind/);
       expect(() => realizeChassis(RAPIER, world, ir, { position: { x: NaN, y: 0, z: 0 } })).toThrow(/spawn pose/);
+      // Per-field collider shape rejections (external review hardening) —
+      // every one must fire BEFORE createRigidBody, so the final body-count
+      // assertion below proves rejection has zero world side effects.
+      const cub = (patch) => ({
+        version: 1,
+        chassis: { density: 100, colliders: [{ kind: 'cuboid', hx: 0.3, hy: 0.2, hz: 0.2, cx: 0, cy: 0, cz: 0, rot: { x: 0, y: 0, z: 0, w: 1 }, ...patch }] },
+      });
+      expect(() => realizeChassis(RAPIER, world, cub({ hx: 0 }))).toThrow(/positive finite half-extents/);
+      expect(() => realizeChassis(RAPIER, world, cub({ hy: -0.1 }))).toThrow(/positive finite half-extents/);
+      expect(() => realizeChassis(RAPIER, world, cub({ cz: NaN }))).toThrow(/positive finite half-extents/);
+      expect(() => realizeChassis(RAPIER, world, cub({ rot: undefined }))).toThrow(/rotation quaternion/);
+      expect(() => realizeChassis(RAPIER, world, cub({ rot: { x: 0, y: 0, z: 0, w: NaN } }))).toThrow(/rotation quaternion/);
+      const hull = (points) => ({ version: 1, chassis: { density: 100, colliders: [{ kind: 'convexHull', points }] } });
+      expect(() => realizeChassis(RAPIER, world, hull(Array(10).fill(0.5)))).toThrow(/3n-length/); // ragged (10 % 3 != 0)
+      expect(() => realizeChassis(RAPIER, world, hull(Array(9).fill(0.5)))).toThrow(/3n-length/); // only 3 points
+      const nanHull = Array(24).fill(0.5);
+      nanHull[7] = NaN;
+      expect(() => realizeChassis(RAPIER, world, hull(nanHull))).toThrow(/non-finite convexHull point/);
       expect(world.bodies.len()).toBe(before); // no side effects from any rejection
     } finally {
       world.free();

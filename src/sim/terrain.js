@@ -36,6 +36,19 @@ export const MATERIALS = Object.freeze({ FIRM: 0, SAND: 1, MUD: 2 });
 // append-only, never reorder (locked features fingerprint).
 export const FEATURE_TYPES = Object.freeze(['boulder', 'ramp', 'log']);
 
+// Resource-budget ceiling on the heightfield: vertices = (rows+1)*(cols+1).
+// Every scalar knob is finite-validated, but a finite-yet-tiny cellSize (or a
+// finite-yet-huge length/width) still yields a grid too large to allocate —
+// a raw Float32Array RangeError, or silent integer-precision loss past 2^53 —
+// which is exactly the fail-loud class validateConfig exists to catch. Cap the
+// vertex count so those fail with a diagnostic BEFORE the allocation.
+// The ceiling is a deliberate ruling, not a round guess: the heightfield is
+// the dominant allocation, and 2^22 vertices (a 16 MB Float32Array) is ~2,600×
+// the default 121×13 corridor and ~7× an aggressive 600 m × 60 m corridor at
+// 0.25 m cells — generous headroom for any GA-scale terrain, while staying
+// ~1,000× under the Float32Array element limit (2^32−1) and far under 2^53.
+export const MAX_TERRAIN_VERTICES = 4194304; // 2^22
+
 // The public config contract, exported so the scalar-knob domain sweep in
 // tests/terrain.test.js can enumerate every knob programmatically (a new knob
 // is swept automatically). DEEP-frozen — the nested ranges and the weight
@@ -445,6 +458,14 @@ export function generateCorridorTerrain(options = {}) {
   // a heightfield needs at least one cell per axis.
   if (rows < 1 || cols < 1) {
     throw new Error('generateCorridorTerrain: length/width round to fewer than one cell — increase them or decrease cellSize');
+  }
+  // Resource-budget ceiling (see MAX_TERRAIN_VERTICES): guard each dimension
+  // FIRST so the product below is computed only when both factors are already
+  // bounded — (MAX+1)^2 stays exact in f64, no precision loss to mask an
+  // over-budget grid. Catches a tiny cellSize (rows/cols explode), a huge
+  // dimension, or an in-bounds-per-axis pair whose product overflows.
+  if (rows > MAX_TERRAIN_VERTICES || cols > MAX_TERRAIN_VERTICES || (rows + 1) * (cols + 1) > MAX_TERRAIN_VERTICES) {
+    throw new Error(`generateCorridorTerrain: grid of ${rows}×${cols} cells exceeds MAX_TERRAIN_VERTICES (${MAX_TERRAIN_VERTICES}) — increase cellSize or reduce length/width`);
   }
   const scale = { x: length, y: 1, z: width }; // y=1 -> heights are literal metres
   const heights = new Float32Array((rows + 1) * (cols + 1));

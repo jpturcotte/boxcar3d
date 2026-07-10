@@ -1,7 +1,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   generateCorridorTerrain, indexToLocalXZ, startEnvelope, craterDepthAt,
-  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal, TERRAIN_DEFAULTS,
+  zoneAt, MATERIALS, FEATURE_TYPES, heightAtLocal, TERRAIN_DEFAULTS, MAX_TERRAIN_VERTICES,
 } from '../src/sim/terrain.js';
 
 // Pure generator tests (no Rapier / WASM). Physics realization + the fall-through
@@ -640,6 +640,18 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       positiveInteger: [],
     };
 
+    test('TERRAIN_DEFAULTS is DEEP-frozen: root and every nested array/object (the public-contract claim)', () => {
+      // A shallow Object.freeze would leave the nested range arrays and the
+      // featureTypeWeights object mutable through the exported reference — a
+      // consumer could rewrite process-wide defaults. Lock the deep freeze.
+      expect(Object.isFrozen(TERRAIN_DEFAULTS)).toBe(true);
+      for (const [key, value] of Object.entries(TERRAIN_DEFAULTS)) {
+        if (value !== null && typeof value === 'object') {
+          expect(Object.isFrozen(value), `TERRAIN_DEFAULTS.${key} must be frozen`).toBe(true);
+        }
+      }
+    });
+
     test('SCALAR_DOMAINS covers exactly the scalar numeric knobs of TERRAIN_DEFAULTS (add a domain entry when adding a knob)', () => {
       const scalarKnobs = Object.keys(TERRAIN_DEFAULTS)
         .filter((key) => typeof TERRAIN_DEFAULTS[key] === 'number')
@@ -663,6 +675,38 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       // Before this guard, seed NaN reached `seed >>> 0` and produced heights
       // byte-identical to seed 0 while terrain.seed recorded NaN.
       expect(() => generateCorridorTerrain({ seed: NaN })).toThrow(/seed/);
+    });
+
+    // ---- Resource-budget ceiling on the heightfield (external-review blocker) ----
+    // Finite-but-degenerate dimensions passed every scalar-knob check yet
+    // still exploded the Float32Array allocation (a tiny cellSize -> a raw
+    // "Invalid typed array length" RangeError; a huge length -> "Array buffer
+    // allocation failed") or silently over-allocated (an in-bounds-per-axis
+    // pair whose PRODUCT is enormous built a multi-MB grid with no complaint).
+    // MAX_TERRAIN_VERTICES turns all of those into one named diagnostic.
+    test('rejects finite grids over MAX_TERRAIN_VERTICES: tiny cellSize, huge dimension, or over-budget product', () => {
+      // Tiny cellSize: rows/cols explode past the per-axis arm.
+      expect(() => generateCorridorTerrain({ seed: 1, cellSize: 1e-9 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      // Huge single dimension (finite).
+      expect(() => generateCorridorTerrain({ seed: 1, length: 1e12 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      expect(() => generateCorridorTerrain({ seed: 1, width: 1e12 })).toThrow(/MAX_TERRAIN_VERTICES/);
+      // Each dimension is modest (3000 < the ceiling) but the product is not:
+      // 3001*3001 ≈ 9.0M > 4.19M. This case BUILT silently before the guard.
+      expect(() => generateCorridorTerrain({ seed: 1, length: 3000, width: 3000 })).toThrow(/MAX_TERRAIN_VERTICES/);
+    });
+
+    test('accepts a grid exactly at MAX_TERRAIN_VERTICES, rejects one cell past it', () => {
+      // A 1-row corridor pins the vertex count to 2*(cols+1); length picks cols.
+      // startFlatLength = length (blend 0) makes the whole corridor flat pad, so
+      // this near-ceiling grid generates cheaply (no noise eval, no craters,
+      // empty zone set) — the boundary check without a heavy build.
+      const colsAt = MAX_TERRAIN_VERTICES / 2 - 1; // 2*(colsAt+1) === MAX
+      const atLimit = { seed: 1, width: 1, cellSize: 1, length: colsAt, startFlatLength: colsAt, startBlendLength: 0 };
+      expect(() => generateCorridorTerrain(atLimit)).not.toThrow();
+      const over = generateCorridorTerrain(atLimit); // exactly at the ceiling
+      expect((over.rows + 1) * (over.cols + 1)).toBe(MAX_TERRAIN_VERTICES);
+      // One more cell of length tips the vertex count past the ceiling.
+      expect(() => generateCorridorTerrain({ seed: 1, width: 1, cellSize: 1, length: colsAt + 1 })).toThrow(/MAX_TERRAIN_VERTICES/);
     });
   });
 });

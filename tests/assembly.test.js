@@ -478,10 +478,15 @@ describe('frame families compile to valid IR', () => {
       expect(ir.chassis.massEstimate).toBeLessThanOrEqual(ASSEMBLY_RULES.chassisMass[1] + 1e-9);
       expect(ir.chassis.supports.minFace).toBeGreaterThanOrEqual(ASSEMBLY_RULES.minPartHalfExtent);
       expect(ir.chassis.supports.reach).toBeGreaterThan(ir.chassis.supports.minFace);
-      // Precision note: clearBound derives from the f64 gene-decoded frame
-      // height, but emitted hull-family points are Math.fround-quantized and
-      // can sit up to half an f32 ulp (~1.5e-8 m) above that height — below
-      // Rapier's own f32 numeric floor, and far inside the 1e-9 slack below.
+      // Precision note: this assertion lives entirely in f64 GENE space —
+      // `w.radius` and `clearBound` are both decoded from repaired genes, and
+      // the 1e-9 slack below absorbs only f64 rounding in that clearance
+      // arithmetic. It does NOT compare realized f32 hull geometry: emitted
+      // hull-family points are Math.fround-quantized and can sit up to ~1.5e-8 m
+      // (well ABOVE this 1e-9 slack) off the gene-space height. That is a
+      // separate, realized-geometry concern — a check on the f32 collider
+      // clearance would need its own, explicitly f32-scale tolerance; it must
+      // not silently loosen this gene-space bound.
       const clearBound = maxHalfHeightOf(repaired) + ASSEMBLY_RULES.clearance;
       for (const ax of ir.axles) {
         for (const w of ax.wheels) {

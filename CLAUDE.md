@@ -263,8 +263,10 @@ schema is a locked design ruling — treat it like the terrain seed format:**
   paths and all five terrain fingerprints untouched.
 
 **Pre-S0 hardening PR landed — five external-review findings closed. Zero
-behavior change for in-domain project inputs (all seven locked fingerprints
-byte-identical); garbage and newly ruled-out inputs now fail loud:**
+behavior change for in-domain project inputs (every existing locked
+fingerprint byte-identical — the noise lock, the five terrain locks, the
+boulder-hull geometry lock, and the two assembly locks); garbage and newly
+ruled-out inputs now fail loud:**
 - **`validateConfig` is function-wide** (`src/sim/terrain.js`): every scalar
   knob carries `Number.isFinite` + its documented domain. The NaN/`!(x > 0)`
   comparison bug class the frequency block had fixed once existed in every
@@ -281,7 +283,11 @@ byte-identical); garbage and newly ruled-out inputs now fail loud:**
   the sweep in `tests/terrain.test.js` — `SCALAR_DOMAINS` must equal the
   scalar knobs by exact set equality, so a new knob fails until it declares a
   domain. Octaves stay validated downstream in fbm2D (deliberate; the sweep
-  locks the propagate path via `/octaves/`).
+  locks the propagate path via `/octaves/`). A finite-yet-degenerate grid
+  (tiny cellSize, huge dimension, or an over-budget product) no longer
+  RangeErrors or over-allocates silently — `MAX_TERRAIN_VERTICES` (2^22, a
+  documented resource-budget ceiling) fails it loud before the Float32Array
+  allocation (external-review blocker).
 - ESLint sim block bans `Date` alongside `performance` (hard rule 2 /
   red-team F3); no sim file used it — teeth verified by stdin probe.
 - Dev-scene debris carries the dual-CCD policy (hard CCD alone is

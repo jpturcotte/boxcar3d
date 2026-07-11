@@ -368,10 +368,16 @@ async function boot() {
       strutAnchor.z += cp.z;
       const hp = hubBody.translation();
       strutDir.set(hp.x, hp.y, hp.z).sub(strutAnchor);
-      const len = Math.max(strutDir.length(), 0.02);
+      const len = strutDir.length();
       mesh.position.copy(strutAnchor);
-      mesh.quaternion.setFromUnitVectors(DOWN, strutDir.normalize());
-      mesh.scale.set(1, len, 1);
+      // At full compression the hub coincides with the anchor (len → 0). Three
+      // r185 is NaN-safe here (normalize() divides by `length || 1`, leaving a
+      // zero vector zero, and setFromUnitVectors(DOWN, zero) → identity), but
+      // orient explicitly only when there is a real direction — clearer intent
+      // than relying on the fallback, and the strut just points DOWN when flat.
+      if (len > 1e-6) mesh.quaternion.setFromUnitVectors(DOWN, strutDir.divideScalar(len));
+      else mesh.quaternion.identity();
+      mesh.scale.set(1, Math.max(len, 0.02), 1);
     }
     // Live rear prismatic coordinate through the pure projection (the engine
     // exposes no readback) — the free correctness eyeball: it sags under

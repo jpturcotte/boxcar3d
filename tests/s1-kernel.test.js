@@ -190,6 +190,19 @@ test('vehicleWheelTransforms: S0 stations are EXACTLY s0WheelTransforms; S1 stat
   });
 });
 
+test('vehicleWheelTransforms THROWS on S2/unknown — no silent rigid fallback (the helper is public and called before the realizer validates)', () => {
+  // The helper is exported and main.js calls it independently to size the
+  // spawn height, BEFORE realizeVehicle's validation. It must not hand an
+  // S2/unknown axle an apparently-valid S0 placement plan.
+  const s2 = canonicalIR([0.5, 0.9]); // an S1 + S2 mix compiles as legal IR data
+  expect(() => vehicleWheelTransforms(s2, {}))
+    .toThrow(/unsupported suspension type 'S2'/);
+  const weird = canonicalIR();
+  weird.axles[0].suspension.type = 'S9';
+  expect(() => vehicleWheelTransforms(weird, {}))
+    .toThrow(/unsupported suspension type 'S9'/);
+});
+
 test('vehicleWorldAxes: the vehicle-local ruling in pure form — roll-180 REVERSES the suspension axis', () => {
   const id = vehicleWorldAxes(IDENTITY);
   expect(id.suspension).toEqual({ x: 0, y: -1, z: 0 });
@@ -497,6 +510,10 @@ describe.each([
         .toThrow(/hub record is missing/);
       expect(() => realizeVehicle(RAPIER, world, broken((ir) => { ir.mass.hubsTotal += 1; }), {}))
         .toThrow(/hubsTotal .* disagrees with the stored hub records/);
+      // A corrupted canonical total is caught by the unconditional mass-block
+      // coherence check.
+      expect(() => realizeVehicle(RAPIER, world, broken((ir) => { ir.mass.total += 5; }), {}))
+        .toThrow(/ir\.mass\.total .* disagrees with chassis \+ wheelsTotal \+ hubsTotal/);
       expect(() => realizeVehicle(RAPIER, world, broken((ir) => { ir.axles[0].suspension.stiffness = NaN; }), {}))
         .toThrow(/suspension\.stiffness must be a finite number >= 0/);
       expect(() => realizeVehicle(RAPIER, world, broken((ir) => { ir.axles[0].suspension.travel = -0.1; }), {}))
@@ -507,6 +524,22 @@ describe.each([
       expect(() => realizeVehicle(RAPIER, world, broken((ir) => { ir.version = 1; }), {}))
         .toThrow(/malformed IR/);
       expect(counts(world)).toEqual(before); // zero side effects from any rejection
+
+      // The all-S0 v2 coherence holes the review flagged: a stale hub record
+      // on an S0 wheel, and a nonzero hubsTotal on an all-S0 IR, both realize
+      // to a physical mass below the canonical total unless rejected. The
+      // checks are UNCONDITIONAL (the all-S0 case is the zero case).
+      const brokenS0 = (mutate) => {
+        const ir = canonicalIR([0, 0]); // all-S0
+        mutate(ir);
+        return ir;
+      };
+      const beforeS0 = counts(world);
+      expect(() => realizeVehicle(RAPIER, world, brokenS0((ir) => { ir.axles[0].wheels[0].hub = { mass: 1 }; }), {}))
+        .toThrow(/hub must be null on a non-S1 wheel/);
+      expect(() => realizeVehicle(RAPIER, world, brokenS0((ir) => { ir.mass.hubsTotal = 3; }), {}))
+        .toThrow(/hubsTotal .* disagrees with the stored hub records/);
+      expect(counts(world)).toEqual(beforeS0);
     } finally {
       world.free();
     }

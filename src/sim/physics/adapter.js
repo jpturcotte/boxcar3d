@@ -494,10 +494,13 @@ export function suspensionAnchorLocal(axle, wheel) {
 }
 
 // The quiescent-spawn coordinate (metres of extension from full compression):
-// clamp(restLength, 0, travel). The spring spawns AT its set point (zero
-// stored energy) — never at full compression (a birth-launch). Preload
-// (restLength > travel) spawns at the extension stop, which IS its static
-// state; zero travel returns 0 (a locked suspension).
+// clamp(restLength, 0, travel) — the nearest legal coordinate to the motor
+// target. In range (restLength ≤ travel) that IS the natural length, so the
+// spring spawns force-free; NEVER at full compression (a birth-launch).
+// Preload (restLength > travel) spawns AT the extension stop with the motor
+// target still beyond it — deliberately nonzero preload force pressing the
+// stop, which IS its static state, not stored launch energy. Zero travel
+// returns 0 (a locked suspension).
 export function s1SpawnCoordinate(suspension) {
   return Math.min(Math.max(suspension.restLength, 0), suspension.travel);
 }
@@ -535,8 +538,11 @@ export function vehicleWorldAxes(rotation) {
 //   { axleIndex, wheelIndex, suspensionType, anchorLocal,
 //     spawnCoordinate,   // s1SpawnCoordinate(suspension) for S1, null for S0
 //     local, world }     // the body center: S0 wheel, or S1 hub AND wheel
-// Assumes a validated IR (realizeVehicle rejects S2/unknown types pre-world
-// BEFORE computing placements); non-S1 types get the S0 expression.
+// EXPLICIT dispatch (this helper is exported and callable independently of
+// realizeVehicle — e.g. main.js sizes its spawn height from it BEFORE the
+// realizer's validation runs): S2/unknown types THROW here rather than
+// silently receiving a rigid S0 plan, so no caller can be handed an
+// apparently-valid placement for a type the realizer will reject.
 export function vehicleWheelTransforms(ir, { position = { x: 0, y: 0, z: 0 }, rotation = { x: 0, y: 0, z: 0, w: 1 } } = {}) {
   const out = [];
   ir.axles.forEach((axle, axleIndex) => {
@@ -547,7 +553,7 @@ export function vehicleWheelTransforms(ir, { position = { x: 0, y: 0, z: 0 }, ro
         const spawnCoordinate = s1SpawnCoordinate(axle.suspension);
         const t = s1WheelTransformAt(axle, wheel, spawnCoordinate, { position, rotation });
         out.push({ axleIndex, wheelIndex, suspensionType, anchorLocal, spawnCoordinate, local: t.local, world: t.world });
-      } else {
+      } else if (suspensionType === 'S0') {
         const r = rotateByQuat(rotation, anchorLocal);
         out.push({
           axleIndex,
@@ -558,6 +564,8 @@ export function vehicleWheelTransforms(ir, { position = { x: 0, y: 0, z: 0 }, ro
           local: anchorLocal,
           world: { x: position.x + r.x, y: position.y + r.y, z: position.z + r.z },
         });
+      } else {
+        throw new Error(`vehicleWheelTransforms: unsupported suspension type '${String(suspensionType)}' at axles[${axleIndex}] — only S0 and S1 have a placement plan`);
       }
     });
   });
@@ -609,6 +617,12 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
     targetAngvel = MOTOR_TARGET_ANGVEL,
     wheelFriction = WHEEL_FRICTION,
   } = options;
+  // ir.version IS the realizer compatibility gate (the compiled
+  // physical-record contract). ir.genotypeVersion is INFORMATIONAL provenance
+  // (which gene schema produced this IR) — deliberately NOT gated here, since
+  // two genotype-schema versions could compile to the same physical-record
+  // contract; a genotype-schema bump that changed the IR shape would bump
+  // ASSEMBLY_IR_VERSION too, and that is what this guard catches.
   if (!ir || ir.version !== ASSEMBLY_IR_VERSION || !Array.isArray(ir.axles)) {
     throw new Error(`${label}: malformed IR (need assembly IR version ${ASSEMBLY_IR_VERSION} and an axles array)`);
   }
@@ -672,7 +686,15 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
       if (Math.abs(w.mass - derived) > 1e-9 * Math.max(1, w.mass)) {
         throw new Error(`${label}: ${at}.mass ${w.mass} disagrees with π·r²·width·density = ${derived}`);
       }
-      if (type === 'S1') {
+      if (type !== 'S1') {
+        // The compiler emits hub: null on every non-S1 wheel; a stale hub
+        // record on an S0 wheel is hand-edited IR the realizer would silently
+        // ignore (it reads w.hub only on S1 stations) while ir.mass.hubsTotal
+        // still counted it — the v2 physical-record contract rejects it.
+        if (w.hub !== null) {
+          throw new Error(`${label}: ${at}.hub must be null on a non-S1 wheel (got ${String(w.hub)})`);
+        }
+      } else {
         // The compiler-owned hub record (assembly IR v2). The realizer
         // CONSUMES the stored record; recomputing it through the imported
         // policy here is the tamper guard — it catches a hand-edited record,
@@ -703,15 +725,29 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
       if (w.driven && w.driveTorque > 0) anyMotor = true;
     });
   });
-  if (anyS1) {
-    // Canonical hub-mass accounting must match the stored records (the
-    // ir.mass.hubsTotal tamper guard; same axle-then-wheel float-add order
-    // buildIR documents).
-    const storedSum = ir.axles.flatMap((ax) => ax.wheels).reduce((s, w) => s + (w.hub ? w.hub.mass : 0), 0);
-    const hubsTotal = ir.mass ? ir.mass.hubsTotal : undefined;
-    if (!Number.isFinite(hubsTotal) || Math.abs(hubsTotal - storedSum) > 1e-9 * Math.max(1, storedSum)) {
-      throw new Error(`${label}: ir.mass.hubsTotal ${String(hubsTotal)} disagrees with the stored hub records' sum ${storedSum}`);
-    }
+  // Canonical mass-block coherence — checked UNCONDITIONALLY (the all-S0
+  // case is the zero case, not an exemption): ir.mass.hubsTotal must equal
+  // the stored hub records' sum (same axle-then-wheel float-add order buildIR
+  // documents), and ir.mass.total must equal chassis + wheelsTotal + hubsTotal
+  // (buildIR's exact addition order). This closes the tamper hole where a
+  // hand-edited all-S0 v2 IR carried stale hubs or a nonzero hubsTotal and
+  // realized to a physical mass below its own canonical total. (ir.mass.*
+  // stay the CANONICAL estimates; the realizer returns REALIZED readbacks
+  // separately.)
+  const mass = ir.mass;
+  if (!mass || typeof mass !== 'object') {
+    throw new Error(`${label}: ir.mass is missing — the assembly IR v2 mass block is required`);
+  }
+  const storedHubSum = ir.axles.flatMap((ax) => ax.wheels).reduce((s, w) => s + (w.hub ? w.hub.mass : 0), 0);
+  if (!Number.isFinite(mass.hubsTotal) || Math.abs(mass.hubsTotal - storedHubSum) > 1e-9 * Math.max(1, storedHubSum)) {
+    throw new Error(`${label}: ir.mass.hubsTotal ${String(mass.hubsTotal)} disagrees with the stored hub records' sum ${storedHubSum}`);
+  }
+  for (const k of ['chassis', 'wheelsTotal', 'total']) {
+    if (!Number.isFinite(mass[k])) throw new Error(`${label}: ir.mass.${k} must be finite (${String(mass[k])})`);
+  }
+  const totalExpected = mass.chassis + mass.wheelsTotal + mass.hubsTotal;
+  if (Math.abs(mass.total - totalExpected) > 1e-9 * Math.max(1, totalExpected)) {
+    throw new Error(`${label}: ir.mass.total ${mass.total} disagrees with chassis + wheelsTotal + hubsTotal = ${totalExpected}`);
   }
   if (!finiteVec(position) || !finiteVec(linvel) || !finiteVec(rotation) || !Number.isFinite(rotation.w)) {
     throw new Error(`${label}: non-finite spawn pose`);
@@ -843,6 +879,18 @@ function constructVehicle(RAPIER, world, ir, v) {
         const hinv = hubBody.invPrincipalInertia();
         if (![hinv.x, hinv.y, hinv.z].every((c) => Number.isFinite(c) && c > 0)) {
           throw new Error(`${label}: hub inverse inertia must be finite and > 0 (a rotation-locked hub would fight the drive path)`);
+        }
+        // Cross-check the REALIZED principal inertia against the IR record
+        // (the whole reason the hub carries a collider — else this readback is
+        // zero until the first step). Rapier reports principal values in the
+        // principal frame's ordering, so compare as a SORTED set; the 1e-3
+        // relative band mirrors the mass guard's f32 tolerance.
+        const gotI = [1 / hinv.x, 1 / hinv.y, 1 / hinv.z].sort((a, b) => a - b);
+        const wantI = [rec.principalInertia.x, rec.principalInertia.y, rec.principalInertia.z].sort((a, b) => a - b);
+        for (let ii = 0; ii < 3; ii++) {
+          if (Math.abs(gotI[ii] - wantI[ii]) > 1e-3 * Math.max(1e-3, wantI[ii])) {
+            throw new Error(`${label}: realized hub principal inertia ${gotI.join(',')} drifted from the IR record ${wantI.join(',')}`);
+          }
         }
         // The suspension: chassis→hub prismatic along the vehicle-local
         // axis. Chassis anchor = the full-compression point (the S0 wheel

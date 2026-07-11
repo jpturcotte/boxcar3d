@@ -101,24 +101,30 @@ const median = (values) => percentile([...values].sort((a, b) => a - b), 0.5);
 function buildRows(config) {
   const rows = [];
   const flavors = FLAVORS.filter(([name]) => config.flavorFilter === null || name === config.flavorFilter);
-  const fixtureKeys = Object.keys(FIXTURES).filter((k) => config.fixtureFilter === null || k === config.fixtureFilter);
-  const smokeKeys = config.smoke ? ['A'] : fixtureKeys;
+  // The fixture filter is honored in EVERY mode (smoke included): smoke caps
+  // the DEFAULT fixture set to A, but an explicit --fixture always narrows to
+  // exactly that fixture. A filter that survives to an empty set is caught
+  // fail-loud in main().
+  const requested = config.fixtureFilter === null ? Object.keys(FIXTURES) : [config.fixtureFilter];
+  const smokeDefault = config.smoke ? ['A'] : requested;
+  const fixtureKeys = config.fixtureFilter === null ? smokeDefault : requested;
   // 1. canonical: principal (all fixtures) + control (fixture A only) —
   //    ascending vehicle counts so the budget guard can extrapolate.
   for (const [flavor] of flavors) {
-    for (const fixture of smokeKeys) {
+    for (const fixture of fixtureKeys) {
       for (const vehicleCount of config.vehicleCounts) {
         rows.push({ class: 'canonical', workload: 'principal', flavor, fixture, vehicleCount, traceMode: 'none', profile: false });
       }
     }
-    if (smokeKeys.includes('A')) {
+    if (fixtureKeys.includes('A')) {
       for (const vehicleCount of config.vehicleCounts) {
         rows.push({ class: 'canonical', workload: 'control', flavor, fixture: 'A', vehicleCount, traceMode: 'none', profile: false });
       }
     }
   }
-  // 2. profiler diagnostic: {A,C} × {1,50}.
-  const profFixtures = config.smoke ? ['A'] : ['A', 'C'].filter((k) => smokeKeys.includes(k));
+  // 2. profiler diagnostic: {A,C} ∩ the requested fixtures × {1,50}.
+  const profBase = config.smoke ? ['A'] : ['A', 'C'];
+  const profFixtures = profBase.filter((k) => fixtureKeys.includes(k));
   const profCounts = config.smoke ? [1] : [1, 50];
   for (const [flavor] of flavors) {
     for (const fixture of profFixtures) {
@@ -422,7 +428,16 @@ async function main() {
   config.argv = process.argv.slice(2);
   if (!Number.isInteger(config.samples) || config.samples < 1) throw new Error(`bench: invalid --samples ${config.samples}`);
   if (!Number.isFinite(config.rowBudgetMs) || config.rowBudgetMs <= 0) throw new Error(`bench: invalid --row-budget ${config.rowBudgetMs}`);
+  // Fail loud on a typo'd filter rather than emitting a silently empty report
+  // (the house fail-loud rule; an empty matrix would read as "nothing to run").
+  if (config.flavorFilter !== null && !FLAVORS.some(([n]) => n === config.flavorFilter)) {
+    throw new Error(`bench: invalid --flavor ${config.flavorFilter} (expected default | deterministic)`);
+  }
+  if (config.fixtureFilter !== null && !Object.prototype.hasOwnProperty.call(FIXTURES, config.fixtureFilter)) {
+    throw new Error(`bench: invalid --fixture ${config.fixtureFilter} (expected ${Object.keys(FIXTURES).join(' | ')})`);
+  }
   const report = await runBenchmark(config);
+  if (report.rows.length === 0) throw new Error('bench: matrix is empty — no rows to run');
   console.log(renderMarkdown(report));
   if (values.json !== undefined) {
     writeFileSync(values.json, JSON.stringify(report, null, 2));
@@ -430,6 +445,11 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Run the CLI only when invoked directly. Guard process.argv[1] — it is
+// undefined under `node -e`/`--input-type=module -e` and a bare REPL import,
+// where pathToFileURL(undefined) would throw at import time and make the
+// module's exports unusable (the bench-schema test imports this module).
+const entry = process.argv[1];
+if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   await main();
 }

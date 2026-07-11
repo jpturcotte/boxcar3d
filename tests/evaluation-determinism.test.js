@@ -48,12 +48,17 @@ describe('gate (a): same-process fresh-world byte-identity (deterministic flavor
       const run = () => runEvaluation(evaluationOptionsFor(fx, { deterministic: true, trace: DIGEST_TRACE }));
       const a = await run();
       const b = await run();
-      expect(b.trace.digest).toBe(a.trace.digest);
+      // Diagnostic order (counts → checkpoints → digest): checkpoint
+      // localization must run BEFORE the digest assertion so a real
+      // divergence prints its first differing step, not a bare digest
+      // mismatch. The digest is the final checkpoint state, so the digest
+      // assertion is the backstop, not the primary signal.
       expect(b.trace.recordCount).toBe(a.trace.recordCount);
       expect(b.trace.byteCount).toBe(a.trace.byteCount);
       expect(b.executedSteps).toBe(a.executedSteps);
       const div = compareCheckpoints(a.trace.checkpoints, b.trace.checkpoints);
       expect(div === null ? null : formatDivergence(fx.name, div)).toBeNull();
+      expect(b.trace.digest).toBe(a.trace.digest);
       // Bitwise-identical physics must produce identical readback metrics too.
       expect(b.vehicles.map((v) => v.forwardDistance)).toEqual(a.vehicles.map((v) => v.forwardDistance));
       expect(b.vehicles.map((v) => v.finalPose)).toEqual(a.vehicles.map((v) => v.finalPose));
@@ -68,8 +73,10 @@ describe('gate (c): default flavor', () => {
     const run = () => runEvaluation(evaluationOptionsFor(FIXTURE_A, { deterministic: false, trace: DIGEST_TRACE }));
     const a = await run();
     const b = await run();
+    // Diagnostic order: checkpoints before the digest backstop.
+    const div = compareCheckpoints(a.trace.checkpoints, b.trace.checkpoints);
+    expect(div === null ? null : formatDivergence(FIXTURE_A.name, div)).toBeNull();
     expect(b.trace.digest).toBe(a.trace.digest);
-    expect(compareCheckpoints(a.trace.checkpoints, b.trace.checkpoints)).toBeNull();
     // Deliberately NOT compared against EVALUATION_GOLDEN_LOCKS: the default
     // package may legitimately differ across platforms/architectures.
   });

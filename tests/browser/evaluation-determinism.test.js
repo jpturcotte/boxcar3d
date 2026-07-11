@@ -31,7 +31,6 @@ import { compareCheckpoints } from '../../src/sim/trace.js';
 
 // Report the actual browser once, pass or fail (vitest forwards browser
 // console output to the terminal, so this lands in CI logs).
-// eslint-disable-next-line no-console
 console.log(`[browser-gate] ${navigator.userAgent}`);
 
 describe('Chromium reproduces the committed deterministic-flavor locks', () => {

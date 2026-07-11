@@ -34,6 +34,15 @@ export default [
     },
   },
   {
+    // The Chromium determinism gate runs in a real browser page.
+    files: ['tests/browser/**/*.js'],
+    languageOptions: {
+      globals: {
+        navigator: 'readonly',
+      },
+    },
+  },
+  {
     files: ['src/sim/**/*.js', 'src/workers/**/*.js'],
     rules: {
       'no-restricted-properties': [

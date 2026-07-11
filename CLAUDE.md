@@ -359,8 +359,12 @@ after creation:**
   fail-loud if missing), `MOTOR_TARGET_ANGVEL = -10` rad/s (NEGATIVE about
   local +Z drives +X — contact-point kinematics, locked by the sign test;
   magnitude is the SALVAGE legacy default), `WHEEL_FRICTION = 1` (explicit —
-  Rapier's silent default is 0.5). `targetAngvel === 0` with any motorized
-  wheel is rejected pre-world (the conversion never divides by zero).
+  Rapier's silent default is 0.5). Every motor gain
+  (`driveTorque / |targetAngvel|`) is derived and validated pre-world: a
+  zero target with any motorized wheel is rejected, AND any non-finite gain
+  is rejected (a finite denormal-tiny target overflows to `Infinity`). No
+  magnitude floor on FINITE gains — a large finite gain (~6.25e9 at target
+  1e-8) is stable in-probe, so only non-finite is out of domain.
 - **The forward-drive witness** (`tests/s0-drive.test.js`, both flavors):
   declared terrain seed 20260713, `startFlatLength: 80` (pad x ∈ [−60, +20],
   exactly-zero elevation), craters/features/zones off per knob, default

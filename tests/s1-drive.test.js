@@ -278,6 +278,8 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
     let maxQ = -Infinity;
     let maxAnchorErr = 0;
     let maxSpeed = 0;
+    let maxTwistZ = 0;
+    let maxSwingXY = 0;
     for (let i = 1; i <= steps; i++) {
       world.step();
       const cp = rec.chassis.body.translation();
@@ -287,6 +289,23 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
         const q = projectedPrismaticCoordinate(poseOf(rec.chassis.body), poseOf(s.st.hub.body), s.anchor, ORIGIN, SUSPENSION_AXIS);
         if (q < minQ) minQ = q;
         if (q > maxQ) maxQ = q;
+        // Hub rotation RELATIVE to the chassis, decomposed about the axle:
+        // qRel = conj(qChassis) ⊗ qHub; twist = rotation about local z (the
+        // free-spinning-looking but prismatic-LOCKED axle DOF — pure
+        // constraint deflection, geometrically unobservable on the
+        // axisymmetric hub), swing = the x/y part that would TILT the wheel
+        // plane.
+        const qh = s.st.hub.body.rotation();
+        const rel = {
+          x: cr.w * qh.x - cr.x * qh.w - (cr.y * qh.z - cr.z * qh.y),
+          y: cr.w * qh.y - cr.y * qh.w - (cr.z * qh.x - cr.x * qh.z),
+          z: cr.w * qh.z - cr.z * qh.w - (cr.x * qh.y - cr.y * qh.x),
+          w: cr.w * qh.w + cr.x * qh.x + cr.y * qh.y + cr.z * qh.z,
+        };
+        const twist = Math.abs(2 * Math.atan2(rel.z, rel.w));
+        const swing = 2 * Math.asin(Math.min(1, Math.sqrt(rel.x * rel.x + rel.y * rel.y)));
+        if (twist > maxTwistZ) maxTwistZ = twist;
+        if (swing > maxSwingXY) maxSwingXY = swing;
       }
       if (i % 10 === 0) {
         for (const s of stations) {
@@ -319,6 +338,9 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
       maxQ: maxQ === -Infinity ? null : maxQ,
       maxAnchorErr,
       maxSpeed,
+      maxTwistZ,
+      maxSwingXY,
+      wheelOmegaZ: rec.wheels.map((st) => st.wheel.body.angvel().z),
       jointsValid: rec.wheels.every((st) => st.driveJoint.isValid() && (st.suspensionJoint === null || st.suspensionJoint.isValid())),
       counts: [world.bodies.len(), world.impulseJoints.len()],
     };
@@ -448,6 +470,26 @@ describe.each([
     expect(Math.abs(run.z), diag).toBeLessThan(3); // asymmetric drift, measured 0.10
     expect(run.minQ, diag).toBeGreaterThan(-0.05);
     expect(run.maxQ, diag).toBeLessThan(0.42);
+  });
+
+  test('drive-torque reaction: the hub does NOT tilt the wheel plane — the drive path reacts through the prismatic rotational lock', { timeout: 60000 }, async () => {
+    // The whole drive torque now reacts wheel → hub → prismatic angular
+    // constraint → chassis. Decomposition matters: SWING (hub x/y rotation
+    // vs the chassis) would tilt the wheel plane — that is the lock this
+    // test guards; TWIST (about the axle z) is bounded constraint
+    // deflection on an axisymmetric body, geometrically unobservable, and
+    // is RECORDED with a ceiling (measured 0.244 rad at 125 N·m stall
+    // transients on rough ground; flat-ground driving measures lower).
+    const run = await boundedRun(deterministic, compileAssembly(witnessGenotype()), {
+      x: 0, steps: 300, flatCuboid: true,
+    });
+    const diag = JSON.stringify(run);
+    expect(run.finite, diag).toBe(true);
+    // The tooth is non-vacuous only if the wheels actually spun under drive.
+    expect(Math.min(...run.wheelOmegaZ.map(Math.abs)), diag).toBeGreaterThan(5); // target −10, cruise ≈ −9.9
+    expect(run.dx, diag).toBeGreaterThan(3); // it drove
+    expect(run.maxSwingXY, diag).toBeLessThan(0.15); // measured 0.046 max even on rough terrain
+    expect(run.maxTwistZ, diag).toBeLessThan(0.6); // measured ≤ 0.244 at this torque — a ceiling, not a curve
   });
 
   test('findings ledger (record, do not remediate): solver-pump under S1, mixed-radius conflict under travel, R5-cap overlap with S1', { timeout: 120000 }, async () => {

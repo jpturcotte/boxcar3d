@@ -35,6 +35,8 @@
 import { describe, test, expect } from 'vitest';
 import {
   GROUND_GROUPS,
+  HUB_GROUPS,
+  WHEEL_GROUPS,
   SUSPENSION_AXIS,
   createPhysics,
   projectedPrismaticCoordinate,
@@ -246,6 +248,31 @@ describe.each([
     // below its spawn by a real margin.
     expect(Math.abs(s0.chassisY - 0.5), diag).toBeLessThan(0.03);
     expect(s1.spawnY - s1.chassisY, diag).toBeGreaterThan(0.03); // measured sag ~0.09 from rest 0.14
+  });
+
+  test('HUB_GROUPS touches NOTHING behaviorally: a hub-grouped body falls through the ground a wheel-grouped twin lands on', { timeout: 60000 }, async () => {
+    // The kernel test asserts the group WORD; this is the solver-level
+    // tooth (the feature-physics matrix idiom): filter 0 fails the pair
+    // test in both directions, ground included.
+    const { RAPIER, world } = await createPhysics({ deterministic });
+    try {
+      world.createCollider(
+        RAPIER.ColliderDesc.cuboid(50, 1, 25).setTranslation(0, -1, 0).setFriction(1).setCollisionGroups(GROUND_GROUPS)
+      );
+      const drop = (x, groups) => {
+        const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(x, 2, 0));
+        world.createCollider(RAPIER.ColliderDesc.ball(0.2).setCollisionGroups(groups), body);
+        return body;
+      };
+      const ghost = drop(0, HUB_GROUPS);
+      const solid = drop(3, WHEEL_GROUPS);
+      for (let i = 0; i < 120; i++) world.step();
+      const diag = JSON.stringify({ ghostY: ghost.translation().y, solidY: solid.translation().y });
+      expect(ghost.translation().y, diag).toBeLessThan(-3); // fell straight through
+      expect(solid.translation().y, diag).toBeGreaterThan(0.1); // landed on the floor
+    } finally {
+      world.free();
+    }
   });
 
   test('hand-edited k=0 ∧ c=0 realizes as an honest FREE SLIDER: the load runs it to the compression stop (never the frozen 0/0 motor)', { timeout: 60000 }, async () => {

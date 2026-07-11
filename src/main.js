@@ -1,22 +1,22 @@
-// Phase 1 boot: the composite corridor. Generates the deterministic terrain
-// (src/sim/terrain.js), realizes floor + walls + seated feature colliders in
-// Rapier through the adapter seam, and renders the matching meshes with Three
-// r185 — feature meshes are built from the SAME realized poses and hull points
-// the colliders use, so the visible rocks/ramps/logs cannot drift from the
-// physics. A handful of seeded debris cubes fall onto the floor as a live
-// proof that terrain and physics agree. Add ?zones to the URL to tint the
-// sand/mud cells of the zone map. Render code may use the wall clock and
-// Math.* freely (the determinism ban is scoped to src/sim).
+// Phase 1 boot: the composite corridor with a live S0 vehicle. Generates the
+// deterministic terrain (src/sim/terrain.js), realizes floor + walls + seated
+// feature colliders through the adapter seam, and drops one compiled all-S0
+// vehicle at the start line — cylinder wheels on revolute joints whose native
+// motors drive it toward +X (the S0 kernel witness; no steering, no AI).
+// Meshes are built from the SAME IR dims and realized poses the colliders
+// use, so the visible vehicle cannot drift from the physics. Seeded debris
+// cubes still fall as the terrain-agreement proof. Add ?zones to the URL to
+// tint the sand/mud cells. Render code may use the wall clock and Math.*
+// freely (the determinism ban is scoped to src/sim).
 
 import * as THREE from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
-import { createPhysics, addCorridorWithFeatures, realizeChassis, FIXED_DT, SOFT_CCD_PREDICTION } from './sim/physics/adapter.js';
-import { MATERIALS, generateCorridorTerrain, indexToLocalXZ } from './sim/terrain.js';
-import { compileAssembly, randomGenotype } from './sim/assembly.js';
+import { createPhysics, addCorridorWithFeatures, realizeS0Vehicle, FIXED_DT, SOFT_CCD_PREDICTION, WHEEL_COLLIDER_ROTATION } from './sim/physics/adapter.js';
+import { MATERIALS, generateCorridorTerrain, heightAtLocal, indexToLocalXZ } from './sim/terrain.js';
+import { compileAssembly } from './sim/assembly.js';
 import { Rng } from './sim/prng.js';
 
 const SEED = 20260708;
-const CHASSIS_SEED = 20260710; // the assembly-corpus seed family (PR #10)
 const hud = document.getElementById('hud');
 
 // Build a Three mesh from the heightfield using the SAME col->+X / row->+Z
@@ -110,9 +110,8 @@ function buildFeatureMesh(realized) {
   return mesh;
 }
 
-// One compiled chassis (PR #10: assembly compiler v0 — chassis only, no
-// wheels yet). Meshes are built from the SAME IR colliders the physics body
-// uses (BoxGeometry per cuboid / ConvexGeometry from the exact fround'd hull
+// Chassis meshes are built from the SAME IR colliders the physics body uses
+// (BoxGeometry per cuboid / ConvexGeometry from the exact fround'd hull
 // points), tinted from gene[0] (hue) — the SALVAGE render-tint convention.
 function buildChassisMesh(ir) {
   const material = new THREE.MeshLambertMaterial({
@@ -189,16 +188,79 @@ async function boot() {
   const showZones = new URLSearchParams(window.location.search).has('zones');
   if (showZones) scene.add(buildZoneOverlay(terrain));
 
-  // --- One compiled chassis dropped near the start line (PR #10) ---
-  // fork(9) is a declared deterministic pick: a 7-collider ladder frame with
-  // 4 axle modules — visually unmistakable as a compiled frame (fork 0 is a
-  // single-cuboid 0-axle sled, which reads as just another feature box).
-  const chassisIR = compileAssembly(randomGenotype(new Rng(CHASSIS_SEED).fork(9)));
-  const { body: chassisBody } = realizeChassis(RAPIER, world, chassisIR, {
-    position: { x: -terrain.scale.x / 2 + 8, y: terrain.bounds.maxY + 6, z: 0 },
+  // --- One compiled all-S0 vehicle driving from the start line (S0 kernel) ---
+  // A DECLARED hand-built genotype (every gene explicit, repair-stable —
+  // tests/s0-kernel.test.js proves the fixture family): two paired driven S0
+  // axles on a low spine frame, tuned to actually climb the corridor.
+  // Measured while choosing it (2026-07-10, seed 20260708 terrain): the old
+  // fork(9) pick with suspType/driven edits does NOT move — its 7 wheels mix
+  // radii 0.2–0.7 under the single shared MOTOR_TARGET_ANGVEL, so their
+  // no-load surface speeds disagree and the budget burns fighting itself —
+  // and thrust/weight under ~6% stalls on the start-blend grade at gravity
+  // 20. This build (power 1 ⇒ full 500 budget, wheel radius gene 0.4 ⇒
+  // 0.4 m, frameDensity 0.1, nodeHeight 0.3 ⇒ ~267 kg, thrust/weight ~23%)
+  // drives ~46 m of composite terrain before the crater field catches it —
+  // which is the corridor doing its job, not a kernel failure.
+  const vehicleGenotype = {
+    version: 1,
+    hue: 0.25,
+    symmetric: 0.9, // symmetric build
+    power: 1, // full global budget: 500 N·m split across 4 driven wheels
+    frameDensity: 0.1, // light frame — thrust/weight is what climbs grades
+    frame: {
+      family: 0.1, // spine
+      segments: [{
+        nodeCount: 0.5, // 4 active nodes
+        nodes: Array.from({ length: 6 }, () => ({ gap: 0.5, height: 0.3, halfWidth: 0.5, thickness: 0.5 })),
+        fam: { spine: { beamWidthFrac: 0.5 }, ladder: { crossFrac: 0.5 }, hull: { bulge: 0.5 } },
+      }],
+    },
+    axles: [0.2, 0.8].map((posX01) => ({
+      posX01,
+      paired: 1,
+      trackHalf: 0.5,
+      radius: 0.4, // 0.4 m wheels: smaller radius = more thrust per N·m
+      width: 0.5,
+      density: 0.15,
+      suspType: 0, // S0 — the only realizable suspension level in this PR
+      stiffness: 0.5,
+      damping: 0.5,
+      travel: 0.5,
+      restLength: 0.5,
+      driven: 1, // every wheel takes a motor share
+      share: 0.5,
+      asym: { driveBias: 0.5, sizeBias: 0.5, centerOffset: 0.5 },
+    })),
+  };
+  const vehicleIR = compileAssembly(vehicleGenotype);
+  const spawnX = -terrain.scale.x / 2 + 8;
+  const maxWheelR = Math.max(...vehicleIR.axles.flatMap((a) => a.wheels.map((w) => w.radius)));
+  // Placed just above the local surface (a short drop), not lobbed from the
+  // sky — the witness is driving, not falling.
+  const vehicle = realizeS0Vehicle(RAPIER, world, vehicleIR, {
+    position: { x: spawnX, y: heightAtLocal(spawnX, 0, terrain) + maxWheelR + 0.5, z: 0 },
   });
-  const chassisMesh = buildChassisMesh(chassisIR);
+  const chassisBody = vehicle.chassis.body;
+  const chassisMesh = buildChassisMesh(vehicleIR);
   scene.add(chassisMesh);
+  // Wheel meshes from the SAME IR dims the colliders use. Three cylinders and
+  // Rapier cylinders share the local-Y axis, so each mesh takes its body's
+  // rotation composed with the same collider-local Y→Z rotation the physics
+  // applies (WHEEL_COLLIDER_ROTATION) — render and contact cannot disagree.
+  const wheelColliderQuat = new THREE.Quaternion(
+    WHEEL_COLLIDER_ROTATION.x, WHEEL_COLLIDER_ROTATION.y, WHEEL_COLLIDER_ROTATION.z, WHEEL_COLLIDER_ROTATION.w
+  );
+  const wheelMaterial = new THREE.MeshLambertMaterial({
+    color: new THREE.Color().setHSL(vehicleIR.render.hue, 0.55, 0.32), // darker of the body hue
+  });
+  const wheelMeshes = vehicle.wheels.map(({ body, irWheel }) => {
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(irWheel.radius, irWheel.radius, irWheel.width, 24),
+      wheelMaterial
+    );
+    scene.add(mesh);
+    return { mesh, body };
+  });
 
   // --- Seeded debris: cubes dropped onto the corridor (deterministic layout) ---
   const rng = new Rng(0xb0c3d001);
@@ -255,8 +317,14 @@ async function boot() {
     const cq = chassisBody.rotation();
     chassisMesh.position.set(cp.x, cp.y, cp.z);
     chassisMesh.quaternion.set(cq.x, cq.y, cq.z, cq.w);
+    for (const { mesh, body } of wheelMeshes) {
+      const p = body.translation();
+      const q = body.rotation();
+      mesh.position.set(p.x, p.y, p.z);
+      mesh.quaternion.set(q.x, q.y, q.z, q.w).multiply(wheelColliderQuat);
+    }
 
-    hud.textContent = `corridor · seed ${SEED} · ${features.length} features · chassis: ${chassisIR.chassis.family}${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
+    hud.textContent = `corridor · seed ${SEED} · ${features.length} features · s0 ${vehicleIR.chassis.family}, ${vehicle.wheels.length} wheels, x=${cp.x.toFixed(1)}${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
     renderer.render(scene, camera);
   });
 

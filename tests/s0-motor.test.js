@@ -5,11 +5,13 @@
 //
 // THE RULING (S0 kernel PR): motors run ForceBased, and the adapter converts
 // the IR's torque allocation into Rapier's velocity-servo gain —
-//     gain = driveTorque / |targetAngvel|
-// so stall torque = gain × |targetAngvel| = driveTorque EXACTLY and the
-// torque–speed law is τ = driveTorque × (1 − ω/targetAngvel): a linear servo
-// falling to zero torque at the target speed. Rapier's factor is a GAIN
-// derived from the IR torque — driveTorque itself is not the gain. This file
+//     gain = driveTorque / |targetAngvel|      (gain ≥ 0)
+// so the signed law is τ = gain × (targetAngvel − ω) = sign(targetAngvel) ×
+// driveTorque × (1 − ω/targetAngvel): the stall MAGNITUDE = driveTorque
+// EXACTLY (its sign follows targetAngvel — negative target ⇒ −driveTorque
+// stall), τ a linear servo falling to zero at the target speed. Rapier's
+// factor is a GAIN derived from the IR torque — driveTorque itself is not
+// the gain. This file
 // locks the physical relationships that make that conversion honest;
 // tests/s0-kernel.test.js locks the same semantics through the shipped
 // realizeS0Vehicle path.

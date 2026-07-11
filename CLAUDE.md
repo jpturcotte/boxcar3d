@@ -343,9 +343,11 @@ after creation:**
 - **The motor ruling (measured; `tests/s0-motor.test.js`): ForceBased +
   gain conversion.** Rapier's motor factor is a velocity-servo GAIN (no
   JS-reachable max-force exists in 0.19.3), so the adapter derives
-  `gain = driveTorque / |targetAngvel|` ⇒ stall torque = driveTorque EXACTLY
-  and τ = driveTorque × (1 − ω/targetAngvel), zero at the target (no-load)
-  speed. Airborne discriminator: same driveTorque on wheels of 5.06× inertia
+  `gain = driveTorque / |targetAngvel|` ⇒ signed law τ = gain × (targetAngvel
+  − ω) = sign(targetAngvel) × driveTorque × (1 − ω/targetAngvel): stall
+  MAGNITUDE = driveTorque EXACTLY (sign follows targetAngvel — the canonical
+  −10 gives −driveTorque stall), zero at the target (no-load) speed. Airborne
+  discriminator: same driveTorque on wheels of 5.06× inertia
   → first-step ω ratio 4.86 under ForceBased (a real torque) vs 1.000 under
   AccelerationBased (inertia normalized away — REJECTED; its factor is not a
   torque and wheel size would silently rescale thrust; note it is NOT
@@ -386,7 +388,7 @@ after creation:**
   The dev scene now drives a declared hand-built all-S0 build (~23%
   thrust/weight) ~46 m into the composite terrain, wheels rendered from the
   same IR dims and synced as body rotation × `WHEEL_COLLIDER_ROTATION`.
-- All 254 tests green both flavors; every locked fingerprint byte-identical
+- Full suite green both flavors; every locked fingerprint byte-identical
   (terrain paths untouched; assembly.js changes comment-only).
 
 Next — **the S1 PR: vertical spring-damper suspension** (spec §3.2's S1,

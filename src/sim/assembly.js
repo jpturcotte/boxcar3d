@@ -76,7 +76,7 @@ export const ASSEMBLY_RULES = Object.freeze({
 // bump only. Divergences from the recovered legacy mappings are the schema
 // ruling's D1-D7 table (docs + CLAUDE.md); wheelRadius is SALVAGE verbatim.
 export const GENE_RANGES = Object.freeze({
-  power: Object.freeze([0, 500]), // global torque-factor budget (SALVAGE g*500, now global)
+  power: Object.freeze([0, 500]), // global stall-torque budget, N·m (SALVAGE g*500; per-wheel shares are each wheel's stall torque via the S0 gain conversion)
   frameDensity: Object.freeze([30, 1200]), // kg/m³ (floor 30 keeps big frames inside the mass band)
   nodeGap: Object.freeze([0.3, 1.0]), // m spacing -> monotone node x by construction
   nodeHeight: Object.freeze([0.15, 0.45]), // m half-height

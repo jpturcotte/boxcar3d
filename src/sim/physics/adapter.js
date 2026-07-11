@@ -359,14 +359,17 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
 // causality or nothing).
 //
 // MOTOR RULING (measured, tests/s0-motor.test.js): Rapier's motor "factor" is
-// a velocity-servo GAIN, not a torque — raw law: torque = factor × (targetVel
-// − ω). The realizer derives the gain from the IR torque,
-//     gain = driveTorque / |targetAngvel|
-// so stall torque = gain × |targetAngvel| = driveTorque EXACTLY and the
-// torque–speed law is τ = driveTorque × (1 − ω/targetAngvel): driveTorque is
-// a literal stall-torque budget, falling linearly to zero at the target
-// speed, and thrust stays proportional to each wheel's share of the global
-// power budget. ForceBased is required for that reading: on an airborne
+// a velocity-servo GAIN, not a torque — raw law: τ = factor × (targetVel − ω).
+// The realizer derives the gain from the IR torque,
+//     gain = driveTorque / |targetAngvel|      (gain ≥ 0)
+// so the signed law is τ = gain × (targetAngvel − ω) = sign(targetAngvel) ×
+// driveTorque × (1 − ω/targetAngvel): the stall MAGNITUDE |τ(ω=0)| = gain ×
+// |targetAngvel| = driveTorque EXACTLY (its SIGN follows targetAngvel — with
+// the canonical −10 target the signed stall torque is −driveTorque, spinning
+// the wheel for +X). driveTorque is thus a literal stall-torque budget in
+// magnitude, τ falling linearly to zero at the target speed, and thrust stays
+// proportional to each wheel's share of the global power budget. ForceBased
+// is required for that reading: on an airborne
 // bench, the same driveTorque on wheels of 5.06× inertia produced a 4.86×
 // first-step spin ratio under ForceBased (a real torque) but 1.000 under
 // AccelerationBased (the solver normalizes effective inertia away — its
@@ -550,6 +553,29 @@ export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
   if (!Number.isFinite(wheelFriction) || wheelFriction < 0) {
     throw new Error(`realizeS0Vehicle: wheelFriction must be a finite number >= 0 (${String(wheelFriction)})`);
   }
+  // Derive every motor gain NOW, pre-world: gain = driveTorque / |targetAngvel|
+  // (the ruling's conversion). Rejecting only targetAngvel === 0 was not
+  // enough — a finite but denormal-tiny target (e.g. Number.MIN_VALUE) sends
+  // driveTorque / |target| to Infinity, a non-finite gain that must fail loud
+  // HERE, never reach configureMotorVelocity after bodies/joints exist. The
+  // validated gains are stored so the construction loop consumes them (one
+  // source, never recomputed). No magnitude floor: a large finite gain (e.g.
+  // 6.25e9 at target 1e-8) is stable over 600 steps in-probe, so only
+  // non-finite is out of domain — matching the "fail loud on garbage, don't
+  // over-restrict valid input" convention.
+  const invTarget = 1 / Math.abs(targetAngvel);
+  const motorGain = new Map();
+  for (const axle of ir.axles) {
+    for (const w of axle.wheels) {
+      if (w.driven && w.driveTorque > 0) {
+        const gain = w.driveTorque * invTarget;
+        if (!Number.isFinite(gain)) {
+          throw new Error(`realizeS0Vehicle: motor gain ${gain} (driveTorque ${w.driveTorque} / |targetAngvel| ${Math.abs(targetAngvel)}) is not finite — targetAngvel is too small`);
+        }
+        motorGain.set(w, gain);
+      }
+    }
+  }
 
   // --- Construction (transactional) -----------------------------------------
   const placements = s0WheelTransforms(ir, { position, rotation });
@@ -601,10 +627,12 @@ export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
         true
       );
       createdJoints.push(joint);
-      if (w.driven && w.driveTorque > 0) {
+      const gain = motorGain.get(w); // undefined ⇒ undriven or zero-torque (no motor)
+      if (gain !== undefined) {
         joint.configureMotorModel(motorModel);
-        // stall torque = gain × |targetAngvel| = driveTorque (the ruling)
-        joint.configureMotorVelocity(targetAngvel, w.driveTorque / Math.abs(targetAngvel));
+        // gain validated finite pre-world; stall MAGNITUDE = gain × |targetAngvel|
+        // = driveTorque, signed by sign(targetAngvel).
+        joint.configureMotorVelocity(targetAngvel, gain);
       }
       wheels.push({ axleIndex: p.axleIndex, wheelIndex: p.wheelIndex, body, collider, joint, irWheel: w });
     }

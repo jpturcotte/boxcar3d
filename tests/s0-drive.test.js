@@ -66,6 +66,15 @@ const SPAWN_X = -45; // on the pad, ~15 m past the corridor's west end margin
 const REVERSED_SPAWN_X = 0; // see header: −X runs must not exit the open west end
 const ANCHOR_BAND = 0.02; // m — measured max 7.2e-3 across every case
 const TUNNEL_Y = -50;
+// The exactly-flat pad: terrain length 120 is centered, so x ∈ [−60, +60];
+// startFlatLength 80 from the west edge is flat to x = +20, then the 6 m blend.
+// The witness must stay strictly inside the flat span (the whole vehicle, not
+// just the chassis center — hence the margin) or its flat-terrain claim is void.
+const PAD_MIN_X = -60;
+const PAD_MAX_X = 20;
+const PAD_MARGIN = 1.5; // ≥ the canonical vehicle's longitudinal reach
+// measured trajectory extremes across all runs: maxX ≈ 0 (reversed spawn),
+// minX ≈ −45 (driven/undriven spawn) — far inside; the bound is a regression net.
 
 const terrain = generateCorridorTerrain(WITNESS_CONFIG);
 
@@ -115,9 +124,18 @@ async function witnessRun(deterministic, ir, { x, steps = STEPS, targetAngvel } 
     let maxAnchorErr = 0;
     let minBodyY = Infinity;
     let maxSpeed = 0;
+    let minX = Infinity;
+    let maxX = -Infinity;
     const samples = {};
     for (let i = 1; i <= steps; i++) {
       world.step();
+      // Chassis X every step — the witness claims driving happens on the
+      // exactly-flat pad, so the trajectory (not just the endpoint) must stay
+      // inside it; a later speed bump could otherwise carry the vehicle onto
+      // the blend/real terrain while the test still claimed a flat witness.
+      const cx = rec.chassis.body.translation().x;
+      minX = Math.min(minX, cx);
+      maxX = Math.max(maxX, cx);
       if (i % 10 === 0) {
         const cp = rec.chassis.body.translation();
         const cr = rec.chassis.body.rotation();
@@ -152,6 +170,8 @@ async function witnessRun(deterministic, ir, { x, steps = STEPS, targetAngvel } 
       maxAnchorErr,
       minBodyY,
       maxSpeed,
+      minX,
+      maxX,
       samples,
       wheels: rec.wheels.map((w) => ({ y: w.body.translation().y, radius: w.irWheel.radius })),
     };
@@ -191,6 +211,10 @@ describe.each([
       expect(run.y, diag).toBeGreaterThan(run.floorY + 0.35);
       for (const w of run.wheels) expect(w.y, diag).toBeGreaterThan(run.floorY + 0.6 * w.radius);
       expect(Math.abs(run.z), diag).toBeLessThan(1); // symmetric vehicle: measured ≤ 0.18
+      // Stayed on the exactly-flat pad the whole run (the witness's premise —
+      // not merely at the endpoint): a slope excursion would void the claim.
+      expect(run.maxX, diag).toBeLessThan(PAD_MAX_X - PAD_MARGIN);
+      expect(run.minX, diag).toBeGreaterThan(PAD_MIN_X + PAD_MARGIN);
     }
     expect(driven.dx, diag).toBeGreaterThan(10); // measured +19.43
     expect(Math.abs(undriven.dx), diag).toBeLessThan(1); // measured −0.063

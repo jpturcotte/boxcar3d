@@ -397,15 +397,43 @@ describe.each([
       // rollback); 3rd = second wheel (chassis + 1 wheel + 1 joint alive —
       // the full unwind path); 2nd createImpulseJoint (chassis + 2 wheels +
       // 1 joint alive).
+      // createCollider on the first WHEEL collider (chassis colliders come
+      // first, through realizeChassis) exercises the collider-failure branch:
+      // chassis + 1 wheel body alive, no joints yet. The body is tracked in
+      // createdBodies before its collider, so the rollback still unwinds it.
+      const firstWheelCollider = ir.chassis.colliders.length + 1;
       for (const [method, failOn] of [
         ['createRigidBody', 2],
         ['createRigidBody', 3],
+        ['createCollider', firstWheelCollider],
         ['createImpulseJoint', 2],
       ]) {
         expect(() => realizeS0Vehicle(RAPIER, trapWorld(method, failOn), ir, {}))
           .toThrow(new RegExp(`induced ${method} #${failOn}`));
         expect(counts(world)).toEqual(before);
       }
+    } finally {
+      world.free();
+    }
+  });
+
+  test('motor-gain domain: a denormal-tiny targetAngvel is rejected pre-world (non-finite gain)', async () => {
+    const { RAPIER, world } = await createPhysics({ deterministic });
+    try {
+      const ir = canonicalIR(); // paired driven wheels ⇒ a motor gain is derived
+      const before = counts(world);
+      // driveTorque ≈ 62.5 each; 62.5 / |denormal| overflows to Infinity — a
+      // finite option that passed the exact-zero guard but must fail loud
+      // BEFORE any body/joint exists, never reach configureMotorVelocity.
+      for (const tiny of [Number.MIN_VALUE, 1e-320]) {
+        expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: tiny }))
+          .toThrow(/gain .* is not finite|too small/);
+        expect(counts(world)).toEqual(before); // rejected with the world untouched
+      }
+      // A small-but-safe target keeps the gain finite (62.5 / 1e-3 = 62500) and
+      // realizes normally — no arbitrary magnitude floor.
+      const rec = realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: -1e-3 });
+      expect(rec.wheels.length).toBeGreaterThan(0);
     } finally {
       world.free();
     }

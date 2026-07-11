@@ -122,6 +122,9 @@ describe('runEvaluation options validation', () => {
       [(o) => { o.hooks = { onPhase: 'log' }; }, /hooks\.onPhase/],
       [(o) => { o.vehicles[0].spawn.position = { x: NaN, y: 1, z: 0 }; }, /spawn\.position/],
       [(o) => { o.profile = 1; }, /profile/],
+      // Traced runs cannot exceed the u32 stepIndex field — rejected pre-world,
+      // not mid-run at the final capture's encode.
+      [(o) => { o.trace = { mode: 'digest' }; o.maxSteps = 0x100000000; }, /MAX_STEP_INDEX/],
     ];
     for (const [mutate, re] of cases) {
       const opts = base();

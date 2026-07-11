@@ -35,7 +35,7 @@ import {
   FIXED_DT, createPhysics, addCorridor, addCorridorWithFeatures, realizeVehicle,
 } from './physics/adapter.js';
 import { generateCorridorTerrain } from './terrain.js';
-import { EVALUATION_TRACE_VERSION, TERMINATION_REASONS, TRACE_MODES, TraceWriter } from './trace.js';
+import { EVALUATION_TRACE_VERSION, MAX_STEP_INDEX, TERMINATION_REASONS, TRACE_MODES, TraceWriter } from './trace.js';
 
 export { EVALUATION_TRACE_VERSION, TERMINATION_REASONS }; // one import point for consumers
 
@@ -95,6 +95,10 @@ function validateOptions(options) {
   if (typeof trace !== 'object' || trace === null) fail('trace', trace);
   checkUnknownKeys(trace, TRACE_KEYS, 'trace');
   if (!TRACE_MODES.includes(trace.mode)) fail('trace.mode', trace.mode);
+  // Capture indices run 0..maxSteps and the trace stepIndex field is u32, so a
+  // traced run needs maxSteps <= MAX_STEP_INDEX — reject the overflow pre-world
+  // rather than letting the encoder throw at the final capture mid-run.
+  if (trace.mode !== 'none' && maxSteps > MAX_STEP_INDEX) fail('maxSteps', `${maxSteps} > MAX_STEP_INDEX ${MAX_STEP_INDEX} (trace stepIndex is u32)`);
   if (trace.checkpointInterval !== undefined
     && (!Number.isInteger(trace.checkpointInterval) || trace.checkpointInterval < 1)) {
     fail('trace.checkpointInterval', trace.checkpointInterval);

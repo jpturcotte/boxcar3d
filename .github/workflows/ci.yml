@@ -26,9 +26,51 @@ jobs:
         with:
           path: dist
 
+  # The narrow cross-environment determinism gate (deterministic Rapier
+  # flavor): the SAME production runner, fixtures, and committed golden locks
+  # as the Node suite, executed in the exact-pinned playwright Chromium.
+  # Chromium binaries are cached keyed on the playwright version — version,
+  # browser build, and cache invalidation rotate together on a deliberate
+  # dependency bump. A failure prints the fixture, the browser userAgent, the
+  # expected vs actual digest, and the first divergent checkpoint step.
+  browser-determinism:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - id: playwright-version
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+
+  # The narrow Node OS matrix: ONLY the two determinism test files (the
+  # golden-lock and fresh-module gates) — never a duplicate of the full suite.
+  node-determinism:
+    strategy:
+      fail-fast: false # a Windows-only divergence must not mask the macOS result
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:determinism
+
   deploy:
     if: github.ref == 'refs/heads/main'
-    needs: test
+    needs: [test, browser-determinism, node-determinism]
     runs-on: ubuntu-latest
     permissions:
       pages: write

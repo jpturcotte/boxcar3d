@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 
 // On GitHub Actions, serve from /<repo-name>/ so GitHub Pages project sites work
 // out of the box. Locally, serve from /.
@@ -14,5 +15,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.js'],
+    // The Chromium gate lives in its own config (vitest.browser.config.js);
+    // spread the defaults so node_modules stays excluded too.
+    exclude: [...configDefaults.exclude, 'tests/browser/**'],
   },
 });

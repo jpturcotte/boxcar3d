@@ -10,6 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:determinism": "vitest run tests/evaluation-determinism.test.js tests/evaluation-golden.test.js",
+    "test:browser": "vitest run --config vitest.browser.config.js",
     "probe:s1": "node tests/s1-calibration-probe.js",
     "probe:timing": "node scripts/probe-rapier-timing.js",
     "lint": "eslint ."
@@ -20,8 +22,10 @@
     "three": "0.185.1"
   },
   "devDependencies": {
+    "@vitest/browser": "3.2.7",
     "eslint": "^9.0.0",
+    "playwright": "1.61.1",
     "vite": "^7.0.0",
-    "vitest": "^3.0.0"
+    "vitest": "3.2.7"
   }
 }

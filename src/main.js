@@ -1,17 +1,24 @@
-// Phase 1 boot: the composite corridor with a live S0 vehicle. Generates the
-// deterministic terrain (src/sim/terrain.js), realizes floor + walls + seated
-// feature colliders through the adapter seam, and drops one compiled all-S0
-// vehicle at the start line — cylinder wheels on revolute joints whose native
-// motors drive it toward +X (the S0 kernel witness; no steering, no AI).
-// Meshes are built from the SAME IR dims and realized poses the colliders
-// use, so the visible vehicle cannot drift from the physics. Seeded debris
-// cubes still fall as the terrain-agreement proof. Add ?zones to the URL to
-// tint the sand/mud cells. Render code may use the wall clock and Math.*
-// freely (the determinism ban is scoped to src/sim).
+// Phase 1 boot: the composite corridor with a live MIXED S0/S1 vehicle.
+// Generates the deterministic terrain (src/sim/terrain.js), realizes floor +
+// walls + seated feature colliders through the adapter seam, and drops one
+// compiled vehicle at the start line — rigid S0 front axle, spring-damper S1
+// rear axle (chassis → prismatic → hub → revolute → wheel), all native joint
+// motors, no steering, no AI. Meshes are built from the SAME IR dims and
+// realized poses the colliders use, so the visible vehicle cannot drift from
+// the physics; the S1 hubs are INVISIBLE (policy bodies) but each rear
+// station renders a thin strut from its chassis anchor to its hub so the
+// suspension travel is visible, and the HUD prints the live rear prismatic
+// coordinate (via the pure projection — the engine has no readback). Render
+// code READS body poses only — it never writes physics. Seeded debris cubes
+// still fall as the terrain-agreement proof. Add ?zones to tint zone cells.
 
 import * as THREE from 'three';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
-import { createPhysics, addCorridorWithFeatures, realizeS0Vehicle, FIXED_DT, SOFT_CCD_PREDICTION, WHEEL_COLLIDER_ROTATION } from './sim/physics/adapter.js';
+import {
+  createPhysics, addCorridorWithFeatures, realizeVehicle, FIXED_DT,
+  SOFT_CCD_PREDICTION, WHEEL_COLLIDER_ROTATION, SUSPENSION_AXIS,
+  projectedPrismaticCoordinate, suspensionAnchorLocal, vehicleWheelTransforms,
+} from './sim/physics/adapter.js';
 import { MATERIALS, generateCorridorTerrain, heightAtLocal, indexToLocalXZ } from './sim/terrain.js';
 import { compileAssembly } from './sim/assembly.js';
 import { Rng } from './sim/prng.js';
@@ -188,19 +195,17 @@ async function boot() {
   const showZones = new URLSearchParams(window.location.search).has('zones');
   if (showZones) scene.add(buildZoneOverlay(terrain));
 
-  // --- One compiled all-S0 vehicle driving from the start line (S0 kernel) ---
+  // --- One compiled MIXED S0/S1 vehicle driving from the start line ---
   // A DECLARED hand-built genotype (every gene explicit, repair-stable —
-  // tests/s0-kernel.test.js proves the fixture family): two paired driven S0
-  // axles on a low spine frame, tuned to actually climb the corridor.
-  // Measured while choosing it (2026-07-10, seed 20260708 terrain): the old
-  // fork(9) pick with suspType/driven edits does NOT move — its 7 wheels mix
-  // radii 0.2–0.7 under the single shared MOTOR_TARGET_ANGVEL, so their
-  // no-load surface speeds disagree and the budget burns fighting itself —
-  // and thrust/weight under ~6% stalls on the start-blend grade at gravity
-  // 20. This build (power 1 ⇒ full 500 budget, wheel radius gene 0.4 ⇒
-  // 0.4 m, frameDensity 0.1, nodeHeight 0.3 ⇒ ~267 kg, thrust/weight ~23%)
-  // drives ~46 m of composite terrain before the crater field catches it —
-  // which is the corridor doing its job, not a kernel failure.
+  // the s0/s1-kernel fixture-family proofs): a rigid S0 front axle and a
+  // sprung S1 rear axle on the low spine frame the S0 dev build tuned
+  // (power 1 ⇒ full 500 N·m budget, wheel r 0.4 m, ~267 kg chassis,
+  // thrust/weight ~23% — under ~6% stalls on the start-blend grade, and
+  // mixed radii under the shared MOTOR_TARGET_ANGVEL fight each other; both
+  // measured, 2026-07-10). Rear suspension genes: k ≈ 17.8 kN/m (gene 0.33),
+  // c ≈ 500 N·s/m (0.1), travel 0.3 m (0.75), rest 0.18 m (0.29) — about
+  // 0.08 m of static sag under the ~1.3 kN rear corner load, mid-travel
+  // margins both ways.
   const vehicleGenotype = {
     version: 1,
     hue: 0.25,
@@ -215,30 +220,37 @@ async function boot() {
         fam: { spine: { beamWidthFrac: 0.5 }, ladder: { crossFrac: 0.5 }, hull: { bulge: 0.5 } },
       }],
     },
-    axles: [0.2, 0.8].map((posX01) => ({
-      posX01,
-      paired: 1,
-      trackHalf: 0.5,
-      radius: 0.4, // 0.4 m wheels: smaller radius = more thrust per N·m
-      width: 0.5,
-      density: 0.15,
-      suspType: 0, // S0 — the only realizable suspension level in this PR
-      stiffness: 0.5,
-      damping: 0.5,
-      travel: 0.5,
-      restLength: 0.5,
-      driven: 1, // every wheel takes a motor share
-      share: 0.5,
-      asym: { driveBias: 0.5, sizeBias: 0.5, centerOffset: 0.5 },
-    })),
+    axles: [
+      { // front: rigid S0
+        posX01: 0.2, paired: 1, trackHalf: 0.5,
+        radius: 0.4, width: 0.5, density: 0.15,
+        suspType: 0, stiffness: 0.5, damping: 0.5, travel: 0.5, restLength: 0.5,
+        driven: 1, share: 0.5,
+        asym: { driveBias: 0.5, sizeBias: 0.5, centerOffset: 0.5 },
+      },
+      { // rear: S1 vertical spring-damper (chassis → prismatic → hub → revolute → wheel)
+        posX01: 0.8, paired: 1, trackHalf: 0.5,
+        radius: 0.4, width: 0.5, density: 0.15,
+        suspType: 0.5, stiffness: 0.33, damping: 0.1, travel: 0.75, restLength: 0.29,
+        driven: 1, share: 0.5,
+        asym: { driveBias: 0.5, sizeBias: 0.5, centerOffset: 0.5 },
+      },
+    ],
   };
   const vehicleIR = compileAssembly(vehicleGenotype);
   const spawnX = -terrain.scale.x / 2 + 8;
-  const maxWheelR = Math.max(...vehicleIR.axles.flatMap((a) => a.wheels.map((w) => w.radius)));
+  // Spawn height from the PLACEMENT PLAN, not just the wheel radius: an S1
+  // wheel spawns at its quiescent prismatic coordinate BELOW the chassis
+  // anchor, so the lowest wheel-bottom (local.y − radius) sets the drop.
+  const wheelDrop = Math.max(
+    ...vehicleWheelTransforms(vehicleIR, {}).map(
+      (p) => -p.local.y + vehicleIR.axles[p.axleIndex].wheels[p.wheelIndex].radius
+    )
+  );
   // Placed just above the local surface (a short drop), not lobbed from the
   // sky — the witness is driving, not falling.
-  const vehicle = realizeS0Vehicle(RAPIER, world, vehicleIR, {
-    position: { x: spawnX, y: heightAtLocal(spawnX, 0, terrain) + maxWheelR + 0.5, z: 0 },
+  const vehicle = realizeVehicle(RAPIER, world, vehicleIR, {
+    position: { x: spawnX, y: heightAtLocal(spawnX, 0, terrain) + wheelDrop + 0.5, z: 0 },
   });
   const chassisBody = vehicle.chassis.body;
   const chassisMesh = buildChassisMesh(vehicleIR);
@@ -247,20 +259,44 @@ async function boot() {
   // Rapier cylinders share the local-Y axis, so each mesh takes its body's
   // rotation composed with the same collider-local Y→Z rotation the physics
   // applies (WHEEL_COLLIDER_ROTATION) — render and contact cannot disagree.
+  // (S1 wheel bodies keep the same base-rotation contract, so nothing here
+  // branches on suspension type.)
   const wheelColliderQuat = new THREE.Quaternion(
     WHEEL_COLLIDER_ROTATION.x, WHEEL_COLLIDER_ROTATION.y, WHEEL_COLLIDER_ROTATION.z, WHEEL_COLLIDER_ROTATION.w
   );
   const wheelMaterial = new THREE.MeshLambertMaterial({
     color: new THREE.Color().setHSL(vehicleIR.render.hue, 0.55, 0.32), // darker of the body hue
   });
-  const wheelMeshes = vehicle.wheels.map(({ body, irWheel }) => {
+  const wheelMeshes = vehicle.wheels.map(({ wheel, irWheel }) => {
     const mesh = new THREE.Mesh(
       new THREE.CylinderGeometry(irWheel.radius, irWheel.radius, irWheel.width, 24),
       wheelMaterial
     );
     scene.add(mesh);
-    return { mesh, body };
+    return { mesh, body: wheel.body };
   });
+  // Suspension struts: one thin bright link per S1 station, drawn from the
+  // chassis-local full-compression anchor to the (invisible) hub body — the
+  // visible suspension travel. Pure readback rendering: position/orient the
+  // mesh from body poses; NOTHING here writes physics.
+  const strutGeometry = new THREE.CylinderGeometry(0.035, 0.035, 1, 8);
+  strutGeometry.translate(0, -0.5, 0); // origin at the top so it hangs from the anchor
+  const strutMaterial = new THREE.MeshBasicMaterial({ color: 0x7dff6a });
+  const DOWN = new THREE.Vector3(0, -1, 0);
+  const struts = vehicle.wheels
+    .filter((st) => st.suspensionType === 'S1')
+    .map((st) => {
+      const mesh = new THREE.Mesh(strutGeometry, strutMaterial);
+      scene.add(mesh);
+      return {
+        mesh,
+        hubBody: st.hub.body,
+        anchorLocal: suspensionAnchorLocal(vehicleIR.axles[st.axleIndex], st.irWheel),
+      };
+    });
+  const strutAnchor = new THREE.Vector3();
+  const strutDir = new THREE.Vector3();
+  const chassisQuat = new THREE.Quaternion();
 
   // --- Seeded debris: cubes dropped onto the corridor (deterministic layout) ---
   const rng = new Rng(0xb0c3d001);
@@ -323,8 +359,39 @@ async function boot() {
       mesh.position.set(p.x, p.y, p.z);
       mesh.quaternion.set(q.x, q.y, q.z, q.w).multiply(wheelColliderQuat);
     }
+    // Struts: anchor (chassis pose applied to the local anchor) → hub body.
+    chassisQuat.set(cq.x, cq.y, cq.z, cq.w);
+    for (const { mesh, hubBody, anchorLocal } of struts) {
+      strutAnchor.set(anchorLocal.x, anchorLocal.y, anchorLocal.z).applyQuaternion(chassisQuat);
+      strutAnchor.x += cp.x;
+      strutAnchor.y += cp.y;
+      strutAnchor.z += cp.z;
+      const hp = hubBody.translation();
+      strutDir.set(hp.x, hp.y, hp.z).sub(strutAnchor);
+      const len = strutDir.length();
+      mesh.position.copy(strutAnchor);
+      // At full compression the hub coincides with the anchor (len → 0). Three
+      // r185 is NaN-safe here (normalize() divides by `length || 1`, leaving a
+      // zero vector zero, and setFromUnitVectors(DOWN, zero) → identity), but
+      // orient explicitly only when there is a real direction — clearer intent
+      // than relying on the fallback, and the strut just points DOWN when flat.
+      if (len > 1e-6) mesh.quaternion.setFromUnitVectors(DOWN, strutDir.divideScalar(len));
+      else mesh.quaternion.identity();
+      mesh.scale.set(1, Math.max(len, 0.02), 1);
+    }
+    // Live rear prismatic coordinate through the pure projection (the engine
+    // exposes no readback) — the free correctness eyeball: it sags under
+    // load and breathes over bumps.
+    const rear = struts[0];
+    const rearQ = rear
+      ? projectedPrismaticCoordinate(
+          { position: cp, rotation: cq },
+          { position: rear.hubBody.translation(), rotation: rear.hubBody.rotation() },
+          rear.anchorLocal, { x: 0, y: 0, z: 0 }, SUSPENSION_AXIS
+        )
+      : 0;
 
-    hud.textContent = `corridor · seed ${SEED} · ${features.length} features · s0 ${vehicleIR.chassis.family}, ${vehicle.wheels.length} wheels, x=${cp.x.toFixed(1)}${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
+    hud.textContent = `corridor · seed ${SEED} · ${features.length} features · ${vehicleIR.chassis.family} S0+S1, ${vehicle.wheels.length} wheels, x=${cp.x.toFixed(1)}, rearQ=${rearQ.toFixed(3)}${showZones ? ' · zones' : ''} · rapier 0.19.3 · three r185 · fixed steps: ${stepCount}`;
     renderer.render(scene, camera);
   });
 

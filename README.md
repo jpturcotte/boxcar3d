@@ -6,29 +6,40 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, the S0 kernel landed — vehicles drive. A repaired,
-all-S0 assembly IR now realizes through Rapier's native path: one dynamic
-cylinder body per wheel, one chassis-to-wheel revolute joint on the lateral
-axis, and real joint motors (`realizeS0Vehicle` in the adapter — validation
-all before world mutation, S1/S2 axles rejected at realization while staying
-legal IR data, transactional cleanup proven by induced mid-construction
-failures). The motor ruling is measured, not assumed: ForceBased with a gain
-conversion (`gain = driveTorque / |targetAngvel|`) so `driveTorque` is a
-literal stall-torque budget falling linearly to zero at the target speed —
-an airborne discriminator shows AccelerationBased normalizes wheel inertia
-away (ω ratio 1.000 vs the physical 4.86) and is rejected. Wheel bodies
-share the chassis' base rotation (Rapier's revolute axis is interpreted in
-each body's local frame) with the Y→Z rotation on the collider only, so the
-kernel works at any spawn yaw. A both-flavors forward-drive witness on a
-declared 80 m flat-pad terrain proves the mechanism: driven +19.4 m in 10 s,
-undriven twin stays put, reversed target drives −X; the R5 residual-overlap
-case realizes and stays stable. `npm run dev` now drives a declared all-S0
-vehicle ~46 m into the composite corridor, cylinder wheels rendered from the
-same IR dims the colliders use (add `?zones` to tint the zone map). All
-locked fingerprints byte-identical. Next is S1 vertical spring-damper
-suspension (re-locking the provisional suspension gene ranges); zone
-material response, S2, and the GA land in their own later PRs. The design
-docs in `docs/` define everything that comes after.
+**Status:** Phase 1, the S1 suspension kernel landed — vehicles drive on
+real springs. `realizeVehicle` in the adapter dispatches each axle
+explicitly: S0 stays the rigid chassis→revolute→wheel kernel, and S1
+realizes chassis → prismatic (VEHICLE-LOCAL vertical — a 180°-rolled
+vehicle's suspension extends world-up, measured) → hub body → revolute →
+wheel, with the spring as the prismatic's ForceBased position motor
+(`configureMotorPosition(restLength, stiffness, damping)` + hard stops
+`setLimits(0, travel)`; honest N/m — the isolated rig settles at
+target ± m·g/k exactly, while AccelerationBased is mass-blind and
+rejected). Coordinate 0 is full compression = the proven S0 wheel
+position; spawns are quiescent at `clamp(restLength, 0, travel)`; preload
+(rest beyond travel) and zero-travel (locked) are legal phenotypes. Hubs
+are compiler-owned per-wheel IR records (mass/geometry scale with the
+wheel; a small collision-inert cylinder makes mass/inertia read back at
+creation — colliderless bodies read zero pre-step in 0.19.3, measured),
+`ir.mass` now includes `hubsTotal`, and the IR version split from the gene
+schema (ASSEMBLY_IR_VERSION 2, GENOTYPE_VERSION still 1: the calibration
+matrix measured every provisional suspension range binding UNCHANGED, so
+every locked fingerprint stands). The three-way rough-strip witness (seed
+20260714, both flavors byte-identical) is the payoff: on 60 m of rough
+fBm terrain, a mass-matched S1 vehicle cuts RMS chassis-vertical
+acceleration to 0.15× its rigid S0 twin (1.29 vs 8.59 m/s²), holds
+perfect wheel contact (1.00 vs 0.83), and still covers +85 m — with
+travel mid-band and zero limit strikes. Transactionality now covers
+joint-configuration failures (joints are ledgered before configuration);
+the max legal topology (25 bodies / 24 joints) is stable under the
+existing chassis solver-iteration policy; solver-pump drift is unchanged
+by S1 (−0.33 m/s, recorded). `npm run dev` drives a mixed S0-front /
+S1-rear vehicle ~53 m into the composite corridor with visible green
+suspension struts and a live prismatic-coordinate HUD readout. Next is a
+representative determinism/performance gate (S1 grew worst-case islands to
+25 bodies — measure the deterministic flavor's cost before worker
+sharding); zone material response, S2, and the GA land in their own later
+PRs. The design docs in `docs/` define everything that comes after.
 
 ## Quickstart
 

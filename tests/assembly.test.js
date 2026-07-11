@@ -15,13 +15,19 @@
 import { describe, test, expect } from 'vitest';
 import {
   ASSEMBLY_DEFAULTS,
+  ASSEMBLY_IR_VERSION,
   ASSEMBLY_RULES,
   FRAME_FAMILIES,
   GENE_RANGES,
   GENOTYPE_VERSION,
+  HUB_LENGTH_FRACTION,
+  HUB_MASS_FRACTION,
+  HUB_MASS_RANGE,
+  HUB_RADIUS_FRACTION,
   NODE_SLOTS,
   SUSPENSION_TYPES,
   compileAssembly,
+  hubMassProperties,
   randomGenotype,
   repairGenotype,
   serializeGenotype,
@@ -613,5 +619,125 @@ describe('fail-loud negatives (domain-invalid throws; physical invalidity repair
 
   test('randomGenotype output is always domain-valid (corpus draws never need pre-clamping)', () => {
     for (const { raw } of corpus) expect(() => repairGenotype(raw)).not.toThrow();
+  });
+});
+
+// --- S1 PR additions: the hub policy, the IR-version split, and hub-aware
+// mass accounting. All additive — no existing lock or assertion above moved.
+describe('S1 hub policy and mass accounting', () => {
+  test('version split: ir.version is the physical-record contract (2), ir.genotypeVersion the gene schema (1)', () => {
+    const ir = compileAssembly(validGenotype());
+    expect(ASSEMBLY_IR_VERSION).toBe(2);
+    expect(ir.version).toBe(ASSEMBLY_IR_VERSION);
+    expect(ir.genotypeVersion).toBe(GENOTYPE_VERSION);
+    expect(ir.genotype.version).toBe(GENOTYPE_VERSION); // the embedded repaired clone keeps ITS version
+  });
+
+  test('hubMassProperties is pure, deterministic, and internally consistent', () => {
+    const wheel = { radius: 0.45, width: 0.3, mass: 40 };
+    const a = hubMassProperties(wheel);
+    const b = hubMassProperties({ ...wheel });
+    expect(a).toEqual(b); // same input, same record
+    // Geometry derives from the wheel through the exported fractions…
+    expect(a.radius).toBe(HUB_RADIUS_FRACTION * wheel.radius);
+    expect(a.halfWidth).toBe((HUB_LENGTH_FRACTION * wheel.width) / 2);
+    expect(a.mass).toBe(HUB_MASS_FRACTION * wheel.mass); // 10 kg, inside the clamp band
+    // …density realizes exactly that mass through the cylinder volume…
+    const volume = Math.PI * a.radius * a.radius * (2 * a.halfWidth);
+    expect(Math.abs(a.density * volume - a.mass)).toBeLessThan(1e-12 * a.mass);
+    // …and the principal inertia is the solid cylinder about the axle (z
+    // axial, x/y transverse), exactly.
+    const L = 2 * a.halfWidth;
+    expect(a.principalInertia.z).toBe(a.mass * a.radius * a.radius * 0.5);
+    expect(a.principalInertia.x).toBe((a.mass * (3 * a.radius * a.radius + L * L)) / 12);
+    expect(a.principalInertia.y).toBe(a.principalInertia.x);
+    for (const v of [a.mass, a.radius, a.halfWidth, a.density, a.principalInertia.x, a.principalInertia.z]) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThan(0);
+    }
+  });
+
+  test('hub inertia is scale-aware: equal-mass wheels of different shape get DIFFERENT hub inertia', () => {
+    // Same wheel mass, radically different proportions — a mass-only policy
+    // (fixed characteristic radius) would hand these identical inertia.
+    const squat = hubMassProperties({ radius: 0.2, width: 0.4, mass: 10 });
+    const wide = hubMassProperties({ radius: 0.4, width: 0.1, mass: 10 });
+    expect(squat.mass).toBe(wide.mass);
+    expect(squat.principalInertia.z).not.toBe(wide.principalInertia.z);
+    expect(wide.principalInertia.z / squat.principalInertia.z).toBeCloseTo(4, 10); // r² scaling, exactly ×4
+  });
+
+  test('the mass clamp band is 0.25 × the wheel band — identity for every legal wheel, a floor/ceiling for degenerate hand-edits', () => {
+    expect(HUB_MASS_RANGE[0]).toBe(HUB_MASS_FRACTION * ASSEMBLY_RULES.wheelMass[0]);
+    expect(HUB_MASS_RANGE[1]).toBe(HUB_MASS_FRACTION * ASSEMBLY_RULES.wheelMass[1]);
+    // In-band wheels: the clamp is the identity.
+    expect(hubMassProperties({ radius: 0.2, width: 0.1, mass: 2 }).mass).toBe(0.5);
+    expect(hubMassProperties({ radius: 0.7, width: 0.5, mass: 80 }).mass).toBe(20);
+    // Out-of-band (impossible from repair, possible from hand-edited IR).
+    expect(hubMassProperties({ radius: 0.2, width: 0.1, mass: 1 }).mass).toBe(HUB_MASS_RANGE[0]);
+    expect(hubMassProperties({ radius: 0.7, width: 0.5, mass: 500 }).mass).toBe(HUB_MASS_RANGE[1]);
+  });
+
+  test('S1 wheels carry compiler-owned hub records matching the policy; S0/S2 wheels carry hub: null', () => {
+    // validGenotype is all-S1 (suspType 0.5); flip the gene for the twins.
+    const s1 = compileAssembly(validGenotype());
+    for (const ax of s1.axles) {
+      expect(ax.suspension.type).toBe('S1');
+      for (const wh of ax.wheels) expect(wh.hub).toEqual(hubMassProperties(wh));
+    }
+    for (const [gene, type] of [[0, 'S0'], [0.9, 'S2']]) {
+      const g = validGenotype();
+      for (const ax of g.axles) ax.suspType = gene;
+      const ir = compileAssembly(g);
+      for (const ax of ir.axles) {
+        expect(ax.suspension.type).toBe(type);
+        for (const wh of ax.wheels) expect(wh.hub).toBeNull();
+      }
+    }
+  });
+
+  test('asymmetric paired S1 module: each wheel gets the hub record of ITS OWN wheel (two different masses)', () => {
+    const g = validGenotype();
+    g.symmetric = 0.1; // asymmetric build
+    g.axles[0].asym.sizeBias = 0.9; // second wheel radius × ~1.32
+    const ir = compileAssembly(g);
+    const [w0, w1] = ir.axles[0].wheels;
+    expect(w0.mass).not.toBe(w1.mass);
+    expect(w0.hub).toEqual(hubMassProperties(w0));
+    expect(w1.hub).toEqual(hubMassProperties(w1));
+    expect(w0.hub.mass).not.toBe(w1.hub.mass);
+  });
+
+  test('mass accounting: hubsTotal sums the STORED records in axle-then-wheel order; total includes hubs; all-S0 is unchanged arithmetic', () => {
+    const s1 = compileAssembly(validGenotype());
+    const recomputedHubs = s1.axles.flatMap((ax) => ax.wheels).reduce((s, wh) => s + (wh.hub ? wh.hub.mass : 0), 0);
+    expect(s1.mass.hubsTotal).toBe(recomputedHubs); // exact — same float-add order
+    expect(s1.mass.total).toBe(s1.mass.chassis + s1.mass.wheelsTotal + s1.mass.hubsTotal);
+    expect(s1.mass.hubsTotal).toBeGreaterThan(0);
+    const g0 = validGenotype();
+    for (const ax of g0.axles) ax.suspType = 0;
+    const s0 = compileAssembly(g0);
+    expect(s0.mass.hubsTotal).toBe(0);
+    expect(s0.mass.total).toBe(s0.mass.chassis + s0.mass.wheelsTotal);
+  });
+
+  test('corpus-wide (seed 20260710, n=256): hub records present exactly on S1 wheels, always policy-exact; hubsTotal always consistent', () => {
+    for (const { ir } of corpus) {
+      let sum = 0;
+      for (const ax of ir.axles) {
+        for (const wh of ax.wheels) {
+          if (ax.suspension.type === 'S1') {
+            expect(wh.hub).toEqual(hubMassProperties(wh));
+            sum += wh.hub.mass;
+          } else {
+            expect(wh.hub).toBeNull();
+          }
+        }
+      }
+      expect(ir.mass.hubsTotal).toBe(sum);
+      expect(ir.mass.total).toBe(ir.mass.chassis + ir.mass.wheelsTotal + ir.mass.hubsTotal);
+      expect(ir.version).toBe(ASSEMBLY_IR_VERSION);
+      expect(ir.genotypeVersion).toBe(GENOTYPE_VERSION);
+    }
   });
 });

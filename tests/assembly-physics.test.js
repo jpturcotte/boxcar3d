@@ -38,7 +38,7 @@ import {
 } from '../src/sim/physics/adapter.js';
 import { quatMultiply, yawToQuaternion } from '../src/sim/features.js';
 import { generateCorridorTerrain } from '../src/sim/terrain.js';
-import { compileAssembly, randomGenotype } from '../src/sim/assembly.js';
+import { ASSEMBLY_IR_VERSION, compileAssembly, randomGenotype } from '../src/sim/assembly.js';
 import { Rng } from '../src/sim/prng.js';
 
 const TERRAIN_SEED = 20260708; // the repo's locked-fingerprint seed
@@ -299,7 +299,7 @@ describe('negative teeth (default flavor — deterministic single spawns, tunnel
       const before = world.bodies.len();
       // Mode 1 — hull construction fails outright (all points identical):
       // the null-desc / lazy-createCollider path, the addFeatures F16 twin.
-      const identical = { version: 1, chassis: { density: 100, colliders: [{ kind: 'convexHull', points: Array(24).fill(0.5) }] } };
+      const identical = { version: ASSEMBLY_IR_VERSION, chassis: { density: 100, colliders: [{ kind: 'convexHull', points: Array(24).fill(0.5) }] } };
       expect(() => realizeChassis(RAPIER, world, identical, { position: { x: 0, y: 5, z: 0 } }))
         .toThrow(/degenerate convex hull \(F16\)/);
       // Mode 2 — MEASURED 0.19.3 behavior: a COPLANAR cloud does NOT fail
@@ -307,7 +307,7 @@ describe('negative teeth (default flavor — deterministic single spawns, tunnel
       // mass/inertia sanity assertion is what catches that one.
       const coplanar = [];
       for (let i = 0; i < 8; i++) coplanar.push(0, i * 0.1, (i % 2) * 0.2); // all x = 0
-      const flat = { version: 1, chassis: { density: 100, colliders: [{ kind: 'convexHull', points: coplanar }] } };
+      const flat = { version: ASSEMBLY_IR_VERSION, chassis: { density: 100, colliders: [{ kind: 'convexHull', points: coplanar }] } };
       expect(() => realizeChassis(RAPIER, world, flat, { position: { x: 0, y: 5, z: 0 } }))
         .toThrow(/mass 0 is not finite and positive/);
       expect(world.bodies.len()).toBe(before); // every half-built body was removed
@@ -322,16 +322,20 @@ describe('negative teeth (default flavor — deterministic single spawns, tunnel
       const ir = spineIR();
       const before = world.bodies.len();
       expect(() => realizeChassis(RAPIER, world, null)).toThrow(/malformed IR/);
-      expect(() => realizeChassis(RAPIER, world, { version: 2, chassis: ir.chassis })).toThrow(/malformed IR/);
-      expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: { density: 100, colliders: [] } })).toThrow(/malformed IR/);
-      expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: { density: NaN, colliders: ir.chassis.colliders } })).toThrow(/density/);
-      expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: { density: 100, colliders: [{ kind: 'sphere' }] } })).toThrow(/unknown collider kind/);
+      // Version teeth (the S1 IR-version split): the hubless v1 shape is
+      // REJECTED — a consumer can never confuse it with a hub-bearing v2 IR —
+      // and so is any future version this build does not implement.
+      expect(() => realizeChassis(RAPIER, world, { version: 1, chassis: ir.chassis })).toThrow(/malformed IR/);
+      expect(() => realizeChassis(RAPIER, world, { version: ASSEMBLY_IR_VERSION + 1, chassis: ir.chassis })).toThrow(/malformed IR/);
+      expect(() => realizeChassis(RAPIER, world, { version: ASSEMBLY_IR_VERSION, chassis: { density: 100, colliders: [] } })).toThrow(/malformed IR/);
+      expect(() => realizeChassis(RAPIER, world, { version: ASSEMBLY_IR_VERSION, chassis: { density: NaN, colliders: ir.chassis.colliders } })).toThrow(/density/);
+      expect(() => realizeChassis(RAPIER, world, { version: ASSEMBLY_IR_VERSION, chassis: { density: 100, colliders: [{ kind: 'sphere' }] } })).toThrow(/unknown collider kind/);
       expect(() => realizeChassis(RAPIER, world, ir, { position: { x: NaN, y: 0, z: 0 } })).toThrow(/spawn pose/);
       // Per-field collider shape rejections (external review hardening) —
       // every one must fire BEFORE createRigidBody, so the final body-count
       // assertion below proves rejection has zero world side effects.
       const cub = (patch) => ({
-        version: 1,
+        version: ASSEMBLY_IR_VERSION,
         chassis: { density: 100, colliders: [{ kind: 'cuboid', hx: 0.3, hy: 0.2, hz: 0.2, cx: 0, cy: 0, cz: 0, rot: { x: 0, y: 0, z: 0, w: 1 }, ...patch }] },
       });
       expect(() => realizeChassis(RAPIER, world, cub({ hx: 0 }))).toThrow(/positive finite half-extents/);
@@ -339,7 +343,7 @@ describe('negative teeth (default flavor — deterministic single spawns, tunnel
       expect(() => realizeChassis(RAPIER, world, cub({ cz: NaN }))).toThrow(/positive finite half-extents/);
       expect(() => realizeChassis(RAPIER, world, cub({ rot: undefined }))).toThrow(/rotation quaternion/);
       expect(() => realizeChassis(RAPIER, world, cub({ rot: { x: 0, y: 0, z: 0, w: NaN } }))).toThrow(/rotation quaternion/);
-      const hull = (points) => ({ version: 1, chassis: { density: 100, colliders: [{ kind: 'convexHull', points }] } });
+      const hull = (points) => ({ version: ASSEMBLY_IR_VERSION, chassis: { density: 100, colliders: [{ kind: 'convexHull', points }] } });
       expect(() => realizeChassis(RAPIER, world, hull(Array(10).fill(0.5)))).toThrow(/3n-length/); // ragged (10 % 3 != 0)
       expect(() => realizeChassis(RAPIER, world, hull(Array(9).fill(0.5)))).toThrow(/3n-length/); // only 3 points
       const nanHull = Array(24).fill(0.5);

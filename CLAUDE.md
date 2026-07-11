@@ -48,7 +48,16 @@ evidence notes. Reference only; never import from `legacy/`.
 ## Commands
 
 - `npm run dev` — Vite dev server (smoke scene: falling cubes prove the stack)
-- `npm test` / `npm run test:watch` — Vitest (Node env, headless Rapier works)
+- `npm test` / `npm run test:watch` — Vitest (Node env, headless Rapier works;
+  excludes `tests/browser/**`)
+- `npm run test:determinism` — the narrow golden-lock + fresh-module gate
+  (the two files CI's 3-OS matrix runs)
+- `npm run test:browser` — the Chromium gate (vitest browser mode + pinned
+  playwright; one-time local setup: `npx playwright install chromium`)
+- `npm run bench:physics` — the physics cost matrix (an INSTRUMENT, results
+  pasted into PRs — never a CI threshold; `-- --smoke` for a quick pass)
+- `npm run probe:timing` — the retained Rapier timing/timestep-semantics
+  probe (exits 1 on engine-semantics DRIFT; re-run on any Rapier upgrade)
 - `npm run lint` — includes the determinism ban on `src/sim`
 - `npm run build` — production bundle; CI deploys `dist/` to GitHub Pages
 
@@ -60,8 +69,16 @@ evidence notes. Reference only; never import from `legacy/`.
   compiler + repair v0 + the S1 hub policy), `physics/adapter.js` (the only
   Rapier seam: realization, seating, collision groups, chassis, the S0
   wheel/joint/motor kernel, and the S1 prismatic/hub suspension behind
-  `realizeVehicle`'s explicit dispatch), later: GA operators.
+  `realizeVehicle`'s explicit dispatch), `fnv1a.js` (the extracted house lock
+  hash — streaming state-passing fold), `trace.js` (the versioned per-step
+  trace: 128-byte records, TraceWriter, checkpoint + divergence diagnostics),
+  `evaluation.js` (the ONE canonical headless runner — `runEvaluation`),
+  `evaluation-fixtures.js` (declared fixtures A/B/C + `evaluationOptionsFor`),
+  `evaluation-locks.js` (golden digests + per-step checkpoint states; literals
+  only), later: GA operators.
   Must run headless in Node (tests and CI depend on it).
+- `scripts/` — Node-only instruments OUTSIDE the sim ESLint ban (wall clock
+  allowed): `probe-rapier-timing.js`, `bench-physics.js`.
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -93,8 +110,18 @@ evidence notes. Reference only; never import from `legacy/`.
   tamper + API-drift negatives, transactionality incl. joint-config-stage
   traps), `s1-sag.test.js` (static relational teeth on flat ground),
   `s1-drive.test.js` (the three-way rough-strip witness + roll-180, max
-  topology, strange phenotype, findings ledger), plus the committed Gate-5
-  instrument `s1-calibration-probe.js` (`npm run probe:s1` — NOT a test).
+  topology, strange phenotype, findings ledger), `fnv1a.test.js` (published
+  vectors, incremental≡one-shot, equivalence with two pre-existing locked
+  hashes), `trace.test.js` + `trace-writer.test.js` (the 128-byte codec
+  contract, capture modes, checkpoints, every compare mismatch class),
+  `evaluation.test.js` (runner + fixture contract, `readBodyState`
+  classifications against real engine states), `evaluation-determinism.test.js`
+  + `evaluation-golden.test.js` (the golden-lock gates — `test:determinism`),
+  `bench-schema.test.js` (the bench's only CI touchpoint), and
+  `tests/browser/evaluation-determinism.test.js` (the Chromium gate, own
+  config `vitest.browser.config.js`, excluded from `npm test`); plus the
+  committed instruments `s1-calibration-probe.js` (`npm run probe:s1`) —
+  NOT tests.
 
 ## Current state & next steps (Phase 1)
 
@@ -503,23 +530,155 @@ flavors, byte-identical at the declared seeds:**
 - Full suite green both flavors; every locked fingerprint byte-identical
   (noise, five terrain locks, boulder hull, `24cd0dd5`, `39bcd6c4`).
 
-Next — **a representative determinism/performance gate**, reassessed (not
-inherited): GA stays blocked on the mixed-radius and residual-overlap
-rulings either way, so neither S2 nor zone response unblocks it — but
-worker sharding and the eval-world design both hinge on whether the
-deterministic flavor is affordable as the eval default, S1 just grew
-worst-case islands to 25 bodies / 24 joints, and that number gets costlier
-to retrofit after sharding lands (phase0-refresh §5 item 8's bit-exact
-replay smoke is the seed of it). After that: zone material response
-(cheap, isolated, `zoneAt(x, z, terrain)` is ready), then S2 trailing arms
-(S2 must land before — or the population seeder must mask `suspType` away
-from — any GA PR, since realization rejects S2 pre-world).
-**Explicitly deferred beyond that:** GA operators (spec §3.3:
-module-exchange crossover, structural vs parametric mutation) + the
-population seeder (symmetry default-on bias lives there), worker sharding
-with the 1-vs-4-workers equality test, and the full replay-determinism
-criterion. Open ruling question carried from PR #10 review (a THIRD
-measured witness now: the R5-cap case realizes and drives with S1 modules
-too): are visually-overlapping wheels acceptable for evolution? Physics
-ignores them (collision-inert, stable, no detach), but they read as one
-thick wheel on screen.
+**The deterministic-trace + physics-budget gate PR landed — the
+representative determinism/performance instrument (phase0-refresh §6 item
+8's superset), plus the O3 documentation resolution. Every ruling below is
+measured; every earlier locked fingerprint is byte-identical:**
+- **The canonical runner (`src/sim/evaluation.js`, wall-clock-free):**
+  `runEvaluation({deterministic, terrain (must carry its own seed),
+  vehicles: [{ir, spawn, targetAngvel?, wheelFriction?}], maxSteps,
+  termination:'maxSteps', trace:{mode, checkpointInterval?}, profile,
+  hooks:{onPhase}})` owns createPhysics, terrain (+ the one statics
+  BVH pre-step), realization, the fixed-step loop, per-step capture,
+  metrics, and `world.free()`. Vehicles enter as COMPILED IRs (a
+  genotype-accepting runner would silently repair — the digest must
+  attest to what the caller saw). Callers own elapsed time:
+  `hooks.onPhase(name)` fires names only. Capture indices 0..maxSteps
+  (0 = post-realization: spawn placement is under the digest); the run
+  always executes exactly maxSteps (no data-dependent early exit — a
+  non-finite vehicle LATCHES `{step, reason:'nonFinite'}` and keeps
+  being stepped and traced shape-static). Unknown option keys reject
+  loud everywhere. Result: per-vehicle forwardDistance/finalPose/
+  finalVelocity/finite/terminated/validity/sleep counts, world counts,
+  the trace envelope, `timing.stepMs` (per-step `timingStep()` when
+  `profile`), and `{requestedDt, effectiveDt}`.
+- **The dt ruling (measured, probe-locked):** the engine stores the
+  timestep as f32 — `world.timestep = 1/60` reads back
+  `Math.fround(1/60)` = 0.01666666753590107, NOT the f64 1/60; the
+  runner asserts that readback and the locks bind it. An exact-f64
+  assertion would fail on every run.
+- **The trace contract (`src/sim/trace.js`, EVALUATION_TRACE_VERSION 1
+  — its own axis: a trace-version change means the ENCODED contract
+  changed, not physics):** fixed 128-byte records — u32 LE
+  stepIndex/vehicleIndex/axleIndex/wheelIndex (`NO_INDEX` 0xffffffff;
+  u32 so the format imposes no station ceiling below the runtime
+  guard), 8 flag/enum bytes (bodyRole chassis/hub/wheel, bodyValid,
+  bodySleeping, jointState invalid/valid/notApplicable, terminated,
+  terminationReason none/nonFinite, finiteState, reserved), 13 raw LE
+  f64 floats (translation/rotation/linvel/angvel). NO normalization
+  (−0, denormals, ±Inf, quaternion sign bit-preserved) EXCEPT NaN →
+  canonical quiet NaN via explicit setUint32 writes (setFloat64's NaN
+  pattern is implementation-defined per the ES spec; wasm NaN payloads
+  are nondeterministic — raw NaN bits would break the cross-env gate
+  exactly in the blow-up case). Joint tri-state: chassis = AND over the
+  vehicle's joints ('notApplicable' for a sled), hub = its prismatic,
+  wheel = its drive revolute. Canonical order (vehicle → chassis →
+  stations axle-then-wheel, hub before wheel) is a WRITE-TIME invariant
+  in TraceWriter. Capture modes: none (literal no work) / digest
+  (streaming fold, retains nothing) / full (scratch COPIES, identical
+  digest). Checkpoints `{stepIndex, recordCount, byteCount, state}`
+  carry the raw cumulative uint32 FNV state (O(1) — the state IS the
+  hash); finish() appends a terminal checkpoint only when the last
+  endStep didn't already make one. `compareTraces` reports the first
+  divergence (version/size/field-with-bytes/ordering/missing/extra);
+  `compareCheckpoints` accepts partial lock-style entries.
+  `src/sim/fnv1a.js` is the extracted house hash (0x811c9dc5 /
+  Math.imul 0x01000193), proven byte-identical to two pre-existing
+  locked constants; existing test-local loops stay untouched.
+- **Golden locks (`src/sim/evaluation-locks.js`, literals only, zero
+  imports)** @ deterministic flavor 0.19.3, digest mode, interval 1:
+  `eval-a-s0-flat` v1 (seed 20260715, 600 steps, 3005 records/384640
+  bytes) digest `5a219735`; `eval-b-mixed-composite` v1 (seed 20260716,
+  composite defaults ON, 900 steps, 6307/807296) `65f9e2fd`;
+  `eval-c-max-s1` v1 (seed 20260717, 25 bodies/24 joints, 600 steps,
+  15025/1923200) `bc71517b` — each with its FULL per-step
+  checkpoint-state array committed (≈2,103 uint32s total), so a failing
+  environment reports its first divergent STEP against the lock, not
+  just "digest differs". Re-lock workflow: set digest null → the gate
+  prints the full measured record as paste-ready JSON → Node green →
+  Chromium must agree before merge. Locks carry
+  fixtureVersion/traceVersion/recordBytes/rapierVersion (checked at run
+  time via `RAPIER.version()`)/effectiveDt/executedSteps/captureCount/
+  checkpointCount.
+- **Environments actually verified (no broader claim):** fresh-world ×2
+  and fresh-module (a second Vitest file = fresh module graph + fresh
+  world under the measured forks pool — NOT claimed as a fresh OS
+  process or fresh wasm instantiation) on Windows dev + CI
+  ubuntu/windows/macos Node 22 (`node-determinism` matrix, only
+  `test:determinism`), and pinned Chromium 149.0.7827.55 via vitest
+  browser mode + playwright 1.61.1 exact (`browser-determinism` job,
+  cached binaries keyed on the playwright version; deploy now needs all
+  three jobs). Chromium reproduced all three digests and every
+  checkpoint state on the first run. Because fixture B keeps the
+  composite defaults, the browser gate transitively proves the
+  integer-noise field, crater baking, zone quantiles, feature
+  generation, and the addCorridorWithFeatures castRay-seating path
+  bit-identical in Chromium — nothing is claimed about rendering.
+  Default flavor: per-process repeatability asserted; digest never
+  locked (F10).
+- **Measured engine findings (recorded, load-bearing):** (1) a pose
+  read on a REMOVED body panics the wasm module ("unreachable") and can
+  poison later calls — `readBodyState`'s isValid() guard + canonical-NaN
+  readout is the only safe idiom; (2) raw `setLinvel(NaN)` is ACCEPTED
+  and the NaN persists through stepping — the finite flag detects it;
+  (3) NO legal runner input produces NaN on 0.19.3 — velocities to 1e25
+  m/s stay finite 60+ steps and ~3e38 hard-panics wasm (a thrown error,
+  not a NaN trace), so the non-finite latch is a defensive net, tested
+  at the readBodyState seam (its 6-line wiring is negative-covered
+  only — a recorded limitation); (4) the ghost-isolation lock: vehicle
+  0's FULL 3005-record trace is bit-equal solo vs sharing its world
+  with an identical ghost — the worker-sharding equivalence witness;
+  (5) profiler timing*() methods are per-step MILLISECONDS gated on the
+  `profilerEnabled` accessor (default false; disable freezes, re-enable
+  resumes; components do NOT sum to timingStep; the ~1.5 ms warm-up
+  spike attaches to a fresh module's FIRST step, not to enablement) —
+  `npm run probe:timing` re-verifies all of this and exits 1 on drift;
+  (6) `profilerEnabled` does not change the digest (semantic
+  non-interference — cost is measured separately, never inferred).
+- **The cost baseline (`npm run bench:physics`, reference machine:
+  i7-14650HX, Windows 11, Node v22.19.0, 2026-07-11 — machine-specific,
+  never a package property; full table in
+  `docs/bench-physics-reference-2026-07-11.md`):** the deterministic
+  flavor's stepping tax is ≈1.0–1.12× at steady-state high-vehicle rows
+  (fixture C 1.00/1.01/1.10/1.12; fixture B 1.03–1.10) and *faster* on
+  the flat control workload (0.77–0.87×) — the 1.5–1.7× fixture-A rows at
+  1–20 vehicles are fixed-cost/JIT noise on 40–60 ms measurements, NOT a
+  stepping tax; the digest instrument adds 1.00–1.12× (negligible); the
+  50-vehicle/60-FPS goal (16.7 ms/step) is met by ordinary A/B fixtures
+  (≈5–6 ms at 50 vehicles) but NOT by 50 worst-case-max-topology
+  vehicles (fixture C ≈26 ms default / ≈29 ms deterministic; 100 vehicles
+  ≈92/103 ms) — an input to worker sharding and population composition,
+  recorded not remediated. Physics cost only (explicit render-budget
+  caveat; this PR does not benchmark rendering).
+- **All-flavors f32 finding:** every one of fixture A's 39,065 traced
+  floats is exactly f32-representable (`Math.fround(v) === v`) — the
+  engine's exposed state is f32-backed; the trace keeps lossless f64
+  encoding regardless (pre-ruled: if the tooth ever fails, keep f64 and
+  record the fields).
+
+Next — **zone material response**, re-derived (not inherited) against the
+measured state: the deterministic tax measured ≈1.0–1.12× at steady state
+(faster on flat ground), so the deterministic flavor is affordable as the
+eval default and no architecture rethink fires; Node/Chromium agreed
+bit-exact on the first
+run, so no divergence diagnosis queue exists; the bench showed no
+population-scale architecture risk at 100 vehicles (worst rows within
+budget); and S2 has no evidence-based reason to jump the queue (it stays
+realization-rejected, which only the seeder or S2 itself unblocks — after
+zones). Zone response is cheap, isolated (`zoneAt(x, z, terrain)` is
+ready), gives wheel count/width their environmental trade-off, and the
+NEW instruments measure it for free: fixture B already runs the zone grid
+under the determinism gate, so a zone-response PR extends the runner with
+per-zone friction/rolling-resistance response, re-locks B deliberately
+(the documented re-lock workflow), and benches its incremental cost.
+After that: S2 trailing arms (S2 must land before — or the population
+seeder must mask `suspType` away from — any GA PR), then the GA.
+**Explicitly deferred:** GA operators (spec §3.3) + the population seeder
+(symmetry default-on bias lives there), worker sharding with the
+1-vs-4-workers equality test (the ghost-isolation bit-equality lock is
+its physics precondition, now in place), full replay closure (the trace
+instrument exists; record→re-run→compare a GA session does not yet), and
+the solver-pump / mixed-radius / residual-overlap rulings (unchanged).
+Open ruling question carried from PR #10 review: are visually-overlapping
+wheels acceptable for evolution? Physics ignores them (collision-inert,
+stable, no detach), but they read as one thick wheel on screen.

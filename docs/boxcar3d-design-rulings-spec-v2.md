@@ -18,7 +18,7 @@
 
 ## 2. Cascade through the open decisions
 
-- **D3 is now resolved by implication.** Evolving suspension *topologies* requires real joint assemblies. The ray-cast vehicle controller has exactly one hard-coded suspension model with tunable parameters — it cannot express suspension types. **Backend J (joints) is the only canonical backend.** Recommendation: drop Backend R from Phase 1 scope entirely (→ **O3** to confirm) rather than carry a mode that can't represent the spec.
+- **D3 is now resolved by implication.** Evolving suspension *topologies* requires real joint assemblies. The ray-cast vehicle controller has exactly one hard-coded suspension model with tunable parameters — it cannot express suspension types. **Backend J (joints) is the only canonical backend.** Backend R is dropped from scope entirely (**O3 — resolved 2026-07-11**) rather than carrying a mode that can't represent the spec.
 - **Joint-stability risk climbs back to HIGH.** Evolved assemblies multiply joints and produce configurations no human would design. Mitigation moves from "polish" to core: the assembly compiler (§3) *validates and repairs* every genotype before it touches the physics world, and chassis bodies get per-body additional solver iterations.
 - **Physics budget rises; worker sharding becomes load-bearing.** A Tier-1 vehicle is 1 compound-collider chassis body + up to N wheel bodies + optional arm bodies, with 1–2 joints per wheel. The 50-vehicle target at 60 FPS now leans on the worker-shard design (red-team F9 invariants: no inter-vehicle interaction; shard-invariant per-vehicle RNG streams).
 - **Ghost vehicles are implied and required.** "All start on the starting line" + no steering means vehicles will occupy the same space constantly. Non-colliding (ghost) vehicles is both the BoxCar2D convention and the precondition for sharding — recorded as the design, flagged for explicit confirmation (→ **O2**).
@@ -102,7 +102,7 @@ Population size, elite count, tournament size, structural/parametric mutation ra
 | D7 | Determinism scope | ✅ **Ruled — cross-platform shareable seeds** (consequences in §6.1) |
 | O1 | Wheel count range | ✅ **Ruled — unlimited by design**; perf-guard cap as a user option (§6.1) |
 | O2 | Ghost vehicles | ✅ **Confirmed** |
-| O3 | Drop Backend R from scope entirely | ⏳ Awaiting confirmation — plain-language explanation in §8 glossary; recommendation stands |
+| O3 | Drop Backend R from scope entirely | ✅ **Resolved (2026-07-11) — Backend R dropped from scope; Backend J is the sole canonical backend** because real wheel bodies and evolving suspension topologies are required by R3. No J/R fidelity toggle; glossary entry retained as historical context |
 | O4 | Tier-2 articulated frame | ✅ **Ruled — defer, but architect toward it** (§6.1) |
 
 ### 6.1 Second-pass ruling consequences (2026-07-08)
@@ -111,7 +111,7 @@ Population size, elite count, tournament size, structural/parametric mutation ra
 - An integer-state PRNG (PCG32 or xoshiro128\*\*) as the *only* randomness source in terrain generation, genetics, and simulation scheduling, with per-vehicle child streams so results are shard-invariant.
 - A repo-wide ban on `Math.random` and `Math.sin/cos/tan/pow/exp` in any generation or simulation path, enforced by an ESLint `no-restricted-properties` rule (rendering code exempt). Generation-side trig uses our own deterministic implementation.
 - Seed mode runs on `rapier3d-deterministic-compat`: a shared seed reproduces the same terrain, population history, and champion on any machine or browser.
-- CI: cross-environment hash test (same seed → identical terrain hash + fitness vector) on both Chromium and Node.
+- CI: cross-environment hash test (same seed → identical terrain hash + fitness vector) on both Chromium and Node. *(The physics-trace half landed 2026-07-11: per-step full-vehicle trace digests reproduce bit-exact across ubuntu/windows/macos Node 22 and pinned Chromium under the deterministic flavor — `npm run test:determinism` / `test:browser`. The fitness-vector half arrives with the GA.)*
 
 **O1 — wheel count**: the genotype has no structural limit (axle modules are a variable-length list), and the economics already push back on wheel spam — every wheel adds mass and joints while the drivetrain's power budget is fixed, so more wheels means less torque each and more to haul. Terrain types make the trade genuinely interesting: soft zones (sand/mud) should favor more/wider wheels, firm ground fewer. A **runtime cap stays as a user option** (generous default, e.g. 12; "uncapped" exposed as an experimental setting) purely as a performance guard, since population × wheels is the physics cost product.
 
@@ -121,14 +121,14 @@ Population size, elite count, tournament size, structural/parametric mutation ra
 
 ## 7. Impact on the Phase 1 checklist
 
-Steps 1–5 (repo scaffold, tests-first, heightfield **now built to R2's composite-corridor spec with physical walls**, static features, chassis drop tests) proceed unchanged and are unaffected by the open items above. Step 6 becomes the **axle-module system**, landing suspension types incrementally — S0, then S1, then S2 — each behind its own test gate. Step 7 (gene adapter) becomes the **assembly compiler + repair pass** described in §3. Backend R work is removed from scope pending O3.
+Steps 1–5 (repo scaffold, tests-first, heightfield **now built to R2's composite-corridor spec with physical walls**, static features, chassis drop tests) proceed unchanged and are unaffected by the open items above. Step 6 becomes the **axle-module system**, landing suspension types incrementally — S0, then S1, then S2 — each behind its own test gate. Step 7 (gene adapter) becomes the **assembly compiler + repair pass** described in §3. Backend R work is removed from scope (O3 resolved — dropped).
 
 ---
 
 ## 8. Glossary (plain language)
 
 - **Backend J ("joints")** — wheels are real physical objects, each its own rigid body, connected to the frame by joints (hinges and sliders carrying springs and motors). Everything is honestly simulated: wheels ride over obstacles, get deflected, and still matter when the vehicle flips. The only backend that can represent different suspension *types* — canonical by ruling R3/D3.
-- **Backend R ("ray-cast")** — Rapier's built-in shortcut vehicle: the car is one rigid box, and each "wheel" is an invisible ray probing the ground with a spring formula deciding how hard to push up. Very fast and explosion-proof, but the wheels aren't objects — one fixed suspension model, no wheel-vs-obstacle contact, nothing honest when flipped.
+- **Backend R ("ray-cast")** *(historical — rejected by O3, 2026-07-11; retained so the ruling stays legible)* — Rapier's built-in shortcut vehicle: the car is one rigid box, and each "wheel" is an invisible ray probing the ground with a spring formula deciding how hard to push up. Very fast and explosion-proof, but the wheels aren't objects — one fixed suspension model, no wheel-vs-obstacle contact, nothing honest when flipped. Dropped because R3's evolving suspension topologies require real wheel bodies.
 - **Shape 1 / Shape 2** — the two deployment styles after relaxing the single-file constraint: a no-build static folder (1) vs. the chosen Vite + Vitest + GitHub Actions repo (2).
 - **`-compat` / `-deterministic` flavors** — Rapier package variants: `-compat` embeds the physics WASM inside the JavaScript file (no special hosting needed); `-deterministic` guarantees identical simulation results across machines and platforms, at some speed cost.
 - **Heightfield** — a terrain collider defined by a grid of height values: fast and gap-free, but unable to express overhangs — which is why obstacles are separate colliders on top.

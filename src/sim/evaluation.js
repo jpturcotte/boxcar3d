@@ -34,7 +34,7 @@
 import {
   FIXED_DT, createPhysics, addCorridor, addCorridorWithFeatures, realizeVehicle,
 } from './physics/adapter.js';
-import { generateCorridorTerrain } from './terrain.js';
+import { generateCorridorTerrain, TERRAIN_DEFAULTS } from './terrain.js';
 import { EVALUATION_TRACE_VERSION, MAX_STEP_INDEX, TERMINATION_REASONS, TRACE_MODES, TraceWriter } from './trace.js';
 
 export { EVALUATION_TRACE_VERSION, TERMINATION_REASONS }; // one import point for consumers
@@ -75,6 +75,14 @@ function validateOptions(options) {
   if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
     fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
   }
+  // Reject unknown terrain keys HERE, consistent with the runner's other
+  // option objects: generateCorridorTerrain spreads `{ ...TERRAIN_DEFAULTS,
+  // ...terrain }` and silently ignores extras, so a typo'd knob (e.g.
+  // `featureDensitty`) would otherwise run the DEFAULT terrain while producing
+  // a valid digest — the exact silently-wrong-terrain class fail-loud prevents.
+  checkUnknownKeys(terrain, Object.keys(TERRAIN_DEFAULTS), 'terrain');
+  // Domain validation of the values themselves stays delegated to
+  // generateCorridorTerrain's function-wide validateConfig.
   if (!Array.isArray(vehicles) || vehicles.length === 0) fail('vehicles', vehicles);
   vehicles.forEach((v, i) => {
     if (typeof v !== 'object' || v === null) fail(`vehicles[${i}]`, v);

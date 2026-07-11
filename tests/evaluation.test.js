@@ -110,6 +110,7 @@ describe('runEvaluation options validation', () => {
   test('negative teeth: every malformed option fails loud before any world exists', async () => {
     const cases = [
       [(o) => { delete o.terrain.seed; }, /terrain\.seed/],
+      [(o) => { o.terrain.featureDensitty = 0.9; }, /terrain\.featureDensitty.*unknown key/],
       [(o) => { o.vehicles = []; }, /vehicles/],
       [(o) => { o.maxSteps = 0; }, /maxSteps/],
       [(o) => { o.maxSteps = 1.5; }, /maxSteps/],

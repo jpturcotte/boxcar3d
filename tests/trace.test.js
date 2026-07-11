@@ -3,7 +3,7 @@ import {
   EVALUATION_TRACE_VERSION, RECORD_BYTES, TRACE_FIELDS,
   BODY_ROLES, JOINT_STATES, TERMINATION_REASONS, TRACE_MODES,
   NO_INDEX, MAX_AXLE_INDEX, MAX_WHEEL_INDEX,
-  encodeTraceRecord, decodeTraceRecord,
+  encodeTraceRecord, decodeTraceRecord, compareTraces,
 } from '../src/sim/trace.js';
 import { fnv1aHex } from '../src/sim/fnv1a.js';
 import { Rng } from '../src/sim/prng.js';
@@ -293,5 +293,115 @@ describe('trace record codec (T1–T8)', () => {
         'translation', 'vehicleIndex', 'wheelIndex',
       ]);
     }
+  });
+});
+
+describe('compareTraces (T9–T14)', () => {
+  // A small canonical stream: two steps of one vehicle (chassis + one hub/wheel station).
+  function stream() {
+    const out = [];
+    for (let s = 0; s < 2; s += 1) {
+      out.push({ ...chassisRecord(), stepIndex: s, translation: { x: s, y: 1, z: 2 } });
+      out.push({ ...baseRecord(), stepIndex: s, axleIndex: 0, wheelIndex: 0, bodyRole: 'hub' });
+      out.push({ ...baseRecord(), stepIndex: s, axleIndex: 0, wheelIndex: 0, bodyRole: 'wheel' });
+    }
+    return out;
+  }
+  const encodedTrace = (records) => ({
+    version: EVALUATION_TRACE_VERSION,
+    recordBytes: RECORD_BYTES,
+    records: records.map((r) => encodeTraceRecord(r)),
+  });
+
+  test('T9: identical traces compare to null; plain-object expected records are accepted', () => {
+    expect(compareTraces(encodedTrace(stream()), encodedTrace(stream()))).toBeNull();
+    // Hand-written expectation path: plain record objects vs encoded bytes.
+    const plain = { version: EVALUATION_TRACE_VERSION, recordBytes: RECORD_BYTES, records: stream() };
+    expect(compareTraces(plain, encodedTrace(stream()))).toBeNull();
+  });
+
+  test('T10: fieldMismatch reports index, identity, field name, values, bytes, and counts', () => {
+    const mutated = stream();
+    mutated[3] = { ...mutated[3], translation: { x: 1, y: 1, z: 2 }, linvel: { x: -4.5, y: -5.5, z: -6.5 } };
+    const report = compareTraces(encodedTrace(stream()), encodedTrace(mutated));
+    expect(report).toMatchObject({
+      kind: 'fieldMismatch',
+      index: 3,
+      identity: { stepIndex: 1, vehicleIndex: 2, axleIndex: null, wheelIndex: null, bodyRole: 'chassis' },
+      field: 'linvel.y',
+      byteOffset: 88,
+      expectedValue: 5.5,
+      actualValue: -5.5,
+      expectedCount: 6,
+      actualCount: 6,
+    });
+    expect(report.expectedBytes).toMatch(/^[0-9a-f]{16}$/);
+    expect(report.actualBytes).toMatch(/^[0-9a-f]{16}$/);
+    expect(report.expectedBytes).not.toBe(report.actualBytes);
+  });
+
+  test('T11: −0 vs +0 IS a divergence (byte-first comparison)', () => {
+    const a = stream();
+    const b = stream();
+    a[0].translation.x = 0;
+    b[0].translation.x = -0;
+    const report = compareTraces(encodedTrace(a), encodedTrace(b));
+    expect(report).toMatchObject({ kind: 'fieldMismatch', index: 0, field: 'translation.x' });
+    expect(Object.is(report.expectedValue, 0)).toBe(true);
+    expect(Object.is(report.actualValue, -0)).toBe(true);
+  });
+
+  test('T12: orderingMismatch on swapped records; missing/extra on truncation/extension', () => {
+    const swapped = encodedTrace(stream());
+    [swapped.records[1], swapped.records[2]] = [swapped.records[2], swapped.records[1]];
+    expect(compareTraces(encodedTrace(stream()), swapped)).toMatchObject({
+      kind: 'orderingMismatch',
+      index: 1,
+      expected: { bodyRole: 'hub' },
+      actual: { bodyRole: 'wheel' },
+    });
+    const truncated = encodedTrace(stream());
+    truncated.records.pop();
+    expect(compareTraces(encodedTrace(stream()), truncated)).toMatchObject({
+      kind: 'missingRecord',
+      index: 5,
+      expectedCount: 6,
+      actualCount: 5,
+      identity: { stepIndex: 1, bodyRole: 'wheel' },
+    });
+    const extended = encodedTrace(stream());
+    extended.records.push(encodeTraceRecord({ ...baseRecord(), stepIndex: 2 }));
+    expect(compareTraces(encodedTrace(stream()), extended)).toMatchObject({
+      kind: 'extraRecord',
+      index: 6,
+      identity: { stepIndex: 2 },
+    });
+  });
+
+  test('T13: versionMismatch is reported before any bytes are touched', () => {
+    const v2 = { version: 2, recordBytes: RECORD_BYTES, records: [new Uint8Array(3)] }; // bogus records — must not be read
+    expect(compareTraces(encodedTrace(stream()), v2)).toMatchObject({
+      kind: 'versionMismatch',
+      expected: EVALUATION_TRACE_VERSION,
+      actual: 2,
+    });
+  });
+
+  test('T14: recordSizeMismatch — declared and per-entry', () => {
+    const declared = { version: EVALUATION_TRACE_VERSION, recordBytes: 112, records: [] };
+    expect(compareTraces(encodedTrace(stream()), declared)).toMatchObject({
+      kind: 'recordSizeMismatch',
+      expected: RECORD_BYTES,
+      actual: 112,
+    });
+    const badEntry = encodedTrace(stream());
+    badEntry.records[2] = new Uint8Array(119);
+    expect(compareTraces(encodedTrace(stream()), badEntry)).toMatchObject({
+      kind: 'recordSizeMismatch',
+      index: 2,
+      actual: 119,
+    });
+    // Metadata is required — a records-only object is rejected loud.
+    expect(() => compareTraces({ records: [] }, encodedTrace(stream()))).toThrow(/version missing/);
   });
 });

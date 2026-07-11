@@ -23,6 +23,8 @@
 // digest hashes physics content only and `byteCount = recordCount ×
 // RECORD_BYTES` stays an exact identity.
 
+import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
+
 export const EVALUATION_TRACE_VERSION = 1;
 export const RECORD_BYTES = 128;
 
@@ -247,4 +249,316 @@ export function decodeTraceRecord(bytes, offset = 0) {
   // A decoded stream must satisfy the same coherence rules as encoder input.
   validateRecord(rec);
   return rec;
+}
+
+// --- Streaming writer ----------------------------------------------------------
+
+function writerFail(what, value) {
+  throw new Error(`trace: TraceWriter ${what} (${String(value)})`);
+}
+
+/**
+ * Streaming trace writer. The runner passes plain record objects in canonical
+ * semantic order (vehicles in input order; per vehicle chassis first, then
+ * stations axle-then-wheel, hub before wheel) — the order is a WRITE-TIME
+ * INVARIANT enforced here, not a compare-time observation.
+ *
+ * Modes: 'none' retains and computes nothing (a literal early return, so a
+ * benchmark comparing none vs digest measures encoding, not validation);
+ * 'digest' encodes each record into one reusable scratch buffer and folds it
+ * immediately — no records retained; 'full' additionally retains a COPY of
+ * every encoded record and produces the identical digest by the same fold.
+ *
+ * Checkpoints (digest/full): one per `checkpointInterval` ended steps —
+ * `{ stepIndex, recordCount, byteCount, state }` where `state` is the raw
+ * cumulative uint32 FNV state (hex is derived only for reports; a checkpoint
+ * is O(1) because the state IS the running hash). `finish()` appends a
+ * terminal checkpoint only when the last `endStep` did not already create
+ * one, so interval 1 never duplicates the tail.
+ */
+export class TraceWriter {
+  #mode;
+  #interval;
+  #state = FNV_OFFSET_BASIS;
+  #recordCount = 0;
+  #byteCount = 0;
+  #checkpoints = [];
+  #records = null;
+  #scratch = null;
+  #lastKey = null;
+  #lastEndedStep = -1;
+  #maxSeenStep = -1;
+  #stepsEnded = 0;
+  #finished = false;
+
+  constructor({ mode = 'digest', checkpointInterval = 1 } = {}) {
+    if (!TRACE_MODES.includes(mode)) writerFail('invalid mode', mode);
+    if (!Number.isInteger(checkpointInterval) || checkpointInterval < 1) {
+      writerFail('invalid checkpointInterval', checkpointInterval);
+    }
+    this.#mode = mode;
+    this.#interval = checkpointInterval;
+    if (mode !== 'none') this.#scratch = new Uint8Array(RECORD_BYTES);
+    if (mode === 'full') this.#records = [];
+  }
+
+  record(rec) {
+    if (this.#finished) writerFail('record() after finish()', this.#mode);
+    if (this.#mode === 'none') return;
+    encodeTraceRecord(rec, this.#scratch); // validates fully
+    if (rec.stepIndex <= this.#lastEndedStep) {
+      writerFail(`record for already-ended step ${rec.stepIndex}`, `lastEndedStep ${this.#lastEndedStep}`);
+    }
+    const key = [
+      rec.stepIndex, rec.vehicleIndex,
+      rec.axleIndex === null ? -1 : rec.axleIndex,
+      rec.wheelIndex === null ? -1 : rec.wheelIndex,
+      BODY_ROLES.indexOf(rec.bodyRole),
+    ];
+    if (this.#lastKey !== null) {
+      let cmp = 0;
+      for (let i = 0; i < key.length && cmp === 0; i += 1) cmp = key[i] - this.#lastKey[i];
+      if (cmp <= 0) {
+        writerFail('record out of canonical order', `${JSON.stringify(this.#lastKey)} then ${JSON.stringify(key)}`);
+      }
+    }
+    this.#lastKey = key;
+    if (rec.stepIndex > this.#maxSeenStep) this.#maxSeenStep = rec.stepIndex;
+    this.#state = fnv1aFold(this.#state, this.#scratch);
+    this.#recordCount += 1;
+    this.#byteCount += RECORD_BYTES;
+    if (this.#mode === 'full') this.#records.push(this.#scratch.slice()); // COPY — never the scratch itself
+  }
+
+  endStep(stepIndex) {
+    if (this.#finished) writerFail('endStep() after finish()', stepIndex);
+    if (this.#mode === 'none') return;
+    if (!Number.isInteger(stepIndex) || stepIndex <= this.#lastEndedStep) {
+      writerFail('endStep must advance', `${stepIndex} after ${this.#lastEndedStep}`);
+    }
+    if (stepIndex < this.#maxSeenStep) {
+      writerFail('endStep behind recorded steps', `${stepIndex} < max seen ${this.#maxSeenStep}`);
+    }
+    this.#lastEndedStep = stepIndex;
+    this.#stepsEnded += 1;
+    if (this.#stepsEnded % this.#interval === 0) {
+      this.#checkpoints.push({
+        stepIndex,
+        recordCount: this.#recordCount,
+        byteCount: this.#byteCount,
+        state: this.#state,
+      });
+    }
+  }
+
+  finish() {
+    if (this.#finished) writerFail('finish() after finish()', this.#mode);
+    this.#finished = true;
+    if (this.#mode === 'none') {
+      return {
+        version: EVALUATION_TRACE_VERSION,
+        mode: 'none',
+        recordBytes: RECORD_BYTES,
+        recordCount: null, // an honest "did no work", never a fake 0
+        byteCount: null,
+        digest: null,
+        checkpoints: null,
+        records: null,
+      };
+    }
+    const last = this.#checkpoints[this.#checkpoints.length - 1];
+    const anythingHappened = this.#lastEndedStep !== -1 || this.#maxSeenStep !== -1;
+    const lastIsCurrent = last !== undefined
+      && last.recordCount === this.#recordCount
+      && last.byteCount === this.#byteCount
+      && last.stepIndex === Math.max(this.#lastEndedStep, this.#maxSeenStep);
+    if (anythingHappened && !lastIsCurrent) {
+      this.#checkpoints.push({
+        stepIndex: Math.max(this.#lastEndedStep, this.#maxSeenStep),
+        recordCount: this.#recordCount,
+        byteCount: this.#byteCount,
+        state: this.#state,
+      });
+    }
+    return {
+      version: EVALUATION_TRACE_VERSION,
+      mode: this.#mode,
+      recordBytes: RECORD_BYTES,
+      recordCount: this.#recordCount,
+      byteCount: this.#byteCount,
+      digest: fnv1aHexOf(this.#state),
+      checkpoints: this.#checkpoints,
+      records: this.#records,
+    };
+  }
+}
+
+// --- Comparison / diagnostics --------------------------------------------------
+
+const hexBytes = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// Lenient identity read for divergence reports: raw wire values, no
+// validation — a corrupt stream must still be REPORTABLE, so this never
+// throws on out-of-range codes (it reports the raw code instead).
+function identityOf(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const axleRaw = view.getUint32(8, true);
+  const wheelRaw = view.getUint32(12, true);
+  const roleCode = view.getUint8(16);
+  return {
+    stepIndex: view.getUint32(0, true),
+    vehicleIndex: view.getUint32(4, true),
+    axleIndex: axleRaw === NO_INDEX ? null : axleRaw,
+    wheelIndex: wheelRaw === NO_INDEX ? null : wheelRaw,
+    bodyRole: BODY_ROLES[roleCode] ?? `code ${roleCode}`,
+  };
+}
+
+function fieldValueOf(f, bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (f.type === 'f64') return view.getFloat64(f.offset, true);
+  if (f.type === 'u32') {
+    const v = view.getUint32(f.offset, true);
+    return (f.name === 'axleIndex' || f.name === 'wheelIndex') && v === NO_INDEX ? null : v;
+  }
+  const code = view.getUint8(f.offset);
+  if (f.name === 'bodyRole') return BODY_ROLES[code] ?? `code ${code}`;
+  if (f.name === 'jointState') return JOINT_STATES[code] ?? `code ${code}`;
+  if (f.name === 'terminationReason') return TERMINATION_REASONS[code] ?? `code ${code}`;
+  return code;
+}
+
+function compareFail(what, value) {
+  throw new Error(`trace: compare ${what} (${String(value)})`);
+}
+
+function normalizeRecords(side, label) {
+  if (typeof side !== 'object' || side === null) compareFail(`invalid ${label}`, side);
+  if (!Number.isInteger(side.version)) compareFail(`${label}.version missing`, side.version);
+  if (!Number.isInteger(side.recordBytes)) compareFail(`${label}.recordBytes missing`, side.recordBytes);
+  if (!Array.isArray(side.records)) compareFail(`${label}.records missing (full-capture input required)`, side.records);
+  return side.records;
+}
+
+/**
+ * Compare two full-capture traces. `expected`/`actual` are
+ * `{ version, recordBytes, records }` — a full-mode `finish()` result works
+ * directly; records entries may be Uint8Array(RECORD_BYTES) or plain record
+ * objects (encoded on the fly), so tests can diff against hand-written
+ * expectations. Returns null when identical, else the FIRST divergence:
+ * `{ kind, expectedCount, actualCount, ... }` with kind one of
+ * versionMismatch | recordSizeMismatch | fieldMismatch | orderingMismatch |
+ * missingRecord | extraRecord. Comparison is byte-first, so −0 vs +0 and
+ * differing quaternion signs ARE divergences.
+ */
+export function compareTraces(expected, actual) {
+  const expRecords = normalizeRecords(expected, 'expected');
+  const actRecords = normalizeRecords(actual, 'actual');
+  const counts = { expectedCount: expRecords.length, actualCount: actRecords.length };
+  if (expected.version !== actual.version) {
+    return { kind: 'versionMismatch', ...counts, expected: expected.version, actual: actual.version };
+  }
+  if (expected.recordBytes !== actual.recordBytes
+    || expected.recordBytes !== RECORD_BYTES || actual.recordBytes !== RECORD_BYTES) {
+    return {
+      kind: 'recordSizeMismatch', ...counts, index: null,
+      expected: expected.recordBytes, actual: actual.recordBytes,
+    };
+  }
+  const toBytes = (entry, index, label) => {
+    if (entry instanceof Uint8Array) {
+      if (entry.byteLength !== RECORD_BYTES) {
+        return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: entry.byteLength } };
+      }
+      return { bytes: entry };
+    }
+    return { bytes: encodeTraceRecord(entry) };
+  };
+  const n = Math.min(expRecords.length, actRecords.length);
+  for (let i = 0; i < n; i += 1) {
+    const e = toBytes(expRecords[i], i, 'expected');
+    if (e.sizeError) return e.sizeError;
+    const a = toBytes(actRecords[i], i, 'actual');
+    if (a.sizeError) return a.sizeError;
+    let firstDiff = -1;
+    for (let b = 0; b < RECORD_BYTES; b += 1) {
+      if (e.bytes[b] !== a.bytes[b]) { firstDiff = b; break; }
+    }
+    if (firstDiff === -1) continue;
+    const expId = identityOf(e.bytes);
+    const actId = identityOf(a.bytes);
+    const idEqual = expId.stepIndex === actId.stepIndex
+      && expId.vehicleIndex === actId.vehicleIndex
+      && expId.axleIndex === actId.axleIndex
+      && expId.wheelIndex === actId.wheelIndex
+      && expId.bodyRole === actId.bodyRole;
+    if (!idEqual) {
+      return { kind: 'orderingMismatch', ...counts, index: i, expected: expId, actual: actId };
+    }
+    const f = TRACE_FIELDS.find((fd) => firstDiff >= fd.offset && firstDiff < fd.offset + fd.bytes);
+    return {
+      kind: 'fieldMismatch',
+      ...counts,
+      index: i,
+      identity: expId,
+      field: f.name,
+      byteOffset: f.offset,
+      expectedValue: fieldValueOf(f, e.bytes),
+      actualValue: fieldValueOf(f, a.bytes),
+      expectedBytes: hexBytes(e.bytes.subarray(f.offset, f.offset + f.bytes)),
+      actualBytes: hexBytes(a.bytes.subarray(f.offset, f.offset + f.bytes)),
+    };
+  }
+  if (expRecords.length > actRecords.length) {
+    const e = toBytes(expRecords[n], n, 'expected');
+    return { kind: 'missingRecord', ...counts, index: n, identity: e.sizeError ? null : identityOf(e.bytes) };
+  }
+  if (actRecords.length > expRecords.length) {
+    const a = toBytes(actRecords[n], n, 'actual');
+    return { kind: 'extraRecord', ...counts, index: n, identity: a.sizeError ? null : identityOf(a.bytes) };
+  }
+  return null;
+}
+
+/**
+ * Localize the first differing step/block between two checkpoint sequences.
+ * Entries are `{ stepIndex, recordCount, byteCount, state }`; a side may be
+ * PARTIAL (e.g. lock-derived `{ stepIndex, state }` pairs) — only fields
+ * present on both sides are compared. Returns null when identical, else
+ * `{ checkpointIndex, reason, lastAgreedStepIndex, firstDifferingStepIndex,
+ * expected, actual }` — with interval 1 the first bad step exactly, with
+ * interval N an N-step block for a bounded full-capture re-run.
+ */
+export function compareCheckpoints(expected, actual) {
+  if (!Array.isArray(expected)) compareFail('invalid expected checkpoints', expected);
+  if (!Array.isArray(actual)) compareFail('invalid actual checkpoints', actual);
+  const n = Math.min(expected.length, actual.length);
+  const lastAgreed = (i) => (i > 0 ? expected[i - 1].stepIndex : null);
+  for (let i = 0; i < n; i += 1) {
+    for (const fieldName of ['stepIndex', 'recordCount', 'byteCount', 'state']) {
+      const e = expected[i][fieldName];
+      const a = actual[i][fieldName];
+      if (e === undefined || a === undefined || e === a) continue;
+      return {
+        checkpointIndex: i,
+        reason: fieldName,
+        lastAgreedStepIndex: lastAgreed(i),
+        firstDifferingStepIndex: expected[i].stepIndex ?? actual[i].stepIndex ?? null,
+        expected: expected[i],
+        actual: actual[i],
+      };
+    }
+  }
+  if (expected.length !== actual.length) {
+    const longer = expected.length > actual.length ? expected : actual;
+    return {
+      checkpointIndex: n,
+      reason: 'length',
+      lastAgreedStepIndex: lastAgreed(n),
+      firstDifferingStepIndex: longer[n].stepIndex ?? null,
+      expected: expected[n] ?? null,
+      actual: actual[n] ?? null,
+    };
+  }
+  return null;
 }

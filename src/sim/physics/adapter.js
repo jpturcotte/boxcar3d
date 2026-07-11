@@ -18,7 +18,7 @@
 //   world.dispose()
 
 import { featureGeometry } from '../features.js';
-import { wheelMass } from '../assembly.js';
+import { wheelMass, ASSEMBLY_IR_VERSION } from '../assembly.js';
 
 export const FIXED_DT = 1 / 60;
 
@@ -263,8 +263,8 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
     rotation = { x: 0, y: 0, z: 0, w: 1 },
     linvel = { x: 0, y: 0, z: 0 },
   } = options;
-  if (!ir || ir.version !== 1 || !ir.chassis || !Array.isArray(ir.chassis.colliders) || ir.chassis.colliders.length === 0) {
-    throw new Error('realizeChassis: malformed IR (need version 1 and a non-empty chassis.colliders)');
+  if (!ir || ir.version !== ASSEMBLY_IR_VERSION || !ir.chassis || !Array.isArray(ir.chassis.colliders) || ir.chassis.colliders.length === 0) {
+    throw new Error(`realizeChassis: malformed IR (need assembly IR version ${ASSEMBLY_IR_VERSION} and a non-empty chassis.colliders)`);
   }
   if (!Number.isFinite(ir.chassis.density) || !(ir.chassis.density > 0)) {
     throw new Error('realizeChassis: chassis density must be a finite number > 0');
@@ -485,8 +485,8 @@ export function realizeS0Vehicle(RAPIER, world, ir, options = {}) {
   } = options;
 
   // --- Validation: everything before the world is touched -------------------
-  if (!ir || ir.version !== 1 || !Array.isArray(ir.axles)) {
-    throw new Error('realizeS0Vehicle: malformed IR (need version 1 and an axles array)');
+  if (!ir || ir.version !== ASSEMBLY_IR_VERSION || !Array.isArray(ir.axles)) {
+    throw new Error(`realizeS0Vehicle: malformed IR (need assembly IR version ${ASSEMBLY_IR_VERSION} and an axles array)`);
   }
   // Resolve the motor model by name, fail-loud (the [V2] convention for
   // Rapier bumps): a missing member means the motor API changed and the S0

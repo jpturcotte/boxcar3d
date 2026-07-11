@@ -3,9 +3,10 @@
 // Genotype -> repaired assembly IR, per the PR #10 schema ruling (the genome
 // contract: locked by fingerprint, versioned like the terrain seed format).
 // Realization lives in physics/adapter.js — realizeChassis for the frame,
-// realizeS0Vehicle for the S0 wheel/joint/motor kernel; axle modules are
-// decoded/bounded/snapped/repaired here as IR DATA ONLY (S1/S2 realize in
-// their own later PRs).
+// realizeVehicle for the S0/S1 dispatch (realizeS0Vehicle remains the
+// S0-only compatibility wrapper); axle modules are decoded/bounded/snapped/
+// repaired here, and S1 wheels additionally carry the compiler-owned hub
+// record (S2 stays IR data until its own PR).
 //
 // Contract headline: DOMAIN validation fails loud; PHYSICAL invalidity
 // repairs. A non-finite / out-of-[0,1] gene, wrong version, or wrong
@@ -38,7 +39,19 @@
 // mass band through the sizeBias gene and R5 spaces by the emitted max
 // radius (tests assert the invariants over every wheel the corpus emits).
 
+// TWO version constants, deliberately split (S1 PR ruling):
+//   GENOTYPE_VERSION — the serialized GENE schema + decoder contract (what
+//     serializeGenotype writes at byte 0 and the corpus fingerprint covers).
+//     Stays 1: the S1 calibration matrix (npm run probe:s1) measured every
+//     provisional suspension range binding to real physics UNCHANGED, so no
+//     gene meaning moved and the 24cd0dd5 corpus lock stands.
+//   ASSEMBLY_IR_VERSION — the compiled PHYSICAL-RECORD contract the realizers
+//     consume. Bumped to 2 by the S1 PR: v2 IRs carry a per-wheel `hub`
+//     record on S1 axles, `mass.hubsTotal`, and the `genotypeVersion` field —
+//     required realization data a hubless v1 IR does not have, so a consumer
+//     can never confuse the two shapes under one number.
 export const GENOTYPE_VERSION = 1;
+export const ASSEMBLY_IR_VERSION = 2;
 
 // Array index doubles as the enum/fingerprint id — append-only, never
 // reorder (same rule as terrain.js FEATURE_TYPES).
@@ -89,10 +102,19 @@ export const GENE_RANGES = Object.freeze({
   wheelRadius: Object.freeze([0.2, 0.7]), // m — SALVAGE g*0.5+0.2 verbatim
   wheelWidth: Object.freeze([0.1, 0.5]), // m
   wheelDensity: Object.freeze([100, 1200]), // kg/m³ ([2,80] kg feasible for every r,w)
-  stiffness: Object.freeze([2000, 50000]), // N/m — provisional until the S1 PR binds S1/S2
-  damping: Object.freeze([0, 5000]), // N·s/m — provisional
-  travel: Object.freeze([0, 0.4]), // m — provisional
-  restLength: Object.freeze([0.05, 0.5]), // m — provisional
+  // Suspension ranges — BOUND by the S1 PR's calibration matrix (npm run
+  // probe:s1; measured on both flavors) to configureMotorPosition(restLength,
+  // stiffness, damping) + setLimits(0, travel) on the chassis→hub prismatic.
+  // The numbers survived measurement UNCHANGED (honest N/m under ForceBased —
+  // the [V12] ruling; breadth spans bottomed/preload-rigid/locked poor
+  // phenotypes through mid-travel compliant riders), so this binding is
+  // deliberately NOT a re-lock: the corpus fingerprint hashes raw [0,1]
+  // genes, no decoded meaning moved, and GENOTYPE_VERSION stays 1. S2 will
+  // re-interpret the same four genes per type (spec §3.2 "meaning per type").
+  stiffness: Object.freeze([2000, 50000]), // N/m — honest spring rate at the joint (in-chain convergence caveat: see the probe header)
+  damping: Object.freeze([0, 5000]), // N·s/m — decay tuning; high c × light unsprung rides soft/bottomed (measured, legal phenotypes)
+  travel: Object.freeze([0, 0.4]), // m — prismatic limits [0, travel]; 0 = locked suspension (legal)
+  restLength: Object.freeze([0.05, 0.5]), // m — motor target; beyond travel = preload pinned at the stop (legal static state)
   centerOffset: Object.freeze([-1.5, 1.5]), // m — SALVAGE posZ span kept for single wheels
   sizeBiasFactor: Object.freeze([0.6, 1.4]), // right-wheel radius ratio from asym.sizeBias
 });
@@ -120,6 +142,50 @@ const fusedClamp = (g, lo, hi) => Math.min(hi, Math.max(g, Math.min(lo, hi)));
 // realizer's guard still catches a tampered `mass` field, since only the
 // stored value (not the recomputed one) is corrupted there.
 export const wheelMass = (radius, width, density) => Math.PI * radius * radius * width * density;
+
+// --- S1 hub policy (single-sourced, the wheelMass pattern) ------------------
+// The S1 topology interposes a hub body between the chassis prismatic and the
+// wheel revolute. The hub is NOT a gene, but it is real physics: the compiler
+// stores one record per S1 wheel (wheel.hub), sums ir.mass.hubsTotal from the
+// STORED records, and the realizer consumes those records — recomputing them
+// through these SAME exports only to validate that a hand-edited record
+// disagrees loud (the wheelMass tamper-guard pattern; recomputing both sides
+// from one helper would only prove the helper agrees with itself).
+//
+// Representation (measured ruling, tests/s1-prismatic.test.js): the hub is a
+// COLLIDER-CARRYING body — a small solid cylinder coaxial with the wheel —
+// because colliderless additional-mass bodies read mass()/inertia() ZERO
+// until the first world.step() in rapier 0.19.3, which would defeat the
+// mandated creation-time readback cross-check. The collider is collision-
+// inert (HUB_GROUPS filters NOTHING) and its geometry is derived from the
+// wheel, so the inertia is scale-aware in BOTH wheel radius and width: two
+// equal-mass hubs on differently shaped wheels get different inertia.
+//
+// principalInertia is the solid cylinder about its own axis (the axle, body-
+// local +Z after the shared Y→Z collider rotation): axial = m·r²/2 on z,
+// transverse = m·(3r² + L²)/12 on x/y. NOTE (measured): Rapier's
+// invPrincipalInertia() reports principal values in the PRINCIPAL frame's
+// ordering — for this rotated cylinder the axial value appears on the y
+// slot — so readback checks compare the value SET, not slot-by-slot.
+export const HUB_MASS_FRACTION = 0.25; // of the carried wheel's mass
+export const HUB_MASS_RANGE = Object.freeze([0.5, 20]); // kg — 0.25 × the [2, 80] wheel band, so the clamp NEVER bites for a legal wheel; it floors degenerate hand-edited IR only
+export const HUB_RADIUS_FRACTION = 0.4; // of the wheel radius
+export const HUB_LENGTH_FRACTION = 0.5; // of the wheel width
+
+export function hubMassProperties(wheel) {
+  const mass = Math.min(HUB_MASS_RANGE[1], Math.max(HUB_MASS_RANGE[0], HUB_MASS_FRACTION * wheel.mass));
+  const radius = HUB_RADIUS_FRACTION * wheel.radius;
+  const halfWidth = (HUB_LENGTH_FRACTION * wheel.width) / 2;
+  const length = 2 * halfWidth;
+  const transverse = (mass * (3 * radius * radius + length * length)) / 12;
+  return {
+    mass, // kg
+    radius, // m — hub cylinder radius
+    halfWidth, // m — hub cylinder half-length along the axle
+    density: mass / (Math.PI * radius * radius * length), // kg/m³ — realizes the mass through the collider
+    principalInertia: Object.freeze({ x: transverse, y: transverse, z: mass * radius * radius * 0.5 }), // kg·m², body frame (axle = z)
+  };
+}
 
 // --- Domain validation (fail-loud layer) -----------------------------------
 
@@ -524,8 +590,8 @@ function buildIR(repaired, cfg) {
   const symmetric = boolGene(repaired.symmetric);
   const P = affine(repaired.power, GENE_RANGES.power);
 
-  // Axle records (IR data only; the adapter's S0 realizer consumes them,
-  // S1/S2 stay data until their PRs). Symmetry gates the asym
+  // Axle records (the adapter's realizeVehicle dispatches S0 and S1; S2
+  // stays IR data until its PR). Symmetry gates the asym
   // genes at BUILD time — the stored genes are never overwritten, so a later
   // symmetry flip re-expresses them (count-stable, non-destructive).
   const axles = repaired.axles.map((a, index) => {
@@ -554,21 +620,28 @@ function buildIR(repaired, cfg) {
           wheelOf(-trackHalf, r * affine(sizeBias, GENE_RANGES.sizeBiasFactor), a.share * (1 - driveBias)),
         ]
       : [wheelOf(centerOffset, r, a.share)];
+    const suspension = {
+      type: SUSPENSION_TYPES[enumIdx(a.suspType, 3)],
+      stiffness: affine(a.stiffness, GENE_RANGES.stiffness),
+      damping: affine(a.damping, GENE_RANGES.damping),
+      travel: affine(a.travel, GENE_RANGES.travel),
+      restLength: affine(a.restLength, GENE_RANGES.restLength),
+    };
+    // Compiler-owned hub records: one per S1 wheel (an asymmetric paired
+    // module's two wheels differ in mass, hence in hub record), null
+    // elsewhere. The realizer consumes THESE — it never invents bodies.
+    for (const wh of wheels) {
+      wh.hub = suspension.type === 'S1' ? hubMassProperties(wh) : null;
+    }
     return {
       index,
       posX: a.posX01 * frame.span - frame.span / 2, // anchor ∈ [-span/2, +span/2] by construction
-      mountY: 0, // explicit so the S1 PR can move the anchor without a schema change
+      mountY: 0, // the chassis-side anchor Y: S0 wheel center AND the S1 prismatic full-compression anchor (the reserved move landed)
       kind: paired ? 'paired' : 'single',
       trackHalf: paired ? trackHalf : null,
       centerOffset: paired ? null : centerOffset,
       wheels,
-      suspension: {
-        type: SUSPENSION_TYPES[enumIdx(a.suspType, 3)],
-        stiffness: affine(a.stiffness, GENE_RANGES.stiffness),
-        damping: affine(a.damping, GENE_RANGES.damping),
-        travel: affine(a.travel, GENE_RANGES.travel),
-        restLength: affine(a.restLength, GENE_RANGES.restLength),
-      },
+      suspension,
     };
   });
 
@@ -583,9 +656,16 @@ function buildIR(repaired, cfg) {
   }
   for (const ax of axles) for (const wh of ax.wheels) delete wh.shareFrac;
 
+  // Canonical mass accounting, axle-then-wheel float-add order for BOTH sums
+  // (documented so tests recompute to exact toBe equality). These are the
+  // CANONICAL estimates — exact for cuboid families, the documented proxy
+  // volume for hull chassis; the realizer's returned mass block is the
+  // realized Rapier readback, a separate (f32-bounded) quantity.
   const wheelsTotal = axles.flatMap((ax) => ax.wheels).reduce((s, wh) => s + wh.mass, 0);
+  const hubsTotal = axles.flatMap((ax) => ax.wheels).reduce((s, wh) => s + (wh.hub ? wh.hub.mass : 0), 0);
   return {
-    version: GENOTYPE_VERSION,
+    version: ASSEMBLY_IR_VERSION,
+    genotypeVersion: GENOTYPE_VERSION,
     render: { hue: repaired.hue },
     genotype: repaired,
     chassis: {
@@ -598,7 +678,7 @@ function buildIR(repaired, cfg) {
     },
     axles,
     power: { budget: P, drivenWheelCount: drivenWheels.length },
-    mass: { chassis: volume * density, wheelsTotal, total: volume * density + wheelsTotal },
+    mass: { chassis: volume * density, wheelsTotal, hubsTotal, total: volume * density + wheelsTotal + hubsTotal },
     meta: { corridorHalfWidth: cfg.corridorHalfWidth, maxAxles: cfg.maxAxles },
   };
 }

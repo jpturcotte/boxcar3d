@@ -45,10 +45,10 @@
 - Track half-width; wheel radius, width, density. Wheels compile to **cylinders** (honest rolling contact), not spheres.
 - **Suspension type enum:**
   - `S0` rigid mount — wheel revolute directly on the frame (cheapest, 1 joint).
-  - `S1` vertical spring-damper — prismatic (vertical, spring via motor-position + limits) carrying the wheel revolute (the Phase 0 dual-joint; 2 joints).
+  - `S1` vertical spring-damper — prismatic (VEHICLE-LOCAL vertical, by ruling: the axis rotates with the vehicle, a 180°-rolled vehicle's suspension extends world-up; spring via motor-position + limits) carrying a hub body that carries the wheel revolute (the Phase 0 dual-joint; 2 joints + 1 hub body — the hub is a policy body, not a gene: mass/geometry derive from the wheel via `hubMassProperties`, stored per-wheel in the IR).
   - `S2` trailing arm — small arm body on a laterally-axised sprung revolute, wheel revolute at its end (arc-travel dynamics; 2 joints + 1 body).
   - Menu is extensible (wishbone, swing axle later) — the enum is the extension point.
-- Suspension params: stiffness, damping, travel, rest length (meaning per type).
+- Suspension params: stiffness, damping, travel, rest length (meaning per type). S1 binding (measured, the S1 PR): stiffness = honest N/m under the ForceBased position motor ([V12]); damping = N·s/m decay tuning; travel = the prismatic hard limits `[0, travel]` where coordinate 0 is FULL COMPRESSION (the S0-safe wheel position — extension only ADDS belly clearance, so R2 needs no S1 variant); restLength = the ABSOLUTE motor target — beyond travel it is a PRELOAD pressed into the droop stop (valid static phenotype); travel 0 is a locked suspension (legal). Spawn is QUIESCENT at `clamp(restLength, 0, travel)` — never full compression (a birth-launch); the preload case spawns at the stop, which IS its static state.
 
 **Drivetrain:**
 - Per wheel: `driven?` + torque-share gene.
@@ -68,7 +68,7 @@
 | Frame nodes/beams | 1 `RigidBodyDesc.dynamic()` + compound `cuboid`/`convexHull` colliders; CCD on |
 | Wheel | `cylinder` collider on its own body, density from gene |
 | S0 | `JointData.revolute` (lateral axis) + `configureMotorVelocity` if driven |
-| S1 | `JointData.prismatic` (vertical, `configureMotorPosition(rest, stiffness, damping)`, `setLimits`) + wheel revolute |
+| S1 | `JointData.prismatic` (vehicle-local down, chassis→HUB BODY, `configureMotorPosition(restLength, stiffness, damping)` + `setLimits(0, travel)`) + hub→wheel revolute; the hub is a collision-inert policy cylinder (HUB_GROUPS, dual CCD) whose mass/inertia come from the per-wheel IR hub record |
 | S2 | arm body + sprung revolute (motor-position) + wheel revolute |
 | Torque share | per-wheel `configureMotorVelocity(targetVel, share × P)` |
 

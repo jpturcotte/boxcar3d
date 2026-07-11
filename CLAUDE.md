@@ -9,7 +9,7 @@ tests in Vitest, deployed to GitHub Pages by CI.
 
 Canonical design docs live in `docs/` — **read before structural work**:
 - `boxcar3d-design-rulings-spec-v2.md` — rulings, genotype/terrain architecture, glossary. The source of truth.
-- `boxcar3d-phase0-refresh-2026-07.md` — Rapier/Three migration mapping, Phase 1 checklist, [V1]–[V9] verification items.
+- `boxcar3d-phase0-refresh-2026-07.md` — Rapier/Three migration mapping, Phase 1 checklist, [V1]–[V12] verification items.
 - `boxcar3d-red-team-2026-07.md` — why these rules exist (findings F1–F18).
 
 `legacy/` holds the recovered 2025 private-repo snapshot: the last single-file
@@ -57,9 +57,10 @@ evidence notes. Reference only; never import from `legacy/`.
 - `src/sim/` — deterministic core: `prng.js`, `noise.js`, `terrain.js` (pure
   composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
   support samples), `assembly.js` (the genome contract: genotype schema +
-  compiler + repair v0), `physics/adapter.js` (the only Rapier seam:
-  realization, seating, collision groups, chassis, the S0 wheel/joint/motor
-  kernel), later: GA operators.
+  compiler + repair v0 + the S1 hub policy), `physics/adapter.js` (the only
+  Rapier seam: realization, seating, collision groups, chassis, the S0
+  wheel/joint/motor kernel, and the S1 prismatic/hub suspension behind
+  `realizeVehicle`'s explicit dispatch), later: GA operators.
   Must run headless in Node (tests and CI depend on it).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
@@ -82,7 +83,18 @@ evidence notes. Reference only; never import from `legacy/`.
   `s0-kernel.test.js` (realizeS0Vehicle's creation-time contract: pure pose
   math, readbacks, the S1/S2 gate, Proxy-induced transactional-cleanup
   teeth, legal edge shapes), `s0-drive.test.js` (the forward-drive witness
-  on the declared flat-pad terrain + the residual-overlap witness).
+  on the declared flat-pad terrain + the residual-overlap witness),
+  `s1-prismatic.test.js` (the raw prismatic/spring-model ground truth:
+  coordinate contract, ForceBased honesty vs the rejected AccelerationBased,
+  limits/preload/zero-travel, vehicle-local covariance + the world-vertical
+  negative, the colliderless-readback and k=0∧c=0-freeze engine findings),
+  `s1-kernel.test.js` (realizeVehicle's creation-time contract: helpers vs
+  the oracle, counts/groups/CCD/anchors/quiescent spawn, dispatch gates,
+  tamper + API-drift negatives, transactionality incl. joint-config-stage
+  traps), `s1-sag.test.js` (static relational teeth on flat ground),
+  `s1-drive.test.js` (the three-way rough-strip witness + roll-180, max
+  topology, strange phenotype, findings ledger), plus the committed Gate-5
+  instrument `s1-calibration-probe.js` (`npm run probe:s1` — NOT a test).
 
 ## Current state & next steps (Phase 1)
 
@@ -395,21 +407,119 @@ after creation:**
 - Full suite green both flavors; every locked fingerprint byte-identical
   (terrain paths untouched; assembly.js changes comment-only).
 
-Next — **the S1 PR: vertical spring-damper suspension** (spec §3.2's S1,
-via `configureMotorPosition(targetPos, stiffness, damping)` + `setLimits` on
-a prismatic joint — [V4] signature verified, recorded in phase0-refresh).
-It re-locks the PROVISIONAL suspension parameter ranges in
-`GENE_RANGES` (stiffness/damping/travel/restLength) when they bind to real
-physics — an expected corpus re-lock, documented in assembly.js. The S0
-kernel's realizer stays S0-only; S1 adds its own realizer or dispatch, and
-the S0 gate teeth in `tests/s0-kernel.test.js` keep S1/S2 from silently
-realizing as rigid axles until then.
-**Explicitly deferred beyond S1:** zone material response (its own later
-PR; `zoneAt(x, z, terrain)` is ready), S2 trailing arms, GA operators (spec
-§3.3: module-exchange crossover, structural vs parametric mutation) + the
+**The S1 suspension kernel PR landed — the first honest deformable
+suspension (spec §3.2's S1): chassis → prismatic → hub → revolute → wheel,
+with explicit mixed S0/S1 dispatch. Every ruling below is measured, both
+flavors, byte-identical at the declared seeds:**
+- **`realizeVehicle(RAPIER, world, ir, options)`** (adapter) — explicit
+  per-axle dispatch: S0 = the S0 kernel's original statements (all-S0
+  counts, call order, rollback, and every existing test UNCHANGED);
+  S1 = one hub body + one chassis→hub prismatic + one hub→wheel revolute
+  per wheel; S2/unknown types rejected pre-world. `realizeS0Vehicle` stays
+  the S0-only fail-loud wrapper (legacy return shape). One shared
+  validation pass (all pre-world: spring params, stored hub records vs the
+  policy, `ir.mass.hubsTotal`, the S1 API surface via prototype checks) +
+  one transactional pass — joints enter the rollback ledger BEFORE any
+  configuration call, so throws inside `setLimits`/`configureMotor*`
+  unwind too (rollback: drive joints → prismatics → wheel bodies → hub
+  bodies → chassis; proven by world-method AND proxied-joint-method traps).
+- **The coordinate contract ([V11], measured):** `SUSPENSION_AXIS (0,−1,0)`
+  is VEHICLE-LOCAL by ruling — at roll-180 the suspension extends world-UP
+  (locked with a direct world-vertical negative: the wrong placement misses
+  by 2× the coordinate). Coordinate 0 = full compression = the S0-safe
+  wheel position `{posX, mountY, z}` (extension only ADDS clearance — R2
+  needs no S1 variant); positive = extension; limits `[0, travel]` with
+  measured stop compliance ≈ 9e-6 m/N; the motor target is ABSOLUTE;
+  placement sets the initial coordinate. Spawns are QUIESCENT at
+  `clamp(restLength, 0, travel)`; preload (rest > travel) spawns pressed
+  into the droop stop — its static state; travel 0 = locked (legal). NO
+  native coordinate readback exists in 0.19.3 — the pure
+  `projectedPrismaticCoordinate` is the only source, and its bands must
+  scale with the WORLD-ANCHOR magnitudes, never the small projected value.
+- **The spring ruling ([V12], measured):** the spring IS the prismatic's
+  ForceBased position motor (`S1_SPRING_MOTOR_MODEL_NAME`, symbolic) —
+  isolated-rig statics are EXACT (target ± m·g/k on both sides; damping
+  changes decay, not equilibrium); AccelerationBased settles 5 kg and
+  50 kg identically (mass-blind) → REJECTED. Engine findings: a k=0∧c=0
+  position motor 0/0-FREEZES the axis (the realizer skips motor config for
+  that phenotype — no motor IS the honest free slider), and IN-CHAIN static
+  sag inflates by γ ≈ 0.33·c·dt/m_unsprung (solver convergence starvation;
+  exact at c=0 or heavy wheels; the chassis
+  `ADDITIONAL_SOLVER_ITERATIONS = 4` policy is LOAD-BEARING — without it
+  the same vehicle bottoms outright). Recorded, not remediated.
+- **Hubs are compiler-owned IR data (assembly.js):** `hubMassProperties(
+  wheel)` → `{mass, radius, halfWidth, density, principalInertia}` — a
+  small solid cylinder coaxial with the wheel (mass = clamp(0.25·wheelMass,
+  [0.5, 20] = 0.25 × the wheel band), geometry scales with wheel radius AND
+  width, so equal-mass hubs on different wheels differ in inertia). Stored
+  per S1 wheel as `wheel.hub` (null on S0/S2); `ir.mass.hubsTotal` +
+  `total` include hubs; the realizer CONSUMES the stored record and the
+  policy recomputation is the tamper guard (the wheelMass pattern).
+  Collider-carrying by MEASURED necessity: colliderless additional-mass
+  bodies read mass()/inertia() ZERO until the first `world.step()` (both
+  the desc API and the runtime setter — locked as a negative), which would
+  defeat the creation-time readback cross-check; `HUB_GROUPS =
+  packGroups(GROUP_HUB 0x0010, 0)` touches NOTHING (0x0008 stays reserved)
+  + dual CCD. Principal-inertia readbacks come back in the PRINCIPAL
+  frame's ordering (axial on the y slot for the rotated cylinder) — tests
+  compare the value SET.
+- **The version split (review ruling):** `ASSEMBLY_IR_VERSION = 2` (the
+  compiled physical-record contract — v2 carries hub records,
+  mass.hubsTotal, genotypeVersion; v1 hubless IRs are REJECTED loud, the
+  migration tooth) is now separate from `GENOTYPE_VERSION = 1` (the gene
+  schema — UNCHANGED: the calibration matrix measured every provisional
+  suspension range binding to real physics with its numbers intact, so
+  this is their first physical binding, NOT a re-lock; the corpus
+  fingerprint hashes raw [0,1] genes and stands at `24cd0dd5`. This
+  consciously supersedes the previous handoff's "expected corpus re-lock"
+  phrasing — the expectation conflated binding with changing). Committed
+  Gate-5 instrument: `npm run probe:s1` (13 bench + 20 chain declared
+  rows × both flavors; regenerate before touching any suspension range).
+- **The three-way rough-strip witness** (`tests/s1-drive.test.js`, seed
+  20260714, pad [−60,−40], rough segment x ∈ [−30,+30] on DEFAULT fBm
+  amplitudes): rigid S0 twin vs MASS-MATCHED S1 (chassis density reduced by
+  the hub total; compiled AND realized totals equal) vs native-cost S1
+  (recorded). Measured: RMS chassis-local vertical accel 8.585 → 1.288
+  (0.150×), peak 32.1 → 5.7, contact continuity 0.83 → 1.00, dx 82.4 →
+  85.4 m, travel mid-band with zero limit strikes. The teeth are the
+  suspension effect + an absolute progress floor — deliberately NO
+  not-slower-than-S0 guard. The witness fixture is small-wheeled on a low
+  frame (thrust/weight ≈ 1.0): a 29% build STALLED on this seed's blend
+  grade (the S0-era stall finding re-measured — witness fixtures must
+  clear the approach before their claims mean anything).
+- **Findings for later PRs (recorded, unchanged rulings):** solver-pump
+  drift is UNCHANGED by S1 (undriven all-S1 on a cuboid creeps at
+  −0.327 m/s ≈ the S0 0.33 finding; a preloaded suspension pressed into
+  its stop also never sleeps — residual creep 0.565 m/s); the
+  mixed-radius shared-target conflict persists under suspension travel;
+  the R5-cap residual overlap stays stable with S1 modules; the max legal
+  topology (6 paired S1 axles = 25 bodies / 24 joints) is stable and
+  drives under the existing chassis solver-iteration policy.
+- Dev scene: mixed S0-front / S1-rear declared build drives ~53 m of the
+  composite corridor (the all-S0 build managed ~46 m), rear coordinate
+  breathing across [0.08, 0.25] of 0.30 m travel; invisible hubs, thin
+  green anchor→hub struts, live `rearQ` HUD readout via the pure
+  projection. Render reads poses only.
+- Full suite green both flavors; every locked fingerprint byte-identical
+  (noise, five terrain locks, boulder hull, `24cd0dd5`, `39bcd6c4`).
+
+Next — **a representative determinism/performance gate**, reassessed (not
+inherited): GA stays blocked on the mixed-radius and residual-overlap
+rulings either way, so neither S2 nor zone response unblocks it — but
+worker sharding and the eval-world design both hinge on whether the
+deterministic flavor is affordable as the eval default, S1 just grew
+worst-case islands to 25 bodies / 24 joints, and that number gets costlier
+to retrofit after sharding lands (phase0-refresh §5 item 8's bit-exact
+replay smoke is the seed of it). After that: zone material response
+(cheap, isolated, `zoneAt(x, z, terrain)` is ready), then S2 trailing arms
+(S2 must land before — or the population seeder must mask `suspType` away
+from — any GA PR, since realization rejects S2 pre-world).
+**Explicitly deferred beyond that:** GA operators (spec §3.3:
+module-exchange crossover, structural vs parametric mutation) + the
 population seeder (symmetry default-on bias lives there), worker sharding
 with the 1-vs-4-workers equality test, and the full replay-determinism
-criterion. Open ruling question carried from PR #10 review (now with a
-measured witness): are visually-overlapping wheels acceptable for
-evolution? Physics ignores them (collision-inert, stable, no detach), but
-they read as one thick wheel on screen.
+criterion. Open ruling question carried from PR #10 review (a THIRD
+measured witness now: the R5-cap case realizes and drives with S1 modules
+too): are visually-overlapping wheels acceptable for evolution? Physics
+ignores them (collision-inert, stable, no detach), but they read as one
+thick wheel on screen.

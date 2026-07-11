@@ -1,0 +1,330 @@
+// The canonical headless vehicle-evaluation runner — the ONE simulation loop
+// (every earlier test inlined its own `for (...) world.step()`; new
+// determinism gates, the Chromium gate, the benchmark, and later GA/replay
+// work all call this instead).
+//
+// Wall-clock-free by construction (the src/sim ESLint ban applies): time is
+// physics-step counting, and the only timing that flows OUT is Rapier's own
+// engine profiler readback (engine state, allowed through results). Callers
+// that need elapsed-time brackets own them: `hooks.onPhase(name)` fires at
+// each phase boundary with the phase NAME ONLY — no timestamp ever crosses
+// the seam.
+//
+// Step-index contract: capture indices 0..maxSteps. Index 0 is the
+// post-realization, pre-first-step state — spawn placement itself is under
+// the digest, so a realizer regression is caught even if dynamics happen to
+// reconverge, and replay tooling gets its initial condition. Index k is the
+// state after k evaluation `world.step()` calls, read post-step. The one
+// statics-only pre-step (the [V1] query-BVH idiom) is setup and appears in no
+// count. A maxSteps=N digest run therefore carries N+1 capture batches.
+//
+// Termination: the run ALWAYS executes exactly maxSteps evaluation steps —
+// no data-dependent early exit (it would make digests structurally
+// incomparable between near-identical runs; stepping NaN bodies is bounded
+// cost, and physics cannot pause one vehicle anyway). A vehicle that goes
+// non-finite LATCHES {step, reason:'nonFinite'} at the first bad capture and
+// keeps being stepped AND traced with the terminated bit set — the record
+// count stays shape-static and the NaN bytes are the forensic evidence.
+//
+// dt contract (MEASURED, scripts/probe-rapier-timing.js): the engine stores
+// the timestep as f32 — `world.timestep = 1/60` reads back Math.fround(1/60),
+// NOT the f64 1/60. The tooth below asserts that measured readback; results
+// carry {requestedDt, effectiveDt}.
+
+import {
+  FIXED_DT, createPhysics, addCorridor, addCorridorWithFeatures, realizeVehicle,
+} from './physics/adapter.js';
+import { generateCorridorTerrain } from './terrain.js';
+import { EVALUATION_TRACE_VERSION, TERMINATION_REASONS, TRACE_MODES, TraceWriter } from './trace.js';
+
+export { EVALUATION_TRACE_VERSION, TERMINATION_REASONS }; // one import point for consumers
+
+// Run-level termination (a different axis from the per-vehicle
+// TERMINATION_REASONS): v1 always completes its declared step budget.
+export const RUN_TERMINATION = Object.freeze({ COMPLETED: 'completed' });
+
+function fail(path, value) {
+  throw new Error(`evaluation: invalid options at ${path} (${String(value)})`);
+}
+
+const OPTION_KEYS = Object.freeze([
+  'deterministic', 'terrain', 'vehicles', 'maxSteps', 'termination', 'trace', 'profile', 'hooks',
+]);
+const VEHICLE_KEYS = Object.freeze(['ir', 'spawn', 'targetAngvel', 'wheelFriction']);
+const SPAWN_KEYS = Object.freeze(['position', 'rotation', 'linvel']);
+const TRACE_KEYS = Object.freeze(['mode', 'checkpointInterval']);
+const HOOK_KEYS = Object.freeze(['onPhase']);
+
+function checkUnknownKeys(obj, allowed, path) {
+  for (const k of Object.keys(obj)) {
+    if (!allowed.includes(k)) fail(`${path}.${k}`, 'unknown key');
+  }
+}
+
+// All validation is PRE-WORLD: a typo'd option (linVel, checkpointinterval …)
+// must fail loud here, never silently change a digest.
+function validateOptions(options) {
+  if (typeof options !== 'object' || options === null) fail('options', options);
+  checkUnknownKeys(options, OPTION_KEYS, 'options');
+  const {
+    deterministic = false, terrain, vehicles, maxSteps,
+    termination = 'maxSteps', trace = { mode: 'none' }, profile = false, hooks = {},
+  } = options;
+  if (typeof deterministic !== 'boolean') fail('deterministic', deterministic);
+  if (typeof terrain !== 'object' || terrain === null) fail('terrain', terrain);
+  if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
+    fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
+  }
+  if (!Array.isArray(vehicles) || vehicles.length === 0) fail('vehicles', vehicles);
+  vehicles.forEach((v, i) => {
+    if (typeof v !== 'object' || v === null) fail(`vehicles[${i}]`, v);
+    checkUnknownKeys(v, VEHICLE_KEYS, `vehicles[${i}]`);
+    if (typeof v.ir !== 'object' || v.ir === null) fail(`vehicles[${i}].ir`, v.ir);
+    if (typeof v.spawn !== 'object' || v.spawn === null) fail(`vehicles[${i}].spawn`, v.spawn);
+    checkUnknownKeys(v.spawn, SPAWN_KEYS, `vehicles[${i}].spawn`);
+    const p = v.spawn.position;
+    if (typeof p !== 'object' || p === null
+      || ![p.x, p.y, p.z].every((c) => typeof c === 'number' && Number.isFinite(c))) {
+      fail(`vehicles[${i}].spawn.position`, JSON.stringify(p));
+    }
+    // rotation/linvel/targetAngvel/wheelFriction are validated in depth by
+    // realizeVehicle — the existing thorough, message-rich gate.
+  });
+  if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
+  if (termination !== 'maxSteps') fail('termination', termination);
+  if (typeof trace !== 'object' || trace === null) fail('trace', trace);
+  checkUnknownKeys(trace, TRACE_KEYS, 'trace');
+  if (!TRACE_MODES.includes(trace.mode)) fail('trace.mode', trace.mode);
+  if (trace.checkpointInterval !== undefined
+    && (!Number.isInteger(trace.checkpointInterval) || trace.checkpointInterval < 1)) {
+    fail('trace.checkpointInterval', trace.checkpointInterval);
+  }
+  if (typeof profile !== 'boolean') fail('profile', profile);
+  if (typeof hooks !== 'object' || hooks === null) fail('hooks', hooks);
+  checkUnknownKeys(hooks, HOOK_KEYS, 'hooks');
+  if (hooks.onPhase !== undefined && typeof hooks.onPhase !== 'function') fail('hooks.onPhase', hooks.onPhase);
+  return {
+    deterministic, terrain, vehicles, maxSteps, termination,
+    traceMode: trace.mode, checkpointInterval: trace.checkpointInterval ?? 1,
+    profile, onPhase: hooks.onPhase ?? null,
+  };
+}
+
+const finiteVec = (v) => Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+const NAN_VEC3 = Object.freeze({ x: NaN, y: NaN, z: NaN });
+const NAN_QUAT = Object.freeze({ x: NaN, y: NaN, z: NaN, w: NaN });
+
+/**
+ * The canonical single-body readback (exported: the classification seam the
+ * non-finite latch consumes, and the contract future replay/worker code
+ * shares). Invalid-body rule, defined up front and MEASURED load-bearing: a
+ * pose read on a removed/stale body PANICS the wasm module ("unreachable" —
+ * probed 2026-07-11, both flavors, and the panic can poison subsequent wasm
+ * calls), so when isValid() is false the read yields canonical NaNs in every
+ * physical field with bodyValid=false, finiteState=false, WITHOUT touching
+ * the engine — the record count stays shape-static and the validity bit
+ * carries the diagnosis. Engine-side NaN (e.g. a raw setLinvel(NaN)) is
+ * accepted by Rapier and persists through stepping — the finite flag here is
+ * what detects it. No legal runEvaluation input can produce either state on
+ * rapier 0.19.3 (measured: velocities to 1e25 m/s stay finite for 60+ steps;
+ * ~3e38 hard-panics wasm, which surfaces as a thrown error, not a NaN trace)
+ * — the latch is a defensive net, tested at this seam.
+ */
+export function readBodyState(body) {
+  if (!body.isValid()) {
+    return {
+      valid: false, sleeping: false, finite: false,
+      translation: NAN_VEC3, rotation: NAN_QUAT, linvel: NAN_VEC3, angvel: NAN_VEC3,
+    };
+  }
+  const translation = body.translation();
+  const rotation = body.rotation();
+  const linvel = body.linvel();
+  const angvel = body.angvel();
+  const finite = finiteVec(translation) && finiteVec(linvel) && finiteVec(angvel)
+    && Number.isFinite(rotation.x) && Number.isFinite(rotation.y)
+    && Number.isFinite(rotation.z) && Number.isFinite(rotation.w);
+  return { valid: true, sleeping: body.isSleeping(), finite, translation, rotation, linvel, angvel };
+}
+
+/**
+ * Run one headless evaluation. See the header for the step-index, termination,
+ * and dt contracts. Options:
+ *
+ *   { deterministic, terrain (must carry its own seed), vehicles: [{ ir,
+ *     spawn: { position, rotation?, linvel? }, targetAngvel?, wheelFriction? }],
+ *     maxSteps, termination: 'maxSteps', trace: { mode, checkpointInterval? },
+ *     profile, hooks: { onPhase? } }
+ *
+ * Vehicles enter as COMPILED IRs, never genotypes — a genotype-accepting
+ * runner would silently repair, and the digest would attest to a phenotype
+ * the caller never saw (fixtures assert repair-stability separately, then
+ * compile). Ghost policy: vehicle groups filter GROUND only, so spawning any
+ * number of vehicles at the identical transform is legal and expected; the
+ * runner performs no spawn-separation validation.
+ */
+export async function runEvaluation(options) {
+  const cfg = validateOptions(options);
+  const onPhase = cfg.onPhase ?? (() => {});
+
+  onPhase('createPhysics');
+  const { RAPIER, world } = await createPhysics({ deterministic: cfg.deterministic });
+  let result;
+  try {
+    // The MEASURED dt contract (probe: the engine stores f32) — a drift
+    // tooth against future adapter/engine changes, not a knob.
+    if (world.timestep !== Math.fround(FIXED_DT)) {
+      throw new Error(`evaluation: world.timestep readback drifted from the measured f32 contract (${world.timestep})`);
+    }
+    const effectiveDt = world.timestep;
+    // Enable the profiler BEFORE any stepping so the fresh-module first-step
+    // warm-up spike (measured ~1.5 ms) lands on the statics pre-step, never
+    // on an evaluation sample.
+    if (cfg.profile) world.profilerEnabled = true;
+
+    onPhase('terrain');
+    const terrain = generateCorridorTerrain(cfg.terrain);
+    if (terrain.features.length > 0) {
+      // addFeatures performs the one statics-only BVH step internally.
+      addCorridorWithFeatures(RAPIER, world, terrain);
+    } else {
+      addCorridor(RAPIER, world, terrain);
+      world.step(); // the [V1] statics-only query-BVH idiom
+    }
+    const staticColliders = world.colliders.len();
+
+    onPhase('realize');
+    const realized = cfg.vehicles.map((v) => {
+      const opts = { position: v.spawn.position };
+      if (v.spawn.rotation !== undefined) opts.rotation = v.spawn.rotation;
+      if (v.spawn.linvel !== undefined) opts.linvel = v.spawn.linvel;
+      if (v.targetAngvel !== undefined) opts.targetAngvel = v.targetAngvel;
+      if (v.wheelFriction !== undefined) opts.wheelFriction = v.wheelFriction;
+      return realizeVehicle(RAPIER, world, v.ir, opts);
+    });
+
+    // Canonical body order falls out of iterating the realizeVehicle return
+    // shape: vehicles in input order → chassis → stations axle-then-wheel,
+    // hub before wheel. No sorting, no handles.
+    const tracked = realized.map((rec) => {
+      const joints = rec.wheels.flatMap((st) => (st.suspensionJoint === null
+        ? [st.driveJoint] : [st.suspensionJoint, st.driveJoint]));
+      const bodies = [{
+        role: 'chassis', axleIndex: null, wheelIndex: null, body: rec.chassis.body,
+        jointState: () => {
+          if (joints.length === 0) return 'notApplicable'; // a zero-joint sled
+          return joints.every((j) => j.isValid()) ? 'valid' : 'invalid';
+        },
+      }];
+      for (const st of rec.wheels) {
+        if (st.hub !== null) {
+          bodies.push({
+            role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+            body: st.hub.body, jointState: () => (st.suspensionJoint.isValid() ? 'valid' : 'invalid'),
+          });
+        }
+        bodies.push({
+          role: 'wheel', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+          body: st.wheel.body, jointState: () => (st.driveJoint.isValid() ? 'valid' : 'invalid'),
+        });
+      }
+      return { rec, joints, bodies, origin: { ...rec.chassis.body.translation() }, latched: null };
+    });
+
+    const writer = cfg.traceMode === 'none'
+      ? null
+      : new TraceWriter({ mode: cfg.traceMode, checkpointInterval: cfg.checkpointInterval });
+
+    // One capture does the readback ONCE per body and feeds both the
+    // finiteness latch and (when tracing) the writer — the scanned values and
+    // the traced values are provably the same read.
+    const captureStep = (stepIndex) => {
+      for (let vi = 0; vi < tracked.length; vi += 1) {
+        const t = tracked[vi];
+        const reads = t.bodies.map((b) => readBodyState(b.body));
+        if (t.latched === null && reads.some((r) => !r.finite)) {
+          t.latched = { step: stepIndex, reason: 'nonFinite' };
+        }
+        if (writer !== null) {
+          const terminated = t.latched !== null;
+          for (let bi = 0; bi < t.bodies.length; bi += 1) {
+            const b = t.bodies[bi];
+            const r = reads[bi];
+            writer.record({
+              stepIndex,
+              vehicleIndex: vi,
+              bodyRole: b.role,
+              axleIndex: b.axleIndex,
+              wheelIndex: b.wheelIndex,
+              bodyValid: r.valid,
+              bodySleeping: r.sleeping,
+              jointState: b.jointState(),
+              terminated,
+              terminationReason: terminated ? t.latched.reason : 'none',
+              finiteState: r.finite,
+              translation: r.translation,
+              rotation: r.rotation,
+              linvel: r.linvel,
+              angvel: r.angvel,
+            });
+          }
+        }
+      }
+      if (writer !== null) writer.endStep(stepIndex);
+    };
+
+    captureStep(0); // post-realization, pre-first-step
+
+    onPhase('run');
+    const stepMs = cfg.profile ? new Float64Array(cfg.maxSteps) : null;
+    for (let i = 1; i <= cfg.maxSteps; i += 1) {
+      world.step();
+      if (stepMs !== null) stepMs[i - 1] = world.timingStep();
+      captureStep(i);
+    }
+
+    onPhase('collect');
+    const vehicles = tracked.map((t) => {
+      const chassis = readBodyState(t.rec.chassis.body);
+      const bodyReads = t.bodies.map((b) => readBodyState(b.body));
+      return {
+        forwardDistance: chassis.translation.x - t.origin.x,
+        origin: t.origin,
+        finalPose: { translation: chassis.translation, rotation: chassis.rotation },
+        finalVelocity: { linvel: chassis.linvel, angvel: chassis.angvel },
+        finite: t.latched === null,
+        terminated: t.latched === null ? { step: null, reason: null } : { ...t.latched },
+        bodies: {
+          count: t.bodies.length,
+          allValid: bodyReads.every((r) => r.valid),
+          sleepingAtEnd: bodyReads.filter((r) => r.sleeping).length, // a count, NEVER an expectation (solver-pump)
+        },
+        joints: {
+          count: t.joints.length,
+          allValid: t.joints.every((j) => j.isValid()),
+        },
+        mass: t.rec.mass,
+        stationCount: t.rec.wheels.length,
+      };
+    });
+    result = {
+      terminationReason: RUN_TERMINATION.COMPLETED,
+      executedSteps: cfg.maxSteps, // evaluation steps only; the statics pre-step is setup
+      requestedDt: FIXED_DT,
+      effectiveDt,
+      vehicles,
+      counts: {
+        bodies: world.bodies.len(),
+        colliders: world.colliders.len(),
+        joints: world.impulseJoints.len(),
+        staticColliders,
+      },
+      trace: writer === null ? null : writer.finish(),
+      timing: stepMs === null ? null : { stepMs },
+    };
+  } finally {
+    world.free();
+  }
+  onPhase('done');
+  return result;
+}

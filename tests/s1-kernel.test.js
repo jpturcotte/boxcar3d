@@ -40,6 +40,8 @@ import {
   HUB_GROUPS,
   WHEEL_GROUPS,
   SUSPENSION_AXIS,
+  S0_MOTOR_MODEL_NAME,
+  S1_SPRING_MOTOR_MODEL_NAME,
   createPhysics,
   projectedPrismaticCoordinate,
   realizeS0Vehicle,
@@ -510,21 +512,45 @@ describe.each([
     }
   });
 
+  test('motor-model names resolve symbolically off the injected RAPIER (both the drive and the S1 spring constant)', async () => {
+    const { RAPIER, world } = await createPhysics({ deterministic });
+    try {
+      // The symbolic-enum pin (the s0-kernel:241 discipline, now covering the
+      // S1 constant too): both names MUST resolve to numeric MotorModel
+      // members. Today S1_SPRING_MOTOR_MODEL_NAME === S0_MOTOR_MODEL_NAME
+      // ('ForceBased' — S1 wheel drive reuses the S0 motor), so the adapter's
+      // unconditional drive-model resolution ALSO covers the spring model's
+      // presence (defense in depth); this pin is what keeps that redundancy
+      // honest and would make the adapter's separate spring guard load-bearing
+      // the day the two constants diverge.
+      expect(typeof RAPIER.MotorModel[S0_MOTOR_MODEL_NAME]).toBe('number');
+      expect(typeof RAPIER.MotorModel[S1_SPRING_MOTOR_MODEL_NAME]).toBe('number');
+    } finally {
+      world.free();
+    }
+  });
+
   test('API-drift negatives: a Rapier build missing any piece of the S1 surface fails loud PRE-WORLD', async () => {
     const { RAPIER, world } = await createPhysics({ deterministic });
     try {
       const ir = canonicalIR();
       const before = counts(world);
-      // MotorModel without the spring model (keep the drive model resolvable
-      // so the failure isolates the S1 check).
-      const noSpring = { ...RAPIER, MotorModel: { ForceBased: undefined, AccelerationBased: 0 } };
-      expect(() => realizeVehicle(noSpring, world, ir, {}))
-        .toThrow(/MotorModel\.ForceBased is missing/); // the shared drive check fires first — same surface
-      // JointData without prismatic.
+      // MotorModel missing ForceBased: the unconditional drive-model
+      // resolution fails loud first (it resolves the SAME member the S1
+      // spring motor uses, so this one throw covers both the drive and the
+      // spring path while the two model-name constants are equal — NOT an
+      // isolation of the S1-only branch, which is unreachable-by-design until
+      // the constants diverge; the symbolic-pin test above is the real S1
+      // spring-model coverage).
+      const noForceBased = { ...RAPIER, MotorModel: { ForceBased: undefined, AccelerationBased: 0 } };
+      expect(() => realizeVehicle(noForceBased, world, ir, {}))
+        .toThrow(/MotorModel\.ForceBased is missing/);
+      // The genuinely S1-ISOLATING surface drift (unreachable through the S0
+      // path, so these throws are the S1 realizer's own): JointData.prismatic…
       const noPrismatic = { ...RAPIER, JointData: { revolute: RAPIER.JointData.revolute } };
       expect(() => realizeVehicle(noPrismatic, world, ir, {}))
         .toThrow(/JointData\.prismatic is missing/);
-      // PrismaticImpulseJoint prototype missing a required method.
+      // …and a PrismaticImpulseJoint prototype missing a required method.
       class Gutted {}
       Gutted.prototype.setLimits = () => {};
       Gutted.prototype.configureMotorModel = () => {};
@@ -635,6 +661,51 @@ describe.each([
           .toThrow(new RegExp(`induced joint ${method} #${failOn}`));
         expect(counts(world)).toEqual(before);
       }
+    } finally {
+      world.free();
+    }
+  });
+
+  test('no direct-force / impulse / angular-velocity / post-creation-pose shortcut: the realizer builds bodies and joints ONLY', async () => {
+    // Requirement (5) made testable, not just asserted in comments: wrap the
+    // world so every RigidBody it creates is a Proxy that THROWS if the
+    // realizer calls any forbidden post-creation write — a body pose/velocity
+    // is legal ONLY through the desc builder at creation, and all motion must
+    // come from joint motors. Reads (.mass()/.invPrincipalInertia() the
+    // readback guards need) pass through untouched.
+    const FORBIDDEN = new Set([
+      'setTranslation', 'setNextKinematicTranslation', 'setRotation', 'setNextKinematicRotation',
+      'setLinvel', 'setAngvel', 'applyImpulse', 'applyTorqueImpulse', 'addForce', 'addTorque',
+    ]);
+    const { RAPIER, world } = await createPhysics({ deterministic });
+    try {
+      const trapWrites = new Proxy(world, {
+        get(target, key) {
+          const v = target[key];
+          if (key === 'createRigidBody') {
+            return (...args) => {
+              const body = v.apply(target, args); // creation is legal
+              return new Proxy(body, {
+                get(b, bk) {
+                  if (FORBIDDEN.has(bk)) {
+                    return () => { throw new Error(`forbidden post-creation write: RigidBody.${String(bk)}`); };
+                  }
+                  const bv = b[bk];
+                  return typeof bv === 'function' ? bv.bind(b) : bv;
+                },
+              });
+            };
+          }
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+      // A mixed S0/S1 driven vehicle spawned WITH a linvel exercises every
+      // construction path (hub bodies, wheel bodies, both joint types, drive
+      // + spring motors, the shared spawn-linvel) — if any of them reached
+      // for a post-creation pose/velocity/force write, this throws.
+      const built = realizeVehicle(RAPIER, trapWrites, canonicalIR([0, 0.5]), { position: { x: 0, y: 2, z: 0 }, linvel: { x: 1, y: 0, z: 0 } });
+      expect(built.wheels).toHaveLength(4);
+      expect(built.wheels.some((st) => st.suspensionType === 'S1')).toBe(true);
     } finally {
       world.free();
     }

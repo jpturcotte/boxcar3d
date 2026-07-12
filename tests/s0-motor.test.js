@@ -3,18 +3,21 @@
 // createPhysics, per F10 exactness only ever per-flavor. No random draws
 // anywhere in this file: every rig is a declared literal, so no seeds.
 //
-// THE RULING (S0 kernel PR): motors run ForceBased, and the adapter converts
-// the IR's torque allocation into Rapier's velocity-servo gain —
-//     gain = driveTorque / |targetAngvel|      (gain ≥ 0)
-// so the signed law is τ = gain × (targetAngvel − ω) = sign(targetAngvel) ×
-// driveTorque × (1 − ω/targetAngvel): the stall MAGNITUDE = driveTorque
-// EXACTLY (its sign follows targetAngvel — negative target ⇒ −driveTorque
-// stall), τ a linear servo falling to zero at the target speed. Rapier's
-// factor is a GAIN derived from the IR torque — driveTorque itself is not
-// the gain. This file
-// locks the physical relationships that make that conversion honest;
-// tests/s0-kernel.test.js locks the same semantics through the shipped
-// realizeS0Vehicle path.
+// THE RULING (S0 kernel PR; target derivation generalized PER WHEEL by the
+// surface-speed PR): motors run ForceBased, and the adapter converts each
+// wheel's IR torque allocation into Rapier's velocity-servo gain — per
+// driven wheel,
+//     ω_i = −targetWheelSurfaceSpeed / radius_i,  gain_i = driveTorque_i × (1/|ω_i|)
+// so the signed law is τ = gain_i × (ω_i − ω) = sign(ω_i) × driveTorque_i ×
+// (1 − ω/ω_i): the stall MAGNITUDE = driveTorque_i EXACTLY (a positive
+// surface speed derives negative ω_i ⇒ −driveTorque stall), τ a linear
+// servo falling to zero at the wheel's OWN no-load ω. Rapier's factor is a
+// GAIN derived from the IR torque — driveTorque itself is not the gain.
+// This file locks the ENGINE-LEVEL physical relationships that make the
+// conversion honest, using its own declared shared-target literals (TARGET
+// −10, the pre-per-wheel form — the engine ruling is target-value-
+// agnostic); tests/s0-kernel.test.js and the surface-speed tests lock the
+// per-wheel semantics through the shipped realizer path.
 //
 // Why ForceBased (the model discriminator, airborne bench — fixed chassis,
 // one wheel on a revolute, NO ground contact, so no traction/contact/mass
@@ -63,6 +66,11 @@ const W = 0.2; // wheel width (m)
 const RHO = 800; // wheel density (kg/m³)
 const R_SMALL = 0.3;
 const R_LARGE = 0.45; // inertia ratio (0.45/0.3)^4 ≈ 5.06 at equal width/density
+// NOTE (per-wheel surface-speed PR): the shipped adapter now derives a
+// PER-WHEEL target ω_i = −targetWheelSurfaceSpeed/radius_i and feeds this
+// same gain shape (driveMotorForWheel). The raw-level constants here are
+// this instrument's own declared literals — the engine-level MotorModel
+// ruling they lock is unchanged.
 const TARGET = -10; // rad/s about local +Z — the forward-drive sign (see sign test)
 const TORQUE = 100; // intended stall torque (N·m) per driven wheel
 const gainFor = (torque, target) => torque / Math.abs(target); // the S0 conversion under test

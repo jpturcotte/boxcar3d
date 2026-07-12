@@ -16,7 +16,7 @@ import { describe, test, expect } from 'vitest';
 import {
   ADDITIONAL_SOLVER_ITERATIONS,
   CHASSIS_GROUPS,
-  MOTOR_TARGET_ANGVEL,
+  MOTOR_TARGET_WHEEL_SURFACE_SPEED,
   REVOLUTE_AXIS,
   S0_MOTOR_MODEL_NAME,
   SOFT_CCD_PREDICTION,
@@ -239,8 +239,10 @@ describe.each([
     try {
       expect(typeof RAPIER.MotorModel[S0_MOTOR_MODEL_NAME]).toBe('number');
       expect(RAPIER.MotorModel[S0_MOTOR_MODEL_NAME]).toBe(RAPIER.MotorModel.ForceBased);
-      expect(Number.isFinite(MOTOR_TARGET_ANGVEL)).toBe(true);
-      expect(MOTOR_TARGET_ANGVEL).toBeLessThan(0); // negative target drives +X (s0-motor sign lock)
+      expect(Number.isFinite(MOTOR_TARGET_WHEEL_SURFACE_SPEED)).toBe(true);
+      // POSITIVE surface speed drives +X — the minus sign lives in the
+      // per-wheel derivation ω_i = −speed/radius_i (s0-motor sign lock).
+      expect(MOTOR_TARGET_WHEEL_SURFACE_SPEED).toBeGreaterThan(0);
     } finally {
       world.free();
     }
@@ -338,17 +340,24 @@ describe.each([
         .toThrow(/unit quaternion/);
       expect(() => realizeS0Vehicle(RAPIER, world, ir, { linvel: { x: NaN, y: 0, z: 0 } }))
         .toThrow(/spawn pose/);
-      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: Infinity }))
-        .toThrow(/targetAngvel must be finite/);
+      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: Infinity }))
+        .toThrow(/targetWheelSurfaceSpeed must be finite/);
       expect(() => realizeS0Vehicle(RAPIER, world, ir, { wheelFriction: -0.1 }))
         .toThrow(/wheelFriction/);
-      // Zero target + driven wheels: the gain conversion must never divide.
-      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: 0 }))
-        .toThrow(/nonzero no-load speed/);
+      // Zero surface speed + driven wheels: the per-wheel derivation must
+      // never divide (−0 === 0, so a negative zero is rejected identically).
+      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: 0 }))
+        .toThrow(/nonzero no-load surface speed/);
+      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: -0 }))
+        .toThrow(/nonzero no-load surface speed/);
+      // Migration tombstone: the removed option name gets the rename
+      // diagnosis, never a silent fall-through to the default speed.
+      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: -10 }))
+        .toThrow(/targetAngvel was removed/);
       expect(counts(world)).toEqual(before); // zero side effects from any rejection
-      // …but a fully undriven IR accepts targetAngvel 0 (nothing consumes it).
+      // …but a fully undriven IR accepts speed 0 (nothing consumes it).
       const undrivenIR = compileAssembly(canonicalS0Genotype({ axle: { driven: 0 } }));
-      const rec = realizeS0Vehicle(RAPIER, world, undrivenIR, { targetAngvel: 0 });
+      const rec = realizeS0Vehicle(RAPIER, world, undrivenIR, { targetWheelSurfaceSpeed: 0 });
       expect(rec.wheels).toHaveLength(4);
     } finally {
       world.free();
@@ -417,22 +426,31 @@ describe.each([
     }
   });
 
-  test('motor-gain domain: a denormal-tiny targetAngvel is rejected pre-world (non-finite gain)', async () => {
+  test('motor domain: a denormal-tiny targetWheelSurfaceSpeed is rejected pre-world (non-finite per-wheel gain)', async () => {
     const { RAPIER, world } = await createPhysics({ deterministic });
     try {
-      const ir = canonicalIR(); // paired driven wheels ⇒ a motor gain is derived
+      const ir = canonicalIR(); // paired driven wheels ⇒ motor plans are derived
       const before = counts(world);
-      // driveTorque ≈ 62.5 each; 62.5 / |denormal| overflows to Infinity — a
-      // finite option that passed the exact-zero guard but must fail loud
-      // BEFORE any body/joint exists, never reach configureMotorVelocity.
+      // A denormal speed keeps ω_i = −speed/radius finite-denormal while
+      // 1/|ω_i| overflows, sending the gain to Infinity — a finite option
+      // that passed the exact-zero guard but must fail loud BEFORE any
+      // body/joint exists, never reach configureMotorVelocity. (The mirror
+      // overflow — a huge speed over a small radius sends ω_i itself to
+      // ±Infinity — is rejected by the ω check, which the validator runs
+      // FIRST for the sharper message; the helper also poisons the gain to
+      // NaN whenever ω is non-finite, so neither check can be skipped.)
       for (const tiny of [Number.MIN_VALUE, 1e-320]) {
-        expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: tiny }))
+        expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: tiny }))
           .toThrow(/gain .* is not finite|too small/);
         expect(counts(world)).toEqual(before); // rejected with the world untouched
       }
-      // A small-but-safe target keeps the gain finite (62.5 / 1e-3 = 62500) and
-      // realizes normally — no arbitrary magnitude floor.
-      const rec = realizeS0Vehicle(RAPIER, world, ir, { targetAngvel: -1e-3 });
+      expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: 1e308 }))
+        .toThrow(/drive target ω .* is not finite/);
+      expect(counts(world)).toEqual(before);
+      // A small-but-safe speed keeps every plan finite (r ≈ 0.5 ⇒ |ω| ≈
+      // 0.002, gain ≈ 62.5 / 0.002 = 31250) and realizes normally — no
+      // arbitrary magnitude floor.
+      const rec = realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: -1e-3 });
       expect(rec.wheels.length).toBeGreaterThan(0);
     } finally {
       world.free();

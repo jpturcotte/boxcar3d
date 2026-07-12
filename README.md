@@ -6,16 +6,29 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, the deterministic-evaluation trace and physics-budget
-gate landed. One canonical headless runner (`src/sim/evaluation.js`,
-wall-clock-free) now owns terrain construction, vehicle realization, the
-fixed-step loop, and a versioned per-step trace of every dynamic vehicle
-body (pose, velocities, sleep/validity bits — raw little-endian f64,
-fixed 128-byte records, streaming FNV-1a digests with per-step checkpoint
-states). Three declared fixtures are golden-locked on the deterministic
-Rapier flavor — ordinary S0, mixed S0/S1 on the full composite corridor
-(craters/features/zones on), and the maximum 25-body/24-joint all-S1
-topology — and reproduce **bit-exact across Ubuntu, Windows, and macOS
+**Status:** Phase 1, the per-wheel surface-speed drive law landed. The
+shared −10 rad/s wheel-speed target is gone: one `targetWheelSurfaceSpeed`
+(default 5 m/s) now derives every driven wheel's own no-load target from
+its radius (ω = −speed/radius), so mixed-radius vehicles stop fighting
+themselves over a phantom driveshaft — each wheel's exact stall torque
+(its share of the stall-torque budget) and the measured ForceBased gain
+ruling are unchanged (what is preserved is the stall-torque budget, not
+mechanical power). All three earlier golden fixtures were deliberately re-locked
+under the documented workflow (step-0 spawn states identical; divergence
+enters with the first motor step; fixture A's digest even reproduced, its
+target shift being below the engine's f32 state resolution), and a fourth
+locked fixture — genuinely mixed 0.3 m / 0.6 m radii on the flat pad —
+now pins the per-wheel law across the same environments. This built on
+the deterministic-evaluation trace and physics-budget gate: one canonical
+headless runner (`src/sim/evaluation.js`, wall-clock-free) owns terrain
+construction, vehicle realization, the fixed-step loop, and a versioned
+per-step trace of every dynamic vehicle body (pose, velocities,
+sleep/validity bits — raw little-endian f64, fixed 128-byte records,
+streaming FNV-1a digests with per-step checkpoint states). The declared
+fixtures are golden-locked on the deterministic Rapier flavor — ordinary
+S0, mixed S0/S1 on the full composite corridor (craters/features/zones
+on), the maximum 25-body/24-joint all-S1 topology, and the mixed-radius
+lock — and reproduce **bit-exact across Ubuntu, Windows, and macOS
 (Node 22) and pinned Chromium 149** (`npm run test:determinism`,
 `npm run test:browser`; the browser gate transitively proves the whole
 terrain path — noise, craters, zones, feature ray-seating — identical in
@@ -41,9 +54,10 @@ validity guard is load-bearing); and no legal input produces NaN on
 stand unchanged (springs are honest N/m; the S1 witness, hub records,
 and every earlier locked fingerprint are byte-identical). Backend R is
 formally dropped (O3 resolved — Backend J is the sole canonical
-backend). Next: zone material response, then S2, then the GA — each in
-its own PR. The design docs in `docs/` define everything that comes
-after.
+backend). Next: GA Phase 1a — headless deterministic evolution (the
+population seeder masks `suspType` away from S2); zone material response
+and S2 are deferred behind it, each in its own PR. The design docs in
+`docs/` define everything that comes after.
 
 ## Quickstart
 

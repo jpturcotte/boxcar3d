@@ -426,12 +426,12 @@ describe.each([
       const sled = realizeVehicle(RAPIER, world, canonicalIR([0.5, 0.5], (g) => { g.axles = []; }), {});
       expect(sled.wheels).toEqual([]);
       expect(sled.mass.hubs).toBe(0);
-      // Zero driven: free-rolling S1; targetAngvel 0 is accepted (nothing
-      // consumes it) — the S0 semantics, unchanged.
+      // Zero driven: free-rolling S1; targetWheelSurfaceSpeed 0 is accepted
+      // (nothing consumes it) — the S0 semantics, unchanged.
       const undriven = realizeVehicle(
         RAPIER, world,
         canonicalIR([0.5, 0.5], (g) => { for (const a of g.axles) a.driven = 0; }),
-        { position: { x: 0, y: 2, z: 0 }, targetAngvel: 0 }
+        { position: { x: 0, y: 2, z: 0 }, targetWheelSurfaceSpeed: 0 }
       );
       expect(undriven.wheels).toHaveLength(4);
       // Single centerline S1 module: one wheel, one hub, symmetric snap puts

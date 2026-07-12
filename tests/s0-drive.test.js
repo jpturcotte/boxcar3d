@@ -28,10 +28,18 @@
 //   undriven (x −45): dx −0.063 (sleeps at rest; the s0-motor solver-pump
 //                     drift did not manifest on the heightfield pad)
 //   reversed (x 0):   dx −19.186, anchorErr 3.4e-3
-//   gain invariance through the shipped path (targetAngvel −5 vs −10, same
-//     driveTorque): vx@15 0.1781 vs 0.1784 (0.2% apart) — target speed is
-//     the no-load speed, NOT a torque rescale; dx@600 14.62 vs 19.43 (the
-//     cruise cap ωR differs, exactly as the law says)
+//   gain invariance through the shipped path (targetWheelSurfaceSpeed 2.5 vs
+//     the default 5 — per-wheel ω ≈ −5 vs −10 at this fixture's r ≈ 0.5, the
+//     same physics as the old shared −5/−10 targets, same driveTorque):
+//     vx@15 0.1781 vs 0.1784 (0.2% apart) — the surface speed is the no-load
+//     speed, NOT a torque rescale; dx@600 14.62 vs 19.43 (the cruise cap ωR
+//     differs, exactly as the law says)
+//   PER-WHEEL LAW NOTE (2026-07-11): the witness wheels decode to r =
+//     0.49999999999999994, so the derived ω = −10.000000000000002 differs
+//     from the old shared −10 by 1 f64 ulp — below f32 engine-state
+//     resolution (Math.fround(−10.000000000000002) === −10), and the gains
+//     are f32-equal too; every measured number above reproduced unchanged
+//     under the per-wheel law (re-verified at this seed, both flavors).
 //   power-doubled twin (driveTorque 125): vx@15 ratio 1.919 — the compiler's
 //     budget shares translate into proportional thrust
 //   residual-overlap witness (R5 cap case, axle spacing 0.195 m < r1+r2
@@ -110,14 +118,14 @@ const rotate = rotateVector;
 
 // Realize `ir` close to the pad surface (placed, not dropped) and run a fixed
 // step count while tracking anchor error, wheel lows, and peak speed.
-async function witnessRun(deterministic, ir, { x, steps = STEPS, targetAngvel } = {}) {
+async function witnessRun(deterministic, ir, { x, steps = STEPS, targetWheelSurfaceSpeed } = {}) {
   const { RAPIER, world } = await createPhysics({ deterministic });
   try {
     const { floor } = addCorridor(RAPIER, world, terrain);
     world.step(); // query BVH ([V1])
     const maxR = Math.max(...ir.axles.flatMap((a) => a.wheels).map((w) => w.radius));
     const opts = { position: { x, y: maxR + 0.02, z: 0 } };
-    if (targetAngvel !== undefined) opts.targetAngvel = targetAngvel;
+    if (targetWheelSurfaceSpeed !== undefined) opts.targetWheelSurfaceSpeed = targetWheelSurfaceSpeed;
     const rec = realizeS0Vehicle(RAPIER, world, ir, opts);
     const x0 = rec.chassis.body.translation().x;
 
@@ -197,7 +205,9 @@ describe.each([
     const undrivenIR = compileAssembly(canonicalS0Genotype({ driven: 0 }));
     const driven = await witnessRun(deterministic, drivenIR, { x: SPAWN_X });
     const undriven = await witnessRun(deterministic, undrivenIR, { x: SPAWN_X });
-    const reversed = await witnessRun(deterministic, drivenIR, { x: REVERSED_SPAWN_X, targetAngvel: +10 });
+    // The equal-radius sign tooth: a NEGATIVE surface speed derives positive
+    // per-wheel ω (≈ +10 at r ≈ 0.5) and drives −X.
+    const reversed = await witnessRun(deterministic, drivenIR, { x: REVERSED_SPAWN_X, targetWheelSurfaceSpeed: -5 });
     const diag = JSON.stringify({ driven, undriven, reversed });
 
     for (const run of [driven, undriven, reversed]) {
@@ -222,10 +232,10 @@ describe.each([
     expect(reversed.dx, diag).toBeLessThan(-5); // measured −19.19
   });
 
-  test('gain semantics through the shipped path: target speed is no-load speed, budget shares are thrust', { timeout: 60000 }, async () => {
+  test('gain semantics through the shipped path: surface speed is no-load speed, budget shares are thrust', { timeout: 60000 }, async () => {
     const ir = compileAssembly(canonicalS0Genotype());
-    const t10 = await witnessRun(deterministic, ir, { x: SPAWN_X });
-    const t5 = await witnessRun(deterministic, ir, { x: SPAWN_X, targetAngvel: -5 });
+    const t10 = await witnessRun(deterministic, ir, { x: SPAWN_X }); // default 5 m/s ⇒ ω ≈ −10 at r ≈ 0.5
+    const t5 = await witnessRun(deterministic, ir, { x: SPAWN_X, targetWheelSurfaceSpeed: 2.5 }); // ω ≈ −5
     const diag = JSON.stringify({ t10: t10.samples, t5: t5.samples, dx10: t10.dx, dx5: t5.dx });
     // Same driveTorque, different no-load speed: initial thrust is invariant
     // (measured 0.1784 vs 0.1781 — 0.2% apart; band 5%)…

@@ -6,13 +6,14 @@
 // There is NO second simulation loop here — this file is imports plus
 // assertions.
 //
-// Fixtures A, B, AND C run: B is the only fixture with the composite
-// defaults on, so the gate transitively proves the integer-noise field,
-// crater baking, zone quantiles, feature generation, AND the
-// addCorridorWithFeatures statics-step + castRay feature-seating path
-// produce bit-identical physics in Chromium — plus both ordinary (A) and
-// maximum 25-body/24-joint (C) joint islands under the deterministic flavor.
-// It does NOT claim anything about rendering or unrelated browser APIs.
+// Fixtures A–D run: B is the only fixture with the composite defaults on, so
+// the gate transitively proves the integer-noise field, crater baking, zone
+// quantiles, feature generation, AND the addCorridorWithFeatures
+// statics-step + castRay feature-seating path produce bit-identical physics
+// in Chromium — plus ordinary (A), maximum 25-body/24-joint (C), and
+// genuinely mixed-radius per-wheel-target (D) joint islands under the
+// deterministic flavor. It does NOT claim anything about rendering or
+// unrelated browser APIs.
 //
 // Assertion order is diagnostic order: counts first (the coarsest signal),
 // then the committed per-step checkpoint states (the first unequal state

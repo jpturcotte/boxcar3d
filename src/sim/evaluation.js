@@ -50,7 +50,7 @@ function fail(path, value) {
 const OPTION_KEYS = Object.freeze([
   'deterministic', 'terrain', 'vehicles', 'maxSteps', 'termination', 'trace', 'profile', 'hooks',
 ]);
-const VEHICLE_KEYS = Object.freeze(['ir', 'spawn', 'targetAngvel', 'wheelFriction']);
+const VEHICLE_KEYS = Object.freeze(['ir', 'spawn', 'targetWheelSurfaceSpeed', 'wheelFriction']);
 const SPAWN_KEYS = Object.freeze(['position', 'rotation', 'linvel']);
 const TRACE_KEYS = Object.freeze(['mode', 'checkpointInterval']);
 const HOOK_KEYS = Object.freeze(['onPhase']);
@@ -86,6 +86,12 @@ function validateOptions(options) {
   if (!Array.isArray(vehicles) || vehicles.length === 0) fail('vehicles', vehicles);
   vehicles.forEach((v, i) => {
     if (typeof v !== 'object' || v === null) fail(`vehicles[${i}]`, v);
+    // Migration tombstone BEFORE the generic key check: a stale caller using
+    // the removed drive option must get the rename diagnosis, not a generic
+    // "unknown key".
+    if (Object.hasOwn(v, 'targetAngvel')) {
+      fail(`vehicles[${i}].targetAngvel`, 'removed; use targetWheelSurfaceSpeed');
+    }
     checkUnknownKeys(v, VEHICLE_KEYS, `vehicles[${i}]`);
     if (typeof v.ir !== 'object' || v.ir === null) fail(`vehicles[${i}].ir`, v.ir);
     if (typeof v.spawn !== 'object' || v.spawn === null) fail(`vehicles[${i}].spawn`, v.spawn);
@@ -95,8 +101,8 @@ function validateOptions(options) {
       || ![p.x, p.y, p.z].every((c) => typeof c === 'number' && Number.isFinite(c))) {
       fail(`vehicles[${i}].spawn.position`, JSON.stringify(p));
     }
-    // rotation/linvel/targetAngvel/wheelFriction are validated in depth by
-    // realizeVehicle — the existing thorough, message-rich gate.
+    // rotation/linvel/targetWheelSurfaceSpeed/wheelFriction are validated in
+    // depth by realizeVehicle — the existing thorough, message-rich gate.
   });
   if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
   if (termination !== 'maxSteps') fail('termination', termination);
@@ -164,7 +170,8 @@ export function readBodyState(body) {
  * and dt contracts. Options:
  *
  *   { deterministic, terrain (must carry its own seed), vehicles: [{ ir,
- *     spawn: { position, rotation?, linvel? }, targetAngvel?, wheelFriction? }],
+ *     spawn: { position, rotation?, linvel? }, targetWheelSurfaceSpeed?,
+ *     wheelFriction? }],
  *     maxSteps, termination: 'maxSteps', trace: { mode, checkpointInterval? },
  *     profile, hooks: { onPhase? } }
  *
@@ -210,7 +217,7 @@ export async function runEvaluation(options) {
       const opts = { position: v.spawn.position };
       if (v.spawn.rotation !== undefined) opts.rotation = v.spawn.rotation;
       if (v.spawn.linvel !== undefined) opts.linvel = v.spawn.linvel;
-      if (v.targetAngvel !== undefined) opts.targetAngvel = v.targetAngvel;
+      if (v.targetWheelSurfaceSpeed !== undefined) opts.targetWheelSurfaceSpeed = v.targetWheelSurfaceSpeed;
       if (v.wheelFriction !== undefined) opts.wheelFriction = v.wheelFriction;
       return realizeVehicle(RAPIER, world, v.ir, opts);
     });

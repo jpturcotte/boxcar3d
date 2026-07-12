@@ -369,15 +369,19 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
 //
 // MOTOR RULING (measured, tests/s0-motor.test.js): Rapier's motor "factor" is
 // a velocity-servo GAIN, not a torque — raw law: τ = factor × (targetVel − ω).
-// The realizer derives the gain from the IR torque,
-//     gain = driveTorque / |targetAngvel|      (gain ≥ 0)
-// so the signed law is τ = gain × (targetAngvel − ω) = sign(targetAngvel) ×
-// driveTorque × (1 − ω/targetAngvel): the stall MAGNITUDE |τ(ω=0)| = gain ×
-// |targetAngvel| = driveTorque EXACTLY (its SIGN follows targetAngvel — with
-// the canonical −10 target the signed stall torque is −driveTorque, spinning
-// the wheel for +X). driveTorque is thus a literal stall-torque budget in
-// magnitude, τ falling linearly to zero at the target speed, and thrust stays
-// proportional to each wheel's share of the global power budget. ForceBased
+// The realizer derives EACH WHEEL's target and gain from the IR torque and
+// one shared no-load wheel-surface speed (driveMotorForWheel below):
+//     ω_i = −targetWheelSurfaceSpeed / radius_i,  gain_i = driveTorque_i × (1/|ω_i|)
+// so the signed per-wheel law is τ_i = gain_i × (ω_i − ω) = sign(ω_i) ×
+// driveTorque_i × (1 − ω/ω_i): the stall MAGNITUDE |τ(ω=0)| = gain_i ×
+// |ω_i| = driveTorque_i EXACTLY (its SIGN follows ω_i — a positive surface
+// speed derives a negative ω_i, spinning the wheel for +X). driveTorque is
+// thus a literal stall-torque budget in magnitude, τ falling linearly to
+// zero at the wheel's OWN no-load ω (every wheel's no-load SURFACE speed is
+// the one shared setting, so unequal radii agree on contact-surface speed
+// instead of fighting over a phantom shaft ω — the closed mixed-radius
+// finding), and thrust stays proportional to each wheel's share of the
+// global stall-torque budget. ForceBased
 // is required for that reading: on an airborne
 // bench, the same driveTorque on wheels of 5.06× inertia produced a 4.86×
 // first-step spin ratio under ForceBased (a real torque) but 1.000 under
@@ -388,13 +392,52 @@ export function realizeChassis(RAPIER, world, ir, options = {}) {
 // that drops/renames the member must fail loud, never silently re-map.
 export const S0_MOTOR_MODEL_NAME = 'ForceBased';
 
-// Signed motor target (rad/s) about the local +Z axle. NEGATIVE spins wheels
-// for +X travel: with the axle along +Z, the contact-point velocity is +ωR·x̂,
-// so forward needs ω < 0 (locked by the sign test in tests/s0-motor.test.js:
-// target −10 → dx +9.47 m, target +10 → the mirror). Magnitude is the legacy
-// SALVAGE default (~10 rad/s wheel target). This is the no-load speed; by the
-// gain conversion above, changing it does NOT rescale stall torque.
-export const MOTOR_TARGET_ANGVEL = -10;
+// Signed NO-LOAD wheel-surface speed (m/s) — the per-wheel drive-target
+// policy default. Each driven wheel derives its OWN angular target
+// ω_i = −targetWheelSurfaceSpeed / radius_i (driveMotorForWheel below), so
+// every driven wheel agrees on the no-load circumferential speed of its
+// contact surface (the rolling-without-slip reading — actual vehicle speed
+// differs under slip, terrain, suspension motion, collisions, and solver
+// behavior) instead of sharing one phantom-driveshaft ω. POSITIVE drives
+// +X; the minus sign lives in the derivation (axle along local +Z ⇒
+// forward needs ω < 0 — the s0-motor sign lock). Default 5 = the legacy
+// no-load target (10 rad/s) × the canonical 0.5 m wheel, confirmed by this
+// PR's preflight matrix. A no-load speed: by the gain conversion it never
+// rescales stall torque ([V10]) — the global stall-torque budget and its
+// per-wheel allocation are untouched.
+export const MOTOR_TARGET_WHEEL_SURFACE_SPEED = 5;
+
+// Per-wheel drive-motor derivation under the surface-speed law (pure, no
+// Rapier). A wheel of radius r meets the shared signed no-load SURFACE
+// speed (m/s, +X positive) by spinning at
+//     ω = −targetWheelSurfaceSpeed / radius     (rad/s about local +Z)
+// and its velocity-servo gain keeps the [V10] conversion SHAPE, fed the
+// per-wheel ω:
+//     gain = driveTorque × (1 / |ω|)
+// The reciprocal-MULTIPLY is load-bearing for bit-exactness: at the
+// pure-math identity corner (surface speed 5, radius 0.5) ω is exactly −10
+// and 1/|ω| is the same f64 as the legacy shared-target reciprocal, so the
+// gain reproduces the legacy shared-target (−10 rad/s) bits for EVERY
+// driveTorque; a direct divide does not (3/10 ≠ 3·(1/10) in f64 —
+// measured). Stall MAGNITUDE stays
+// driveTorque exactly, signed by sign(ω) — the [V10] contract per wheel.
+// CONTRACT: for a validated wheel-shaped record, numeric out-of-domain
+// inputs surface as NON-FINITE fields — the realizer's validator owns the
+// fail-loud messages. A malformed or missing wheel record (null/undefined,
+// no radius) is a programmer error and MAY throw: callers validate the
+// wheel before invoking, and silently coercing a missing object to NaNs
+// would hide the bug (deliberately declining optional-chaining). A
+// non-finite ω POISONS the gain to NaN, because the raw math would collapse
+// it to a plausible finite 0 (t × 1/Infinity) and a consumer validating the
+// gain alone would accept a broken plan; with the poison, checking EITHER
+// field fails loud. (A denormal speed keeps ω finite-denormal while 1/|ω|
+// overflows the gain to Infinity — the other overflow direction.) The
+// validator still rejects ω first for the sharper diagnostic.
+export function driveMotorForWheel(targetWheelSurfaceSpeed, wheel) {
+  const omega = -targetWheelSurfaceSpeed / wheel.radius;
+  if (!Number.isFinite(omega)) return { omega, gain: NaN };
+  return { omega, gain: wheel.driveTorque * (1 / Math.abs(omega)) };
+}
 
 // Firm-baseline wheel-contact friction. Explicit because it is load-bearing
 // for traction: Rapier's silent collider default is 0.5, and the corridor
@@ -614,7 +657,7 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
     position = { x: 0, y: 0, z: 0 },
     rotation = { x: 0, y: 0, z: 0, w: 1 },
     linvel = { x: 0, y: 0, z: 0 },
-    targetAngvel = MOTOR_TARGET_ANGVEL,
+    targetWheelSurfaceSpeed = MOTOR_TARGET_WHEEL_SURFACE_SPEED,
     wheelFriction = WHEEL_FRICTION,
   } = options;
   // ir.version IS the realizer compatibility gate (the compiled
@@ -759,41 +802,56 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
   if (Math.abs(norm2 - 1) > 1e-6) {
     throw new Error(`${label}: spawn rotation must be a unit quaternion (|q|² = ${norm2})`);
   }
-  if (!Number.isFinite(targetAngvel)) {
-    throw new Error(`${label}: targetAngvel must be finite (${String(targetAngvel)})`);
+  // Migration tombstone: the pre-surface-speed option name. The options
+  // destructure ignores unknown keys, so without this a stale caller's
+  // targetAngvel would be silently DROPPED and the vehicle would run the
+  // default surface speed — the silently-changed-physics class this adapter
+  // exists to prevent.
+  if (Object.hasOwn(options, 'targetAngvel')) {
+    throw new Error(`${label}: option targetAngvel was removed — use targetWheelSurfaceSpeed (m/s; ω is derived per wheel as −targetWheelSurfaceSpeed/radius)`);
   }
-  // The gain conversion divides by |targetAngvel| — a zero-target motor
-  // request is rejected loud, never divided. A fully undriven IR accepts any
-  // finite target (nothing consumes it).
-  if (anyMotor && targetAngvel === 0) {
-    throw new Error(`${label}: targetAngvel 0 with driven wheels — the gain conversion needs a nonzero no-load speed`);
+  if (!Number.isFinite(targetWheelSurfaceSpeed)) {
+    throw new Error(`${label}: targetWheelSurfaceSpeed must be finite (${String(targetWheelSurfaceSpeed)})`);
+  }
+  // The per-wheel derivation ω_i = −speed/radius_i feeds a reciprocal — a
+  // zero-speed motor request is rejected loud, never divided (−0 === 0, so
+  // a negative zero is caught here too). A fully undriven IR accepts any
+  // finite speed (nothing consumes it).
+  if (anyMotor && targetWheelSurfaceSpeed === 0) {
+    throw new Error(`${label}: targetWheelSurfaceSpeed 0 with driven wheels — the per-wheel drive derivation needs a nonzero no-load surface speed`);
   }
   if (!Number.isFinite(wheelFriction) || wheelFriction < 0) {
     throw new Error(`${label}: wheelFriction must be a finite number >= 0 (${String(wheelFriction)})`);
   }
-  // Derive every DRIVE motor gain NOW, pre-world: gain = driveTorque /
-  // |targetAngvel| (the [V10] ruling — reused VERBATIM by S1 wheels; only
-  // the joint the motor lands on differs). Rejecting only targetAngvel === 0
-  // was not enough — a finite but denormal-tiny target (e.g.
-  // Number.MIN_VALUE) sends driveTorque / |target| to Infinity, a non-finite
-  // gain that must fail loud HERE, never reach configureMotorVelocity after
-  // bodies/joints exist. The validated gains are stored so the construction
-  // loop consumes them (one source, never recomputed). No magnitude floor: a
-  // large finite gain (e.g. 6.25e9 at target 1e-8) is stable over 600 steps
-  // in-probe, so only non-finite is out of domain.
-  const invTarget = 1 / Math.abs(targetAngvel);
-  const motorGain = new Map();
-  for (const axle of ir.axles) {
-    for (const w of axle.wheels) {
-      if (w.driven && w.driveTorque > 0) {
-        const gain = w.driveTorque * invTarget;
-        if (!Number.isFinite(gain)) {
-          throw new Error(`${label}: motor gain ${gain} (driveTorque ${w.driveTorque} / |targetAngvel| ${Math.abs(targetAngvel)}) is not finite — targetAngvel is too small`);
-        }
-        motorGain.set(w, gain);
+  // Derive every DRIVE motor plan NOW, pre-world: ω_i = −targetWheelSurfaceSpeed
+  // / radius_i and gain_i = driveTorque_i × (1/|ω_i|) — driveMotorForWheel,
+  // the [V10] gain shape fed the per-wheel ω (reused VERBATIM by S1 wheels;
+  // only the joint the motor lands on differs). Rejecting only speed === 0
+  // is not enough: a finite denormal-tiny speed keeps ω_i finite while
+  // 1/|ω_i| overflows the gain to Infinity, and a huge speed over a small
+  // radius overflows ω_i itself (ω_i is checked FIRST for the sharper
+  // message; the helper also poisons the gain to NaN whenever ω_i is
+  // non-finite, so no gain-only consumer can miss it). Both must fail loud
+  // HERE, never reach
+  // configureMotorVelocity after bodies/joints exist. The validated plans
+  // are stored so the construction loop consumes them (one source, never
+  // recomputed). No magnitude floor on finite values: a large finite gain
+  // (measured stable at ~6.25e9 in-probe) is in domain — only non-finite is
+  // out.
+  const motorPlan = new Map();
+  ir.axles.forEach((axle, i) => {
+    axle.wheels.forEach((w, j) => {
+      if (!(w.driven && w.driveTorque > 0)) return;
+      const plan = driveMotorForWheel(targetWheelSurfaceSpeed, w);
+      if (!Number.isFinite(plan.omega)) {
+        throw new Error(`${label}: axles[${i}].wheels[${j}] drive target ω ${plan.omega} (−targetWheelSurfaceSpeed ${targetWheelSurfaceSpeed} / radius ${w.radius}) is not finite`);
       }
-    }
-  }
+      if (!Number.isFinite(plan.gain)) {
+        throw new Error(`${label}: axles[${i}].wheels[${j}] motor gain ${plan.gain} (driveTorque ${w.driveTorque} × 1/|ω| ${Math.abs(plan.omega)}) is not finite — targetWheelSurfaceSpeed is too small for this wheel`);
+      }
+      motorPlan.set(w, plan);
+    });
+  });
   // The S1 API surface, verified pre-world whenever any S1 axle exists, so
   // API drift on a future Rapier bump can never fire after the chassis and
   // hubs already exist (the rollback would cover it, but fail-loud-first is
@@ -814,7 +872,10 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
       }
     }
   }
-  return { label, position, rotation, linvel, targetAngvel, wheelFriction, motorModel, springModel, motorGain };
+  // targetWheelSurfaceSpeed is deliberately NOT returned: the effective
+  // per-wheel targets live in motorPlan (plan.omega, rad/s) — returning the
+  // m/s speed too would invite a reader to mistake it for the motor target.
+  return { label, position, rotation, linvel, wheelFriction, motorModel, springModel, motorPlan };
 }
 
 // Transactional construction over a validated plan. Ledger discipline: every
@@ -826,7 +887,7 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
 // its joints — Rapier's implicit joint-removal-on-body-removal never fires),
 // restoring all three world counts exactly.
 function constructVehicle(RAPIER, world, ir, v) {
-  const { label, position, rotation, linvel, targetAngvel, wheelFriction, motorModel, springModel, motorGain } = v;
+  const { label, position, rotation, linvel, wheelFriction, motorModel, springModel, motorPlan } = v;
   const placements = vehicleWheelTransforms(ir, { position, rotation });
   const chassis = realizeChassis(RAPIER, world, ir, { position, rotation, linvel });
   const wheels = [];
@@ -965,12 +1026,13 @@ function constructVehicle(RAPIER, world, ir, v) {
         true
       );
       createdDriveJoints.push(driveJoint);
-      const gain = motorGain.get(w); // undefined ⇒ undriven or zero-torque (no motor)
-      if (gain !== undefined) {
+      const plan = motorPlan.get(w); // undefined ⇒ undriven or zero-torque (no motor)
+      if (plan !== undefined) {
         driveJoint.configureMotorModel(motorModel);
-        // gain validated finite pre-world; stall MAGNITUDE = gain × |targetAngvel|
-        // = driveTorque, signed by sign(targetAngvel). [V10] — unchanged by S1.
-        driveJoint.configureMotorVelocity(targetAngvel, gain);
+        // ω_i and gain_i validated finite pre-world; stall MAGNITUDE =
+        // gain_i × |ω_i| = driveTorque_i EXACTLY, signed by sign(ω_i).
+        // [V10] per wheel — unchanged by S1.
+        driveJoint.configureMotorVelocity(plan.omega, plan.gain);
       }
       wheels.push({
         axleIndex: p.axleIndex,
@@ -1030,8 +1092,10 @@ function constructVehicle(RAPIER, world, ir, v) {
 //   4. S1 spring = setLimits(0, travel) + ForceBased
 //      configureMotorPosition(restLength, stiffness, damping) on the
 //      prismatic; spawn is QUIESCENT at clamp(restLength, 0, travel). Drive
-//      motors reuse the S0 [V10] gain conversion unchanged, configured on
-//      the hub→wheel revolute for S1 stations.
+//      motors derive PER-WHEEL targets from one no-load wheel-surface speed
+//      (ω_i = −targetWheelSurfaceSpeed/radius_i, the [V10] gain shape per
+//      wheel — driveMotorForWheel), configured on the hub→wheel revolute
+//      for S1 stations.
 //   5. NOTHING here (or anywhere) applies forces/impulses, writes angular
 //      velocities, or re-poses bodies after creation — suspension and drive
 //      are joint-motor causality only.

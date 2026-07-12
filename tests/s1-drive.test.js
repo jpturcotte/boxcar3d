@@ -50,9 +50,22 @@
 // −0.0067 (stop leak); strange mixed asymmetric drives +26.41 m, |z| 0.10;
 // solver-pump (undriven all-S1, flat cuboid, 900 steps): vx plateaus at
 // −0.327 m/s — the S0 finding's ≈0.33 magnitude, UNCHANGED by S1 (recorded,
-// not remediated); mixed radii under travel: +11.59 m then vxEnd −0.099
-// (the shared-target conflict persists — recorded); R5-cap overlap with S1:
+// not remediated); mixed radii under travel, RE-MEASURED under the
+// per-wheel law: the corridor end state is a GRADE stall and stands
+// unchanged (+11.64 m then vxEnd −0.099 at t/w 15.8% — stall thrust is
+// driveTorque/r, law-invariant by design; the old record misattributed it
+// to the target conflict), while the shared-target CONFLICT itself is
+// CLOSED (same IR on flat ground: old-law cruise 4.43 m/s with small
+// wheels dragged past the shared target vs per-wheel-law cruise 4.89 m/s
+// with every wheel under its own target); R5-cap overlap with S1:
 // +5.06 m, no detach, maxSpeed 2.90.
+//
+// PER-WHEEL SURFACE-SPEED PR NOTE (2026-07-11): the three-way witness and
+// the max-topology case PIN their legacy operating points via explicit
+// targetWheelSurfaceSpeed literals (3 m/s at r 0.3, 4.2 m/s at r 0.42 —
+// both derive ω = EXACTLY the old shared −10 in f64, gains bit-equal), so
+// their measured tables above stand verbatim; the remaining cases run the
+// new default (5 m/s) and were re-measured where their numbers moved.
 
 import { describe, test, expect } from 'vitest';
 import {
@@ -79,6 +92,21 @@ const WITNESS_CONFIG = Object.freeze({
   sandCoverage: 0,
   mudCoverage: 0,
 });
+// The MOTOR's OWN coordinate: a revolute motor drives the RELATIVE angular
+// velocity between its bodies about the joint axis (the parent's local +Z),
+// not the wheel body's world ω_z — the only honest observable for the
+// driving/braking sign. Parent = the hub for S1 (its drive revolute is
+// hub→wheel; the hub co-rotates with the chassis through the prismatic),
+// the chassis for S0. World ω_z stays as a diagnostic. (Shared verbatim
+// with tests/surface-speed-drive.test.js.)
+function motorRelativeOmega(st, chassisBody) {
+  const parent = st.suspensionType === 'S1' ? st.hub.body : chassisBody;
+  const axis = rotate(parent.rotation(), { x: 0, y: 0, z: 1 });
+  const w = st.wheel.body.angvel();
+  const p = parent.angvel();
+  return (w.x - p.x) * axis.x + (w.y - p.y) * axis.y + (w.z - p.z) * axis.z;
+}
+
 const SEG_MIN = -30;
 const SEG_MAX = 30;
 const SPAWN_X = -44; // on the pad
@@ -138,7 +166,16 @@ async function roughRun(deterministic, ir, { x = SPAWN_X } = {}) {
     const coord0 = s1axle
       ? Math.max(0, Math.min(s1axle.suspension.restLength, s1axle.suspension.travel))
       : 0;
-    const rec = realizeVehicle(RAPIER, world, ir, { position: { x, y: maxR + coord0 + 0.02, z: 0 } });
+    // OPERATING-POINT PIN (per-wheel surface-speed PR): this witness's claims
+    // are SUSPENSION effects, not drive-law effects, so it declares the
+    // surface speed that reproduces the legacy operating point at its r 0.3
+    // wheels — 3 m/s ⇒ ω = −3/0.3 rounds to EXACTLY the old shared −10 in
+    // f64, gains bit-equal — keeping the whole measured header table valid
+    // verbatim. The drive-law witnesses live in tests/surface-speed-drive.test.js.
+    const rec = realizeVehicle(RAPIER, world, ir, {
+      position: { x, y: maxR + coord0 + 0.02, z: 0 },
+      targetWheelSurfaceSpeed: 3,
+    });
     const stations = rec.wheels.map((st) => ({
       st,
       anchor: suspensionAnchorLocal(ir.axles[st.axleIndex], st.irWheel),
@@ -253,7 +290,7 @@ async function roughRun(deterministic, ir, { x = SPAWN_X } = {}) {
 }
 
 // A bounded generic run (pad or flat cuboid) for the G10/G11 cases.
-async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = null, steps = 600, flatCuboid = false } = {}) {
+async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = null, steps = 600, flatCuboid = false, targetWheelSurfaceSpeed } = {}) {
   const { RAPIER, world } = await createPhysics({ deterministic });
   try {
     if (flatCuboid) {
@@ -269,6 +306,7 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
       : 0;
     const opts = { position: { x, y: y === null ? maxR + coord0 + 0.02 : y, z: 0 } };
     if (rotation) opts.rotation = rotation;
+    if (targetWheelSurfaceSpeed !== undefined) opts.targetWheelSurfaceSpeed = targetWheelSurfaceSpeed;
     const rec = realizeVehicle(RAPIER, world, ir, opts);
     const stations = rec.wheels.map((st) => ({
       st,
@@ -340,7 +378,8 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
       maxSpeed,
       maxTwistZ,
       maxSwingXY,
-      wheelOmegaZ: rec.wheels.map((st) => st.wheel.body.angvel().z),
+      wheelOmegaZ: rec.wheels.map((st) => st.wheel.body.angvel().z), // diagnostic (world component)
+      wheelMotorOmega: rec.wheels.map((st) => motorRelativeOmega(st, rec.chassis.body)), // the motor's own coordinate
       jointsValid: rec.wheels.every((st) => st.driveJoint.isValid() && (st.suspensionJoint === null || st.suspensionJoint.isValid())),
       counts: [world.bodies.len(), world.impulseJoints.len()],
     };
@@ -440,7 +479,10 @@ describe.each([
       g.axles = [0, 0.18, 0.36, 0.54, 0.72, 0.9].map((p) => axle(p, { radius: 0.44, density: 0.15 }));
     });
     expect(repairGenotype(maxG)).toEqual(maxG);
-    const run = await boundedRun(deterministic, compileAssembly(maxG), { steps: 900 });
+    // OPERATING-POINT PIN: 4.2 m/s ⇒ ω = −4.2/0.42 rounds to EXACTLY the old
+    // shared −10 at these r 0.42 wheels (the roughRun pin's argument) — the
+    // topology claim keeps its measured numbers.
+    const run = await boundedRun(deterministic, compileAssembly(maxG), { steps: 900, targetWheelSurfaceSpeed: 4.2 });
     const diag = JSON.stringify(run);
     expect(run.counts, diag).toEqual([25, 24]); // 12 hubs + 12 wheels + chassis; 12 prismatics + 12 revolutes
     expect(run.finite, diag).toBe(true);
@@ -466,8 +508,10 @@ describe.each([
     expect(run.finite, diag).toBe(true);
     expect(run.jointsValid, diag).toBe(true);
     expect(run.maxAnchorErr, diag).toBeLessThan(ANCHOR_BAND); // measured 1.4e-3
-    expect(run.dx, diag).toBeGreaterThan(5); // measured +26.41 — not required to drive WELL, but it does
-    expect(Math.abs(run.z), diag).toBeLessThan(3); // asymmetric drift, measured 0.10
+    // Runs the new 5 m/s default (r 0.3 wheels ⇒ ω ≈ −16.7, was the shared
+    // −10): re-measured for the per-wheel surface-speed PR, both flavors.
+    expect(run.dx, diag).toBeGreaterThan(15); // measured +41.98 (was +26.41 at the old shared target)
+    expect(Math.abs(run.z), diag).toBeLessThan(3); // asymmetric drift, measured 1.93 (was 0.10 — faster wheels drift more; band unchanged)
     expect(run.minQ, diag).toBeGreaterThan(-0.05);
     expect(run.maxQ, diag).toBeLessThan(0.42);
   });
@@ -486,13 +530,13 @@ describe.each([
     const diag = JSON.stringify(run);
     expect(run.finite, diag).toBe(true);
     // The tooth is non-vacuous only if the wheels actually spun under drive.
-    expect(Math.min(...run.wheelOmegaZ.map(Math.abs)), diag).toBeGreaterThan(5); // target −10, cruise ≈ −9.9
+    expect(Math.min(...run.wheelOmegaZ.map(Math.abs)), diag).toBeGreaterThan(5); // per-wheel target −5/0.3 ≈ −16.7 (was the shared −10) — the tooth stands with more margin
     expect(run.dx, diag).toBeGreaterThan(3); // it drove
     expect(run.maxSwingXY, diag).toBeLessThan(0.15); // measured 0.046 max even on rough terrain
     expect(run.maxTwistZ, diag).toBeLessThan(0.6); // measured ≤ 0.244 at this torque — a ceiling, not a curve
   });
 
-  test('findings ledger (record, do not remediate): solver-pump under S1, mixed-radius conflict under travel, R5-cap overlap with S1', { timeout: 120000 }, async () => {
+  test('findings ledger: solver-pump under S1 (recorded), mixed radii re-measured (grade stall stands; the shared-target conflict is closed), R5-cap overlap with S1', { timeout: 120000 }, async () => {
     // (1) Solver-pump drift: an awake undriven all-S1 vehicle on a flat
     // cuboid creeps at the S0 finding's magnitude — measured vxEnd −0.327
     // vs the S0 kernel's ≈0.33. S1 does NOT change the finding; fitness
@@ -510,20 +554,48 @@ describe.each([
     expect(pump.minQ, diagPump).toBeGreaterThan(-0.02); // suspension stays sane while creeping
     expect(pump.maxQ, diagPump).toBeLessThan(0.42);
 
-    // (2) Mixed-radius shared-target conflict persists under suspension
-    // travel: r 0.5 / 0.42 wheels fight over the one MOTOR_TARGET_ANGVEL;
-    // measured +11.59 m then vxEnd −0.099. Finite and bounded — recorded.
+    // (2) Mixed radii under suspension travel, RE-MEASURED under the
+    // per-wheel law — the old record conflated two mechanisms.
+    // (2a) On this corridor the build still stops where it always did
+    // (measured under the new law: dx +11.64, vxEnd −0.099, final x −38.4 —
+    // ON the start-blend grade): a GRADE stall. This build is t/w 15.8% on
+    // the seed whose blend stalled a 29% build (header), and stall thrust
+    // is driveTorque/r — preserved BY DESIGN under any drive-target law, so
+    // no target law can change this end state. The grade-stall finding
+    // STANDS, now correctly attributed.
     const mixedG = witnessGenotype((g, axle) => {
       g.frame.segments[0].nodes.forEach((n) => { n.height = 0.5; });
       g.axles = [axle(0.2, { radius: 0.6, density: 0.15 }), axle(0.8, { radius: 0.44, density: 0.15 })];
     });
     expect(repairGenotype(mixedG)).toEqual(mixedG);
-    const mixed = await boundedRun(deterministic, compileAssembly(mixedG), { steps: 600 });
+    const mixedIR = compileAssembly(mixedG);
+    const mixed = await boundedRun(deterministic, mixedIR, { steps: 600 });
     const diagMixed = JSON.stringify(mixed);
     expect(mixed.finite, diagMixed).toBe(true);
     expect(mixed.jointsValid, diagMixed).toBe(true);
-    expect(mixed.dx, diagMixed).toBeGreaterThan(2); // measured +11.59
+    expect(mixed.dx, diagMixed).toBeGreaterThan(2); // measured +11.64 — crosses the pad, dies on the blend
+    expect(Math.abs(mixed.vxEnd), diagMixed).toBeLessThan(0.5); // measured −0.099 — grade-stalled at rest, not exploding
     expect(mixed.maxAnchorErr, diagMixed).toBeLessThan(ANCHOR_BAND);
+    // (2b) The shared-target CONFLICT itself is CLOSED — witnessed on FLAT
+    // ground where the grade cannot confound, and read from each motor's OWN
+    // relative-angular-velocity coordinate (wheelMotorOmega: parent = hub
+    // for S1), NOT the wheel body's world ω_z. Same IR, flat cuboid: under
+    // the per-wheel law every wheel sits under ITS OWN target (motor-relative
+    // r 0.5 → −9.81 of −10.0; r 0.42 → −11.71 of −11.905) and it cruises
+    // 4.89 m/s. Station order: [axle0 ×2 (r 0.5), axle1 ×2 (r 0.42)]. The
+    // sharp behavioral witness (radius ratio 2×, exact-old-law control twin,
+    // driving-vs-braking split) lives in tests/surface-speed-drive.test.js.
+    const mixedFlat = await boundedRun(deterministic, mixedIR, { x: 0, steps: 600, flatCuboid: true });
+    const diagMixedFlat = JSON.stringify(mixedFlat);
+    expect(mixedFlat.finite, diagMixedFlat).toBe(true);
+    expect(mixedFlat.jointsValid, diagMixedFlat).toBe(true);
+    expect(mixedFlat.dx, diagMixedFlat).toBeGreaterThan(25); // measured +39.39
+    expect(mixedFlat.vxEnd, diagMixedFlat).toBeGreaterThan(3); // measured 4.891 — sustained cruise near the 5 m/s no-load surface speed
+    for (const [k, omega] of mixedFlat.wheelMotorOmega.entries()) {
+      const target = k < 2 ? 10.000000000000002 : 11.904761904761905; // |−5/r| per station
+      expect(Math.abs(omega), diagMixedFlat).toBeLessThan(target * 1.05); // no wheel dragged past its OWN no-load target
+      expect(Math.abs(omega), diagMixedFlat).toBeGreaterThan(target * 0.75); // engaged, near-cruise (measured 0.98× both axles)
+    }
 
     // (3) The R5 cap-and-accept residual overlap stays stable with S1
     // modules: spacing 0.195 m < combined radii 1.0 m, yet it realizes,

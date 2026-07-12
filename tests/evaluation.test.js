@@ -116,6 +116,9 @@ describe('runEvaluation options validation', () => {
       [(o) => { o.maxSteps = 1.5; }, /maxSteps/],
       [(o) => { o.stepBudget = 600; }, /options\.stepBudget.*unknown key/],
       [(o) => { o.vehicles[0].genotype = {}; }, /vehicles\[0\]\.genotype.*unknown key/],
+      // Migration tombstone: the removed drive option gets the rename
+      // diagnosis, never a generic unknown-key failure.
+      [(o) => { o.vehicles[0].targetAngvel = -10; }, /vehicles\[0\]\.targetAngvel.*removed; use targetWheelSurfaceSpeed/],
       [(o) => { o.vehicles[0].spawn.linVel = { x: 0, y: 0, z: 0 }; }, /spawn\.linVel.*unknown key/],
       [(o) => { o.trace = { mode: 'digset' }; }, /trace\.mode/],
       [(o) => { o.trace = { mode: 'digest', checkpointInterval: 0 }; }, /checkpointInterval/],

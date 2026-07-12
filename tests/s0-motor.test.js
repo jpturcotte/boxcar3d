@@ -63,6 +63,11 @@ const W = 0.2; // wheel width (m)
 const RHO = 800; // wheel density (kg/m³)
 const R_SMALL = 0.3;
 const R_LARGE = 0.45; // inertia ratio (0.45/0.3)^4 ≈ 5.06 at equal width/density
+// NOTE (per-wheel surface-speed PR): the shipped adapter now derives a
+// PER-WHEEL target ω_i = −targetWheelSurfaceSpeed/radius_i and feeds this
+// same gain shape (driveMotorForWheel). The raw-level constants here are
+// this instrument's own declared literals — the engine-level MotorModel
+// ruling they lock is unchanged.
 const TARGET = -10; // rad/s about local +Z — the forward-drive sign (see sign test)
 const TORQUE = 100; // intended stall torque (N·m) per driven wheel
 const gainFor = (torque, target) => torque / Math.abs(target); // the S0 conversion under test

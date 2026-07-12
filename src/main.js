@@ -200,9 +200,11 @@ async function boot() {
   // the s0/s1-kernel fixture-family proofs): a rigid S0 front axle and a
   // sprung S1 rear axle on the low spine frame the S0 dev build tuned
   // (power 1 ⇒ full 500 N·m budget, wheel r 0.4 m, ~267 kg chassis,
-  // thrust/weight ~23% — under ~6% stalls on the start-blend grade, and
-  // mixed radii under the shared MOTOR_TARGET_ANGVEL fight each other; both
-  // measured, 2026-07-10). Rear suspension genes: k ≈ 17.8 kN/m (gene 0.33),
+  // thrust/weight ~23% — under ~6% stalls on the start-blend grade, measured
+  // 2026-07-10; the old shared-target mixed-radius fight is CLOSED by the
+  // per-wheel surface-speed law — these r 0.4 wheels now run ω = −5/0.4 =
+  // −12.5 rad/s, no-load surface speed 5 m/s, was the shared −10 rad/s).
+  // Rear suspension genes: k ≈ 17.8 kN/m (gene 0.33),
   // c ≈ 500 N·s/m (0.1), travel 0.3 m (0.75), rest 0.18 m (0.29) — about
   // 0.08 m of static sag under the ~1.3 kN rear corner load, mid-travel
   // margins both ways.

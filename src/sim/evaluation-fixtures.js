@@ -8,7 +8,7 @@
 // copies untouched: coupling the dev scene's tuning to a locked fixture would
 // let a cosmetic dev-scene tweak invalidate golden digests, and vice versa.
 // A fixture's `version` bumps on ANY change to its genes, terrain, spawn,
-// step count, or targetAngvel — the golden locks in evaluation-locks.js bind
+// step count, or targetWheelSurfaceSpeed — the golden locks in evaluation-locks.js bind
 // to it.
 //
 // Seeds are fresh and declared (20260708–14 were taken by earlier locks and
@@ -61,7 +61,7 @@ function buildGenotypeA() {
 
 export const FIXTURE_A = Object.freeze({
   name: 'eval-a-s0-flat',
-  version: 1,
+  version: 2, // v2: the per-wheel surface-speed drive law (intended physics-semantic change)
   description: 'Ordinary 4-wheel all-S0 vehicle driving an exactly-flat declared pad — the cheapest rigid-kernel baseline.',
   buildGenotype: buildGenotypeA,
   terrainConfig: Object.freeze({
@@ -74,7 +74,7 @@ export const FIXTURE_A = Object.freeze({
     mudCoverage: 0,
   }),
   spawn: freezeSpawn({ x: -45, y: 0.52, z: 0 }), // max wheel radius 0.5 + 0.02 clearance
-  targetAngvel: -10, // == MOTOR_TARGET_ANGVEL, declared as a literal so the fixture is self-contained
+  targetWheelSurfaceSpeed: 5, // == MOTOR_TARGET_WHEEL_SURFACE_SPEED, declared as a literal so the fixture is self-contained; per-wheel ω = −5/r (r = 0.49999999999999994 → −10.000000000000002, 1 f64 ulp off the old shared −10)
   maxSteps: 600,
   expected: Object.freeze({
     bodies: 5, // chassis + 4 S0 wheels
@@ -125,7 +125,7 @@ function buildGenotypeB() {
 
 export const FIXTURE_B = Object.freeze({
   name: 'eval-b-mixed-composite',
-  version: 1,
+  version: 2, // v2: the per-wheel surface-speed drive law (intended physics-semantic change)
   description: 'Mixed S0-front/S1-rear vehicle on the full composite corridor (craters, features, zones all on) — the terrain-path and mixed-dispatch gate.',
   buildGenotype: buildGenotypeB,
   terrainConfig: Object.freeze({
@@ -135,7 +135,7 @@ export const FIXTURE_B = Object.freeze({
     // Every other knob DELIBERATELY left at TERRAIN_DEFAULTS — composite on.
   }),
   spawn: freezeSpawn({ x: -44, y: 0.6, z: 0 }), // rear S1 drop 0.5805 (coord 0.1805 + r 0.4) + 0.0195 clearance
-  targetAngvel: -10,
+  targetWheelSurfaceSpeed: 5, // per-wheel ω = −5/0.4 = −12.5 rad/s (was the shared −10)
   maxSteps: 900,
   expected: Object.freeze({
     bodies: 7, // chassis + 2 S0 wheels + 2 hubs + 2 S1 wheels
@@ -176,7 +176,7 @@ function buildGenotypeC() {
 
 export const FIXTURE_C = Object.freeze({
   name: 'eval-c-max-s1',
-  version: 1,
+  version: 2, // v2: the per-wheel surface-speed drive law (intended physics-semantic change)
   description: 'Maximum legal topology — 6 paired S1 axles (25 bodies / 24 joints / 12 stations) on a flat declared pad; the structural-cost ceiling fixture.',
   buildGenotype: buildGenotypeC,
   terrainConfig: Object.freeze({
@@ -189,7 +189,7 @@ export const FIXTURE_C = Object.freeze({
     mudCoverage: 0,
   }),
   spawn: freezeSpawn({ x: -45, y: 0.64, z: 0 }), // wheel drop 0.62 (preload coord 0.2 + r 0.42) + 0.02 clearance
-  targetAngvel: -10,
+  targetWheelSurfaceSpeed: 5, // per-wheel ω = −5/0.42 ≈ −11.905 rad/s (was the shared −10)
   maxSteps: 600,
   expected: Object.freeze({
     bodies: 25, // chassis + 12 hubs + 12 wheels
@@ -224,7 +224,7 @@ export function evaluationOptionsFor(fixture, {
       position: { ...fixture.spawn.position },
       rotation: { ...fixture.spawn.rotation },
     },
-    targetAngvel: fixture.targetAngvel,
+    targetWheelSurfaceSpeed: fixture.targetWheelSurfaceSpeed,
   }));
   const options = {
     terrain: { ...fixture.terrainConfig },

@@ -636,20 +636,27 @@ measured; every earlier locked fingerprint is byte-identical:**
   (6) `profilerEnabled` does not change the digest (semantic
   non-interference — cost is measured separately, never inferred).
 - **The cost baseline (`npm run bench:physics`, reference machine:
-  i7-14650HX, Windows 11, Node v22.19.0, 2026-07-11 — machine-specific,
-  never a package property; full table in
-  `docs/bench-physics-reference-2026-07-11.md`):** the deterministic
-  flavor's stepping tax is ≈1.0–1.12× at steady-state high-vehicle rows
-  (fixture C 1.00/1.01/1.10/1.12; fixture B 1.03–1.10) and *faster* on
-  the flat control workload (0.77–0.87×) — the 1.5–1.7× fixture-A rows at
-  1–20 vehicles are fixed-cost/JIT noise on 40–60 ms measurements, NOT a
-  stepping tax; the digest instrument adds 1.00–1.12× (negligible); the
+  i7-14650HX, Windows 11, Node v22.19.0, 2026-07-11, 5 paired samples —
+  machine-specific, never a package property; full table in
+  `docs/bench-physics-reference-2026-07-11.md`):** measured on a REAL
+  composite corridor (a benchmark-owned PRINCIPAL_TERRAIN, not the flat
+  fixture terrain) with PAIRED interleaved sampling (arms back-to-back,
+  order alternated, median of per-pair ratios). The deterministic
+  flavor's stepping tax is a consistent **≈1.0–1.13×** on BOTH composite
+  (0.98–1.13×) and flat (1.00–1.10×) terrain — the paired method removed
+  the earlier unpaired run's spurious "faster on flat" (0.77–0.87×)
+  artifact, so the honest tax is small and uniform. Digest instrument
+  overhead **1.05–1.07×** (tight); profiler overhead ~0.98–1.03×
+  (within noise). Max-topology cost, flat vs composite distinguished
+  (fixture C): at 50 vehicles ≈20.8 ms/step composite vs ≈29.2 ms flat;
+  at 100 vehicles ≈80 vs ≈92 ms — the flat number is HIGHER because a
+  fully-active fleet (driving, continuous contacts all 600 steps) is the
+  true worst case, so structural cost dominates terrain complexity. The
   50-vehicle/60-FPS goal (16.7 ms/step) is met by ordinary A/B fixtures
-  (≈5–6 ms at 50 vehicles) but NOT by 50 worst-case-max-topology
-  vehicles (fixture C ≈26 ms default / ≈29 ms deterministic; 100 vehicles
-  ≈92/103 ms) — an input to worker sharding and population composition,
-  recorded not remediated. Physics cost only (explicit render-budget
-  caveat; this PR does not benchmark rendering).
+  (≈3.0–3.7 ms at 50 vehicles) but NOT by 50 max-topology vehicles on
+  either terrain — an input to worker sharding and population
+  composition, recorded not remediated. Physics cost only (explicit
+  render-budget caveat; this PR does not benchmark rendering).
 - **All-flavors f32 finding:** every one of fixture A's 39,065 traced
   floats is exactly f32-representable (`Math.fround(v) === v`) — the
   engine's exposed state is f32-backed; the trace keeps lossless f64
@@ -657,10 +664,10 @@ measured; every earlier locked fingerprint is byte-identical:**
   record the fields).
 
 Next — **zone material response**, re-derived (not inherited) against the
-measured state: the deterministic tax measured ≈1.0–1.12× at steady state
-(faster on flat ground), so the deterministic flavor is affordable as the
-eval default and no architecture rethink fires; Node/Chromium agreed
-bit-exact on the first
+measured state: the deterministic tax measured a consistent ≈1.0–1.13×
+(paired sampling, composite AND flat), so the deterministic flavor is
+affordable as the eval default and no architecture rethink fires;
+Node/Chromium agreed bit-exact on the first
 run, so no divergence diagnosis queue exists; the bench showed no
 population-scale architecture risk at 100 vehicles (worst rows within
 budget); and S2 has no evidence-based reason to jump the queue (it stays

@@ -19,13 +19,18 @@ topology — and reproduce **bit-exact across Ubuntu, Windows, and macOS
 (Node 22) and pinned Chromium 149** (`npm run test:determinism`,
 `npm run test:browser`; the browser gate transitively proves the whole
 terrain path — noise, craters, zones, feature ray-seating — identical in
-Chromium). `npm run bench:physics` measures the cost baseline with the
-profiler off: on the reference machine (i7-14650HX, Windows 11, Node 22,
-2026-07-11) the deterministic flavor's stepping tax is ≈1.0–1.12× the
-default flavor at steady state (and *faster* on flat ground), the
-determinism-trace instrument adds ≤1.12×, and 50 vehicles of the
-worst-case 25-body fixture step at ≈26 ms (default) / ≈29 ms
-(deterministic) per world-step — the full labelled table is in
+Chromium). `npm run bench:physics` measures the cost baseline on a real composite
+corridor with the profiler off, using paired interleaved sampling (arms
+run back-to-back, order alternated, median of per-pair ratios — which
+cancels the run-order noise that unpaired medians cannot): on the
+reference machine (i7-14650HX, Windows 11, Node 22, 2026-07-11) the
+deterministic flavor's stepping tax is a consistent **≈1.0–1.13×** on
+both composite and flat terrain, the determinism-trace instrument adds
+**1.05–1.07×**, and 50 vehicles of the worst-case 25-body max-topology
+fixture step at ≈21 ms/step on composite (≈29 ms on flat — the fully
+active flat fleet is the true worst case) — comfortably affordable for
+ordinary fixtures (≈3–3.7 ms/step at 50 vehicles) but over the 60-FPS
+budget for 50 max-topology vehicles. The full labelled table is in
 [`docs/bench-physics-reference-2026-07-11.md`](docs/bench-physics-reference-2026-07-11.md)
 (machine-specific numbers, never a package property). Measured engine findings this PR recorded: `world.timestep`
 reads back `Math.fround(1/60)` (the engine stores f32); the profiler's

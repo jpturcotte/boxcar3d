@@ -397,7 +397,11 @@ after creation:**
   `S0_MOTOR_MODEL_NAME = 'ForceBased'` (symbolic, resolved per flavor,
   fail-loud if missing), `MOTOR_TARGET_ANGVEL = -10` rad/s (NEGATIVE about
   local +Z drives +X — contact-point kinematics, locked by the sign test;
-  magnitude is the SALVAGE legacy default), `WHEEL_FRICTION = 1` (explicit —
+  magnitude is the SALVAGE legacy default) **[SUPERSEDED — the per-wheel
+  surface-speed PR replaced this shared constant with
+  `MOTOR_TARGET_WHEEL_SURFACE_SPEED = 5` m/s and per-wheel targets
+  ω_i = −speed/radius_i; see that PR's block. The ForceBased gain
+  conversion and the sign lock stand]**, `WHEEL_FRICTION = 1` (explicit —
   Rapier's silent default is 0.5). Every motor gain
   (`driveTorque / |targetAngvel|`) is derived and validated pre-world: a
   zero target with any motorized wheel is rejected, AND any non-finite gain
@@ -426,8 +430,14 @@ after creation:**
   undriven vehicle holds still on cuboid ground (on the heightfield pad the
   witness undriven twin DID sleep at rest). (2) Mixed-radius wheels under
   the single shared `MOTOR_TARGET_ANGVEL` fight each other (disagreeing
-  no-load surface speeds — the dev scene's old fork(9) pick cannot move);
-  thrust/weight under ~6% stalls on the start-blend grade at gravity 20.
+  no-load surface speeds — the dev scene's old fork(9) pick cannot move)
+  **[RESOLVED — the per-wheel surface-speed PR: each wheel derives its own
+  target ω_i = −targetWheelSurfaceSpeed/radius_i from one no-load surface
+  speed, so every wheel agrees on contact-surface speed by construction;
+  measured by the mixed-radius drive witness and locked as fixture D]**;
+  thrust/weight under ~6% stalls on the start-blend grade at gravity 20
+  (a GRADE limit, distinct from and NOT resolved by the drive law — stall
+  thrust is driveTorque/r, preserved by design; still stands).
   The dev scene now drives a declared hand-built all-S0 build (~23%
   thrust/weight) ~46 m into the composite terrain, wheels rendered from the
   same IR dims and synced as body rotation × `WHEEL_COLLIDER_ROTATION`.
@@ -518,7 +528,9 @@ flavors, byte-identical at the declared seeds:**
   drift is UNCHANGED by S1 (undriven all-S1 on a cuboid creeps at
   −0.327 m/s ≈ the S0 0.33 finding; a preloaded suspension pressed into
   its stop also never sleeps — residual creep 0.565 m/s); the
-  mixed-radius shared-target conflict persists under suspension travel;
+  mixed-radius shared-target conflict persists under suspension travel
+  **[RESOLVED — the per-wheel surface-speed PR; witnessed on flat ground:
+  the r 0.5/0.42 build's small wheels no longer drag the big ones]**;
   the R5-cap residual overlap stays stable with S1 modules; the max legal
   topology (6 paired S1 axles = 25 bodies / 24 joints) is stable and
   drives under the existing chassis solver-iteration policy.
@@ -536,7 +548,7 @@ representative determinism/performance instrument (phase0-refresh §6 item
 measured; every earlier locked fingerprint is byte-identical:**
 - **The canonical runner (`src/sim/evaluation.js`, wall-clock-free):**
   `runEvaluation({deterministic, terrain (must carry its own seed),
-  vehicles: [{ir, spawn, targetAngvel?, wheelFriction?}], maxSteps,
+  vehicles: [{ir, spawn, targetWheelSurfaceSpeed?, wheelFriction?}], maxSteps,
   termination:'maxSteps', trace:{mode, checkpointInterval?}, profile,
   hooks:{onPhase}})` owns createPhysics, terrain (+ the one statics
   BVH pre-step), realization, the fixed-step loop, per-step capture,
@@ -663,29 +675,87 @@ measured; every earlier locked fingerprint is byte-identical:**
   encoding regardless (pre-ruled: if the tooth ever fails, keep f64 and
   record the fields).
 
-Next — **zone material response**, re-derived (not inherited) against the
-measured state: the deterministic tax measured a consistent ≈1.0–1.13×
-(paired sampling, composite AND flat), so the deterministic flavor is
-affordable as the eval default and no architecture rethink fires;
-Node/Chromium agreed bit-exact on the first
-run, so no divergence diagnosis queue exists; the bench showed no
-population-scale architecture risk at 100 vehicles (worst rows within
-budget); and S2 has no evidence-based reason to jump the queue (it stays
-realization-rejected, which only the seeder or S2 itself unblocks — after
-zones). Zone response is cheap, isolated (`zoneAt(x, z, terrain)` is
-ready), gives wheel count/width their environmental trade-off, and the
-NEW instruments measure it for free: fixture B already runs the zone grid
-under the determinism gate, so a zone-response PR extends the runner with
-per-zone friction/rolling-resistance response, re-locks B deliberately
-(the documented re-lock workflow), and benches its incremental cost.
-After that: S2 trailing arms (S2 must land before — or the population
-seeder must mask `suspType` away from — any GA PR), then the GA.
-**Explicitly deferred:** GA operators (spec §3.3) + the population seeder
-(symmetry default-on bias lives there), worker sharding with the
-1-vs-4-workers equality test (the ghost-isolation bit-equality lock is
-its physics precondition, now in place), full replay closure (the trace
-instrument exists; record→re-run→compare a GA session does not yet), and
-the solver-pump / mixed-radius / residual-overlap rulings (unchanged).
-Open ruling question carried from PR #10 review: are visually-overlapping
-wheels acceptable for evolution? Physics ignores them (collision-inert,
-stable, no detach), but they read as one thick wheel on screen.
+**The per-wheel surface-speed drive PR landed — the shared `targetAngvel`
+(−10 rad/s) option is replaced by per-wheel `targetWheelSurfaceSpeed`
+(default 5 m/s): each driven wheel derives its OWN no-load target
+ω_i = −targetWheelSurfaceSpeed/radius_i and gain_i = driveTorque_i·(1/|ω_i|),
+so unequal radii agree on contact-surface speed instead of fighting a
+phantom driveshaft. What is preserved EXACTLY is the [V10] stall-torque
+contract (stall magnitude = driveTorque_i verbatim) and the global
+stall-torque budget split — NOT mechanical power (at a common surface speed
+smaller wheels run larger ω, so equal stall torques imply different peak
+powers). No genotype/IR version change. "Surface speed" is the wheel's
+no-load CIRCUMFERENTIAL speed (rolling-without-slip); actual vehicle speed
+differs under slip, terrain, suspension motion, collisions, and solver
+behavior:**
+- **The law + rename (`src/sim/physics/adapter.js`):** the pure
+  `driveMotorForWheel(targetWheelSurfaceSpeed, wheel)` derives {ω, gain}
+  (the reciprocal-MULTIPLY shape is load-bearing — at the r 0.5 identity
+  corner it reproduces the legacy gain bits for every torque; a divide does
+  not). `validateVehicleIR` builds a per-wheel `motorPlan` Map (ω checked
+  before gain — a huge speed overflows ω while the gain collapses to 0; a
+  denormal speed overflows the gain); the one shared S0/S1 config site does
+  `configureMotorVelocity(plan.omega, plan.gain)`. `MOTOR_TARGET_WHEEL_SURFACE_SPEED
+  = 5` (= the legacy 10 rad/s × the canonical 0.5 m wheel, confirmed by the
+  preflight matrix). Migration tombstones at BOTH public seams (the adapter
+  and the evaluation runner) reject the removed `targetAngvel` with the
+  rename diagnosis. Public surface renamed through realizeVehicle/
+  realizeS0Vehicle, the runner (`VEHICLE_KEYS`), the fixtures, and the dev
+  scene.
+- **Behavioral witnesses** (`tests/surface-speed-drive.test.js`, both
+  flavors, seed 20260720, declared mixed r 0.3/0.6): airborne per-wheel spin
+  through the shipped realizer — each wheel to ITS OWN −5/r (chassis held;
+  a free assembly tumbles under the reaction torque), targets differ 2.02×,
+  |ω·r| = 5 for both, sign flips under −5; grounded per-wheel law
+  (dx +37.7, cruise 4.24 m/s, every wheel under its own target) vs the EXACT
+  old shared-ω law on the identical twin (dx +30.2: small wheels dragged PAST
+  −10 — motor braking — while big wheels lag at −5.6, the fight signature);
+  a small-radius/high-speed stability corner (ω −25, r 0.3 at 7.5 m/s).
+  s0-drive reproduces its numbers unchanged (r ≈ 0.5 → f32 −10); s1-drive
+  pins its legacy operating points (3 m/s at r 0.3, 4.2 at r 0.42, both
+  → exactly −10) and re-measures the mixed-radius ledger case — separating a
+  law-invariant GRADE stall (stands) from the shared-target CONFLICT (closed,
+  witnessed on flat ground: old-law cruise 4.43 m/s vs new 4.89 m/s).
+- **Deliberate golden re-lock** (cause: intended physics-semantic change;
+  Node + pinned Chromium agreed on every digest and checkpoint state on the
+  first run): A `5a219735` REPRODUCED (its wheels decode to r
+  0.49999999999999994 → ω −10.000000000000002, 1 f64 ulp off −10, below the
+  engine's f32 state resolution) — only its fixtureVersion bumped 1→2;
+  B `65f9e2fd → 02a80181`, C `bc71517b → 6b83729e`, both first-diverging at
+  step 1 with step 0 (spawn placement) identical. **Fixture D**
+  (`eval-d-mixed-radius-flat`, seed 20260719, digest `e2fc7625`) is the
+  first LOCKED fixture with genuinely mixed radii (0.3/0.6 m, ω −16.667/
+  −8.333, gains 3.75/7.5 from equal 62.5 N·m stall torques) — A/B/C are all
+  uniform-radius and only prove ONE target per vehicle; D puts the per-wheel
+  law inside the Node/Chromium determinism gate. The bench deliberately
+  stays A/B/C (D adds a semantic path, not a cost class; smoke green).
+- **Deferred idea (recorded, out of scope):** evolvable per-genotype
+  surface speed — a gene — is a GA-era experiment; the target stays a
+  realizer option + policy constant, never IR or a gene, per this ruling.
+- Full suite green both flavors; the noise/terrain/boulder-hull/`24cd0dd5`/
+  `39bcd6c4` fingerprints byte-identical; dev scene now drives ~56 m of the
+  composite corridor (was ~53 m — the r 0.4 wheels' no-load surface speed
+  rose 4→5 m/s).
+
+Next — **GA Phase 1a: headless deterministic evolution** (this PR's handoff
+per the maintainer re-prioritization; SUPERSEDES the prior zone-response
+recommendation — GA is the critical path and the drive law was its first
+prerequisite). The canonical runner, the golden gate, the ghost-isolation
+bit-equality lock, and the affordable ≈1.0–1.13× deterministic tax exist
+precisely so the evolution loop can be built on them — that loop is now the
+missing piece. Phase 1a = the population seeder (symmetry default-on bias
+lives there; it MUST mask `suspType` away from S2 — that mask, NOT landing
+S2, is how the S2-before-GA rule is satisfied) + GA operators (spec §3.3) +
+a generational loop through `runEvaluation`, fitness = forward distance,
+sim-time pure. **Zone material response AND S2 trailing arms are explicitly
+deferred behind Phase 1a** (zone response stays cheap and ready — `zoneAt`
+is pure, fixture B already carries the zone grid through the gate; S2
+unblocks via its own PR or stays masked). **Explicitly deferred (unchanged):**
+worker sharding with the 1-vs-4-workers equality test (the ghost-isolation
+lock is its precondition, in place), full replay closure (record→re-run→
+compare a GA session does not yet exist), and the solver-pump / residual-
+overlap rulings (unchanged). The **mixed-radius ruling is CLOSED** by this
+PR. Open ruling question carried from PR #10 review: are visually-
+overlapping wheels acceptable for evolution? Physics ignores them
+(collision-inert, stable, no detach), but they read as one thick wheel on
+screen.

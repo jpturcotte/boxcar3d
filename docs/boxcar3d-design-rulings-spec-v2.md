@@ -67,10 +67,10 @@
 |---|---|
 | Frame nodes/beams | 1 `RigidBodyDesc.dynamic()` + compound `cuboid`/`convexHull` colliders; CCD on |
 | Wheel | `cylinder` collider on its own body, density from gene |
-| S0 | `JointData.revolute` (lateral axis) + `configureMotorVelocity(targetVel, gain)` if driven (see Torque share for `gain`) |
+| S0 | `JointData.revolute` (lateral axis) + `configureMotorVelocity(targetVelᵢ, gainᵢ)` if driven — a PER-WHEEL target (see Torque share) |
 | S1 | `JointData.prismatic` (vehicle-local down, chassis→HUB BODY, `configureMotorPosition(restLength, stiffness, damping)` + `setLimits(0, travel)`) + hub→wheel revolute; the hub is a collision-inert policy cylinder (HUB_GROUPS, dual CCD) whose mass/inertia come from the per-wheel IR hub record |
 | S2 | arm body + sprung revolute (motor-position) + wheel revolute |
-| Torque share | per wheel: `driveTorque = share × P` (the wheel's stall torque). Rapier's `configureMotorVelocity(targetVel, factor)` takes a velocity-servo GAIN, not a torque ([V10]), so the realizer passes `gain = driveTorque / |targetVel|` — the stall MAGNITUDE is then `gain × |targetVel| = driveTorque` exactly, falling to zero at the no-load `targetVel`. Passing `share × P` directly would be a gain off by a factor of `|targetVel|`, silently rescaling thrust. |
+| Torque share | per wheel: `driveTorque = share × P` (the wheel's stall torque). Rapier's `configureMotorVelocity(targetVel, factor)` takes a velocity-servo GAIN, not a torque ([V10]). The drive target is PER WHEEL, derived from ONE no-load wheel-surface-speed setting: `targetVelᵢ = −targetWheelSurfaceSpeed / radiusᵢ` (every driven wheel agrees on no-load SURFACE speed, so unequal radii do not fight), and the realizer passes `gainᵢ = driveTorqueᵢ / |targetVelᵢ|` — the stall MAGNITUDE is then `gainᵢ × |targetVelᵢ| = driveTorqueᵢ` exactly, falling to zero at that wheel's own no-load `targetVelᵢ` (i.e. at the shared no-load ground speed). Passing `share × P` directly would be a gain off by a factor of `|targetVel|`, silently rescaling thrust. What this preserves exactly is the stall-TORQUE budget and its split — NOT mechanical power (a common surface speed gives smaller wheels larger `|targetVelᵢ|`, so equal stall torques imply different peak powers). |
 
 ---
 

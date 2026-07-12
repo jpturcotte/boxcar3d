@@ -33,8 +33,9 @@ const TORQUE = 125;
 describe('surface-speed law (pure)', () => {
   test('identity corner reproduces the legacy gain bits exactly (r = 0.5, speed 5)', () => {
     // −5/0.5 === −10 exactly (division by a power of two), so 1/|ω| is the
-    // same f64 as the legacy 1/|MOTOR_TARGET_ANGVEL| and the reciprocal-
-    // MULTIPLY gain shape reproduces the legacy bits for EVERY torque. The
+    // same f64 as the legacy shared-target reciprocal 1/|−10| and the
+    // reciprocal-MULTIPLY gain shape reproduces the legacy bits for EVERY
+    // torque. The
     // decoder-emitted r = 0.49999999999999994 gives ω = −10.000000000000002
     // (1 f64 ulp off) — that path is deliberately NOT asserted here; the
     // golden gate owns it (Gate-3 classification: all fixtures re-lock).

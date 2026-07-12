@@ -78,19 +78,21 @@ describe('surface-speed law (pure)', () => {
     expect(Object.is(corner.omega, -10)).toBe(true);
   });
 
-  test('out-of-domain inputs surface as non-finite fields — the validator owns fail-loud, ω checked before gain', () => {
+  test('out-of-domain inputs surface as non-finite fields — a non-finite ω POISONS the gain, so no gain-only consumer can miss it', () => {
     // Denormal speeds: ω stays finite-denormal, 1/|ω| overflows ⇒ gain Infinity.
     for (const gs of [Number.MIN_VALUE, 1e-320]) {
       const p = driveMotorForWheel(gs, { radius: 0.5, driveTorque: TORQUE });
       expect(Number.isFinite(p.omega), `gs ${gs} omega`).toBe(true);
       expect(p.gain, `gs ${gs}`).toBe(Infinity);
     }
-    // Huge speed over a small radius: ω overflows to −Infinity while the gain
-    // COLLAPSES to 0 (t × 1/Infinity) — the reason the validator must reject
-    // non-finite ω BEFORE looking at the gain.
+    // Huge speed over a small radius: ω overflows to −Infinity. The raw math
+    // would COLLAPSE the gain to a plausible finite 0 (t × 1/Infinity) — the
+    // helper poisons it to NaN by contract so a consumer validating EITHER
+    // field fails loud (the shipped validator still rejects ω first for the
+    // sharper diagnostic).
     const huge = driveMotorForWheel(1e308, { radius: 0.2, driveTorque: TORQUE });
     expect(huge.omega).toBe(-Infinity);
-    expect(huge.gain).toBe(0);
+    expect(Number.isNaN(huge.gain)).toBe(true);
     // Zero: ω is −0 (finite), gain Infinity — the validator's dedicated
     // zero-with-motors rule fires first (and −0 === 0 covers a −0 option).
     const zero = driveMotorForWheel(0, { radius: 0.5, driveTorque: TORQUE });

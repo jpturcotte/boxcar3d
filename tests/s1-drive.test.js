@@ -492,8 +492,10 @@ describe.each([
     expect(run.finite, diag).toBe(true);
     expect(run.jointsValid, diag).toBe(true);
     expect(run.maxAnchorErr, diag).toBeLessThan(ANCHOR_BAND); // measured 1.4e-3
-    expect(run.dx, diag).toBeGreaterThan(5); // measured +26.41 — not required to drive WELL, but it does
-    expect(Math.abs(run.z), diag).toBeLessThan(3); // asymmetric drift, measured 0.10
+    // Runs the new 5 m/s default (r 0.3 wheels ⇒ ω ≈ −16.7, was the shared
+    // −10): re-measured for the per-wheel surface-speed PR, both flavors.
+    expect(run.dx, diag).toBeGreaterThan(15); // measured +41.98 (was +26.41 at the old shared target)
+    expect(Math.abs(run.z), diag).toBeLessThan(3); // asymmetric drift, measured 1.93 (was 0.10 — faster wheels drift more; band unchanged)
     expect(run.minQ, diag).toBeGreaterThan(-0.05);
     expect(run.maxQ, diag).toBeLessThan(0.42);
   });

@@ -422,12 +422,16 @@ export const MOTOR_TARGET_WHEEL_SURFACE_SPEED = 5;
 // measured). Stall MAGNITUDE stays
 // driveTorque exactly, signed by sign(ω) — the [V10] contract per wheel.
 // Out-of-domain inputs surface as NON-FINITE fields, never throws — the
-// realizer's validator owns the fail-loud messages, and it must check ω
-// BEFORE gain: a huge speed over a small radius overflows ω to ±Infinity
-// while the gain COLLAPSES to 0 (t × 1/Infinity), and a denormal speed
-// keeps ω finite-denormal while 1/|ω| overflows the gain to Infinity.
+// realizer's validator owns the fail-loud messages. CONTRACT: a non-finite
+// ω POISONS the gain to NaN, because the raw math would collapse it to a
+// plausible finite 0 (t × 1/Infinity) and a consumer validating the gain
+// alone would accept a broken plan; with the poison, checking EITHER field
+// fails loud. (A denormal speed keeps ω finite-denormal while 1/|ω|
+// overflows the gain to Infinity — the other overflow direction.) The
+// validator still rejects ω first for the sharper diagnostic.
 export function driveMotorForWheel(targetWheelSurfaceSpeed, wheel) {
   const omega = -targetWheelSurfaceSpeed / wheel.radius;
+  if (!Number.isFinite(omega)) return { omega, gain: NaN };
   return { omega, gain: wheel.driveTorque * (1 / Math.abs(omega)) };
 }
 
@@ -821,8 +825,10 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
   // only the joint the motor lands on differs). Rejecting only speed === 0
   // is not enough: a finite denormal-tiny speed keeps ω_i finite while
   // 1/|ω_i| overflows the gain to Infinity, and a huge speed over a small
-  // radius overflows ω_i itself (while the gain COLLAPSES to 0 — so ω_i is
-  // checked FIRST). Both must fail loud HERE, never reach
+  // radius overflows ω_i itself (ω_i is checked FIRST for the sharper
+  // message; the helper also poisons the gain to NaN whenever ω_i is
+  // non-finite, so no gain-only consumer can miss it). Both must fail loud
+  // HERE, never reach
   // configureMotorVelocity after bodies/joints exist. The validated plans
   // are stored so the construction loop consumes them (one source, never
   // recomputed). No magnitude floor on finite values: a large finite gain
@@ -862,7 +868,10 @@ function validateVehicleIR(RAPIER, ir, options, { label, s0Only }) {
       }
     }
   }
-  return { label, position, rotation, linvel, targetWheelSurfaceSpeed, wheelFriction, motorModel, springModel, motorPlan };
+  // targetWheelSurfaceSpeed is deliberately NOT returned: the effective
+  // per-wheel targets live in motorPlan (plan.omega, rad/s) — returning the
+  // m/s speed too would invite a reader to mistake it for the motor target.
+  return { label, position, rotation, linvel, wheelFriction, motorModel, springModel, motorPlan };
 }
 
 // Transactional construction over a validated plan. Ledger discipline: every

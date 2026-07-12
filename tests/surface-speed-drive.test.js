@@ -174,7 +174,6 @@ async function padRun(deterministic, ir, { x = SPAWN_X, steps = STEPS, targetWhe
     let maxSpeed = 0;
     let minX = Infinity;
     let maxX = -Infinity;
-    const samples = {};
     for (let i = 1; i <= steps; i++) {
       world.step();
       const cx = rec.chassis.body.translation().x;
@@ -196,7 +195,6 @@ async function padRun(deterministic, ir, { x = SPAWN_X, steps = STEPS, targetWhe
         const v = rec.chassis.body.linvel();
         maxSpeed = Math.max(maxSpeed, Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
       }
-      if (i === 15) samples.vx15 = rec.chassis.body.linvel().x;
     }
     const p = rec.chassis.body.translation();
     const ray = new RAPIER.Ray({ x: p.x, y: 60, z: p.z }, { x: 0, y: -1, z: 0 });
@@ -213,7 +211,6 @@ async function padRun(deterministic, ir, { x = SPAWN_X, steps = STEPS, targetWhe
       maxSpeed,
       minX,
       maxX,
-      samples,
       wheels: rec.wheels.map((st) => ({
         radius: st.irWheel.radius,
         omegaZ: st.wheel.body.angvel().z,
@@ -254,7 +251,11 @@ describe.each([
     const diag = JSON.stringify({ fwd, rev });
 
     for (const st of fwd) {
-      const target = driveMotorForWheel(5, { radius: st.radius, driveTorque: 1 }).omega;
+      // The oracle is a LITERAL derivation (−5/r), deliberately independent
+      // of the driveMotorForWheel helper the realizer consumes — the same
+      // formula written twice is a cross-check, the helper called twice is
+      // circular.
+      const target = -5 / st.radius;
       // Each station near ITS OWN target (measured worst 0.94% off, the r
       // 0.6 wheels at 240 steps; band 3%) and spinning the forward sign.
       expect(st.omegaRel, diag).toBeLessThan(0);
@@ -309,9 +310,10 @@ describe.each([
     expect(neu.dx - undriven.dx, diag).toBeGreaterThan(25);
     // Under the per-wheel law NO wheel is dragged past its own no-load
     // target — every motor still drives (or idles), none fights the others
-    // (measured 0.88× / 0.84× of target under cruise load; slack 5%).
+    // (measured 0.88× / 0.84× of target under cruise load; slack 5%). The
+    // oracle is the literal −5/r, independent of the SUT helper.
     for (const w of neu.wheels) {
-      const target = driveMotorForWheel(5, { radius: w.radius, driveTorque: 1 }).omega;
+      const target = -5 / w.radius;
       expect(Math.abs(w.omegaZ), diag).toBeLessThan(Math.abs(target) * 1.05);
     }
     // THE CONFLICT, on the identical twin under the exact old law: the small

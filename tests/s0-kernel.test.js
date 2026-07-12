@@ -436,8 +436,9 @@ describe.each([
       // that passed the exact-zero guard but must fail loud BEFORE any
       // body/joint exists, never reach configureMotorVelocity. (The mirror
       // overflow — a huge speed over a small radius sends ω_i itself to
-      // ±Infinity while the gain collapses to 0 — is rejected by the ω
-      // check, which the validator runs FIRST.)
+      // ±Infinity — is rejected by the ω check, which the validator runs
+      // FIRST for the sharper message; the helper also poisons the gain to
+      // NaN whenever ω is non-finite, so neither check can be skipped.)
       for (const tiny of [Number.MIN_VALUE, 1e-320]) {
         expect(() => realizeS0Vehicle(RAPIER, world, ir, { targetWheelSurfaceSpeed: tiny }))
           .toThrow(/gain .* is not finite|too small/);

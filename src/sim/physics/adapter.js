@@ -396,6 +396,44 @@ export const S0_MOTOR_MODEL_NAME = 'ForceBased';
 // gain conversion above, changing it does NOT rescale stall torque.
 export const MOTOR_TARGET_ANGVEL = -10;
 
+// Signed NO-LOAD wheel-surface speed (m/s) — the per-wheel drive-target
+// policy default. Each driven wheel derives its OWN angular target
+// ω_i = −targetWheelSurfaceSpeed / radius_i (driveMotorForWheel below), so
+// every driven wheel agrees on the no-load circumferential speed of its
+// contact surface (the rolling-without-slip reading — actual vehicle speed
+// differs under slip, terrain, suspension motion, collisions, and solver
+// behavior) instead of sharing one phantom-driveshaft ω. POSITIVE drives
+// +X; the minus sign lives in the derivation (axle along local +Z ⇒
+// forward needs ω < 0 — the s0-motor sign lock). Default 5 = the legacy
+// no-load target (10 rad/s) × the canonical 0.5 m wheel, confirmed by this
+// PR's preflight matrix. A no-load speed: by the gain conversion it never
+// rescales stall torque ([V10]) — the global stall-torque budget and its
+// per-wheel allocation are untouched.
+export const MOTOR_TARGET_WHEEL_SURFACE_SPEED = 5;
+
+// Per-wheel drive-motor derivation under the surface-speed law (pure, no
+// Rapier). A wheel of radius r meets the shared signed no-load SURFACE
+// speed (m/s, +X positive) by spinning at
+//     ω = −targetWheelSurfaceSpeed / radius     (rad/s about local +Z)
+// and its velocity-servo gain keeps the [V10] conversion SHAPE, fed the
+// per-wheel ω:
+//     gain = driveTorque × (1 / |ω|)
+// The reciprocal-MULTIPLY is load-bearing for bit-exactness: at the
+// pure-math identity corner (surface speed 5, radius 0.5) ω is exactly −10
+// and 1/|ω| is the same f64 as the legacy 1/|MOTOR_TARGET_ANGVEL|, so the
+// gain reproduces the legacy bits for EVERY driveTorque; a direct divide
+// does not (3/10 ≠ 3·(1/10) in f64 — measured). Stall MAGNITUDE stays
+// driveTorque exactly, signed by sign(ω) — the [V10] contract per wheel.
+// Out-of-domain inputs surface as NON-FINITE fields, never throws — the
+// realizer's validator owns the fail-loud messages, and it must check ω
+// BEFORE gain: a huge speed over a small radius overflows ω to ±Infinity
+// while the gain COLLAPSES to 0 (t × 1/Infinity), and a denormal speed
+// keeps ω finite-denormal while 1/|ω| overflows the gain to Infinity.
+export function driveMotorForWheel(targetWheelSurfaceSpeed, wheel) {
+  const omega = -targetWheelSurfaceSpeed / wheel.radius;
+  return { omega, gain: wheel.driveTorque * (1 / Math.abs(omega)) };
+}
+
 // Firm-baseline wheel-contact friction. Explicit because it is load-bearing
 // for traction: Rapier's silent collider default is 0.5, and the corridor
 // floor ships friction 1 (TERRAIN_DEFAULTS.floorFriction) — the witness teeth

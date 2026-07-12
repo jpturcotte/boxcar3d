@@ -115,14 +115,35 @@ function mixedRadiusGenotype(patch = null) {
   return g;
 }
 
+// The MOTOR's OWN coordinate. Rapier's revolute motor drives the RELATIVE
+// angular velocity between its two bodies, projected on the joint axis
+// (the parent's local +Z, since the constraint keeps both bodies' axes
+// aligned) — NOT the wheel body's world ω_z. They differ whenever the
+// parent has angular velocity or the axle tilts off world +Z (chassis
+// pitch/roll/yaw; for S1 the hub co-rotates with the chassis through the
+// prismatic). The driving-vs-braking sign of a motor can ONLY be read from
+// this quantity; world ω_z is a diagnostic. Parent = chassis for S0, the
+// hub for S1 (its drive revolute is hub→wheel). Measured on flat ground the
+// correction here is ≤ 0.063 rad/s, but the old-law control's small wheels
+// sit at motor-relative −11.0 (only ~1 rad/s past the −10 target), so the
+// honest observable is load-bearing for the braking claim, not cosmetic.
+function motorRelativeOmega(st, chassisBody) {
+  const parent = st.suspensionType === 'S1' ? st.hub.body : chassisBody;
+  const axis = rotate(parent.rotation(), { x: 0, y: 0, z: 1 });
+  const w = st.wheel.body.angvel();
+  const p = parent.angvel();
+  return (w.x - p.x) * axis.x + (w.y - p.y) * axis.y + (w.z - p.z) * axis.z;
+}
+
 // Realize `ir` in an EMPTY world (no colliders anywhere) and measure each
-// wheel's spin RELATIVE to the chassis, projected on the chassis' CURRENT
-// local +Z via the independent rotate-oracle. RIG HOLD (pre-step, test-rig
-// configuration — the shipped per-wheel motor configuration under test is
-// untouched): a FREE assembly tumbles chaotically under the reaction torque
-// (see the header finding), so the chassis body is pinned after
-// realization — the s0-motor benchWheel discipline applied to the SHIPPED
-// motor config.
+// wheel's MOTOR-RELATIVE spin (motorRelativeOmega). RIG HOLD (pre-step,
+// test-rig configuration — the shipped per-wheel motor configuration under
+// test is untouched): a FREE assembly tumbles chaotically under the
+// reaction torque (see the header finding), so the chassis body is pinned
+// after realization — the s0-motor benchWheel discipline applied to the
+// SHIPPED motor config. (With the chassis Fixed its ω is 0, so here the
+// motor-relative quantity reduces to the wheel spin about the chassis axle
+// axis; the helper is used for one honest observable across all witnesses.)
 async function airborneRun(deterministic, ir, { speed } = {}) {
   const { RAPIER, world } = await createPhysics({ deterministic });
   try {
@@ -131,16 +152,10 @@ async function airborneRun(deterministic, ir, { speed } = {}) {
     const rec = realizeVehicle(RAPIER, world, ir, opts);
     rec.chassis.body.setBodyType(RAPIER.RigidBodyType.Fixed, true);
     for (let i = 0; i < AIRBORNE_STEPS; i++) world.step();
-    const cr = rec.chassis.body.rotation();
-    const axis = rotate(cr, { x: 0, y: 0, z: 1 });
-    const ca = rec.chassis.body.angvel();
-    return rec.wheels.map((st) => {
-      const wa = st.wheel.body.angvel();
-      return {
-        radius: st.irWheel.radius,
-        omegaRel: (wa.x - ca.x) * axis.x + (wa.y - ca.y) * axis.y + (wa.z - ca.z) * axis.z,
-      };
-    });
+    return rec.wheels.map((st) => ({
+      radius: st.irWheel.radius,
+      omegaRel: motorRelativeOmega(st, rec.chassis.body),
+    }));
   } finally {
     world.free();
   }
@@ -213,6 +228,9 @@ async function padRun(deterministic, ir, { x = SPAWN_X, steps = STEPS, targetWhe
       maxX,
       wheels: rec.wheels.map((st) => ({
         radius: st.irWheel.radius,
+        // motorOmega is the motor's OWN coordinate (drives/brakes sign);
+        // omegaZ is the raw world component, kept only as a diagnostic.
+        motorOmega: motorRelativeOmega(st, rec.chassis.body),
         omegaZ: st.wheel.body.angvel().z,
       })),
     };
@@ -309,22 +327,26 @@ describe.each([
     expect(Math.abs(undriven.dx), diag).toBeLessThan(5);
     expect(neu.dx - undriven.dx, diag).toBeGreaterThan(25);
     // Under the per-wheel law NO wheel is dragged past its own no-load
-    // target — every motor still drives (or idles), none fights the others
-    // (measured 0.88× / 0.84× of target under cruise load; slack 5%). The
-    // oracle is the literal −5/r, independent of the SUT helper.
+    // target — every motor still drives (or idles), none fights the others.
+    // Read from the MOTOR's own coordinate (motorRelativeOmega), not world
+    // ω_z; oracle is the literal −5/r, independent of the SUT helper
+    // (measured motor-relative 14.80/14.67 = 0.888× and 7.10/7.09 = 0.851×
+    // of target under cruise load; slack 5%).
     for (const w of neu.wheels) {
       const target = -5 / w.radius;
-      expect(Math.abs(w.omegaZ), diag).toBeLessThan(Math.abs(target) * 1.05);
+      expect(Math.abs(w.motorOmega), diag).toBeLessThan(Math.abs(target) * 1.05);
     }
-    // THE CONFLICT, on the identical twin under the exact old law: the small
-    // wheel is dragged PAST the shared −10 target (its motor BRAKES) while
-    // the big wheel runs far BELOW it (its motor drives) — opposing motor
-    // torques at cruise, the recorded fight signature (measured −11.10/
-    // −11.01 vs −5.58/−5.53; bands 10.3 and 7.0).
+    // THE CONFLICT, on the identical twin under the exact old law, read from
+    // each motor's OWN relative-angular-velocity coordinate: the small wheel
+    // is dragged PAST the shared −10 target (its motor BRAKES) while the big
+    // wheel runs far BELOW it (its motor drives) — opposing motor torques at
+    // cruise, the recorded fight signature (measured motor-relative
+    // −11.10/−11.00 vs −5.57/−5.53; the small min sits ~1 rad/s past the −10
+    // braking threshold, bands 10.3 / 7.0 with ≥0.7 cushion).
     const ctlSmall = control.wheels.filter((w) => w.radius === 0.3);
     const ctlBig = control.wheels.filter((w) => w.radius === 0.6);
-    for (const w of ctlSmall) expect(Math.abs(w.omegaZ), diag).toBeGreaterThan(10.3);
-    for (const w of ctlBig) expect(Math.abs(w.omegaZ), diag).toBeLessThan(7.0);
+    for (const w of ctlSmall) expect(Math.abs(w.motorOmega), diag).toBeGreaterThan(10.3); // past the −10 target → braking
+    for (const w of ctlBig) expect(Math.abs(w.motorOmega), diag).toBeLessThan(7.0); // below the −10 target → driving
     // And it exhibits the conflict MORE STRONGLY than the per-wheel law:
     // less progress, lower final speed (measured ratios 0.801 and 0.783;
     // relational margin 0.9).
@@ -348,7 +370,7 @@ describe.each([
     expect(run.dx, diag).toBeGreaterThan(20); // measured +39.55 over 420 steps
     expect(run.maxSpeed, diag).toBeLessThan(10); // measured 6.49
     for (const w of run.wheels) {
-      expect(Math.abs(w.omegaZ), diag).toBeLessThan(25 * 1.05); // at/below the no-load target (measured max 20.69)
+      expect(Math.abs(w.motorOmega), diag).toBeLessThan(25 * 1.05); // at/below the no-load target (motor-relative, measured max ≈ 20.7)
     }
   });
 });

@@ -11,9 +11,9 @@ shared −10 rad/s wheel-speed target is gone: one `targetWheelSurfaceSpeed`
 (default 5 m/s) now derives every driven wheel's own no-load target from
 its radius (ω = −speed/radius), so mixed-radius vehicles stop fighting
 themselves over a phantom driveshaft — each wheel's exact stall torque
-(its power-budget share) and the measured ForceBased gain ruling are
-unchanged (what is preserved is the stall-torque budget, not mechanical
-power). All three earlier golden fixtures were deliberately re-locked
+(its share of the stall-torque budget) and the measured ForceBased gain
+ruling are unchanged (what is preserved is the stall-torque budget, not
+mechanical power). All three earlier golden fixtures were deliberately re-locked
 under the documented workflow (step-0 spawn states identical; divergence
 enters with the first motor step; fixture A's digest even reproduced, its
 target shift being below the engine's f32 state resolution), and a fourth

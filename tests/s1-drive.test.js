@@ -92,6 +92,21 @@ const WITNESS_CONFIG = Object.freeze({
   sandCoverage: 0,
   mudCoverage: 0,
 });
+// The MOTOR's OWN coordinate: a revolute motor drives the RELATIVE angular
+// velocity between its bodies about the joint axis (the parent's local +Z),
+// not the wheel body's world ω_z — the only honest observable for the
+// driving/braking sign. Parent = the hub for S1 (its drive revolute is
+// hub→wheel; the hub co-rotates with the chassis through the prismatic),
+// the chassis for S0. World ω_z stays as a diagnostic. (Shared verbatim
+// with tests/surface-speed-drive.test.js.)
+function motorRelativeOmega(st, chassisBody) {
+  const parent = st.suspensionType === 'S1' ? st.hub.body : chassisBody;
+  const axis = rotate(parent.rotation(), { x: 0, y: 0, z: 1 });
+  const w = st.wheel.body.angvel();
+  const p = parent.angvel();
+  return (w.x - p.x) * axis.x + (w.y - p.y) * axis.y + (w.z - p.z) * axis.z;
+}
+
 const SEG_MIN = -30;
 const SEG_MAX = 30;
 const SPAWN_X = -44; // on the pad
@@ -363,7 +378,8 @@ async function boundedRun(deterministic, ir, { x = -50, y = null, rotation = nul
       maxSpeed,
       maxTwistZ,
       maxSwingXY,
-      wheelOmegaZ: rec.wheels.map((st) => st.wheel.body.angvel().z),
+      wheelOmegaZ: rec.wheels.map((st) => st.wheel.body.angvel().z), // diagnostic (world component)
+      wheelMotorOmega: rec.wheels.map((st) => motorRelativeOmega(st, rec.chassis.body)), // the motor's own coordinate
       jointsValid: rec.wheels.every((st) => st.driveJoint.isValid() && (st.suspensionJoint === null || st.suspensionJoint.isValid())),
       counts: [world.bodies.len(), world.impulseJoints.len()],
     };
@@ -561,24 +577,24 @@ describe.each([
     expect(Math.abs(mixed.vxEnd), diagMixed).toBeLessThan(0.5); // measured −0.099 — grade-stalled at rest, not exploding
     expect(mixed.maxAnchorErr, diagMixed).toBeLessThan(ANCHOR_BAND);
     // (2b) The shared-target CONFLICT itself is CLOSED — witnessed on FLAT
-    // ground where the grade cannot confound. Same IR, flat cuboid: under
-    // the exact old law the small-r wheels ran PAST the shared −10 target
-    // (measured −10.56, motor braking) against the big wheels (−8.87,
-    // driving) and it cruised 4.43 m/s; under the per-wheel law every wheel
-    // sits under ITS OWN target (r 0.5 → −9.84 of −10.0; r 0.42 → −11.72 of
-    // −11.905) and it cruises 4.89 m/s. Station order: [axle0 ×2 (r 0.5),
-    // axle1 ×2 (r 0.42)]. The sharp behavioral witness (radius ratio 2×,
-    // old-law control twin) lives in tests/surface-speed-drive.test.js.
+    // ground where the grade cannot confound, and read from each motor's OWN
+    // relative-angular-velocity coordinate (wheelMotorOmega: parent = hub
+    // for S1), NOT the wheel body's world ω_z. Same IR, flat cuboid: under
+    // the per-wheel law every wheel sits under ITS OWN target (motor-relative
+    // r 0.5 → −9.81 of −10.0; r 0.42 → −11.71 of −11.905) and it cruises
+    // 4.89 m/s. Station order: [axle0 ×2 (r 0.5), axle1 ×2 (r 0.42)]. The
+    // sharp behavioral witness (radius ratio 2×, exact-old-law control twin,
+    // driving-vs-braking split) lives in tests/surface-speed-drive.test.js.
     const mixedFlat = await boundedRun(deterministic, mixedIR, { x: 0, steps: 600, flatCuboid: true });
     const diagMixedFlat = JSON.stringify(mixedFlat);
     expect(mixedFlat.finite, diagMixedFlat).toBe(true);
     expect(mixedFlat.jointsValid, diagMixedFlat).toBe(true);
     expect(mixedFlat.dx, diagMixedFlat).toBeGreaterThan(25); // measured +39.39
     expect(mixedFlat.vxEnd, diagMixedFlat).toBeGreaterThan(3); // measured 4.891 — sustained cruise near the 5 m/s no-load surface speed
-    for (const [k, omega] of mixedFlat.wheelOmegaZ.entries()) {
+    for (const [k, omega] of mixedFlat.wheelMotorOmega.entries()) {
       const target = k < 2 ? 10.000000000000002 : 11.904761904761905; // |−5/r| per station
       expect(Math.abs(omega), diagMixedFlat).toBeLessThan(target * 1.05); // no wheel dragged past its OWN no-load target
-      expect(Math.abs(omega), diagMixedFlat).toBeGreaterThan(target * 0.75); // engaged, near-cruise (measured 0.98x both axles)
+      expect(Math.abs(omega), diagMixedFlat).toBeGreaterThan(target * 0.75); // engaged, near-cruise (measured 0.98× both axles)
     }
 
     // (3) The R5 cap-and-accept residual overlap stays stable with S1

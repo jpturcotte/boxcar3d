@@ -421,12 +421,16 @@ export const MOTOR_TARGET_WHEEL_SURFACE_SPEED = 5;
 // driveTorque; a direct divide does not (3/10 ≠ 3·(1/10) in f64 —
 // measured). Stall MAGNITUDE stays
 // driveTorque exactly, signed by sign(ω) — the [V10] contract per wheel.
-// Out-of-domain inputs surface as NON-FINITE fields, never throws — the
-// realizer's validator owns the fail-loud messages. CONTRACT: a non-finite
-// ω POISONS the gain to NaN, because the raw math would collapse it to a
-// plausible finite 0 (t × 1/Infinity) and a consumer validating the gain
-// alone would accept a broken plan; with the poison, checking EITHER field
-// fails loud. (A denormal speed keeps ω finite-denormal while 1/|ω|
+// CONTRACT: for a validated wheel-shaped record, numeric out-of-domain
+// inputs surface as NON-FINITE fields — the realizer's validator owns the
+// fail-loud messages. A malformed or missing wheel record (null/undefined,
+// no radius) is a programmer error and MAY throw: callers validate the
+// wheel before invoking, and silently coercing a missing object to NaNs
+// would hide the bug (deliberately declining optional-chaining). A
+// non-finite ω POISONS the gain to NaN, because the raw math would collapse
+// it to a plausible finite 0 (t × 1/Infinity) and a consumer validating the
+// gain alone would accept a broken plan; with the poison, checking EITHER
+// field fails loud. (A denormal speed keeps ω finite-denormal while 1/|ω|
 // overflows the gain to Infinity — the other overflow direction.) The
 // validator still rejects ω first for the sharper diagnostic.
 export function driveMotorForWheel(targetWheelSurfaceSpeed, wheel) {

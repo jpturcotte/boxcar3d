@@ -254,15 +254,27 @@ export function serializeEvaluationSpec(resolvedSpec) {
   }
   const view = new DataView(new ArrayBuffer(size));
   let o = 0;
+  // Every f64 write is finiteness-gated: setFloat64(NaN) emits an
+  // implementation-defined bit pattern (wasm NaN payloads are
+  // nondeterministic — the exact cross-engine hazard the trace codec
+  // canonicalizes against), and an infinite terrain scalar is nonsense. In
+  // the normal evaluatePopulation flow generateCorridorTerrain's
+  // validateConfig has already rejected a non-finite terrain, but
+  // serializeEvaluationSpec is a public export, so it validates the derived
+  // quantity at its own seam rather than trusting an upstream caller.
+  const f64 = (v, path) => {
+    if (!Number.isFinite(v)) fail(path, v);
+    view.setFloat64(o, v, true); o += 8;
+  };
   view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
   view.setUint8(o, s.deterministic ? 1 : 0); o += 1;
   view.setUint8(o, term); o += 1;
   view.setUint32(o, s.maxSteps, true); o += 4;
-  view.setFloat64(o, s.spawn.x, true); o += 8;
-  view.setFloat64(o, s.spawn.z, true); o += 8;
-  view.setFloat64(o, s.spawn.clearance, true); o += 8;
-  view.setFloat64(o, s.targetWheelSurfaceSpeed, true); o += 8;
-  view.setFloat64(o, s.wheelFriction, true); o += 8;
+  f64(s.spawn.x, 'spawn.x');
+  f64(s.spawn.z, 'spawn.z');
+  f64(s.spawn.clearance, 'spawn.clearance');
+  f64(s.targetWheelSurfaceSpeed, 'targetWheelSurfaceSpeed');
+  f64(s.wheelFriction, 'wheelFriction');
   view.setUint8(o, TERRAIN_SPEC_WALK.length); o += 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
     const v = terrain[key];
@@ -270,10 +282,10 @@ export function serializeEvaluationSpec(resolvedSpec) {
       if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) fail(`terrain.${key}`, v);
       view.setUint32(o, v, true); o += 4;
     } else if (kind === 'f64') {
-      view.setFloat64(o, v, true); o += 8;
+      f64(v, `terrain.${key}`);
     } else if (kind === 'range') {
       view.setUint8(o, v.length); o += 1;
-      for (const e of v) { view.setFloat64(o, e, true); o += 8; }
+      for (const e of v) f64(e, `terrain.${key}[]`);
     } else { // weights
       const keys = Object.keys(v);
       if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {
@@ -282,7 +294,7 @@ export function serializeEvaluationSpec(resolvedSpec) {
       view.setUint8(o, WEIGHT_KEYS.length); o += 1;
       WEIGHT_KEYS.forEach((k, i) => {
         view.setUint8(o, i); o += 1;
-        view.setFloat64(o, v[k], true); o += 8;
+        f64(v[k], `terrain.${key}.${k}`);
       });
     }
   }

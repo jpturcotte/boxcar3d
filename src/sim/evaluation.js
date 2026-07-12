@@ -301,9 +301,15 @@ export async function runEvaluation(options) {
         }
         // Progress folds from the SAME chassis read the latch and trace
         // consume (reads[0] — bodies[0] is the chassis by construction).
-        // Gated AFTER the latch check so the latching capture is excluded:
-        // the fold freezes at the last fully-finite capture. The fold's own
-        // finite guard is the second net.
+        // Gated on the WHOLE-vehicle latch (fires when ANY body goes
+        // non-finite), so the fold freezes at the last fully-finite capture.
+        // That is deliberate: once latched the vehicle is invalid and its
+        // fitness is 0 regardless of progress, so accumulating chassis motion
+        // after a wheel exploded would be meaningless. A trace-based
+        // recompute therefore agrees with these fields only while
+        // latched === null (unreachable divergence otherwise on 0.19.3 — no
+        // legal input goes non-finite). The fold's own finite guard is the
+        // second net.
         if (t.latched === null) {
           foldProgress(t.progress, stepIndex, reads[0].translation.x - t.origin.x);
         }

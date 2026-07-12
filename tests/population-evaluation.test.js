@@ -255,6 +255,22 @@ describe('evaluation-spec encoding v1', () => {
     delete s.terrain.mudCoverage;
     expect(() => serializeEvaluationSpec(s)).toThrow(/diverge from the declared walk/);
   });
+
+  test('a non-finite f64 fails loud at the encoder seam (NaN would emit implementation-defined bytes)', () => {
+    // The public export validates the derived quantity at its own seam
+    // rather than trusting an upstream generateCorridorTerrain call.
+    for (const mutate of [
+      (s) => { s.spawn = { ...s.spawn, z: NaN }; },
+      (s) => { s.wheelFriction = Infinity; },
+      (s) => { s.terrain = { ...s.terrain, macroAmp: NaN }; }, // scalar f64
+      (s) => { s.terrain = { ...s.terrain, craterRadiusRange: [2, NaN] }; }, // range
+      (s) => { s.terrain = { ...s.terrain, featureTypeWeights: { boulder: 3, ramp: NaN, log: 2 } }; }, // weights
+    ]) {
+      const s = resolved();
+      mutate(s);
+      expect(() => serializeEvaluationSpec(s)).toThrow(/population-evaluation: invalid/);
+    }
+  });
 });
 
 describe('fitness-vector encoding v1', () => {

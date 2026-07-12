@@ -82,7 +82,7 @@ All of these landed after our 0.11.2 pin and directly serve the 50-vehicles-at-6
 - **Many-contacts perf** (Rapier 0.29): piles of vehicles on terrain = exactly this workload.
 - **Crash fix:** removing colliders in insertion order used to crash — our per-generation teardown loop does precisely this. Another reason 0.11.2 was a landmine.
 - **`RAPIER.reserveMemory(...)`**: pre-allocate before spawning a generation to avoid WASM heap growth stalls mid-run.
-- **Built-in profiler:** `world.profilerEnabled = true` + `World.timing*` getters → wire directly into the Phase 0 metrics schema (`physicsStepMs` no longer needs manual `performance.now()` bracketing).
+- **Built-in profiler** — CORRECTED 2026-07-11 from the measured probe (`npm run probe:timing`), not typings: the API is an instance get/set accessor `world.profilerEnabled` (default **false** — profiling must be enabled) gating 16 `timing*()` **instance methods** (`world.timingStep()` etc. — methods, not getters, and no static `World.timing*`). Enabled values are **per-step milliseconds**, stable across repeated reads; disabling freezes the last values; an unstepped world reads 0; the sub-timers do **not** sum to `timingStep()` — it is the authoritative per-step total; the ~1.5 ms warm-up spike attaches to a fresh module's FIRST step (not to profiler enablement). Wired into `runEvaluation`'s `profile` option and the `bench:physics` profiler-diagnostic matrix — but the canonical affordability numbers are measured with the profiler OFF via external `performance.now` brackets in `scripts/bench-physics.js` (digest equality proves the profiler's semantic non-interference, not zero cost).
 - Minor rename: `RigidBody.invPrincipalInertiaSqrt` → `invPrincipalInertia` (now returns the actual inverse inertia, not its square root) — only relevant if debug overlays read inertia.
 
 ### 2.5 Cannon → Rapier API mapping (refreshed for 0.19.3)
@@ -111,7 +111,9 @@ All of these landed after our 0.11.2 pin and directly serve the 50-vehicles-at-6
 
 If any obstacle still needs a trimesh, note that trimesh flags for fixing internal-edge (ghost) collisions were added post-0.13 → **[V6]**; heightfield remains the preferred terrain path regardless.
 
-### 2.6 NEW: vehicle backend A/B — joints vs. built-in vehicle controller
+### 2.6 vehicle backend A/B — joints vs. built-in vehicle controller
+
+> **SUPERSEDED by O3 (resolved 2026-07-11): Backend R is dropped from scope; Backend J is the sole canonical backend because real wheel bodies and evolving suspension topologies are required by R3. No A/B was run and there is no J/R fidelity toggle. Retained below as historical analysis.**
 
 Rapier's JS API now ships `DynamicRayCastVehicleController` (added around 0.12, after our pin): a raycast-wheel vehicle model with per-wheel suspension stiffness/damping/rest-length, engine force, and friction parameters. **[V3]** confirm current parameter names.
 
@@ -120,7 +122,7 @@ Implement both behind the adapter and let the metrics decide:
 - **Backend J (joints)** — the original plan. Wheels are real rigid bodies; morphology is fully physical (wheel–obstacle and wheel–wheel contact, flipped vehicles behave honestly). Cost: ~5 bodies + 8 joints per 4-wheel vehicle. Genes map to joint motor/limit params.
 - **Backend R (raycast controller)** — 1 rigid body per vehicle; suspension genes map directly onto controller params; joint explosions are impossible by construction. Cost: wheels are virtual (no wheel-as-body contact), so the fitness landscape differs from BoxCar2D's spirit.
 
-**Decision protocol:** identical seeds + terrain, 30 generations each, compare `fellThroughTerrain`, `jointFailures` (J only), `physicsStepMs` at 20/50/100 vehicles, and best-fitness curves. Expected outcome: R wins raw perf, J wins evolutionary interestingness — if so, ship both as a user-facing "physics fidelity" toggle, since the gene schema can target either.
+**Decision protocol:** identical seeds + terrain, 30 generations each, compare `fellThroughTerrain`, `jointFailures` (J only), `physicsStepMs` at 20/50/100 vehicles, and best-fitness curves. Expected outcome: R wins raw perf, J wins evolutionary interestingness — if so, ship both as a user-facing "physics fidelity" toggle, since the gene schema can target either. *(Superseded — see the O3 banner above: no toggle; the vehicle-count cost curves this protocol wanted are now measured by `npm run bench:physics` on Backend J alone.)*
 
 ---
 
@@ -146,7 +148,7 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 | Component | 2025 rating | 2026 rating | Why it changed |
 |---|---|---|---|
 | Terrain collision | CRITICAL | CRITICAL (plan unchanged) | Heightfield-first still the fix; add [V1] layout test; reworked broad-phase reduces perf risk |
-| Joint stability | HIGH | **MEDIUM** | Modern solver is default and only; per-body extra iterations; Backend R eliminates the failure class entirely |
+| Joint stability | HIGH | **MEDIUM** | Modern solver is default and only; per-body extra iterations; Backend R eliminates the failure class entirely *(Backend R since dropped — O3; the live mitigations are the compiler repair pass + the chassis solver-iteration policy)* |
 | Async loading | HIGH | **MEDIUM** | Pattern is now standard; -compat embeds WASM; pinned versions + CDN fallback chain |
 | Determinism (NEW) | — | **HIGH if ignored** | Default package no longer deterministic since 0.15.0 → use `-deterministic-compat` for replay mode + bit-exact CI test |
 | Visual regression (NEW) | — | LOW | r152/r155 color & lighting defaults; one-time retune + reference screenshot |
@@ -157,9 +159,9 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 ## 5. Success criteria — updates
 
 1. Zero vehicles through terrain over 1,000 spawns — **unchanged**.
-2. 50+ vehicles at 60 FPS (baseline was ~20) — **unchanged**, now with `World.timing*` as the measurement source.
+2. 50+ vehicles at 60 FPS (baseline was ~20) — **unchanged**; the measurement source is `npm run bench:physics` (external monotonic timing, profiler off, with the `world.timing*()` profiler methods as the diagnostic matrix — see corrected §2.4). Physics cost only: this criterion still carries an explicit render-budget caveat.
 3. Stable at 3× time scale — **unchanged**, enabled cleanly by §2.3.
-4. Replay determinism — **tightened**: bit-exact across runs *and platforms* under `rapier3d-deterministic-compat` (was: "within floating-point tolerance"). New sub-task: measure the deterministic build's step-time tax vs. the default build and record it in the metrics.
+4. Replay determinism — **tightened**: bit-exact across runs *and platforms* under `rapier3d-deterministic-compat` (was: "within floating-point tolerance"). The step-time-tax sub-task is **done** — `npm run bench:physics` reports the deterministic-vs-default ratio per fixture and vehicle count (canonical rows, profiler off). The trace-gate PR verified bit-exact reproduction across ubuntu/windows/macos Node 22 and pinned Chromium — the environments actually tested, no broader claim.
 
 ---
 
@@ -169,22 +171,22 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 > - **Steps 1–5 — done** (PRs #6–#11): scaffold + composite terrain + static feature colliders + the canonical 1,000-spawn chassis fall-through gate all landed. Note two rulings that overtook the original text: the physics backend is **Rapier only** (Cannon was deleted, ruling D4 — the `engine: cannon|rapier` flag is gone), and hard CCD on chassis bodies proved **inert against the heightfield** (PR #9), so the policy is **dual CCD** (`setCcdEnabled` + `setSoftCcdPrediction`), not "enable CCD".
 > - **Step 6 — Backend R dropped from scope** (ruling D3/O3: the ray-cast vehicle controller is out of scope). Only **Backend J** (joint-based vehicles) proceeds; there is no A/B harness.
 > - **Step 7 — done** (PR #10): the assembly compiler + repair pass v0 landed the genotype schema and IR; the "25-gene legacy → extended schema" framing is superseded by the schema in that PR.
-> - **Step 8 — full replay/determinism closure is DEFERRED** by the current ruling (the S0 kernel PR ships only a driven-vs-undriven forward-drive witness; the bit-exact-across-runs criterion lands later).
-> - **The narrow S0 kernel LANDED** (S0 kernel PR): cylinder wheel bodies + revolute joints + the ForceBased-gain motor ruling ([V10] above). **Current next: S1** vertical spring-damper suspension. See CLAUDE.md's "Next".
+> - **Step 8 — a SUPERSET landed 2026-07-11** (the deterministic-trace PR): not just hashed per-step chassis transforms but a versioned per-step trace of EVERY dynamic vehicle body (pose + velocities + sleep/validity bits, raw LE f64), streaming FNV-1a digests with per-step checkpoint states, committed golden locks for three declared fixtures, and bit-exact reproduction verified across ubuntu/windows/macos Node 22 AND pinned Chromium under the deterministic flavor (`npm run test:determinism`, `npm run test:browser`). Full replay closure (record → re-run → compare a whole GA session) remains future work, but its trace/digest instrument now exists.
+> - **The narrow S0 kernel LANDED** (S0 kernel PR): cylinder wheel bodies + revolute joints + the ForceBased-gain motor ruling ([V10] above); **S1 LANDED** (PR #13). See CLAUDE.md's "Next" for the live sequence.
 
 1. Scaffold the new single-file skeleton: import map (§2.1), async boot, `PhysicsAdapter` with `{engine: cannon|rapier}` × `{vehicles: joints|raycast}` flags.
-2. Port the test framework first (standing project rule) and wire `world.profilerEnabled` timings into the metrics schema.
+2. Port the test framework first (standing project rule) and wire `world.profilerEnabled` timings into the metrics schema *(landed as `runEvaluation`'s `profile` option + the `bench:physics` profiler matrix — measured semantics in corrected §2.4)*.
 3. Heightfield terrain + **[V1]** known-peak layout test + safety plane at y = −50; enable CCD on chassis bodies.
 4. Static obstacles + collision groups (`0x0001` ground, `0x0002` chassis, `0x0004` wheels).
 5. Chassis-only drop test → run the 1,000-spawn fall-through criterion before any wheels exist.
-6. Backend J (dual joints), then Backend R (vehicle controller); A/B harness on fixed seeds (§2.6).
+6. Backend J (dual joints), then Backend R (vehicle controller); A/B harness on fixed seeds (§2.6). *(Stale — see the reconciliation note above and the §2.6 banner: Backend R dropped by O3, Backend J only, no A/B harness.)*
 7. Gene adapter layer (25-gene legacy → extended schema) — unchanged from original Phase 0.
 8. Determinism smoke test: same seed, two runs, hash the per-step chassis transforms; must match bit-exact under the deterministic flavor.
 
 ### Open verifications
 - **[V1]** Heightfield `heights` memory layout (row- vs column-major) — unit test with a single known peak.
 - **[V2]** RESOLVED (PR #10): `RigidBodyDesc.setAdditionalSolverIterations` (chainable) + `additionalSolverIterations()` readback, verified against both installed 0.19.3 flavors' typings; `realizeChassis` applies it per chassis body.
-- **[V3]** `DynamicRayCastVehicleController` current parameter names/signatures.
+- **[V3]** MOOT (O3 resolved 2026-07-11): `DynamicRayCastVehicleController` parameter names were only needed for Backend R, which is dropped from scope.
 - **[V4]** RESOLVED (S1 PR; signature resolved earlier by the pre-S0 hardening PR): `configureMotorPosition(target, stiffness, damping)` and `setLimits(min, max)` verified verbatim against the installed 0.19.3 typings, and the parameter ranges are now BOUND to real physics by the S1 calibration matrix (`npm run probe:s1`), measured UNCHANGED — no corpus re-lock (the corpus fingerprint hashes raw [0,1] genes; binding without changing keeps the lock; GENOTYPE_VERSION stays 1 while the compiled-IR contract bumped to ASSEMBLY_IR_VERSION 2 for the hub records). The coordinate contract is [V11]; the spring-model ruling is [V12].
 - **[V10]** RESOLVED (S0 kernel PR) — the MotorModel ruling, measured, not read from docs: Rapier 0.19.3's motor factor is a velocity-servo GAIN (raw law τ = factor × (targetVel − ω); `configureMotorVelocity` maps 1:1 onto the wasm binding, and NO max-force setter is reachable from JS — grep of both flavors' d.ts). The S0 adapter therefore runs **ForceBased with a gain conversion** `gain = driveTorque / |targetAngvel|` (gain ≥ 0), making the signed law τ = gain × (targetAngvel − ω) = sign(targetAngvel) × driveTorque × (1 − ω/targetAngvel): the stall MAGNITUDE = driveTorque exactly (its sign follows targetAngvel — the canonical −10 target gives −driveTorque stall, spinning wheels for +X). A finite-but-denormal-tiny target is rejected pre-world (the derived gain would be non-finite). The airborne discriminator (fixed chassis, wheel with no contact): the same driveTorque on wheels of 5.06× rotational inertia gives a first-step ω ratio of 4.86 under ForceBased but **1.000 under AccelerationBased** — AccelerationBased normalizes effective inertia away, so its factor is not a torque (and it is NOT mass-insensitive at the vehicle level, where traction dynamics dominate — vehicle-mass tests do not discriminate the models). Locked in `tests/s0-motor.test.js` with torque-doubling, target-invariance, and torque-vs-speed teeth; the sign lock (negative target about local +Z drives +X) and the shared-base-rotation hinge-frame contract live in the same file family. Also recorded there: the solver-pump drift finding (an awake free-rolling jointed vehicle under per-body additional solver iterations self-accelerates ~0.33 m/s on a flat cuboid and never sleeps — settle test rigs behind a target-0 motor "parking brake").
 - **[V11]** RESOLVED (S1 PR) — the prismatic coordinate contract, measured on both flavors (`tests/s1-prismatic.test.js`): rapier 0.19.3 exposes NO joint-coordinate/translation readback anywhere in the JS surface (grep of both flavors' d.ts), so the pure projection `dot(R1·axisLocal, worldAnchor2 − worldAnchor1)` (`projectedPrismaticCoordinate` in the adapter) is the mandatory idiom — its assertion bands must scale with the WORLD-ANCHOR magnitudes entering the subtraction, never with the small projected value. Measured semantics: body placement sets the initial coordinate (a hub spawned distance d along the axis from anchor coincidence starts at d; coincident anchors read 0); the position-motor target is an ABSOLUTE coordinate; `setLimits(min, max)` clamps both ends with load-scaled compliance ≈ 9e-6 m/N; `setLimits(0, 0)` is engine-safe (locked axis); a target beyond the extension limit presses the stop statically (preload — a valid phenotype); `configureMotorPosition(target, 0, 0)` 0/0-FREEZES the axis (the realizer skips motor config for k=0 ∧ c=0, preserving honest free-slider semantics). The axis is interpreted in each body's local frame — measured covariant at yaw/pitch/roll-180 to ≤1e-6 m while a world-vertical substitution misses by 0.13–0.50 m.
@@ -201,7 +203,7 @@ Keep `WebGLRenderer` for Phase 1 — don't stack a renderer migration on top of 
 ### A.1 Two viable packaging shapes
 
 - **Shape 1 — no-build static folder.** `index.html` + ES-module source files + the §2.1 import map for CDN dependencies. Deploy = upload the folder. Near-zero toolchain; closest to the current workflow.
-- **Shape 2 — Vite + Vitest + CI (recommended).** npm-pinned dependencies with a lockfile, dev server with hot reload, minified production bundle, and deployment via GitHub Actions → Pages (or Netlify/Vercel auto-build). Buys three things Shape 1 can't: real dependency pinning, proper `.wasm` asset handling — we can drop the `-compat` base64 flavor for the default build (smaller payload, streaming instantiation) → **[V7]** confirm the deterministic flavor also works un-embedded under Vite — and above all a real test runner.
+- **Shape 2 — Vite + Vitest + CI (recommended).** npm-pinned dependencies with a lockfile, dev server with hot reload, minified production bundle, and deployment via GitHub Actions → Pages (or Netlify/Vercel auto-build). Buys three things Shape 1 can't: real dependency pinning, proper `.wasm` asset handling — we can drop the `-compat` base64 flavor for the default build (smaller payload, streaming instantiation) → **[V7]** confirm the deterministic flavor also works un-embedded under Vite *(browser half CLOSED 2026-07-11: the embedded-wasm deterministic `-compat` flavor under Vite in pinned Chromium reproduces the committed Node trace digests bit-exact — the Chromium gate, `npm run test:browser`; the literal un-embedded-`.wasm` half stays open and is moot while `-compat` ships)* — and above all a real test runner.
 
 ### A.2 New capabilities unlocked (either shape)
 

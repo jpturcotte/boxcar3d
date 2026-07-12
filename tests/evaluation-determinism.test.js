@@ -1,5 +1,5 @@
 // The determinism gates (mission §11): same-process fresh-world byte-identity
-// for fixtures A/B/C, default-flavor per-process repeatability, the committed
+// for fixtures A–D, default-flavor per-process repeatability, the committed
 // golden locks with their staleness teeth and re-lock workflow, and the
 // determinism-adjacent teeth (profiler neutrality, capture-mode invariance,
 // the f32-backedness one-shot, the ghost-isolation bit-equality lock).
@@ -10,8 +10,10 @@
 // the default flavor gets per-process repeatability and NO cross-platform
 // lock or promise (F10).
 //
-// MEASURED (this worktree, Windows, 2026-07-11, deterministic flavor):
-//   A digest 5a219735 (3005 records), B 65f9e2fd (6307), C bc71517b (15025)
+// MEASURED (this worktree, Windows, 2026-07-11, deterministic flavor; the
+// per-wheel surface-speed drive law re-locked B/C and added D — A reproduced):
+//   A digest 5a219735 (3005 records), B 02a80181 (6307), C 6b83729e (15025),
+//   D e2fc7625 (3005 — the mixed-radius 0.3/0.6 m lock)
 //   fround tooth: 39,065/39,065 traced floats of fixture A are exactly
 //     f32-representable (Math.fround(v) === v) — Rapier's exposed state is
 //     f32-backed; the trace keeps lossless f64 encoding regardless (pre-ruled:

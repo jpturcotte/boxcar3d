@@ -15,6 +15,7 @@
     "probe:s1": "node tests/s1-calibration-probe.js",
     "probe:timing": "node scripts/probe-rapier-timing.js",
     "probe:population": "node scripts/characterize-population.js",
+    "probe:physics-explosion": "node scripts/probe-physics-explosion.js",
     "bench:physics": "node scripts/bench-physics.js",
     "lint": "eslint ."
   },

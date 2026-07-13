@@ -911,20 +911,23 @@ direction, not a defect. Full evidence:
   constraints violated under ordinary load and its corrections pump energy.
   MORE solver iterations ACCELERATE the divergence (A at 16 iters:
   catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s; no
-  TESTED exposed engine setting cured it. Drive is NOT necessary and cannot
-  account for the catastrophic energy (passive + power→0 + motor-off arms
-  reach the same 1e9+ m/s), though motor torque can EXCITE the island;
-  CCD/gravity/S1 all non-necessary; single modules and sleds are ALL stable
-  (≥ 2 modules required). **The trigger is SOME ordinary load, not ground
-  contact per se — the committed `load` pass crosses the two internal load
-  sources under zero gravity and contact-counts every row: on witness A, S1
-  springs alone (cat@48) or drive motors alone (cat@36) each suffice, while
-  the fully unloaded island (passive all-S0, free space) is quiescent with a
-  MEASURED zero touching contacts and peak body speed 0. No PARTICULAR load
-  is necessary; contact is the observed initiating load in evaluation
-  context. These conditions are necessary in every tested witness reduction
-  and the minimal-reproducer closure — not asserted as a universal
-  theorem.**
+  TESTED exposed engine setting cured it (the committed `gravity9.81`
+  reproducer arm gives the same cat@46 as g=20 — the g=20 magnitude is not
+  the cause; CCD inert). Drive is NOT necessary and cannot account for the
+  catastrophic energy (passive + power→0 + motor-off arms reach the same
+  1e9+ m/s), though motor torque can EXCITE the island; single modules and
+  sleds are ALL stable (≥ 2 modules required). **The trigger is SOME
+  ordinary load, not ground contact per se — the committed `load` pass runs
+  the crossing in GENUINELY free space (NO floor/corridor at all,
+  staticColliders 0 hard-checked, zero gravity), so a divergence there is
+  unambiguously internal-load-driven: the fully unloaded island is quiescent
+  on all four witnesses (peak 0); S1 springs alone reach catastrophic on all
+  four; drive motors alone reach catastrophic on A/B/C and the alert regime
+  (782 m/s, no catastrophe in 300 steps) on S. Each internal load source
+  independently INITIATES the divergence; no PARTICULAR load is necessary;
+  floor contact is the observed initiating load in evaluation context. These
+  conditions are necessary in every tested witness reduction and the
+  minimal-reproducer closure — not asserted as a universal theorem.**
 - **Witness identities frozen** (`scripts/explosion-witnesses.js` +
   `tests/explosion-witnesses.test.js`): A 20260725:19 `ec8d42cf`,
   B 20260728:4 `393f7e0e`, C 20260729:19 `57faad4e`, S 20260725:14
@@ -941,10 +944,12 @@ direction, not a defect. Full evidence:
   wide-track paired S0 axles (wheel centers z ≈ ±2.3/±1.9 m), four UNDRIVEN
   8.8–22 kg wheels, one 18 kg chassis, no motors, FLAT ground →
   catastrophic by step ~46 on both flavors; removing ANY ingredient (either
-  axle, trackHalf ≤ ~0.2, frameDensity 1, or the load itself — free space
-  is quiescent with measured zero contacts) stabilizes. The FULL closure
-  matrix is instrumented in the probe's `reproducer` pass. RERUN ON RAPIER
-  BUMP: `npm run probe:physics-explosion -- --pass reproducer`.
+  axle, trackHalf ≤ ~0.2, frameDensity 1, or the load itself — the genuinely
+  static-free `freeSpace` arm, no floor at all, leaves this undriven island
+  quiescent) stabilizes, and the `gravity9.81` arm confirms the g=20
+  magnitude is not the cause (same cat@46). The FULL closure matrix is
+  instrumented in the probe's `reproducer` pass. RERUN ON RAPIER BUMP:
+  `npm run probe:physics-explosion -- --pass reproducer`.
 - **Telemetry:** `src/sim/trace-forensics.js` (pure, offline over FULL
   traces): per-body kinematic series + the three-concept onset —
   firstAlertStep (diagnostic locator), firstCatastrophicStep,

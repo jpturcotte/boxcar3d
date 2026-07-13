@@ -219,24 +219,31 @@ No arm abolishes the event for any witness:
   dt-scaled by the declared captureDt so onsets are unit-consistent): does
   not cure; B becomes astronomically worse (peak 1.66e21 m/s). Not an
   integrator step-size problem.
-- **Zero gravity (free space) — the committed `load` pass**: a dedicated
-  pass crosses the two internal load sources on every witness and counts
-  vehicle-vs-static touching contacts (manifold points with `contactDist ≤
-  0`) at every capture, so "free space" is measured, not assumed. The
-  witness-A crossing (all four witnesses in the pass table):
-  | free-space arm (zero gravity) | internal loads | touching contacts | first alert / catastrophe |
+- **Genuinely free space (NO statics, zero gravity) — the committed `load`
+  pass**: a dedicated pass builds no corridor, floor, or walls
+  (`staticColliders = 0`, HARD-checked; the touching-contact counter is a
+  sanity assertion, 0 by construction) and zeroes gravity, so nothing
+  external can act — any divergence is unambiguously internal-load-driven,
+  with no reliance on a `contactDist` argument that a floor did not
+  contribute (review round 3: zeroing gravity while keeping the floor is not
+  free space). The pass crosses the two internal load sources on every
+  witness. Witness-A crossing (all four witnesses in the pass table):
+  | free-space arm (no statics) | internal loads | onset | peak body (m/s) |
   | --- | --- | --- | --- |
-  | original | motors + springs | 60 (first @25) | alert@19 / cat@33 |
-  | passive (driven→0) | springs only | 40 (first @38) | alert@35 / cat@48 |
-  | drivenAllS0 (suspType→0) | motors only | 64 (first @20) | alert@24 / cat@36 |
-  | passiveAllS0 (both off) | none | **0 (no touching contact ever)** | **no alert; peak body speed exactly 0** |
-  All four full witnesses still diverge under zero gravity in the driven
-  `original` arm (A cat@33, B cat@48, C cat@42, S cat@122). The crossing
-  isolates the trigger: **S1 springs alone (cat@48) and drive motors alone
-  (cat@36) each suffice; the fully unloaded island is quiescent** — the only
-  arm with a MEASURED zero touching contacts (proximity pairs still exist
-  over the pad's conservative heightfield AABB, but none carry a contact
-  point). Every free-space claim regenerates from
+  | original | motors + springs | alert@19 / cat@40 | 2.9e8 |
+  | passive (driven→0) | springs only | alert@35 / cat@44 | 2.9e3 |
+  | drivenAllS0 (suspType→0) | motors only | alert@24 / cat@32 | 2.5e9 |
+  | passiveAllS0 (both off) | none | **no alert** | **0 (exactly)** |
+  Result, precisely: **the fully unloaded island is quiescent on all four
+  witnesses** (peak body speed 0); **S1 springs alone reach catastrophic on
+  all four** (A cat@44, B cat@39, C cat@46, S cat@254); **drive motors alone
+  reach catastrophic on A/B/C** (A cat@32, B cat@62, C cat@26) and on S
+  diverge into the alert regime (alert@34) but stay at peak 782 m/s — below
+  the 1000 m/s catastrophic label within 300 steps. So each internal load
+  source independently INITIATES the instability (every loaded arm alerts),
+  and no static contact is required for it; the catastrophic magnitude
+  within the window is reached by springs-alone universally and by
+  motors-alone on three of four witnesses. Regenerates from
   `npm run probe:physics-explosion -- --witness all --pass load`.
 - **world.numSolverIterations 2/8/16**: MORE iterations make onset EARLIER
   and usually larger (A at 16: alert@9, cat@16; C at 16: peak 5.7e11) —
@@ -249,8 +256,15 @@ No arm abolishes the event for any witness:
   standard.
 - **CCD arms** (hard off / soft off / both off / prediction 0.1–2):
   magnitude shuffling only; onset essentially unchanged. H4 eliminated.
-- **Gravity 9.81 vs 20** (on the reproducer): identical classification —
-  the g = 20 policy is exonerated.
+- **Gravity magnitude — the committed `gravity9.81` reproducer arm**:
+  reducing gravity from the project's 20 to 9.81 did NOT change the
+  reproducer's classification (both cat@46). The elevated g = 20 policy is
+  therefore not required for divergence. Gravity is NOT irrelevant, though:
+  it is one possible EXCITATION — for the fully-unloaded reproducer,
+  gravity-driven floor settle is the only load, so removing it (the
+  static-free `freeSpace` arm: no floor, zero gravity) leaves the unloaded
+  island quiescent. Gravity is one excitation among several (spring preload,
+  motor torque), none individually necessary.
 - Restitution arms were not run: the onset contact partner is the floor,
   whose restitution is already 0 (adapter default); no stored-contact-energy
   path exists at onset. Statics creation-order arms were not run: no static
@@ -266,13 +280,16 @@ total), no motors, no S1, on a completely flat corridor** — catastrophic
 (>1000 m/s) by step ~46 of 300, identically on BOTH Rapier 0.19.3 flavors.
 Necessary/sufficient closure — removing any single ingredient abolishes the
 event: either axle alone (stable), trackHalf genes ≤ ~0.2 (stable),
-frameDensity 1 (~160 kg chassis, stable), and zero load (free space:
-quiescent with a measured zero static contacts). Axle co-location is
-contributory, not necessary (spread axles still diverge). **The complete
-closure matrix is instrumented**: the committed `reproducer` pass runs the
-unchanged reproducer on both flavors plus every stabilizer arm and the
-free-space discriminator, so the closure regenerates from one command.
-Rerun after any engine bump:
+frameDensity 1 (~160 kg chassis, stable), and zero load (the genuinely
+static-free `freeSpace` arm — no floor at all, zero gravity, staticColliders
+0 hard-checked — leaves this undriven island quiescent, peak body speed 0).
+The `gravity9.81` arm confirms the g = 20 magnitude is not required (same
+cat@46 classification). Axle co-location is contributory, not necessary
+(spread axles still diverge). **The complete closure matrix is
+instrumented**: the committed `reproducer` pass runs the unchanged
+reproducer on both flavors plus every stabilizer arm, the gravity-magnitude
+control, and the static-free discriminator, so the closure regenerates from
+one command. Rerun after any engine bump:
 `npm run probe:physics-explosion -- --pass reproducer` (identity and
 deterministic byte-exact repeatability are hard checks; every onset/outcome
 is an observation — no committed test asserts the explosion occurs).
@@ -286,21 +303,29 @@ is an observation — no committed test asserts the explosion occurs).
   one chassis; long lateral anchor arms (wide track relative to the chassis
   body); a light chassis relative to its wheel set (in the minimal
   configuration); and SOME ordinary load exciting the island — floor-contact
-  settle, S1 spring preload, or drive-motor torque EACH suffice, and with
-  none of them (passive all-S0 in free space) the island is quiescent
-  (measured: zero touching contacts, zero alerts, peak body speed 0). No
-  PARTICULAR load is necessary; ground contact is the observed initiating
-  load in every evaluation-context run, not a necessary condition.
+  settle, S1 spring preload, or drive-motor torque. In genuinely free space
+  (no statics, zero gravity), the fully-unloaded island is quiescent on all
+  four witnesses, S1 springs alone reach catastrophic on all four, and drive
+  motors alone reach catastrophic on three of four (on witness S they excite
+  the alert regime but stay at 782 m/s within 300 steps). So each internal
+  load source independently INITIATES the divergence and no static contact
+  is required; no PARTICULAR load is necessary; floor contact is the
+  observed initiating load in evaluation context, not a necessary condition.
 - **Sufficient**: the minimal reproducer's configuration, on a flat plane,
   under either flavor.
 - **Contributory**: unsprung:chassis mass ratio (cures B/S, dampens A, does
   not cure C — the conditioning boundary is multi-dimensional); solver
   iterations (accelerate); chassis additional iterations (dampen at 0);
   axle co-location; S1 chains (raise magnitude; not necessary); drive
-  torque (changes displacement outcome only).
+  torque (changes displacement outcome only); gravity as one EXCITATION —
+  its settle load can initiate divergence in an otherwise-unloaded island
+  (removing it stabilizes the unloaded reproducer), but it is not necessary
+  (internal loads substitute) and its magnitude is immaterial.
 - **Correlated only**: terrain features, craters, roughness (they scatter
   the post-onset ballistics — the Phase-1A "hit terrain features" inference
-  was a final-state artifact); CCD; dt; gravity magnitude; the >200 m label.
+  was a final-state artifact); CCD; dt; gravity MAGNITUDE (9.81 vs 20 give
+  the same classification — distinct from gravity's presence-as-excitation
+  above); the >200 m label.
 
 Clustering: all four witnesses (and control 20260725:1) share ONE mechanism
 class by intervention evidence — station-led onset on flat ground under
@@ -326,7 +351,9 @@ settle, spring preload, or motor torque). The divergence injects finite
 energy (velocities to 1e9+ m/s within ~1 s of sim time) while every body
 stays finite and every joint reports valid. No tested exposed engine setting
 cured it: more iterations accelerate it, halving dt can worsen it
-catastrophically, CCD and gravity are irrelevant.
+catastrophically, CCD is inert, and gravity magnitude is immaterial (9.81
+and 20 give the same classification — though gravity's settle load is one of
+several interchangeable excitations, none necessary).
 
 **Scope of the ruling — what is and is not eliminated.** Eliminated by
 intervention: incorrect spawn placement (no birth penetration), terrain
@@ -414,7 +441,10 @@ terrain 20260727).
   the island (§9 free-space motors-only arm), it is an excitation, not the
   energy source.
 - The deterministic build: the ordinary flavor reproduces onset-for-onset.
-- Gravity 20: 9.81 reproduces.
+- The elevated g = 20 policy as a cause: the `gravity9.81` reproducer arm
+  gives the same classification (cat@46). (Gravity's PRESENCE is still one
+  excitation — the static-free unloaded reproducer is quiescent — but its
+  MAGNITUDE is not the cause.)
 - A knife-edge numeric coincidence: 2-decimal gene rounding reproduces.
 
 ## 15. Known limitations
@@ -492,6 +522,19 @@ terrain 20260727).
   discriminator corrected to "some ordinary load is necessary"; and
   "realization exonerated" over-reached what exact-anchor evidence can
   eliminate.
+- **Review lessons (round 3)**: a zero-gravity world that KEEPS the floor is
+  not free space — the floor still participates, and a `contactDist ≤ 0`
+  count only argues it did not, it does not remove it. The clean experiment
+  builds NO statics at all (`staticColliders = 0`, hard-checked); doing so
+  both settled the sufficiency question unambiguously (springs-alone
+  catastrophic on all four, motors-alone on three of four, unloaded
+  quiescent) and revealed the earlier floor-present magnitudes were
+  contaminated. And every comparative claim the report makes ("9.81 vs 20
+  identical") must be a COMMITTED arm, not a remembered scratch run — the
+  `gravity9.81` reproducer arm now regenerates it. Wording that a variable
+  is "irrelevant" overreaches when the variable is one interchangeable
+  excitation among several: gravity magnitude is immaterial, but gravity's
+  presence is a load.
 - **Review lessons (round 2)**: a "regenerates from `--pass all`" claim is
   only true once the crossing it names is a committed PASS (the spring-only
   / motor-only / unloaded discriminators were still scratch-run, so the

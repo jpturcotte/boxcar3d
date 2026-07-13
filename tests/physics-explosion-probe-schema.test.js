@@ -92,22 +92,27 @@ describe('probe schema smoke', () => {
     }
 
     // Load taxonomy: the smoke crossing endpoints (all internal loads vs the
-    // fully unloaded island), zero gravity, manifold-level touching contacts
-    // measured at every capture. Physics outcomes stay OBSERVATIONS.
+    // fully unloaded island), run GENUINELY static-free (no floor at all).
+    // Every arm's free-space premise is a HARD check (staticColliders 0,
+    // zero touching, zero proximity pairs). Physics outcomes stay OBSERVATIONS.
     expect(report.load.map((l) => l.arm)).toEqual(['original', 'passiveAllS0']);
     for (const l of report.load) {
       expect(l.witness).toBe('A');
       expect(l.armGenotypeDigest).toMatch(HEX8);
       expect(typeof l.internalLoads.motors).toBe('boolean');
       expect(typeof l.internalLoads.springs).toBe('boolean');
-      expect(Number.isInteger(l.contacts.touchingContacts)).toBe(true);
-      expect(Number.isInteger(l.contacts.proximityPairs)).toBe(true);
-      expect(l.contacts.firstTouchingStep === null
-        || Number.isInteger(l.contacts.firstTouchingStep)).toBe(true);
+      // Genuinely free space: no statics, nothing touched.
+      expect(l.staticColliders).toBe(0);
+      expect(l.contacts.touchingContacts).toBe(0);
+      expect(l.contacts.proximityPairs).toBe(0);
+      expect(l.contacts.firstTouchingStep).toBeNull();
       expect(Object.keys(l.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
     }
     expect(report.load.find((l) => l.arm === 'passiveAllS0').internalLoads)
       .toEqual({ motors: false, springs: false });
+    // The free-space premise is hard-checked per arm.
+    expect(report.checks.some((c) => c.name === 'freeSpace:A:original')).toBe(true);
+    expect(report.checks.some((c) => c.name === 'freeSpace:A:passiveAllS0')).toBe(true);
 
     // Localization: one row per witness with the mandated evidence fields.
     expect(report.localization).toHaveLength(1);
@@ -125,7 +130,8 @@ describe('probe schema smoke', () => {
     // deterministic byte-exact repeat hard-checked; onset values are
     // OBSERVATIONS (no must-explode assertion, ever).
     expect(report.reproducer.map((r) => `${r.arm}:${r.flavor}`))
-      .toEqual(['original:deterministic', 'original:ordinary', 'freeSpace:deterministic']);
+      .toEqual(['original:deterministic', 'original:ordinary',
+        'gravity9.81:deterministic', 'freeSpace:deterministic']);
     expect(report.checks.some((c) => c.name === 'identity:reproducer')).toBe(true);
     expect(report.checks.some((c) => c.name === 'repeat:reproducer')).toBe(true);
     for (const r of report.reproducer) {
@@ -133,14 +139,17 @@ describe('probe schema smoke', () => {
       expect(Number.isFinite(r.result.maxForwardDistance)).toBe(true);
       expect(Object.keys(r.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
     }
-    // The free-space arm MEASURES its no-static-contact premise at the
-    // manifold level (touching = contactDist <= 0; pair existence recorded
-    // separately).
+    // The free-space arm is genuinely static-free (no floor at all),
+    // hard-checked: 0 static colliders, nothing touched.
     const freeSpace = report.reproducer.find((r) => r.arm === 'freeSpace');
-    expect(Number.isInteger(freeSpace.contacts.touchingContacts)).toBe(true);
-    expect(Number.isInteger(freeSpace.contacts.proximityPairs)).toBe(true);
-    expect(freeSpace.contacts.firstTouchingStep === null
-      || Number.isInteger(freeSpace.contacts.firstTouchingStep)).toBe(true);
+    expect(freeSpace.contacts.touchingContacts).toBe(0);
+    expect(freeSpace.contacts.proximityPairs).toBe(0);
+    expect(freeSpace.contacts.firstTouchingStep).toBeNull();
+    expect(report.checks.some((c) => c.name === 'freeSpace:reproducer')).toBe(true);
+    // The gravity-magnitude control keeps the floor (a gravity comparison,
+    // not a free-space arm) — it contacts the pad.
+    const gravityArm = report.reproducer.find((r) => r.arm === 'gravity9.81');
+    expect(Number.isInteger(gravityArm.contacts.touchingContacts)).toBe(true);
 
     // Prevalence: one smoke seed, all 20 members classified.
     expect(report.prevalence).toHaveLength(1);

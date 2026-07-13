@@ -146,7 +146,7 @@ export function smokeConfig() {
     componentArms: ['motorOff:all'],
     engineArms: ['baselineComposed', 'solverIters:8'],
     loadArms: ['original', 'passiveAllS0'],
-    reproducerArms: ['original', 'freeSpace'],
+    reproducerArms: ['original', 'gravity9.81', 'freeSpace'],
     prevalenceSeeds: [20260725],
     argv: [],
   };
@@ -305,6 +305,13 @@ function staticContactCounter() {
  *                                leave the world AND the realized record, so
  *                                the loop tracks survivors only
  *   buildInspect({world, rec, handleMap}) -> inspect(stepIndex)
+ *   noStatics                  — build NO terrain/corridor/floor at all: a
+ *                                genuinely static-free world (staticColliders
+ *                                = 0), the honest free-space rig. There is no
+ *                                floor to touch, so a divergence here is
+ *                                unambiguously internal-load-driven — no
+ *                                reliance on contactDist to argue a static
+ *                                manifold did not contribute.
  * The zero-extension composition must reproduce the canonical runEvaluation
  * digest — the engine pass's first arm hard-checks exactly that.
  */
@@ -317,30 +324,37 @@ async function composeRun(ir, {
   bodyTuning = null,
   stationFilter = null,
   buildInspect = null,
+  noStatics = false,
   targetWheelSurfaceSpeed = WITNESS_SPEC.targetWheelSurfaceSpeed,
   wheelFriction = WITNESS_SPEC.wheelFriction,
 } = {}) {
   const { RAPIER, world } = await createPhysics({ deterministic: true });
   try {
     if (worldTuning !== null) worldTuning(world);
-    let terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN, ...terrainOverrides });
-    if (featureFilter !== null) {
-      terrain = { ...terrain, features: terrain.features.filter(featureFilter) };
-    }
     const handleMap = new Map();
-    let corridor;
-    if (terrain.features.length > 0) {
-      corridor = addCorridorWithFeatures(RAPIER, world, terrain);
-      corridor.features.forEach((f, i) => {
-        handleMap.set(f.collider.handle, { kind: 'feature', index: i, type: f.feature.type });
-      });
+    let staticColliders;
+    if (noStatics) {
+      // No corridor, no floor, no walls: the world holds only the vehicle.
+      staticColliders = world.colliders.len(); // 0 — asserted by the caller
     } else {
-      corridor = addCorridor(RAPIER, world, terrain);
-      world.step(); // the [V1] statics-only query-BVH idiom
+      let terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN, ...terrainOverrides });
+      if (featureFilter !== null) {
+        terrain = { ...terrain, features: terrain.features.filter(featureFilter) };
+      }
+      let corridor;
+      if (terrain.features.length > 0) {
+        corridor = addCorridorWithFeatures(RAPIER, world, terrain);
+        corridor.features.forEach((f, i) => {
+          handleMap.set(f.collider.handle, { kind: 'feature', index: i, type: f.feature.type });
+        });
+      } else {
+        corridor = addCorridor(RAPIER, world, terrain);
+        world.step(); // the [V1] statics-only query-BVH idiom
+      }
+      handleMap.set(corridor.floor.handle, { kind: 'floor' });
+      corridor.walls.forEach((wl, i) => handleMap.set(wl.handle, { kind: 'wall', index: i }));
+      staticColliders = world.colliders.len();
     }
-    handleMap.set(corridor.floor.handle, { kind: 'floor' });
-    corridor.walls.forEach((wl, i) => handleMap.set(wl.handle, { kind: 'wall', index: i }));
-    const staticColliders = world.colliders.len();
     const spawn = spawnPoseOnFlatStart(ir, { ...WITNESS_SPEC.spawn });
     let rec = realizeVehicle(RAPIER, world, ir, {
       position: spawn.position, targetWheelSurfaceSpeed, wheelFriction,
@@ -391,7 +405,7 @@ async function composeRun(ir, {
     const result = runRealizedEvaluationLoop(world, [rec], {
       requestedDt, maxSteps, traceMode: 'full', checkpointInterval: 1, staticColliders, inspect,
     });
-    return { result, spawn };
+    return { result, spawn, staticColliders };
   } finally {
     world.free();
   }
@@ -931,16 +945,19 @@ async function enginePass(witnessSet, cfg, check) {
 
 // --- Load-taxonomy pass ----------------------------------------------------------
 //
-// The free-space load discriminators, instrumented (review round 2 — the
-// spring-only/motor-only claims must regenerate from this committed pass,
-// not from scratch runs). Under zero gravity the vehicle spawns clear of
-// the pad and nothing external pushes it, so whatever diverges is driven by
-// INTERNAL loads only. The four arms cross the two internal load sources —
-// drive motors (driven genes x power) and S1 suspension springs (prismatic
-// position motors) — down to the fully unloaded island. EVERY row counts
-// vehicle-vs-static contact pairs at every capture via staticContactCounter,
-// so "free space" is measured, never assumed. Physics outcomes are
-// OBSERVATIONS (never a must-diverge check).
+// The free-space load discriminators, GENUINELY static-free (review round 3:
+// zeroing gravity while keeping the floor is not free space — the floor
+// still participates, and a `contactDist ≤ 0` count only argues it did not,
+// it does not remove the ambiguity). This pass builds NO corridor, NO floor,
+// NO walls (`noStatics: true`, staticColliders asserted 0), so the only
+// bodies in the world are the vehicle's own. Zero gravity + zero statics ⇒
+// nothing external can act; whatever diverges is unambiguously
+// internal-load-driven. The four arms cross the two internal load sources —
+// drive motors (driven genes × power) and S1 suspension springs (prismatic
+// position motors) — down to the fully unloaded island. Each row still runs
+// the contact counter as a SANITY assertion (there being no statics, touching
+// AND proximity must both be 0). Physics outcomes are OBSERVATIONS (never a
+// must-diverge check).
 
 function loadArmsFor(genotype) {
   const allS0 = (g) => ({
@@ -950,28 +967,28 @@ function loadArmsFor(genotype) {
   return [
     {
       name: 'original',
-      changedVariable: 'zero gravity only (all internal loads present)',
+      changedVariable: 'free space (no statics, zero gravity); all internal loads present',
       genotype,
     },
     {
       name: 'passive',
-      changedVariable: 'zero gravity + every driven gene -> 0 (motors removed; S1 springs remain where present)',
+      changedVariable: 'free space + every driven gene -> 0 (motors removed; S1 springs remain where present)',
       genotype: passiveTwinOf(genotype),
     },
     {
       name: 'drivenAllS0',
-      changedVariable: 'zero gravity + every suspType gene -> 0 (springs removed; motors remain)',
+      changedVariable: 'free space + every suspType gene -> 0 (springs removed; motors remain)',
       genotype: repairGenotype(allS0(genotype)),
     },
     {
       name: 'passiveAllS0',
-      changedVariable: 'zero gravity + driven -> 0 AND suspType -> 0 (the fully unloaded island)',
+      changedVariable: 'free space + driven -> 0 AND suspType -> 0 (the fully unloaded island)',
       genotype: repairGenotype(allS0(passiveTwinOf(genotype))),
     },
   ];
 }
 
-async function loadPass(witnessSet, cfg) {
+async function loadPass(witnessSet, cfg, check) {
   const rows = [];
   for (const w of witnessSet) {
     const genotype = witnessGenotype(w.populationSeed, w.individualId);
@@ -980,10 +997,18 @@ async function loadPass(witnessSet, cfg) {
     for (const arm of arms) {
       const ir = compileAssembly(arm.genotype);
       const counter = staticContactCounter();
-      const { result } = await composeRun(ir, {
+      const { result, staticColliders } = await composeRun(ir, {
+        noStatics: true,
         worldTuning: (world) => { world.gravity = { x: 0, y: 0, z: 0 }; },
         buildInspect: counter.buildInspect,
       });
+      // The free-space premise is a HARD check: no static collider exists,
+      // and the counter confirms the vehicle touched nothing.
+      check(`freeSpace:${w.label}:${arm.name}`,
+        staticColliders === 0 && counter.state.touchingContacts === 0
+          && counter.state.proximityPairs === 0,
+        `staticColliders ${staticColliders}, touching ${counter.state.touchingContacts}, `
+          + `proximityPairs ${counter.state.proximityPairs}`);
       rows.push({
         witness: w.label,
         arm: arm.name,
@@ -995,6 +1020,7 @@ async function loadPass(witnessSet, cfg) {
           motors: ir.axles.some((a) => a.wheels.some((wh) => wh.driven && wh.driveTorque > 0)),
           springs: ir.axles.some((a) => a.suspension.type === 'S1'),
         },
+        staticColliders,
         contacts: { ...counter.state },
         result: summarize(result, ir),
       });
@@ -1338,7 +1364,7 @@ export async function runProbe(config) {
   if (passes.includes('terrain')) report.terrain = await terrainPass(witnessSet, cfg);
   if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
   if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
-  if (passes.includes('load')) report.load = await loadPass(witnessSet, cfg);
+  if (passes.includes('load')) report.load = await loadPass(witnessSet, cfg, check);
   if (passes.includes('local')) report.localization = await localPass(witnessSet);
   if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check);
   if (passes.includes('prevalence')) report.prevalence = await prevalencePass(cfg);
@@ -1351,10 +1377,12 @@ export async function runProbe(config) {
 // engine-limitation ruling gets re-evaluated. The pass carries the FULL
 // closure matrix, so the necessary/sufficient claims regenerate from this
 // one command: the unchanged reproducer on both flavors, each documented
-// stabilizer (either axle removed, narrow track, heavy chassis), and the
-// free-space load discriminator (zero gravity, touching contacts measured).
+// stabilizer (either axle removed, narrow track, heavy chassis), the
+// gravity-magnitude control (9.81 vs the project's 20), and the genuinely
+// static-free discriminator (no floor at all, quiescent).
 const REPRODUCER_ARMS = Object.freeze([
-  'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis', 'freeSpace',
+  'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis',
+  'gravity9.81', 'freeSpace',
 ]);
 
 async function reproducerPass(cfg, check) {
@@ -1387,21 +1415,46 @@ async function reproducerPass(cfg, check) {
       }
       continue;
     }
-    if (arm === 'freeSpace') {
-      // Zero gravity: the vehicle spawns 0.02 m above the pad and never
-      // falls — staticContactCounter measures vehicle-vs-static contact
-      // pairs at every capture, so "no contact occurred" is measured,
-      // never assumed.
+    if (arm === 'gravity9.81') {
+      // The gravity-MAGNITUDE control: the project ships g = 20; does 9.81
+      // (earth) change the reproducer's classification? Floor kept — this
+      // is a gravity comparison, not a free-space arm.
       const counter = staticContactCounter();
       const { result } = await composeRun(ir, {
         terrainOverrides: overrides,
-        worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
+        worldTuning: (w) => { w.gravity = { x: 0, y: -9.81, z: 0 }; },
         buildInspect: counter.buildInspect,
       });
       rows.push({
         arm,
         flavor: 'deterministic',
-        changedVariable: 'world.gravity = 0 (free space; static contact measured at every capture, never assumed)',
+        changedVariable: 'world.gravity.y = -9.81 (vs the project policy -20)',
+        genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+        contacts: { ...counter.state },
+        result: summarize(result, ir),
+      });
+      continue;
+    }
+    if (arm === 'freeSpace') {
+      // Genuinely static-free: NO floor at all (staticColliders = 0,
+      // hard-checked), zero gravity. The undriven all-S0 reproducer has no
+      // internal load either, so nothing can act — the unloaded island is
+      // quiescent with no reliance on a contactDist argument.
+      const counter = staticContactCounter();
+      const { result, staticColliders } = await composeRun(ir, {
+        noStatics: true,
+        worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
+        buildInspect: counter.buildInspect,
+      });
+      check('freeSpace:reproducer',
+        staticColliders === 0 && counter.state.touchingContacts === 0
+          && counter.state.proximityPairs === 0,
+        `staticColliders ${staticColliders}, touching ${counter.state.touchingContacts}, `
+          + `proximityPairs ${counter.state.proximityPairs}`);
+      rows.push({
+        arm,
+        flavor: 'deterministic',
+        changedVariable: 'no statics at all + zero gravity (genuinely free space; staticColliders 0 hard-checked)',
         genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
         contacts: { ...counter.state },
         result: summarize(result, ir),
@@ -1545,23 +1598,24 @@ export function renderMarkdown(report) {
     );
   }
   if (report.load !== null && report.load !== undefined) {
-    L.push('## Load taxonomy (zero gravity — internal loads only, contact-counted)');
+    L.push('## Load taxonomy (genuinely free space — no statics, zero gravity)');
     L.push('');
-    L.push('Free space is MEASURED: every row counts manifold contact points with '
-      + 'contactDist <= 0 (touching/penetration) between vehicle and static '
-      + 'colliders at every capture, plus the closest approach ever observed. '
-      + 'Narrow-phase pair EXISTENCE is recorded separately (the heightfield\'s '
-      + 'conservative AABB keeps contact-free pairs alive over real terrain). The '
-      + 'crossing separates the two internal load sources (drive motors x S1 '
-      + 'springs) down to the fully unloaded island. Outcomes are OBSERVATIONS.');
+    L.push('This pass builds NO corridor, floor, or walls (static colliders = 0, '
+      + 'HARD-checked) and zeroes gravity, so nothing external can act — a '
+      + 'divergence here is unambiguously internal-load-driven, with no reliance '
+      + 'on a `contactDist` argument that a floor did not contribute. The '
+      + 'touching-contact counter is a sanity assertion (0 by construction, '
+      + 'checked). The crossing separates the two internal load sources (drive '
+      + 'motors x S1 springs) down to the fully unloaded island. Outcomes are '
+      + 'OBSERVATIONS.');
     L.push('');
     table(
-      ['witness', 'arm', 'digest', 'loads', 'touching (first @step)', 'min dist (m)', 'maxFwd (m)', 'peak body (m/s)', 'onset'],
+      ['witness', 'arm', 'digest', 'loads', 'static colliders', 'touching', 'maxFwd (m)', 'peak body (m/s)', 'onset'],
       report.load.map((r) => [
         r.witness, r.arm, r.armGenotypeDigest,
         `${r.internalLoads.motors ? 'motors' : '-'}/${r.internalLoads.springs ? 'springs' : '-'}`,
-        `${r.contacts.touchingContacts}${r.contacts.firstTouchingStep === null ? '' : ` (@${r.contacts.firstTouchingStep})`}`,
-        r.contacts.minContactDistance === null ? '(no pair)' : exp3(r.contacts.minContactDistance),
+        r.staticColliders,
+        r.contacts.touchingContacts,
         exp3(r.result.maxForwardDistance),
         exp3(r.result.peakBodySpeed),
         onsetCell(r.result.onset),

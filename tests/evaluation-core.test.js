@@ -1,0 +1,183 @@
+// The shared evaluation-loop seam (runRealizedEvaluationLoop) — extraction
+// contract for the physics-integrity investigation. Deterministic flavor
+// only: the equivalence property is structural (the SAME statements run in
+// both compositions), so one flavor suffices and keeps the local footprint
+// light; the A–D golden locks in test:determinism separately prove the
+// production path moved zero digests.
+//
+// Config: witness S (20260725:14, the smallest witness — 3 axles, 11 bodies)
+// on the composite characterization terrain (seed 20260727 — features > 0 so
+// the addCorridorWithFeatures path is exercised), 150 steps.
+
+import { describe, test, expect } from 'vitest';
+import { runEvaluation, runRealizedEvaluationLoop } from '../src/sim/evaluation.js';
+import {
+  FIXED_DT, addCorridorWithFeatures, createPhysics, realizeVehicle,
+} from '../src/sim/physics/adapter.js';
+import { generateCorridorTerrain } from '../src/sim/terrain.js';
+import { compareTraces } from '../src/sim/trace.js';
+import { compileAssembly } from '../src/sim/assembly.js';
+import { spawnPoseOnFlatStart } from '../src/sim/population-evaluation.js';
+import { WITNESS_TERRAIN, witnessGenotype } from '../scripts/explosion-witnesses.js';
+
+const STEPS = 150;
+const ir = compileAssembly(witnessGenotype(20260725, 14));
+const spawn = spawnPoseOnFlatStart(ir, { x: -44, z: 0 });
+
+/**
+ * Compose the loop exactly as runEvaluation does: createPhysics -> terrain
+ * (+ its statics BVH step inside addFeatures) -> staticColliders readback ->
+ * realizeVehicle -> runRealizedEvaluationLoop. `withWorld` runs between
+ * realization and the loop so a test can build an inspect closure over the
+ * live world/colliders it owns.
+ */
+async function composed({ maxSteps = STEPS, withWorld = null } = {}) {
+  const { RAPIER, world } = await createPhysics({ deterministic: true });
+  try {
+    expect(world.timestep).toBe(Math.fround(FIXED_DT));
+    const terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN });
+    expect(terrain.features.length).toBeGreaterThan(0); // composite path exercised
+    addCorridorWithFeatures(RAPIER, world, terrain);
+    const staticColliders = world.colliders.len();
+    const realized = [realizeVehicle(RAPIER, world, ir, {
+      position: spawn.position, targetWheelSurfaceSpeed: 5, wheelFriction: 1,
+    })];
+    const extra = withWorld === null ? {} : withWorld(world, realized);
+    const result = runRealizedEvaluationLoop(world, realized, {
+      requestedDt: FIXED_DT,
+      maxSteps,
+      traceMode: 'full',
+      checkpointInterval: 1,
+      staticColliders,
+      ...extra,
+    });
+    return result;
+  } finally {
+    world.free();
+  }
+}
+
+const direct = () => runEvaluation({
+  deterministic: true,
+  terrain: { ...WITNESS_TERRAIN },
+  vehicles: [{ ir, spawn, targetWheelSurfaceSpeed: 5, wheelFriction: 1 }],
+  maxSteps: STEPS,
+  trace: { mode: 'full', checkpointInterval: 1 },
+});
+
+describe('runRealizedEvaluationLoop (the shared loop seam)', () => {
+  test('a composition identical to runEvaluation reproduces its result byte-for-byte', { timeout: 240000 }, async () => {
+    const a = await direct();
+    const b = await composed();
+    expect(b.trace.recordCount).toBe(a.trace.recordCount);
+    const div = compareTraces(a.trace, b.trace);
+    expect(div === null ? null : JSON.stringify(div)).toBeNull();
+    expect(b.trace.digest).toBe(a.trace.digest);
+    expect(b.counts).toEqual(a.counts);
+    expect(b.vehicles).toEqual(a.vehicles);
+    expect(b.requestedDt).toBe(a.requestedDt);
+    expect(b.effectiveDt).toBe(a.effectiveDt);
+    expect(b.executedSteps).toBe(a.executedSteps);
+    expect(b.terminationReason).toBe(a.terminationReason);
+  });
+
+  test('a REAL contact-querying inspect is observationally inert (identical bytes and results)', { timeout: 240000 }, async () => {
+    const silent = await composed();
+    let calls = 0;
+    let contactPairs = 0;
+    let manifoldReads = 0;
+    const noisy = await composed({
+      withWorld: (world, realized) => {
+        const colliders = [
+          ...realized[0].chassis.colliders,
+          ...realized[0].wheels.map((st) => st.wheel.collider),
+        ];
+        return {
+          inspect: () => {
+            calls += 1;
+            for (const c of colliders) {
+              world.contactPairsWith(c, (other) => {
+                contactPairs += 1;
+                world.contactPair(c, other, (manifold) => {
+                  const n = manifold.numContacts();
+                  for (let i = 0; i < n; i += 1) {
+                    manifold.contactDist(i);
+                    manifold.contactImpulse(i);
+                    manifoldReads += 1;
+                  }
+                  manifold.normal();
+                });
+              });
+            }
+          },
+        };
+      },
+    });
+    // The hook genuinely ran and genuinely touched the narrow phase.
+    expect(calls).toBe(STEPS + 1); // capture 0 + every step
+    expect(contactPairs).toBeGreaterThan(0);
+    expect(manifoldReads).toBeGreaterThan(0);
+    // ... and changed nothing.
+    const div = compareTraces(silent.trace, noisy.trace);
+    expect(div === null ? null : JSON.stringify(div)).toBeNull();
+    expect(noisy.trace.digest).toBe(silent.trace.digest);
+    expect(noisy.vehicles).toEqual(silent.vehicles);
+    expect(noisy.counts).toEqual(silent.counts);
+  });
+
+  test('requestedDt is the caller declaration; effectiveDt is the engine readback (honest 1/120 semantics)', { timeout: 240000 }, async () => {
+    const { RAPIER, world } = await createPhysics({ deterministic: true });
+    try {
+      world.timestep = 1 / 120;
+      expect(world.timestep).toBe(Math.fround(1 / 120)); // the engine's f32 storage
+      const terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN });
+      addCorridorWithFeatures(RAPIER, world, terrain);
+      const staticColliders = world.colliders.len();
+      const realized = [realizeVehicle(RAPIER, world, ir, {
+        position: spawn.position, targetWheelSurfaceSpeed: 5, wheelFriction: 1,
+      })];
+      const r = runRealizedEvaluationLoop(world, realized, {
+        requestedDt: 1 / 120, maxSteps: 10, staticColliders,
+      });
+      // No physics claim — only the honest-reporting contract.
+      expect(r.requestedDt).toBe(1 / 120);
+      expect(r.effectiveDt).toBe(Math.fround(1 / 120));
+      expect(r.executedSteps).toBe(10);
+    } finally {
+      world.free();
+    }
+  });
+
+  test('direct-caller guards fail loud', { timeout: 240000 }, async () => {
+    const { RAPIER, world } = await createPhysics({ deterministic: true });
+    try {
+      const terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN, featureDensity: 0 });
+      const { addCorridor } = await import('../src/sim/physics/adapter.js');
+      addCorridor(RAPIER, world, terrain);
+      world.step();
+      const staticColliders = world.colliders.len();
+      const realized = [realizeVehicle(RAPIER, world, ir, {
+        position: spawn.position, targetWheelSurfaceSpeed: 5, wheelFriction: 1,
+      })];
+      const base = { requestedDt: FIXED_DT, maxSteps: 1, staticColliders };
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, requestedDt: 0 }))
+        .toThrow(/requestedDt/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, requestedDt: NaN }))
+        .toThrow(/requestedDt/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, maxSteps: 0 }))
+        .toThrow(/maxSteps/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, traceMode: 'verbose' }))
+        .toThrow(/traceMode/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, staticColliders: -1 }))
+        .toThrow(/staticColliders/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, inspect: 42 }))
+        .toThrow(/inspect/);
+      // The guards threw BEFORE any stepping — the world is still steppable
+      // and a real run still works afterwards.
+      const r = runRealizedEvaluationLoop(world, realized, base);
+      expect(r.executedSteps).toBe(1);
+    } finally {
+      world.free();
+    }
+  });
+});

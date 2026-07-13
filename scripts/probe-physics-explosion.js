@@ -132,12 +132,12 @@ const TERRAIN_VARIANTS = Object.freeze({
 });
 
 const IMPLEMENTED_PASSES = Object.freeze([
-  'baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence',
+  'baseline', 'terrain', 'vehicle', 'engine', 'load', 'local', 'reproducer', 'prevalence',
 ]);
 
 export function smokeConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'load', 'local', 'reproducer', 'prevalence'],
     witnesses: ['A'],
     ordinaryFlavor: false,
     controls: false,
@@ -145,6 +145,7 @@ export function smokeConfig() {
     vehicleArms: ['passive', 'powerZero', 'sled'],
     componentArms: ['motorOff:all'],
     engineArms: ['baselineComposed', 'solverIters:8'],
+    loadArms: ['original', 'passiveAllS0'],
     reproducerArms: ['original', 'freeSpace'],
     prevalenceSeeds: [20260725],
     argv: [],
@@ -153,7 +154,7 @@ export function smokeConfig() {
 
 export function defaultConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'load', 'local', 'reproducer', 'prevalence'],
     witnesses: ['A'],
     ordinaryFlavor: true,
     controls: true,
@@ -161,6 +162,7 @@ export function defaultConfig() {
     vehicleArms: null, // null = every arm
     componentArms: null,
     engineArms: null,
+    loadArms: null,
     reproducerArms: null,
     prevalenceSeeds: [20260725, 20260728, 20260729],
     argv: [],
@@ -200,6 +202,19 @@ function selectPasses(selector) {
   return list;
 }
 
+/**
+ * Normalize a pass selection — a string or an array whose entries may each
+ * be a pass name, a comma-separated list, or 'all' — into the deduplicated
+ * expanded list runProbe dispatches on. This is the ONE normalization both
+ * the CLI and the programmatic API flow through (review finding: runProbe
+ * used to VALIDATE entries via selectPasses but dispatch on the raw array,
+ * so passes: ['all'] validated successfully and then ran nothing).
+ */
+export function normalizePasses(selector) {
+  const entries = Array.isArray(selector) ? selector : [selector];
+  return [...new Set(entries.flatMap((p) => selectPasses(p)))];
+}
+
 // --- Stage-2 composition (the earned shared-loop seam) --------------------------
 
 // Rotate a vector by a unit quaternion (pure; scripts are outside the sim ban
@@ -222,6 +237,60 @@ const eachDynamicBody = (rec, fn) => {
     if (st.hub !== null) fn(st.hub.body);
   }
 };
+
+/**
+ * Vehicle-vs-static contact counting for free-space claims: an inspect hook
+ * that, at EVERY capture (0..maxSteps), inspects every narrow-phase pair
+ * between a vehicle collider and a non-vehicle (static) collider and counts
+ * MANIFOLD contact points with contactDist <= 0 — actual touching or
+ * penetration. Pair EXISTENCE is recorded separately as proximityPairs but
+ * is NOT the contact measure: on real (non-flat) terrain the heightfield's
+ * conservative AABB spans its full height range, so a body hovering over
+ * the pad carries a contact-free narrow-phase pair at every capture
+ * (measured — the quiescent fully-unloaded arms show thousands of pairs
+ * with zero touching points and peak body speed exactly 0). Vehicle
+ * self-pairs are collision-inert and excluded. minContactDistance records
+ * the closest approach ever observed, so "no contact" comes with its
+ * measured margin.
+ */
+function staticContactCounter() {
+  const state = {
+    proximityPairs: 0,
+    touchingContacts: 0,
+    firstTouchingStep: null,
+    minContactDistance: null,
+  };
+  const buildInspect = ({ world, rec, handleMap }) => {
+    const colliders = [
+      ...rec.chassis.colliders,
+      ...rec.wheels.flatMap((st) => [st.wheel.collider,
+        ...(st.hub !== null && st.hub.collider !== undefined ? [st.hub.collider] : [])]),
+    ];
+    return (stepIndex) => {
+      for (const c of colliders) {
+        world.contactPairsWith(c, (other) => {
+          const partner = handleMap.get(other.handle);
+          if (partner === undefined || partner.kind === 'vehicle') return;
+          state.proximityPairs += 1;
+          world.contactPair(c, other, (m) => {
+            const n = m.numContacts();
+            for (let i = 0; i < n; i += 1) {
+              const d = m.contactDist(i);
+              if (state.minContactDistance === null || d < state.minContactDistance) {
+                state.minContactDistance = d;
+              }
+              if (d <= 0) {
+                state.touchingContacts += 1;
+                if (state.firstTouchingStep === null) state.firstTouchingStep = stepIndex;
+              }
+            }
+          });
+        });
+      }
+    };
+  };
+  return { state, buildInspect };
+}
 
 /**
  * Compose one DIAGNOSTIC run through runRealizedEvaluationLoop exactly as
@@ -487,7 +556,8 @@ async function baselinePass(witnessSet, cfg, report, check) {
         `byte-exact record streams + checkpoints (digests ${r1.trace.digest}/${r2.trace.digest})`);
       check(`dt:${w.label}:${passive ? 'passive' : 'driven'}`,
         r1.effectiveDt === Math.fround(FIXED_DT), `effectiveDt ${r1.effectiveDt}`);
-      if (report.engine.effectiveDt === null) report.engine.effectiveDt = r1.effectiveDt;
+      check(`dt:global:${w.label}`, r1.effectiveDt === report.engine.effectiveDt,
+        `run readback ${r1.effectiveDt} vs global ${report.engine.effectiveDt}`);
       const row = {
         witness: w.label,
         populationSeed: w.populationSeed,
@@ -827,11 +897,8 @@ const ENGINE_ARMS = Object.freeze([
   { name: 'softCcd:0.1', changedVariable: 'setSoftCcdPrediction(0.1) (policy 1)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.1)) } },
   { name: 'softCcd:0.5', changedVariable: 'setSoftCcdPrediction(0.5)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.5)) } },
   { name: 'softCcd:2', changedVariable: 'setSoftCcdPrediction(2)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(2)) } },
-  {
-    name: 'zeroGravity',
-    changedVariable: 'world.gravity = 0 (free space: the ground-contact/internal-load discriminator — the vehicle spawns 0.02 m up and never falls)',
-    opts: { worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; } },
-  },
+  // Zero gravity lives in the dedicated LOAD pass (below), where every
+  // free-space row is contact-counted — one place owns free-space claims.
 ]);
 
 async function enginePass(witnessSet, cfg, check) {
@@ -855,6 +922,80 @@ async function enginePass(witnessSet, cfg, check) {
         requestedDt: result.requestedDt,
         effectiveDt: result.effectiveDt,
         executedSteps: result.executedSteps,
+        result: summarize(result, ir),
+      });
+    }
+  }
+  return rows;
+}
+
+// --- Load-taxonomy pass ----------------------------------------------------------
+//
+// The free-space load discriminators, instrumented (review round 2 — the
+// spring-only/motor-only claims must regenerate from this committed pass,
+// not from scratch runs). Under zero gravity the vehicle spawns clear of
+// the pad and nothing external pushes it, so whatever diverges is driven by
+// INTERNAL loads only. The four arms cross the two internal load sources —
+// drive motors (driven genes x power) and S1 suspension springs (prismatic
+// position motors) — down to the fully unloaded island. EVERY row counts
+// vehicle-vs-static contact pairs at every capture via staticContactCounter,
+// so "free space" is measured, never assumed. Physics outcomes are
+// OBSERVATIONS (never a must-diverge check).
+
+function loadArmsFor(genotype) {
+  const allS0 = (g) => ({
+    ...deepClone(g),
+    axles: g.axles.map((a) => ({ ...deepClone(a), suspType: 0 })),
+  });
+  return [
+    {
+      name: 'original',
+      changedVariable: 'zero gravity only (all internal loads present)',
+      genotype,
+    },
+    {
+      name: 'passive',
+      changedVariable: 'zero gravity + every driven gene -> 0 (motors removed; S1 springs remain where present)',
+      genotype: passiveTwinOf(genotype),
+    },
+    {
+      name: 'drivenAllS0',
+      changedVariable: 'zero gravity + every suspType gene -> 0 (springs removed; motors remain)',
+      genotype: repairGenotype(allS0(genotype)),
+    },
+    {
+      name: 'passiveAllS0',
+      changedVariable: 'zero gravity + driven -> 0 AND suspType -> 0 (the fully unloaded island)',
+      genotype: repairGenotype(allS0(passiveTwinOf(genotype))),
+    },
+  ];
+}
+
+async function loadPass(witnessSet, cfg) {
+  const rows = [];
+  for (const w of witnessSet) {
+    const genotype = witnessGenotype(w.populationSeed, w.individualId);
+    let arms = loadArmsFor(genotype);
+    if (cfg.loadArms !== null) arms = arms.filter((a) => cfg.loadArms.includes(a.name));
+    for (const arm of arms) {
+      const ir = compileAssembly(arm.genotype);
+      const counter = staticContactCounter();
+      const { result } = await composeRun(ir, {
+        worldTuning: (world) => { world.gravity = { x: 0, y: 0, z: 0 }; },
+        buildInspect: counter.buildInspect,
+      });
+      rows.push({
+        witness: w.label,
+        arm: arm.name,
+        changedVariable: arm.changedVariable,
+        armGenotypeDigest: fnv1aHex(serializeGenotype(arm.genotype)),
+        internalLoads: {
+          // The realizer's own motor condition; S1 stiffness genes decode
+          // to [2000, 50000] N/m, so any S1 station carries a live spring.
+          motors: ir.axles.some((a) => a.wheels.some((wh) => wh.driven && wh.driveTorque > 0)),
+          springs: ir.axles.some((a) => a.suspension.type === 'S1'),
+        },
+        contacts: { ...counter.state },
         result: summarize(result, ir),
       });
     }
@@ -1155,12 +1296,15 @@ async function localPass(witnessSet) {
 export async function runProbe(config) {
   const cfg = { ...defaultConfig(), ...config };
   const witnessSet = selectWitnesses(cfg.witnesses);
-  const passes = cfg.passes;
-  for (const p of passes) selectPasses(p); // validate every named pass
+  // Expand AND dispatch on the same normalized list — 'all' and
+  // comma-separated entries work identically in the programmatic API and
+  // the CLI (the round-2 review finding).
+  const passes = normalizePasses(cfg.passes);
 
   const report = {
     schema: PROBE_SCHEMA,
     argv: cfg.argv ?? [],
+    passes,
     engine: { rapierVersion: null, deterministic: true, effectiveDt: null },
     checks: [],
     baseline: null,
@@ -1168,6 +1312,7 @@ export async function runProbe(config) {
     terrain: null,
     vehicle: null,
     engineAblations: null,
+    load: null,
     localization: null,
     reproducer: null,
     prevalence: null,
@@ -1177,6 +1322,12 @@ export async function runProbe(config) {
   {
     const { RAPIER, world } = await createPhysics({ deterministic: true });
     report.engine.rapierVersion = RAPIER.version();
+    // The canonical-dt f32 readback (the identical assignment-then-readback
+    // semantics runEvaluation asserts), measured here so a single-pass run
+    // (e.g. --pass reproducer) never renders a null global timestep. Every
+    // row still carries its own per-run effectiveDt.
+    world.timestep = FIXED_DT;
+    report.engine.effectiveDt = world.timestep;
     world.free();
   }
 
@@ -1187,6 +1338,7 @@ export async function runProbe(config) {
   if (passes.includes('terrain')) report.terrain = await terrainPass(witnessSet, cfg);
   if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
   if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
+  if (passes.includes('load')) report.load = await loadPass(witnessSet, cfg);
   if (passes.includes('local')) report.localization = await localPass(witnessSet);
   if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check);
   if (passes.includes('prevalence')) report.prevalence = await prevalencePass(cfg);
@@ -1200,7 +1352,7 @@ export async function runProbe(config) {
 // closure matrix, so the necessary/sufficient claims regenerate from this
 // one command: the unchanged reproducer on both flavors, each documented
 // stabilizer (either axle removed, narrow track, heavy chassis), and the
-// free-space load discriminator (zero gravity, zero static contacts).
+// free-space load discriminator (zero gravity, touching contacts measured).
 const REPRODUCER_ARMS = Object.freeze([
   'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis', 'freeSpace',
 ]);
@@ -1229,7 +1381,7 @@ async function reproducerPass(cfg, check) {
           flavor: deterministic ? 'deterministic' : 'ordinary',
           changedVariable: 'none (the committed reproducer)',
           genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
-          staticContacts: null,
+          contacts: null,
           result: summarize(r, ir),
         });
       }
@@ -1237,35 +1389,21 @@ async function reproducerPass(cfg, check) {
     }
     if (arm === 'freeSpace') {
       // Zero gravity: the vehicle spawns 0.02 m above the pad and never
-      // falls — the run counts vehicle-vs-STATIC contact pairs across every
-      // capture, so "no contact occurred" is measured, never assumed
-      // (vehicle self-pairs are collision-inert and excluded).
-      let staticContacts = 0;
+      // falls — staticContactCounter measures vehicle-vs-static contact
+      // pairs at every capture, so "no contact occurred" is measured,
+      // never assumed.
+      const counter = staticContactCounter();
       const { result } = await composeRun(ir, {
         terrainOverrides: overrides,
         worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
-        buildInspect: ({ world, rec, handleMap }) => {
-          const colliders = [
-            ...rec.chassis.colliders,
-            ...rec.wheels.flatMap((st) => [st.wheel.collider,
-              ...(st.hub !== null && st.hub.collider !== undefined ? [st.hub.collider] : [])]),
-          ];
-          return () => {
-            for (const c of colliders) {
-              world.contactPairsWith(c, (other) => {
-                const partner = handleMap.get(other.handle);
-                if (partner !== undefined && partner.kind !== 'vehicle') staticContacts += 1;
-              });
-            }
-          };
-        },
+        buildInspect: counter.buildInspect,
       });
       rows.push({
         arm,
         flavor: 'deterministic',
-        changedVariable: 'world.gravity = 0 (free space; no static contact ever occurs — measured)',
+        changedVariable: 'world.gravity = 0 (free space; static contact measured at every capture, never assumed)',
         genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
-        staticContacts,
+        contacts: { ...counter.state },
         result: summarize(result, ir),
       });
       continue;
@@ -1293,7 +1431,7 @@ async function reproducerPass(cfg, check) {
       flavor: 'deterministic',
       changedVariable,
       genotypeDigest: fnv1aHex(serializeGenotype(armGenotype)),
-      staticContacts: null,
+      contacts: null,
       result: summarize(r, armIr),
     });
   }
@@ -1406,6 +1544,30 @@ export function renderMarkdown(report) {
       ]),
     );
   }
+  if (report.load !== null && report.load !== undefined) {
+    L.push('## Load taxonomy (zero gravity — internal loads only, contact-counted)');
+    L.push('');
+    L.push('Free space is MEASURED: every row counts manifold contact points with '
+      + 'contactDist <= 0 (touching/penetration) between vehicle and static '
+      + 'colliders at every capture, plus the closest approach ever observed. '
+      + 'Narrow-phase pair EXISTENCE is recorded separately (the heightfield\'s '
+      + 'conservative AABB keeps contact-free pairs alive over real terrain). The '
+      + 'crossing separates the two internal load sources (drive motors x S1 '
+      + 'springs) down to the fully unloaded island. Outcomes are OBSERVATIONS.');
+    L.push('');
+    table(
+      ['witness', 'arm', 'digest', 'loads', 'touching (first @step)', 'min dist (m)', 'maxFwd (m)', 'peak body (m/s)', 'onset'],
+      report.load.map((r) => [
+        r.witness, r.arm, r.armGenotypeDigest,
+        `${r.internalLoads.motors ? 'motors' : '-'}/${r.internalLoads.springs ? 'springs' : '-'}`,
+        `${r.contacts.touchingContacts}${r.contacts.firstTouchingStep === null ? '' : ` (@${r.contacts.firstTouchingStep})`}`,
+        r.contacts.minContactDistance === null ? '(no pair)' : exp3(r.contacts.minContactDistance),
+        exp3(r.result.maxForwardDistance),
+        exp3(r.result.peakBodySpeed),
+        onsetCell(r.result.onset),
+      ]),
+    );
+  }
   if (report.localization !== null) {
     L.push('## Localization (contact evidence, spawn geometry, joint stretch)');
     L.push('');
@@ -1439,10 +1601,11 @@ export function renderMarkdown(report) {
     L.push('## Minimum reproducer + closure matrix (2 wide-track paired S0 axles, light chassis, undriven, flat ground)');
     L.push('');
     table(
-      ['arm', 'flavor', 'changed variable', 'digest', 'static contacts', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
+      ['arm', 'flavor', 'changed variable', 'digest', 'touching contacts (first @step)', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
       report.reproducer.map((r) => [
         r.arm, r.flavor, r.changedVariable, r.genotypeDigest,
-        r.staticContacts === null ? '-' : r.staticContacts,
+        r.contacts === null ? '-'
+          : `${r.contacts.touchingContacts}${r.contacts.firstTouchingStep === null ? '' : ` (@${r.contacts.firstTouchingStep})`}`,
         exp3(r.result.maxForwardDistance),
         exp3(r.result.peakBodySpeed),
         onsetCell(r.result.onset),
@@ -1483,7 +1646,9 @@ async function main() {
   });
   const config = values.smoke ? smokeConfig() : defaultConfig();
   if (values.witness !== undefined) config.witnesses = values.witness;
-  if (values.pass !== undefined) config.passes = selectPasses(values.pass);
+  // runProbe normalizes ('all' / comma lists) — the CLI and the
+  // programmatic API flow through the one normalizePasses authority.
+  if (values.pass !== undefined) config.passes = values.pass;
   config.argv = process.argv.slice(2);
 
   const report = await runProbe(config);

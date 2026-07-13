@@ -179,11 +179,14 @@ these witnesses.
 
 Ecological (genotype-level, edit → repair → compile; every arm digest
 recorded): passive and power→0 twins explode identically for all four
-witnesses (the drive is not the energy source; `targetWheelSurfaceSpeed: 0`
-with driven wheels is rejected pre-world by ruling, so power→0 is the legal
-zero-drive analogue and produced bit-identical outcomes to the passive
-twin). Power ×0.5/×0.25/×0.1 is non-monotone in magnitude. All-S0
-conversions still explode (S1 is not necessary). **Every single-module arm
+witnesses (**drive is not necessary and cannot account for the catastrophic
+energy magnitude** — the passive and motor-off islands reach the same 1e9+
+m/s speeds; **motor torque can nevertheless excite the unstable island**,
+witnessed by the motors-only free-space arm in §9). `targetWheelSurfaceSpeed:
+0` with driven wheels is rejected pre-world by ruling, so power→0 is the legal
+zero-drive analogue and produced bit-identical outcomes to the passive twin.
+Power ×0.5/×0.25/×0.1 is non-monotone in magnitude. All-S0 conversions still
+explode (S1 is not necessary). **Every single-module arm
 and every chassis-only sled is completely stable** — at least two axle
 modules on one chassis are required. Per-axle removal does not cure A/B/C
 (several arms worsen); S is cured by removing ANY of its three axles.
@@ -216,14 +219,25 @@ No arm abolishes the event for any witness:
   dt-scaled by the declared captureDt so onsets are unit-consistent): does
   not cure; B becomes astronomically worse (peak 1.66e21 m/s). Not an
   integrator step-size problem.
-- **Zero gravity (free space)**: all four witnesses STILL diverge with no
-  settle load (A cat@33, B cat@48, C cat@42, S cat@122) — their S1 spring
-  motors and drive motors are internal loads. The load taxonomy on witness
-  A: passive all-S0 in free space (no internal loads at all) is completely
-  quiescent; S1 springs alone diverge (cat@49); drive motors alone (all-S0
-  driven) diverge (cat@36). The passive all-S0 minimal reproducer in free
-  space is quiescent with a MEASURED zero static contacts (the probe's
-  freeSpace arm counts vehicle-vs-static pairs every capture).
+- **Zero gravity (free space) — the committed `load` pass**: a dedicated
+  pass crosses the two internal load sources on every witness and counts
+  vehicle-vs-static touching contacts (manifold points with `contactDist ≤
+  0`) at every capture, so "free space" is measured, not assumed. The
+  witness-A crossing (all four witnesses in the pass table):
+  | free-space arm (zero gravity) | internal loads | touching contacts | first alert / catastrophe |
+  | --- | --- | --- | --- |
+  | original | motors + springs | 60 (first @25) | alert@19 / cat@33 |
+  | passive (driven→0) | springs only | 40 (first @38) | alert@35 / cat@48 |
+  | drivenAllS0 (suspType→0) | motors only | 64 (first @20) | alert@24 / cat@36 |
+  | passiveAllS0 (both off) | none | **0 (no touching contact ever)** | **no alert; peak body speed exactly 0** |
+  All four full witnesses still diverge under zero gravity in the driven
+  `original` arm (A cat@33, B cat@48, C cat@42, S cat@122). The crossing
+  isolates the trigger: **S1 springs alone (cat@48) and drive motors alone
+  (cat@36) each suffice; the fully unloaded island is quiescent** — the only
+  arm with a MEASURED zero touching contacts (proximity pairs still exist
+  over the pad's conservative heightfield AABB, but none carry a contact
+  point). Every free-space claim regenerates from
+  `npm run probe:physics-explosion -- --witness all --pass load`.
 - **world.numSolverIterations 2/8/16**: MORE iterations make onset EARLIER
   and usually larger (A at 16: alert@9, cat@16; C at 16: peak 5.7e11) —
   iteration accelerates the divergence, the signature of a non-convergent
@@ -265,12 +279,16 @@ is an observation — no committed test asserts the explosion occurs).
 
 ## 11. Causal classification
 
-- **Necessary**: ≥ 2 axle modules on one chassis; long lateral anchor arms
-  (wide track relative to the chassis body); a light chassis relative to its
-  wheel set (in the minimal configuration); and SOME ordinary load exciting
-  the island — floor-contact settle, S1 spring preload, or drive-motor
-  torque EACH suffice, and with none of them (passive all-S0 in free space)
-  the island is quiescent (measured: zero static contacts, zero alerts). No
+- **Necessary in every tested witness reduction and in the committed
+  minimal-reproducer closure** (NOT asserted as a universal theorem about
+  every possible Rapier joint-island divergence — the conditioning boundary
+  was probed one variable at a time, not factorially): ≥ 2 axle modules on
+  one chassis; long lateral anchor arms (wide track relative to the chassis
+  body); a light chassis relative to its wheel set (in the minimal
+  configuration); and SOME ordinary load exciting the island — floor-contact
+  settle, S1 spring preload, or drive-motor torque EACH suffice, and with
+  none of them (passive all-S0 in free space) the island is quiescent
+  (measured: zero touching contacts, zero alerts, peak body speed 0). No
   PARTICULAR load is necessary; ground contact is the observed initiating
   load in every evaluation-context run, not a necessary condition.
 - **Sufficient**: the minimal reproducer's configuration, on a flat plane,
@@ -292,8 +310,11 @@ different conditioning margins (S sits nearest the boundary: any removal
 cures it; A sits deepest). Witness B's Phase-1A "drive-dependence" decomposes
 as **reachability only**: its passive twin diverges identically in velocity
 (cat@67) but the catapult does not translate into +X displacement without
-drive. No second mechanism was found; H6 is closed as "one mechanism,
-varying margin".
+drive. The evidence supports **one observed mechanism class, with no evidence
+of a second mechanism** (H6). It is NOT claimed fully closed: a behavioral
+investigation without a Rapier-side source diagnosis cannot rule out a
+distinct upstream mechanism that happens to present the same kinematic
+signature.
 
 ## 12. Ruling: Rapier 0.19.3 constraint-solver divergence under BoxCar3D's
 current legal multi-module joint realization
@@ -303,8 +324,8 @@ multiple wheel modules whose revolute/prismatic anchors sit on long lateral
 lever arms of a light chassis — under any ordinary load (floor-contact
 settle, spring preload, or motor torque). The divergence injects finite
 energy (velocities to 1e9+ m/s within ~1 s of sim time) while every body
-stays finite and every joint reports valid. No exposed engine parameter
-cures it: more iterations accelerate it, halving dt can worsen it
+stays finite and every joint reports valid. No tested exposed engine setting
+cured it: more iterations accelerate it, halving dt can worsen it
 catastrophically, CCD and gravity are irrelevant.
 
 **Scope of the ruling — what is and is not eliminated.** Eliminated by
@@ -356,8 +377,10 @@ initializer cross-check, passive-twin recipe equivalence, morphology
 literals); the materialized reproducer's identity/canonicality/phenotype
 tests; the shared-loop equivalence + observational non-interference +
 honest-dt (mismatch-fails-loud) contracts; the probe schema smoke
-(structure + hard identity checks only, incl. the measured-zero-contacts
-shape of the free-space arm and the prevalence pass shape).
+(structure + hard identity checks only, incl. the load-taxonomy and
+free-space contact-count shapes, the pass-normalization equivalence of
+`['all']` / `['baseline,terrain']`, the single-pass `effectiveDt` readback,
+and the prevalence pass shape).
 All existing locks are byte-identical: noise, the five terrain
 fingerprints, boulder hull, `24cd0dd5`, `39bcd6c4`, evaluation fixtures A–D
 (digests `5a219735`/`02a80181`/`6b83729e`/`e2fc7625`), the Phase-1A
@@ -385,8 +408,11 @@ terrain 20260727).
 - Integrator step size: dt 1/120 does not cure (worsens B by 10 orders).
 - Convergence starvation curable by iterations: more iterations accelerate
   divergence.
-- Drive/motor energy injection: passive, power→0, and motor-off arms all
-  diverge.
+- Drive/motor energy injection as the NECESSARY source: passive, power→0,
+  and motor-off arms all diverge to the same magnitude, so drive cannot
+  account for the catastrophic energy — though motor torque alone can excite
+  the island (§9 free-space motors-only arm), it is an excitation, not the
+  energy source.
 - The deterministic build: the ordinary flavor reproduces onset-for-onset.
 - Gravity 20: 9.81 reproduces.
 - A knife-edge numeric coincidence: 2-decimal gene rounding reproduces.
@@ -466,6 +492,18 @@ terrain 20260727).
   discriminator corrected to "some ordinary load is necessary"; and
   "realization exonerated" over-reached what exact-anchor evidence can
   eliminate.
+- **Review lessons (round 2)**: a "regenerates from `--pass all`" claim is
+  only true once the crossing it names is a committed PASS (the spring-only
+  / motor-only / unloaded discriminators were still scratch-run, so the
+  dedicated `load` pass had to construct all four arms and contact-count
+  each before the report could cite them); a validated config value that is
+  then discarded is a latent API bug (pass selection was validated but
+  dispatched from the raw array, so `['all']` ran nothing) — normalize once,
+  through one authority, and test the programmatic entry; a nullable global
+  populated only by one pass misreports every OTHER single-pass run
+  (`effectiveDt`); and precise excitation-vs-energy-source wording matters
+  ("drive can excite the island but is not the energy source" is the honest
+  claim, not "drive is never the energy source").
 - **Wall-clock** (machine-specific): the full Stage-1 matrix (~230 runs)
   9.5 s; the Stage-2 engine/local/vehicle matrix 10.2 s; the prevalence
   scan (60 traced runs) ~7 s.

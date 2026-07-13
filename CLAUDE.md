@@ -60,12 +60,13 @@ evidence notes. Reference only; never import from `legacy/`.
 - `npm run probe:timing` — the retained Rapier timing/timestep-semantics
   probe (exits 1 on engine-semantics DRIFT; re-run on any Rapier upgrade)
 - `npm run probe:physics-explosion` — the finite-explosion forensic
-  instrument (witness reproduction, terrain/vehicle/engine ablations,
-  contact localization, the minimal reproducer + its closure matrix, the
-  complete-population prevalence scan; HARD checks are identity-class only
-  — physics magnitudes are observations; `-- --smoke` for a light pass,
-  `-- --witness all --pass all` for the full matrix, `-- --pass reproducer`
-  is the engine-upgrade recheck)
+  instrument (witness reproduction, terrain/vehicle/engine ablations, the
+  zero-gravity `load`-taxonomy matrix with vehicle-vs-static contact
+  counting, contact localization, the minimal reproducer + its closure
+  matrix, the complete-population prevalence scan; HARD checks are
+  identity-class only — physics magnitudes are observations; `-- --smoke`
+  for a light pass, `-- --witness all --pass all` for the full matrix,
+  `-- --pass reproducer` is the engine-upgrade recheck)
 - `npm run probe:population` — the GA-population characterization instrument
   (distributions/viability/undriven-audit/cost/shared-world-recheck; markdown
   to stdout, `--json`; defaults SMALL for a light local run, big sweep opt-in;
@@ -909,14 +910,21 @@ direction, not a defect. Full evidence:
   the [0, travel] limits by orders of magnitude) — the solver leaves
   constraints violated under ordinary load and its corrections pump energy.
   MORE solver iterations ACCELERATE the divergence (A at 16 iters:
-  catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s;
-  CCD/gravity/drive/S1 all non-necessary (passive + power→0 + motor-off
-  arms diverge identically; all-S0 conversions diverge; single modules and
-  sleds are ALL stable — ≥ 2 modules required). **The trigger is ANY
-  ordinary load, not ground contact per se (zero-gravity free-space arms):
-  S1 springs alone or drive motors alone diverge the witness islands with
-  no contact at all, while the fully unloaded island (passive all-S0, free
-  space) is quiescent — measured with zero static contacts.**
+  catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s; no
+  TESTED exposed engine setting cured it. Drive is NOT necessary and cannot
+  account for the catastrophic energy (passive + power→0 + motor-off arms
+  reach the same 1e9+ m/s), though motor torque can EXCITE the island;
+  CCD/gravity/S1 all non-necessary; single modules and sleds are ALL stable
+  (≥ 2 modules required). **The trigger is SOME ordinary load, not ground
+  contact per se — the committed `load` pass crosses the two internal load
+  sources under zero gravity and contact-counts every row: on witness A, S1
+  springs alone (cat@48) or drive motors alone (cat@36) each suffice, while
+  the fully unloaded island (passive all-S0, free space) is quiescent with a
+  MEASURED zero touching contacts and peak body speed 0. No PARTICULAR load
+  is necessary; contact is the observed initiating load in evaluation
+  context. These conditions are necessary in every tested witness reduction
+  and the minimal-reproducer closure — not asserted as a universal
+  theorem.**
 - **Witness identities frozen** (`scripts/explosion-witnesses.js` +
   `tests/explosion-witnesses.test.js`): A 20260725:19 `ec8d42cf`,
   B 20260728:4 `393f7e0e`, C 20260729:19 `57faad4e`, S 20260725:14
@@ -952,7 +960,9 @@ direction, not a defect. Full evidence:
   contracts (`tests/evaluation-core.test.js`).
 - **The instrument:** `npm run probe:physics-explosion` (schema
   `boxcar3d.physics-explosion/1`; passes baseline/terrain/vehicle/engine/
-  local/reproducer/prevalence; witness selector). HARD checks are
+  load/local/reproducer/prevalence; witness selector; pass selection
+  normalizes 'all'/comma-lists identically in the CLI and the programmatic
+  API, and any single pass reports the real f32 timestep). HARD checks are
   identity-class only (genotype digests, deterministic repeat equality over
   the FULL record streams + checkpoints, f32 dt); every physics magnitude
   is an observation — no committed test asserts the explosion occurs (a

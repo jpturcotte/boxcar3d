@@ -8,10 +8,13 @@
 
 import { describe, test, expect } from 'vitest';
 import {
-  PROBE_SCHEMA, renderMarkdown, runProbe, smokeConfig,
+  PROBE_SCHEMA, normalizePasses, renderMarkdown, runProbe, smokeConfig,
 } from '../scripts/probe-physics-explosion.js';
 
 const HEX8 = /^[0-9a-f]{8}$/;
+const ALL_PASSES = [
+  'baseline', 'terrain', 'vehicle', 'engine', 'load', 'local', 'reproducer', 'prevalence',
+];
 const ONSET_KEYS = [
   'firstAlertStep', 'lastOrdinaryStep', 'firstCatastrophicStep',
   'firstCausalCandidateStep', 'leadingBody', 'chassisLagSteps',
@@ -19,10 +22,14 @@ const ONSET_KEYS = [
 
 describe('probe schema smoke', () => {
   test('smoke config produces the versioned report shape with all hard checks green', { timeout: 240000 }, async () => {
-    const report = await runProbe({ ...smokeConfig(), argv: ['--smoke'] });
+    // passes: ['all'] deliberately exercises the programmatic normalization
+    // end-to-end (the round-2 review finding: 'all' used to validate and
+    // then dispatch nothing) — every section assertion below is its teeth.
+    const report = await runProbe({ ...smokeConfig(), passes: ['all'], argv: ['--smoke'] });
 
     expect(report.schema).toBe(PROBE_SCHEMA);
     expect(report.schema).toBe('boxcar3d.physics-explosion/1');
+    expect(report.passes).toEqual(ALL_PASSES);
     expect(report.engine.rapierVersion).toBe('0.19.3');
     expect(report.engine.deterministic).toBe(true);
     expect(report.engine.effectiveDt).toBe(Math.fround(1 / 60));
@@ -84,6 +91,24 @@ describe('probe schema smoke', () => {
       expect(Number.isFinite(e.result.maxForwardDistance)).toBe(true);
     }
 
+    // Load taxonomy: the smoke crossing endpoints (all internal loads vs the
+    // fully unloaded island), zero gravity, manifold-level touching contacts
+    // measured at every capture. Physics outcomes stay OBSERVATIONS.
+    expect(report.load.map((l) => l.arm)).toEqual(['original', 'passiveAllS0']);
+    for (const l of report.load) {
+      expect(l.witness).toBe('A');
+      expect(l.armGenotypeDigest).toMatch(HEX8);
+      expect(typeof l.internalLoads.motors).toBe('boolean');
+      expect(typeof l.internalLoads.springs).toBe('boolean');
+      expect(Number.isInteger(l.contacts.touchingContacts)).toBe(true);
+      expect(Number.isInteger(l.contacts.proximityPairs)).toBe(true);
+      expect(l.contacts.firstTouchingStep === null
+        || Number.isInteger(l.contacts.firstTouchingStep)).toBe(true);
+      expect(Object.keys(l.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
+    }
+    expect(report.load.find((l) => l.arm === 'passiveAllS0').internalLoads)
+      .toEqual({ motors: false, springs: false });
+
     // Localization: one row per witness with the mandated evidence fields.
     expect(report.localization).toHaveLength(1);
     const loc = report.localization[0];
@@ -108,9 +133,14 @@ describe('probe schema smoke', () => {
       expect(Number.isFinite(r.result.maxForwardDistance)).toBe(true);
       expect(Object.keys(r.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
     }
-    // The free-space arm MEASURES its no-static-contact premise.
+    // The free-space arm MEASURES its no-static-contact premise at the
+    // manifold level (touching = contactDist <= 0; pair existence recorded
+    // separately).
     const freeSpace = report.reproducer.find((r) => r.arm === 'freeSpace');
-    expect(Number.isInteger(freeSpace.staticContacts)).toBe(true);
+    expect(Number.isInteger(freeSpace.contacts.touchingContacts)).toBe(true);
+    expect(Number.isInteger(freeSpace.contacts.proximityPairs)).toBe(true);
+    expect(freeSpace.contacts.firstTouchingStep === null
+      || Number.isInteger(freeSpace.contacts.firstTouchingStep)).toBe(true);
 
     // Prevalence: one smoke seed, all 20 members classified.
     expect(report.prevalence).toHaveLength(1);
@@ -131,9 +161,57 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Terrain ablations');
     expect(md).toContain('## Vehicle ablations');
     expect(md).toContain('## Engine ablations');
+    expect(md).toContain('## Load taxonomy');
     expect(md).toContain('## Localization');
     expect(md).toContain('## Minimum reproducer');
     expect(md).toContain('## Prevalence');
+  });
+
+  test('pass selection normalizes identically for the programmatic API and the CLI', () => {
+    expect(normalizePasses(['all'])).toEqual(ALL_PASSES);
+    expect(normalizePasses('all')).toEqual(ALL_PASSES);
+    expect(normalizePasses(['baseline,terrain'])).toEqual(['baseline', 'terrain']);
+    expect(normalizePasses(['baseline', 'terrain'])).toEqual(['baseline', 'terrain']);
+    // Dedupe preserves first-seen order.
+    expect(normalizePasses(['baseline', 'baseline,terrain'])).toEqual(['baseline', 'terrain']);
+    expect(() => normalizePasses(['bogus'])).toThrow(/unknown pass/);
+    expect(() => normalizePasses(['baseline,bogus'])).toThrow(/unknown pass/);
+  });
+
+  test("passes: ['baseline,terrain'] dispatches exactly those passes", { timeout: 240000 }, async () => {
+    const report = await runProbe({ ...smokeConfig(), passes: ['baseline,terrain'] });
+    expect(report.passes).toEqual(['baseline', 'terrain']);
+    expect(report.baseline).not.toBeNull();
+    expect(report.terrain).not.toBeNull();
+    expect(report.vehicle).toBeNull();
+    expect(report.engineAblations).toBeNull();
+    expect(report.load).toBeNull();
+    expect(report.localization).toBeNull();
+    expect(report.reproducer).toBeNull();
+    expect(report.prevalence).toBeNull();
+    for (const c of report.checks) {
+      expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+    }
+  });
+
+  test('a single-pass run reports the real global timestep, never null', { timeout: 240000 }, async () => {
+    // The documented engine-upgrade recheck is `--pass reproducer` — its
+    // report heading must carry the real f32 timestep readback even though
+    // baselinePass (which used to be the only writer) never ran.
+    const report = await runProbe({
+      ...smokeConfig(), passes: ['reproducer'], reproducerArms: ['original'],
+    });
+    expect(report.passes).toEqual(['reproducer']);
+    expect(report.engine.effectiveDt).toBe(Math.fround(1 / 60));
+    expect(report.baseline).toBeNull();
+    expect(report.reproducer.map((r) => `${r.arm}:${r.flavor}`))
+      .toEqual(['original:deterministic', 'original:ordinary']);
+    for (const c of report.checks) {
+      expect(c.ok, `${c.name}: ${c.detail}`).toBe(true);
+    }
+    const md = renderMarkdown(report);
+    expect(md).toContain(`effectiveDt ${Math.fround(1 / 60)}`);
+    expect(md).not.toContain('effectiveDt null');
   });
 
   test('unknown passes and selectors fail loud', async () => {

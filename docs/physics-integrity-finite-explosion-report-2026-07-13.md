@@ -4,13 +4,15 @@
 > and reproducer genotype digests, the shared-loop equivalence and
 > non-interference contracts, the A–D golden locks and Phase-1A population
 > locks — all byte-identical throughout this PR). **Offline deterministic**
-> figures reproduce from declared seeds via
-> `npm run probe:physics-explosion -- --witness all --pass all` (deterministic
-> Rapier 0.19.3 flavor; not CI-gated; the ordinary flavor's figures are
-> per-process observations, never contracts — F10). **Machine-specific** is
-> wall-clock only (reference: i7-14650HX, Windows 11, Node v22.19.0,
-> 2026-07-13). **Design inference** and **unresolved** items are labeled
-> inline. Negative experiments are reported deliberately.
+> figures — including the prevalence counts, the reproducer closure matrix,
+> the free-space load discriminators, the contaminated-control finding, and
+> every onset/localization number — reproduce from declared seeds via
+> `npm run probe:physics-explosion -- --witness all --pass all`
+> (deterministic Rapier 0.19.3 flavor; not CI-gated; the ordinary flavor's
+> figures are per-process observations, never contracts — F10).
+> **Machine-specific** is wall-clock only (reference: i7-14650HX, Windows 11,
+> Node v22.19.0, 2026-07-13). **Design inference** and **unresolved** items
+> are labeled inline. Negative experiments are reported deliberately.
 
 ## 1. Question and scope
 
@@ -56,8 +58,9 @@ hit terrain features and are catapulted").
 Every witness reproduces Phase 1A exactly: A driven maxForward
 8,170,342 m (report: 8.17e6) with final chassis vx −143,188,704 m/s
 (report: −1.43e8); B 2.957e3 driven / 0.527 passive; C 1.156e3 / 9.472e6;
-S 3.635 / 128.5. Deterministic same-config repeats are byte-identical
-(trace digest + checkpoints — a HARD probe check). The ordinary flavor
+S 3.635 / 128.5. Deterministic same-config repeats are byte-identical —
+the FULL retained record streams via `compareTraces`, byte counts, and
+checkpoint arrays, a HARD probe check. The ordinary flavor
 reproduces the mechanism with identical onset steps and leading bodies
 (magnitudes differ; e.g. A driven reaches 2.4e4 m instead of 8.2e6 m) and
 was per-process repeatable in every observation. B's driven final
@@ -75,21 +78,41 @@ from g·dt = 0.333 m/s, the 22 m/s worst legitimate fall, and 25 m of
 legitimate travel), **firstCatastrophicStep** (>1000 m/s or a >16.7 m
 teleport step), and **firstCausalCandidateStep** (backward scan from the
 alert while any body's per-step velocity change exceeds the 1 m/s escalation
-floor; the window expands backward, never clipped). Thresholds are
-diagnostic options echoed in every output, consumed by no lock and no
-fitness path; ordinary controls never alert at default or half thresholds.
+floor; the window expands backward, never clipped). Per-capture thresholds
+are DEFINED at the reference capture interval 1/60 and scale linearly with
+the trace's declared `captureDt` (the run's effectiveDt — the applied
+thresholds and the captureDt are echoed in every output), so onsets from
+different-timestep arms are never compared under mismatched units.
+Thresholds are diagnostic options, consumed by no lock and no fitness path.
+
+Threshold calibration and the contaminated-control finding: the calibration
+procedure walks the fitness ranking of population 20260725 (witness ids
+excluded) for min/median/max controls. **Its first max-fitness candidate —
+id 1, fitness 14.02 m, the best-scoring non-witness — FAILED calibration
+with an internal >1000 m/s blow-up (catastrophic at step 52). That failure
+is itself a finding — fitness concealed the instability — and is what
+triggered the complete prevalence pass (§8).** The committed procedure
+reports every contaminated candidate as its own row and deterministically
+substitutes the next-ranked alert-free member (the selected controls: id 16
+min, id 15 median, id 13 max — clean, driven and passive, at default AND
+half thresholds).
 
 Tier 2 (earned by the decision record, §7): `runRealizedEvaluationLoop` was
 extracted from `runEvaluation` (composed verbatim by the production path —
 A–D golden digests and every checkpoint state byte-identical, zero re-locks)
-with an explicit `requestedDt` and an optional read-only `inspect(stepIndex)`
-hook the production path never passes. **Non-interference is a committed
-contract** (`tests/evaluation-core.test.js`): a real contact-querying
-inspect (narrow-phase manifold reads > 0) produces byte-identical trace
-records, digests, results, and counts; composition equivalence with
-`runEvaluation` is byte-exact on the composite witness terrain; the probe's
-engine pass re-checks composed-vs-canonical digest equality per witness as
-a hard check.
+with an explicit `requestedDt` — which must MATCH the engine's f32 timestep
+readback or the loop fails loud (a 1/120 composition can never
+mis-report itself as 1/60; negative-tested) — and an optional read-only
+`inspect(stepIndex)` hook the production path never passes.
+**Non-interference is a committed contract**
+(`tests/evaluation-core.test.js`): a real contact-querying inspect
+(narrow-phase manifold reads > 0) produces byte-identical trace records,
+digests, results, and counts; composition equivalence with `runEvaluation`
+is byte-exact on the composite witness terrain; the probe's engine pass
+re-checks composed-vs-canonical digest equality per witness as a hard
+check. Deterministic repeatability checks compare the FULL retained record
+streams (`compareTraces`), byte counts, and checkpoint arrays — never the
+FNV digest alone.
 
 ## 6. First-anomaly records (offline deterministic)
 
@@ -112,12 +135,24 @@ Contacts across the causal window are ordinary floor contacts: penetrations
 shows 2 wedge candidates only post-blow-up near the walls at steps 74–79).
 
 **The earliest measurable event is joint-constraint violation, not contact
-anomaly:** witness A's leading S0 station has its drive-revolute anchor
-separation exceed 2 cm at step 6 — before the causal candidate (10) and far
-before the alert (20) — reaching 1.6e7 m by run end; B's leading S1 hub
-crosses 2 cm at step 24; C at 31; S at 88. The solver leaves
-revolute/prismatic constraints violated under ordinary settle loads, and
-its correction impulses grow instead of converging.
+anomaly — directly measured for BOTH joint types.** Revolute-anchor
+separation (S0: chassis-anchor vs wheel; S1: hub vs wheel) and the
+prismatic decomposition (chassis→hub anchor delta split into the along-axis
+coordinate vs the [0, travel] limits and the OFF-AXIS separation) both come
+from the trace:
+
+| witness | first revolute >2 cm | first prismatic off-axis >2 cm | prismatic coordinate range vs travel |
+| --- | --- | --- | --- |
+| A | S0 station 2\|0 at step 6 (alert 20) | station 3\|0 at step 9 | [−2.0e7, +2.3e7] m vs 0.324 m |
+| B | S1 station 5\|1 at step 24 | station 1\|0 at step 15 (alert 21) | [−1.4e7, +1.8e7] m vs 0.278 m |
+| C | S0 station 0\|0 at step 31 | station 2\|0 at step 19 (alert 31) | [−9.8e6, +8.7e6] m vs 0.299 m |
+| S | S1 station 1\|0 at step 88 | station 0\|0 at step 24 (alert 43) | [−1.8, +3.3] m vs 0.301 m |
+
+Every witness shows a directly measured constraint violation at or before
+its causal-candidate/alert steps, and every S1 prismatic coordinate blows
+through its hard limits by orders of magnitude — the solver leaves both
+joint types violated under ordinary loads, and its correction impulses grow
+instead of converging.
 
 Witness S's alert spread (14 steps across ×0.5/×2) flags it as the most
 gradual of the four — nearest the stability boundary (§8) — while A/B are
@@ -165,20 +200,30 @@ island re-diverges through another station at reduced magnitude,
 cat@37/52/44) and DOES cure S. **No single component is necessary; the
 instability is a property of the multi-module island.**
 
-Prevalence: a forensic scan of all 60 characterization individuals finds
-**5/60 catastrophic** (20260725 ids 1, 14, 19; 20260728 id 4; 20260729
-id 19) and 55/60 alert-free. The Phase-1A >200 m label caught only 3 of 5:
-20260725 id 14 (driven 3.63 m) and id 1 — the best NON-witness control,
-fitness 14.02 m — hide >1000 m/s internal blow-ups behind healthy-looking
-forward progress.
+Prevalence (the committed `prevalence` pass — every characterization
+individual, driven, forensically classified): **5/60 catastrophic**
+(20260725 ids 1@52, 14@88, 19@60; 20260728 id 4@56; 20260729 id 19@62) and
+55/60 alert-free. The Phase-1A >200 m label caught only 3 of 5: 20260725
+id 14 (driven 3.63 m) and id 1 (fitness 14.02 m — §5's contaminated
+control) hide >1000 m/s internal blow-ups behind healthy-looking forward
+progress.
 
 ## 9. Engine and solver ablations (diagnostic, composed through the seam)
 
 No arm abolishes the event for any witness:
 
-- **dt 1/120 × 600 steps** (honest `requestedDt`): does not cure; B becomes
-  astronomically worse (peak 1.66e21 m/s). Not an integrator step-size
-  problem.
+- **dt 1/120 × 600 steps** (honest `requestedDt`; forensic thresholds
+  dt-scaled by the declared captureDt so onsets are unit-consistent): does
+  not cure; B becomes astronomically worse (peak 1.66e21 m/s). Not an
+  integrator step-size problem.
+- **Zero gravity (free space)**: all four witnesses STILL diverge with no
+  settle load (A cat@33, B cat@48, C cat@42, S cat@122) — their S1 spring
+  motors and drive motors are internal loads. The load taxonomy on witness
+  A: passive all-S0 in free space (no internal loads at all) is completely
+  quiescent; S1 springs alone diverge (cat@49); drive motors alone (all-S0
+  driven) diverge (cat@36). The passive all-S0 minimal reproducer in free
+  space is quiescent with a MEASURED zero static contacts (the probe's
+  freeSpace arm counts vehicle-vs-static pairs every capture).
 - **world.numSolverIterations 2/8/16**: MORE iterations make onset EARLIER
   and usually larger (A at 16: alert@9, cat@16; C at 16: peak 5.7e11) —
   iteration accelerates the divergence, the signature of a non-convergent
@@ -207,18 +252,27 @@ total), no motors, no S1, on a completely flat corridor** — catastrophic
 (>1000 m/s) by step ~46 of 300, identically on BOTH Rapier 0.19.3 flavors.
 Necessary/sufficient closure — removing any single ingredient abolishes the
 event: either axle alone (stable), trackHalf genes ≤ ~0.2 (stable),
-frameDensity 1 (~160 kg chassis, stable). Axle co-location is contributory,
-not necessary (spread axles still diverge). Rerun after any engine bump:
+frameDensity 1 (~160 kg chassis, stable), and zero load (free space:
+quiescent with a measured zero static contacts). Axle co-location is
+contributory, not necessary (spread axles still diverge). **The complete
+closure matrix is instrumented**: the committed `reproducer` pass runs the
+unchanged reproducer on both flavors plus every stabilizer arm and the
+free-space discriminator, so the closure regenerates from one command.
+Rerun after any engine bump:
 `npm run probe:physics-explosion -- --pass reproducer` (identity and
-deterministic repeatability are hard checks; the onset is an observation —
-no committed test asserts the explosion occurs).
+deterministic byte-exact repeatability are hard checks; every onset/outcome
+is an observation — no committed test asserts the explosion occurs).
 
 ## 11. Causal classification
 
 - **Necessary**: ≥ 2 axle modules on one chassis; long lateral anchor arms
   (wide track relative to the chassis body); a light chassis relative to its
-  wheel set (in the minimal configuration). Ordinary ground contact (the
-  settle) is the trigger load.
+  wheel set (in the minimal configuration); and SOME ordinary load exciting
+  the island — floor-contact settle, S1 spring preload, or drive-motor
+  torque EACH suffice, and with none of them (passive all-S0 in free space)
+  the island is quiescent (measured: zero static contacts, zero alerts). No
+  PARTICULAR load is necessary; ground contact is the observed initiating
+  load in every evaluation-context run, not a necessary condition.
 - **Sufficient**: the minimal reproducer's configuration, on a flat plane,
   under either flavor.
 - **Contributory**: unsprung:chassis mass ratio (cures B/S, dampens A, does
@@ -241,24 +295,39 @@ as **reachability only**: its passive twin diverges identically in velocity
 drive. No second mechanism was found; H6 is closed as "one mechanism,
 varying margin".
 
-## 12. Ruling: engine limitation (Rapier 0.19.3 constraint-solver divergence
-on ill-conditioned multi-module joint islands)
+## 12. Ruling: Rapier 0.19.3 constraint-solver divergence under BoxCar3D's
+current legal multi-module joint realization
 
 The impulse solver fails to converge on legal, in-band vehicle islands —
 multiple wheel modules whose revolute/prismatic anchors sit on long lateral
-lever arms of a light chassis — under ordinary ground contact. The
-divergence injects finite energy (velocities to 1e9+ m/s within ~1 s of sim
-time) while every body stays finite and every joint reports valid. No
-exposed engine parameter cures it: more iterations accelerate it, halving
-dt can worsen it catastrophically, CCD and gravity are irrelevant.
+lever arms of a light chassis — under any ordinary load (floor-contact
+settle, spring preload, or motor torque). The divergence injects finite
+energy (velocities to 1e9+ m/s within ~1 s of sim time) while every body
+stays finite and every joint reports valid. No exposed engine parameter
+cures it: more iterations accelerate it, halving dt can worsen it
+catastrophically, CCD and gravity are irrelevant.
+
+**Scope of the ruling — what is and is not eliminated.** Eliminated by
+intervention: incorrect spawn placement (no birth penetration), terrain
+generation and feature seating (§7 — H1/H2), the drive law and motor
+configuration (§8), the g = 20 policy, CCD policy, and the initial joint
+setup (anchors exact at creation; §9). **NOT eliminated: the current
+realization ARCHITECTURE as a possibly-mitigable design.** Exact creation
+anchors rule out an initial mismatch, not the architecture itself — one
+impulse joint per station with long off-center chassis anchors is what the
+solver diverges ON, and no equivalent physical assembly was tested under an
+alternative realization (e.g. multibody joints, intermediate bodies
+shortening anchor arms, or split anchor frames). The solver may be at
+fault while BoxCar3D could still later choose a better-conditioned
+representation that preserves the phenotype — recorded as an open design
+direction (*unresolved*), distinct from a defect: nothing in the current
+realization is incorrect against Rapier's documented contracts.
 
 **Why no project correction lands in this PR:**
-- Every project-owned candidate cause was eliminated by intervention:
-  terrain generation and feature seating (§7 — H1/H2), spawn placement
-  (§6 — no birth penetration), the drive law (§8), the g = 20 policy (§9),
-  CCD policy (§9), and the `ADDITIONAL_SOLVER_ITERATIONS = 4` policy (§9 —
-  lowering it dampens but does not cure, and it is load-bearing for S1
-  statics; changing it would be a suppression).
+- No candidate DEFECT survived intervention (list above): every component
+  of the current setup is individually correct and in-band, and every
+  "cure" available at the configuration level is a suppression by the
+  mission's own standard (magnitude reduction without convergence).
 - A repair-rule bound (e.g. on track width, module count, or mass ratio)
   would reject legitimate morphology to mask a solver limitation — the
   mission's overfitting guard ("do not globally reject strange morphology
@@ -267,6 +336,9 @@ dt can worsen it catastrophically, CCD and gravity are irrelevant.
   would be overfit to five witnesses. *Design inference:* if Phase 1B later
   chooses to constrain the search space, that is a fitness/GA policy
   decision to make with selection-level evidence, not a physics correction.
+- An alternative realization architecture (above) is a research direction,
+  not a narrow correction — it would re-realize every vehicle and re-lock
+  every digest, and there is no measured candidate design yet.
 - An engine upgrade is out of scope by mission constraint (Rapier pinned at
   0.19.3); the reproducer + probe pass exist precisely so a future bump
   re-answers the question in one command.
@@ -282,8 +354,10 @@ Under an engine-limitation ruling, the bug's persistence is never a CI
 requirement. Committed coverage: witness identity locks (digests,
 initializer cross-check, passive-twin recipe equivalence, morphology
 literals); the materialized reproducer's identity/canonicality/phenotype
-tests; the shared-loop equivalence + observational non-interference
-contracts; the probe schema smoke (structure + hard identity checks only).
+tests; the shared-loop equivalence + observational non-interference +
+honest-dt (mismatch-fails-loud) contracts; the probe schema smoke
+(structure + hard identity checks only, incl. the measured-zero-contacts
+shape of the free-space arm and the prevalence pass shape).
 All existing locks are byte-identical: noise, the five terrain
 fingerprints, boulder hull, `24cd0dd5`, `39bcd6c4`, evaluation fixtures A–D
 (digests `5a219735`/`02a80181`/`6b83729e`/`e2fc7625`), the Phase-1A
@@ -298,6 +372,11 @@ terrain 20260727).
 
 - Terrain launch off features/craters (Phase 1A §4.3's inference): onset
   precedes any feature contact; identical onset on flat ground.
+- Ground contact as THE necessary trigger: the free-space arms show any
+  ordinary load suffices (S1 springs alone or drive motors alone diverge
+  witness islands in zero gravity) while the fully unloaded island is
+  quiescent — contact is the observed initiating load in evaluation
+  context, not a necessary condition.
 - Birth penetration / bad spawn: analytic clearances positive; captures 0–1
   contact-free.
 - Feature seating/geometry defects (H2): no feature participates at onset.
@@ -318,13 +397,16 @@ terrain 20260727).
   module-count surface was probed one variable at a time plus the minimal
   closure; no full factorial of the boundary was run (*unresolved*: the
   exact analytic conditioning criterion).
-- Joint-stretch telemetry approximates S1 stations as hub–wheel coaxiality
-  and omits the prismatic off-axis decomposition; wedge normals use the
-  manifold `flipped` flag orientation convention (*design inference* on the
-  normal frame, used only diagnostically).
-- Witness S's stretch crossing trails its alert (gradual case) — its
-  classification rests on the intervention signature (iteration
-  acceleration, damping response), not on stretch precedence.
+- No equivalent physical assembly was tested under an ALTERNATIVE
+  realization architecture — the current one-impulse-joint-per-station
+  design is not exonerated as a possibly-mitigable representation
+  (*unresolved*; §12).
+- Wedge normals use the manifold `flipped` flag orientation convention
+  (*design inference* on the normal frame, used only diagnostically; the
+  collector fails loud on a contacts-without-normal invariant break).
+- Prismatic motor-target error is not decomposed (the telemetry measures
+  off-axis separation and the coordinate vs limits; spring-target tracking
+  error is not separately reported).
 - The ordinary flavor is observed per-process only (F10); no cross-platform
   claim.
 - One characterization terrain seed family; prevalence (5/60) is for
@@ -371,7 +453,19 @@ terrain 20260727).
   stability detector — per-body kinematic forensics is the honest
   instrument; final-state numbers (Phase 1A's tables) actively misled about
   the mechanism (chaotic post-onset ballistics), exactly the final-state
-  fallacy the mission warned against.
+  fallacy the mission warned against. Fitness-selected calibration controls
+  can be CONTAMINATED by the very effect under study — the first
+  max-fitness control (id 1) concealed a blow-up behind 14.02 m of forward
+  progress; its calibration failure is what triggered the prevalence pass,
+  and the committed procedure now substitutes contaminated candidates
+  deterministically while reporting them as findings.
+- **Review lessons (the request-changes round)**: claims must regenerate
+  from the committed command before the report may say so (the prevalence
+  and closure figures were originally scratch-run only); "contact is
+  necessary" was a final-state-shaped over-claim the zero-gravity
+  discriminator corrected to "some ordinary load is necessary"; and
+  "realization exonerated" over-reached what exact-anchor evidence can
+  eliminate.
 - **Wall-clock** (machine-specific): the full Stage-1 matrix (~230 runs)
   9.5 s; the Stage-2 engine/local/vehicle matrix 10.2 s; the prevalence
   scan (60 traced runs) ~7 s.

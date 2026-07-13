@@ -61,10 +61,11 @@ evidence notes. Reference only; never import from `legacy/`.
   probe (exits 1 on engine-semantics DRIFT; re-run on any Rapier upgrade)
 - `npm run probe:physics-explosion` — the finite-explosion forensic
   instrument (witness reproduction, terrain/vehicle/engine ablations,
-  contact localization, the minimal reproducer; HARD checks are
-  identity-class only — physics magnitudes are observations; `-- --smoke`
-  for a light pass, `-- --witness all --pass all` for the full matrix,
-  `-- --pass reproducer` is the engine-upgrade recheck)
+  contact localization, the minimal reproducer + its closure matrix, the
+  complete-population prevalence scan; HARD checks are identity-class only
+  — physics magnitudes are observations; `-- --smoke` for a light pass,
+  `-- --witness all --pass all` for the full matrix, `-- --pass reproducer`
+  is the engine-upgrade recheck)
 - `npm run probe:population` — the GA-population characterization instrument
   (distributions/viability/undriven-audit/cost/shared-world-recheck; markdown
   to stdout, `--json`; defaults SMALL for a light local run, big sweep opt-in;
@@ -875,21 +876,25 @@ extended operators only if evidence supports (never promised as crossover):**
   COMMITTED fixture (terrain 20260722) is unaffected (max 12.48 m).
   **[MECHANISM SUPERSEDED — the physics-integrity PR: the tail is NOT a
   terrain-feature interaction (onset is identical on fully flat ground,
-  before any feature contact) but a Rapier 0.19.3 constraint-solver
-  divergence on ill-conditioned multi-module joint islands; the >200 m
-  label undercounts (5/60 affected, 2 hidden behind ordinary-looking
-  fitness). The finite-tail EXISTENCE finding and every committed lock
-  stand; see that PR's block below.]**
+  before any feature contact) but Rapier 0.19.3 constraint-solver
+  divergence on ill-conditioned multi-module joint islands under the
+  current legal realization; the >200 m label undercounts (5/60 affected,
+  2 hidden behind ordinary-looking fitness). The finite-tail EXISTENCE
+  finding and every committed lock stand; see that PR's block below.]**
 - Full suite green both flavors; noise/terrain/boulder-hull/`24cd0dd5`/
   `39bcd6c4` and A–D fingerprints byte-identical; `GENOTYPE_VERSION`,
   `ASSEMBLY_IR_VERSION`, `EVALUATION_TRACE_VERSION` unchanged.
 
 **Physics Integrity: Finite-Explosion Reproduction and Ablation landed —
 the corrective investigation between Phase 1A and Phase 1B (NOT a roadmap
-stage). Verdict: the Phase-1A explosion tail is a Rapier 0.19.3
-ENGINE LIMITATION — constraint-solver DIVERGENCE on ill-conditioned
-multi-module joint islands — not a terrain interaction, not a project
-geometry/seating/configuration defect. Full evidence:
+stage). Verdict: the Phase-1A explosion tail is Rapier 0.19.3
+constraint-solver DIVERGENCE under BoxCar3D's current legal multi-module
+joint realization — not a terrain interaction; no incorrect spawn, terrain,
+motor, CCD, or initial-joint setup was found. The realization ARCHITECTURE
+itself (one impulse joint per station on long off-center chassis anchors)
+is NOT exonerated as a possibly-mitigable design — an alternative
+better-conditioned representation preserving the phenotype is an open
+direction, not a defect. Full evidence:
 `docs/physics-integrity-finite-explosion-report-2026-07-13.md`:**
 - **The mechanism (measured, both flavors):** onset occurs on the
   exactly-flat start pad during settle (all four witnesses; onset step and
@@ -897,45 +902,62 @@ geometry/seating/configuration defect. Full evidence:
   contacts at onset are ordinary floor contacts (penetrations 1e-4–2e-3 m,
   impulses 10–140 N·s, zero wedges, no birth penetration — captures 0/1 are
   contact-free, spawn clearances +0.02 m); the earliest measurable event is
-  JOINT-ANCHOR VIOLATION (witness A's leading S0 station > 2 cm at step 6
-  vs kinematic alert at 20) — the solver leaves constraints violated under
-  ordinary load and its corrections pump energy. MORE solver iterations
-  ACCELERATE the divergence (A at 16 iters: catastrophic by step 16); dt
-  1/120 worsens witness B to 1.66e21 m/s; CCD/gravity/drive/S1 all
-  non-necessary (passive + power→0 + motor-off arms diverge identically;
-  all-S0 conversions diverge; single modules and sleds are ALL stable —
-  ≥ 2 modules required).
+  JOINT-CONSTRAINT VIOLATION, directly measured for BOTH joint types —
+  revolute anchor separation (witness A's leading S0 station > 2 cm at step
+  6 vs kinematic alert at 20) AND the prismatic decomposition (off-axis
+  error > 2 cm at steps 9/15/19/24 for A/B/C/S, coordinates blowing through
+  the [0, travel] limits by orders of magnitude) — the solver leaves
+  constraints violated under ordinary load and its corrections pump energy.
+  MORE solver iterations ACCELERATE the divergence (A at 16 iters:
+  catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s;
+  CCD/gravity/drive/S1 all non-necessary (passive + power→0 + motor-off
+  arms diverge identically; all-S0 conversions diverge; single modules and
+  sleds are ALL stable — ≥ 2 modules required). **The trigger is ANY
+  ordinary load, not ground contact per se (zero-gravity free-space arms):
+  S1 springs alone or drive motors alone diverge the witness islands with
+  no contact at all, while the fully unloaded island (passive all-S0, free
+  space) is quiescent — measured with zero static contacts.**
 - **Witness identities frozen** (`scripts/explosion-witnesses.js` +
   `tests/explosion-witnesses.test.js`): A 20260725:19 `ec8d42cf`,
   B 20260728:4 `393f7e0e`, C 20260729:19 `57faad4e`, S 20260725:14
   `565f8c72` (+ passive-twin digests), reconstruction proven byte-identical
-  to the createInitialPopulation members. Prevalence: **5/60**
-  characterization individuals are catastrophic (>1000 m/s internal speeds)
-  — the report's >200 m label caught only 3; two (incl. 20260725 id 1,
-  fitness 14.02 m) hide blow-ups behind ordinary-looking forward progress.
+  to the createInitialPopulation members. Prevalence (the committed
+  `prevalence` pass — every characterization individual forensically
+  classified): **5/60** catastrophic (>1000 m/s internal speeds) — the
+  report's >200 m label caught only 3; two (incl. 20260725 id 1, fitness
+  14.02 m) hide blow-ups behind ordinary-looking forward progress. Id 1 was
+  the probe's own first fitness-selected calibration control — its
+  contamination is a recorded finding, and the committed control procedure
+  now substitutes contaminated candidates deterministically.
 - **Minimum reproducer (MATERIALIZED literal, digest `9fde1f1c`):** two
   wide-track paired S0 axles (wheel centers z ≈ ±2.3/±1.9 m), four UNDRIVEN
   8.8–22 kg wheels, one 18 kg chassis, no motors, FLAT ground →
   catastrophic by step ~46 on both flavors; removing ANY ingredient (either
-  axle, trackHalf ≤ ~0.2, frameDensity 1) stabilizes. RERUN ON RAPIER BUMP:
-  `npm run probe:physics-explosion -- --pass reproducer`.
+  axle, trackHalf ≤ ~0.2, frameDensity 1, or the load itself — free space
+  is quiescent with measured zero contacts) stabilizes. The FULL closure
+  matrix is instrumented in the probe's `reproducer` pass. RERUN ON RAPIER
+  BUMP: `npm run probe:physics-explosion -- --pass reproducer`.
 - **Telemetry:** `src/sim/trace-forensics.js` (pure, offline over FULL
   traces): per-body kinematic series + the three-concept onset —
   firstAlertStep (diagnostic locator), firstCatastrophicStep,
   firstCausalCandidateStep (backward scan) — thresholds are DIAGNOSTIC
-  options, consumed by no lock and no fitness path.
-  `runRealizedEvaluationLoop` extracted from `runEvaluation` (composed
-  verbatim by production; A–D digests byte-identical, zero re-locks) with
-  explicit `requestedDt` and a read-only `inspect(stepIndex)` hook the
-  production path never passes; equivalence + observational
-  non-interference are committed contracts (`tests/evaluation-core.test.js`).
+  options defined at the 1/60 reference capture interval and dt-scaled via
+  the declared `captureDt` (echoed with the applied values), consumed by no
+  lock and no fitness path. `runRealizedEvaluationLoop` extracted from
+  `runEvaluation` (composed verbatim by production; A–D digests
+  byte-identical, zero re-locks) with explicit `requestedDt` — which must
+  match the engine's f32 readback or the loop fails loud — and a read-only
+  `inspect(stepIndex)` hook the production path never passes; equivalence +
+  observational non-interference + the honest-dt negative are committed
+  contracts (`tests/evaluation-core.test.js`).
 - **The instrument:** `npm run probe:physics-explosion` (schema
   `boxcar3d.physics-explosion/1`; passes baseline/terrain/vehicle/engine/
-  local/reproducer; witness selector). HARD checks are identity-class only
-  (genotype digests, deterministic repeat byte-equality, f32 dt);
-  every physics magnitude is an observation — no committed test asserts
-  the explosion occurs (a future engine that converges these islands turns
-  the probe's observations quiet, and the ruling gets re-evaluated).
+  local/reproducer/prevalence; witness selector). HARD checks are
+  identity-class only (genotype digests, deterministic repeat equality over
+  the FULL record streams + checkpoints, f32 dt); every physics magnitude
+  is an observation — no committed test asserts the explosion occurs (a
+  future engine that converges these islands turns the probe's observations
+  quiet, and the ruling gets re-evaluated).
 - **No production physics change; zero re-locks; no new seeds.** All
   fingerprints and version constants byte-identical, `FITNESS_POLICY_VERSION`
   stays 1 by mission ruling (no fitness cap/plausibility threshold here).

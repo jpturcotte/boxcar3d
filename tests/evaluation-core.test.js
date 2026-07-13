@@ -136,6 +136,11 @@ describe('runRealizedEvaluationLoop (the shared loop seam)', () => {
       const realized = [realizeVehicle(RAPIER, world, ir, {
         position: spawn.position, targetWheelSurfaceSpeed: 5, wheelFriction: 1,
       })];
+      // A MISMATCHED declaration fails loud (the honest-dt contract): the
+      // world runs 1/120 here, so declaring the production 1/60 must throw.
+      expect(() => runRealizedEvaluationLoop(world, realized, {
+        requestedDt: FIXED_DT, maxSteps: 10, staticColliders,
+      })).toThrow(/does not match the engine readback/);
       const r = runRealizedEvaluationLoop(world, realized, {
         requestedDt: 1 / 120, maxSteps: 10, staticColliders,
       });

@@ -243,6 +243,13 @@ export function runRealizedEvaluationLoop(world, realized, {
   if (inspect !== null && typeof inspect !== 'function') {
     fail('runRealizedEvaluationLoop.inspect', inspect);
   }
+  // Honest-dt contract: the declaration must MATCH the engine readback (the
+  // engine stores dt as f32) — a composition running 1/120 while declaring
+  // 1/60 must fail loud here, never report a misleading requestedDt.
+  if (world.timestep !== Math.fround(requestedDt)) {
+    fail('runRealizedEvaluationLoop.requestedDt',
+      `${requestedDt} does not match the engine readback ${world.timestep}`);
+  }
   const effectiveDt = world.timestep;
 
   // Canonical body order falls out of iterating the realizeVehicle return

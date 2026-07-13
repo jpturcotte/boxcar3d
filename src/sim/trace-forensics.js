@@ -53,15 +53,31 @@ import { EVALUATION_TRACE_VERSION, RECORD_BYTES, decodeTraceRecord } from './tra
 
 export const TRACE_FORENSICS_SCHEMA = 'boxcar3d.trace-forensics/1';
 
+// Per-capture thresholds are DEFINED at this reference capture interval (the
+// runner's FIXED_DT). For a trace captured at another dt, pass `captureDt`:
+// the speed thresholds are absolute and stay fixed, while every per-capture
+// quantity (one-step displacement = speed x dt; one-step velocity change =
+// acceleration x dt) scales linearly with captureDt — the output echoes both
+// the reference thresholds and the APPLIED (scaled) ones, plus the captureDt
+// used, so onset values from different-timestep runs are never silently
+// compared under mismatched units.
+export const REFERENCE_CAPTURE_DT = 1 / 60;
+
 export const FORENSIC_THRESHOLD_DEFAULTS = Object.freeze({
-  alertSpeed: 25, // m/s
-  alertSpeedDelta: 30, // m/s per capture interval
-  alertStepDisplacement: 25 / 60, // m per capture interval (alertSpeed * dt)
-  catastrophicSpeed: 1000, // m/s
-  catastrophicStepDisplacement: 1000 / 60, // m per capture interval
-  causalSpeedDelta: 1, // m/s per capture — backward-scan escalation floor
-  causalAngularSpeedDelta: 10, // rad/s per capture — backward-scan floor
+  alertSpeed: 25, // m/s (absolute — never scaled)
+  alertSpeedDelta: 30, // m/s per REFERENCE capture (an ~1800 m/s^2 x dt quantity)
+  alertStepDisplacement: 25 / 60, // m per REFERENCE capture (alertSpeed x dt)
+  catastrophicSpeed: 1000, // m/s (absolute — never scaled)
+  catastrophicStepDisplacement: 1000 / 60, // m per REFERENCE capture
+  causalSpeedDelta: 1, // m/s per REFERENCE capture — backward-scan floor (~60 m/s^2 x dt)
+  causalAngularSpeedDelta: 10, // rad/s per REFERENCE capture — backward-scan floor
 });
+
+// The per-capture (dt-scaled) threshold keys; speed thresholds are absolute.
+const PER_CAPTURE_KEYS = Object.freeze([
+  'alertSpeedDelta', 'alertStepDisplacement', 'catastrophicStepDisplacement',
+  'causalSpeedDelta', 'causalAngularSpeedDelta',
+]);
 
 function fail(path, value) {
   throw new Error(`trace-forensics: invalid input at ${path} (${String(value)})`);
@@ -101,7 +117,11 @@ const dist3 = (a, b) => {
 const bodyKey = (r) => `${r.vehicleIndex}|${r.bodyRole}|${r.axleIndex === null ? '-' : r.axleIndex}|${r.wheelIndex === null ? '-' : r.wheelIndex}`;
 
 const BODY_META_KEYS = Object.freeze(['vehicleIndex', 'bodyRole', 'axleIndex', 'wheelIndex', 'reach']);
+const BODY_META_ROLES = Object.freeze(['chassis', 'hub', 'wheel']);
 
+// Full identity validation (the trace's own role-conditional rules): a
+// malformed entry must fail loud, never silently miss its trace key and
+// suppress tip-speed output.
 function resolveReachMap(bodies) {
   if (bodies === null) return null;
   if (!Array.isArray(bodies)) fail('bodies', bodies);
@@ -111,10 +131,23 @@ function resolveReachMap(bodies) {
     for (const k of Object.keys(b)) {
       if (!BODY_META_KEYS.includes(k)) fail(`bodies[${i}].${k}`, 'unknown key');
     }
+    if (!Number.isInteger(b.vehicleIndex) || b.vehicleIndex < 0) {
+      fail(`bodies[${i}].vehicleIndex`, b.vehicleIndex);
+    }
+    if (!BODY_META_ROLES.includes(b.bodyRole)) fail(`bodies[${i}].bodyRole`, b.bodyRole);
+    if (b.bodyRole === 'chassis') {
+      if (b.axleIndex !== null) fail(`bodies[${i}].axleIndex`, `${b.axleIndex} (chassis carries no station)`);
+      if (b.wheelIndex !== null) fail(`bodies[${i}].wheelIndex`, `${b.wheelIndex} (chassis carries no station)`);
+    } else {
+      if (!Number.isInteger(b.axleIndex) || b.axleIndex < 0) fail(`bodies[${i}].axleIndex`, b.axleIndex);
+      if (!Number.isInteger(b.wheelIndex) || b.wheelIndex < 0) fail(`bodies[${i}].wheelIndex`, b.wheelIndex);
+    }
     if (typeof b.reach !== 'number' || !Number.isFinite(b.reach) || b.reach <= 0) {
       fail(`bodies[${i}].reach`, b.reach);
     }
-    map.set(bodyKey(b), b.reach);
+    const key = bodyKey(b);
+    if (map.has(key)) fail(`bodies[${i}]`, `duplicate body identity ${key}`);
+    map.set(key, b.reach);
   });
   return map;
 }
@@ -166,11 +199,15 @@ const foldPeak = (p, value, step) => {
 /**
  * Analyze one FULL-mode trace result ({version, mode:'full', recordBytes,
  * records}). Options: `bodies` — reach metadata entries (see
- * bodyReachMetadataForIR); `thresholds` — diagnostic overrides.
+ * bodyReachMetadataForIR); `thresholds` — diagnostic overrides (defined at
+ * REFERENCE_CAPTURE_DT); `captureDt` — the trace's actual capture interval
+ * (the run's effectiveDt) — per-capture thresholds scale linearly with it.
  * Returns plain data only; throws loud on a digest/none-mode result (no
  * records to analyze) or a trace-contract mismatch.
  */
-export function analyzeTrace(traceResult, { bodies = null, thresholds = {} } = {}) {
+export function analyzeTrace(traceResult, {
+  bodies = null, thresholds = {}, captureDt = REFERENCE_CAPTURE_DT,
+} = {}) {
   if (typeof traceResult !== 'object' || traceResult === null) fail('traceResult', traceResult);
   if (traceResult.version !== EVALUATION_TRACE_VERSION) fail('traceResult.version', traceResult.version);
   if (traceResult.mode !== 'full') fail('traceResult.mode', `${traceResult.mode} (analyzeTrace needs retained records — run with trace mode 'full')`);
@@ -178,7 +215,14 @@ export function analyzeTrace(traceResult, { bodies = null, thresholds = {} } = {
   if (!Array.isArray(traceResult.records) || traceResult.records.length === 0) {
     fail('traceResult.records', traceResult.records);
   }
-  const t = resolveThresholds(thresholds);
+  if (typeof captureDt !== 'number' || !Number.isFinite(captureDt) || captureDt <= 0) {
+    fail('captureDt', captureDt);
+  }
+  const reference = resolveThresholds(thresholds);
+  const dtScale = captureDt / REFERENCE_CAPTURE_DT;
+  const applied = { ...reference };
+  for (const k of PER_CAPTURE_KEYS) applied[k] = reference[k] * dtScale;
+  const t = Object.freeze(applied);
   const reachMap = resolveReachMap(bodies);
 
   // Group decoded records per body, in capture order (the writer's canonical
@@ -321,7 +365,9 @@ export function analyzeTrace(traceResult, { bodies = null, thresholds = {} } = {
 
   return {
     schema: TRACE_FORENSICS_SCHEMA,
-    thresholds: t,
+    thresholds: reference,
+    captureDt,
+    appliedThresholds: t,
     stepRange: { first: firstStep, last: lastStep },
     perBody,
     onset: {

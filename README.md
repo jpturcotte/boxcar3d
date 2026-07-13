@@ -68,24 +68,32 @@ table in
 machine-specific, never a package property). **Physics Integrity:
 Finite-Explosion Reproduction and Ablation — landed** (the corrective
 investigation between Phase 1A and Phase 1B): the explosion tail is **not**
-a terrain interaction — it is a Rapier 0.19.3 **engine limitation**
-(constraint-solver divergence on ill-conditioned multi-module joint
-islands: wide-track wheel anchors on light chassis) that reproduces on
-completely flat ground, undriven, on both engine flavors, with onset during
-the spawn settle and joint-anchor violation preceding any kinematic
+a terrain interaction — it is **Rapier 0.19.3 constraint-solver divergence
+under the project's current legal multi-module joint realization**
+(wide-track wheel anchors on a light chassis; no incorrect spawn, terrain,
+motor, CCD, or initial-joint setup was found, while the realization
+architecture itself remains a possibly-mitigable open design direction).
+It reproduces on completely flat ground, undriven, on both engine flavors —
+and under ANY ordinary load: floor-contact settle, S1 spring preload, or
+drive-motor torque each suffice (witnesses diverge even in zero gravity
+with no contact at all; the fully unloaded island is quiescent). Directly
+measured constraint violations (revolute anchors and prismatic off-axis
+errors > 2 cm, coordinates through their limits) precede the kinematic
 anomaly; no exposed engine parameter cures it (more solver iterations
 accelerate it, dt 1/120 can worsen it by ten orders of magnitude, CCD and
 gravity are irrelevant). The witnesses are frozen as reproducible
-identities, a materialized two-axle minimal reproducer is committed, and a
-forensic instrument (`npm run probe:physics-explosion`; identity-only hard
-checks, physics as observations, `-- --pass reproducer` as the
-engine-upgrade recheck) plus the full report
+identities, a materialized two-axle minimal reproducer with its full
+instrumented closure matrix is committed, and a forensic instrument
+(`npm run probe:physics-explosion`; identity-only hard checks, physics as
+observations, `-- --pass reproducer` as the engine-upgrade recheck) plus
+the full report
 ([`docs/physics-integrity-finite-explosion-report-2026-07-13.md`](docs/physics-integrity-finite-explosion-report-2026-07-13.md))
-document the ruling. Prevalence is ~8% of generation-0 morphologies (5/60),
-two of which hide catastrophic internal speeds behind ordinary-looking
-fitness — so raw `maxForwardDistance` mis-ranks in both directions, on flat
-terrain included. No production physics changed; every lock and version
-constant is byte-identical; the score policy stays v1. Next: **GA Phase 1B
+document the ruling. Prevalence — regenerable from the committed
+`prevalence` pass — is ~8% of generation-0 morphologies (5/60), two of
+which hide catastrophic internal speeds behind ordinary-looking fitness —
+so raw `maxForwardDistance` mis-ranks in both directions, on flat terrain
+included. No production physics changed; every lock and version constant is
+byte-identical; the score policy stays v1. Next: **GA Phase 1B
 — Mutation-Only Evolution** (selection, elitism, deterministic mutation,
 generational replacement) — which follows only after this physics-integrity
 result and therefore **begins by designing the numerical-integrity policy

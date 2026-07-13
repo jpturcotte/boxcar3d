@@ -59,6 +59,15 @@
 //   off / leading-station removal on the ORIGINAL realized vehicle, clearly
 //   labeled outside the genotype contract — the exact-component-necessity
 //   level the ecological arms cannot reach.)
+//   reproducer — the engine-upgrade rerun surface: the committed minimal
+//              reproducer on both flavors + its full CLOSURE MATRIX (each
+//              documented stabilizer, plus the zero-gravity free-space load
+//              discriminator with measured static-contact counts), so the
+//              necessary/sufficient claims regenerate from one command.
+//   prevalence — the complete characterization populations (20 individuals
+//              per declared seed), driven, full-trace forensic
+//              classification — the reproducible source of the "N/60
+//              catastrophic" figures.
 //
 // Check tiers (the probe-rapier-timing convention): HARD checks (exit 1) are
 // IDENTITY-class only — witness genotype digests, deterministic same-config
@@ -84,11 +93,11 @@ import { pathToFileURL } from 'node:url';
 import { writeFileSync } from 'node:fs';
 import { runEvaluation, runRealizedEvaluationLoop } from '../src/sim/evaluation.js';
 import {
-  addCorridor, addCorridorWithFeatures, createPhysics, FIXED_DT, realizeVehicle,
-  vehicleWheelTransforms,
+  SUSPENSION_AXIS, addCorridor, addCorridorWithFeatures, createPhysics, FIXED_DT,
+  realizeVehicle, suspensionAnchorLocal, vehicleWheelTransforms,
 } from '../src/sim/physics/adapter.js';
 import { generateCorridorTerrain } from '../src/sim/terrain.js';
-import { decodeTraceRecord } from '../src/sim/trace.js';
+import { compareCheckpoints, compareTraces, decodeTraceRecord } from '../src/sim/trace.js';
 import {
   evaluatePopulation, isVehicleResultValid, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
@@ -122,11 +131,13 @@ const TERRAIN_VARIANTS = Object.freeze({
   }),
 });
 
-const IMPLEMENTED_PASSES = Object.freeze(['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer']);
+const IMPLEMENTED_PASSES = Object.freeze([
+  'baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence',
+]);
 
 export function smokeConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence'],
     witnesses: ['A'],
     ordinaryFlavor: false,
     controls: false,
@@ -134,13 +145,15 @@ export function smokeConfig() {
     vehicleArms: ['passive', 'powerZero', 'sled'],
     componentArms: ['motorOff:all'],
     engineArms: ['baselineComposed', 'solverIters:8'],
+    reproducerArms: ['original', 'freeSpace'],
+    prevalenceSeeds: [20260725],
     argv: [],
   };
 }
 
 export function defaultConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer', 'prevalence'],
     witnesses: ['A'],
     ordinaryFlavor: true,
     controls: true,
@@ -148,6 +161,8 @@ export function defaultConfig() {
     vehicleArms: null, // null = every arm
     componentArms: null,
     engineArms: null,
+    reproducerArms: null,
+    prevalenceSeeds: [20260725, 20260728, 20260729],
     argv: [],
   };
 }
@@ -286,7 +301,22 @@ async function composeRun(ir, {
           if (st.hub !== null) world.removeRigidBody(st.hub.body);
         }
       }
-      rec = { ...rec, wheels: keep };
+      // Recompute the realized mass record for the SURVIVING phenotype (the
+      // loop returns rec.mass verbatim — stale totals would misreport the
+      // diagnostic vehicle). Read back from the surviving bodies, the same
+      // source the realizer used.
+      const wheels = keep.reduce((s, st) => s + st.wheel.body.mass(), 0);
+      const hubs = keep.reduce((s, st) => s + (st.hub === null ? 0 : st.hub.body.mass()), 0);
+      rec = {
+        ...rec,
+        wheels: keep,
+        mass: {
+          chassis: rec.mass.chassis,
+          wheels,
+          hubs,
+          total: rec.mass.chassis + wheels + hubs,
+        },
+      };
     }
     const inspect = buildInspect === null ? null : buildInspect({ world, rec, handleMap });
     const result = runRealizedEvaluationLoop(world, [rec], {
@@ -316,7 +346,20 @@ async function evaluateIR(ir, {
   });
 }
 
-/** Result + forensics summary for one full-trace run. */
+/**
+ * Byte-exact deterministic repeatability: full record-stream comparison
+ * (compareTraces), byte counts, checkpoints, and the digest — never the FNV
+ * digest alone (the records are already retained in full mode).
+ */
+function tracesByteIdentical(a, b) {
+  return compareTraces(a, b) === null
+    && a.byteCount === b.byteCount
+    && a.recordCount === b.recordCount
+    && a.digest === b.digest
+    && compareCheckpoints(a.checkpoints, b.checkpoints) === null;
+}
+
+/** Result + forensics summary for one full-trace run (captureDt-aware). */
 function summarize(r, ir) {
   const v = r.vehicles[0];
   const row = {
@@ -331,10 +374,13 @@ function summarize(r, ir) {
     peakChassisSpeed: null,
     peakBodySpeed: null,
     onset: null,
+    captureDt: r.effectiveDt,
     traceDigest: r.trace === null ? null : r.trace.digest,
   };
   if (r.trace !== null && r.trace.mode === 'full') {
-    const a = analyzeTrace(r.trace, { bodies: bodyReachMetadataForIR(ir) });
+    const a = analyzeTrace(r.trace, {
+      bodies: bodyReachMetadataForIR(ir), captureDt: r.effectiveDt,
+    });
     const chassis = a.perBody.find((b) => b.bodyRole === 'chassis');
     row.peakChassisSpeed = chassis.peakSpeed.value;
     row.peakBodySpeed = Math.max(...a.perBody.map((b) => b.peakSpeed.value));
@@ -344,10 +390,10 @@ function summarize(r, ir) {
 }
 
 /** Alert-step spread across x0.5/x1/x2 thresholds — the sharpness signal. */
-function alertSensitivity(trace, ir) {
+function alertSensitivity(trace, ir, captureDt = FIXED_DT) {
   const bodies = bodyReachMetadataForIR(ir);
   const at = (factor) => analyzeTrace(trace, {
-    bodies, thresholds: scaledThresholds(factor),
+    bodies, thresholds: scaledThresholds(factor), captureDt,
   }).onset.firstAlertStep;
   const half = at(0.5);
   const base = at(1);
@@ -437,8 +483,8 @@ async function baselinePass(witnessSet, cfg, report, check) {
       const r1 = await evaluateIR(ir);
       const r2 = await evaluateIR(ir);
       check(`repeat:${w.label}:${passive ? 'passive' : 'driven'}`,
-        r1.trace.digest === r2.trace.digest && r1.trace.recordCount === r2.trace.recordCount,
-        `digests ${r1.trace.digest}/${r2.trace.digest}`);
+        tracesByteIdentical(r1.trace, r2.trace),
+        `byte-exact record streams + checkpoints (digests ${r1.trace.digest}/${r2.trace.digest})`);
       check(`dt:${w.label}:${passive ? 'passive' : 'driven'}`,
         r1.effectiveDt === Math.fround(FIXED_DT), `effectiveDt ${r1.effectiveDt}`);
       if (report.engine.effectiveDt === null) report.engine.effectiveDt = r1.effectiveDt;
@@ -450,7 +496,7 @@ async function baselinePass(witnessSet, cfg, report, check) {
         genotypeDigest: witnessDigest(g),
         morphology: passive ? null : { ...w.morphology, suspensionTypes: [...w.morphology.suspensionTypes] },
         result: summarize(r1, ir),
-        sensitivity: alertSensitivity(r1.trace, ir),
+        sensitivity: alertSensitivity(r1.trace, ir, r1.effectiveDt),
         ordinary: null,
       };
       if (cfg.ordinaryFlavor) {
@@ -469,6 +515,16 @@ async function baselinePass(witnessSet, cfg, report, check) {
   return rows;
 }
 
+// Threshold-calibration controls. LESSON RECORDED (the review finding that
+// reshaped this procedure): fitness-selected controls can be CONTAMINATED
+// because fitness itself conceals the instability — the first run of this
+// probe selected population 20260725's max-fitness non-witness (id 1,
+// 14.02 m) as a control and it failed calibration with a >1000 m/s internal
+// blow-up, which is what triggered the full prevalence pass. The procedure
+// therefore walks the fitness ranking DETERMINISTICALLY and substitutes any
+// contaminated candidate with the next-ranked alert-free member; every
+// contaminated candidate is reported as its own row (a finding, not a
+// calibration sample).
 async function controlsPass(report, check) {
   const init = createInitialPopulation({ seed: CONTROL_POPULATION_SEED, populationSize: 20 });
   const evaluation = await evaluatePopulation(init.population, {
@@ -482,40 +538,121 @@ async function controlsPass(report, check) {
   const ranked = evaluation.individuals
     .filter((i) => !CONTROL_EXCLUDED_IDS.includes(i.individualId))
     .sort((a, b) => a.fitness - b.fitness);
-  const picks = [
-    { role: 'min-fitness', ind: ranked[0] },
-    { role: 'median-fitness', ind: ranked[Math.floor(ranked.length / 2)] },
-    { role: 'max-fitness', ind: ranked[ranked.length - 1] },
-  ];
-  const rows = [];
-  for (const { role, ind } of picks) {
+  const mid = Math.floor(ranked.length / 2);
+  // Deterministic candidate orders per role: min walks up, max walks down,
+  // median spirals outward from the middle preferring the lower index.
+  const candidateOrder = {
+    'min-fitness': ranked.map((_, i) => i),
+    'max-fitness': ranked.map((_, i) => ranked.length - 1 - i),
+    'median-fitness': ranked.map((_, i) => {
+      const k = Math.ceil(i / 2);
+      return i % 2 === 0 ? mid - k : mid + k;
+    }).filter((i) => i >= 0 && i < ranked.length),
+  };
+  const cache = new Map(); // individualId -> {row-for-driven, clean}
+  const evaluateCandidate = async (ind, role) => {
+    if (cache.has(ind.individualId)) return cache.get(ind.individualId);
     const genotype = init.population.individuals
       .find((i) => i.individualId === ind.individualId).genotype;
-    for (const passive of [false, true]) {
-      const g = passive ? passiveTwinOf(genotype) : genotype;
-      const ir = compileAssembly(g);
-      const r = await evaluateIR(ir);
-      const row = {
+    const ir = compileAssembly(genotype);
+    const r = await evaluateIR(ir);
+    const sensitivity = alertSensitivity(r.trace, ir, r.effectiveDt);
+    const clean = sensitivity.alertAtDefault === null && sensitivity.alertAtHalf === null;
+    const entry = {
+      genotype,
+      driven: {
         role,
         populationSeed: CONTROL_POPULATION_SEED,
         individualId: ind.individualId,
-        passive,
-        genotypeDigest: witnessDigest(g),
-        fitness: passive ? null : ind.fitness,
+        passive: false,
+        genotypeDigest: witnessDigest(genotype),
+        fitness: ind.fitness,
         result: summarize(r, ir),
-        sensitivity: alertSensitivity(r.trace, ir),
-      };
-      // Threshold calibration signal (an OBSERVATION, prominently flagged in
-      // the markdown — an alerting control means the diagnostic thresholds
-      // need recalibration, or the control itself is a finding).
-      row.calibrationClean = row.sensitivity.alertAtDefault === null
-        && row.sensitivity.alertAtHalf === null;
-      rows.push(row);
+        sensitivity,
+        calibrationClean: clean,
+      },
+      clean,
+    };
+    cache.set(ind.individualId, entry);
+    return entry;
+  };
+  const rows = [];
+  const selectedIds = new Set();
+  for (const role of ['min-fitness', 'median-fitness', 'max-fitness']) {
+    let selected = null;
+    for (const idx of candidateOrder[role]) {
+      const ind = ranked[idx];
+      if (selectedIds.has(ind.individualId)) continue;
+      const entry = await evaluateCandidate(ind, role);
+      if (entry.clean) {
+        selected = { ind, entry };
+        break;
+      }
+      // A contaminated candidate is a FINDING (fitness concealed a blow-up),
+      // reported and then substituted — never used for calibration.
+      rows.push({ ...entry.driven, role: `contaminated(${role})` });
     }
+    if (selected === null) {
+      throw new Error(`probe-physics-explosion: no alert-free ${role} control exists in `
+        + `population ${CONTROL_POPULATION_SEED} — recalibrate thresholds or widen the pool`);
+    }
+    selectedIds.add(selected.ind.individualId);
+    rows.push({ ...selected.entry.driven, role });
+    const twin = passiveTwinOf(selected.entry.genotype);
+    const twinIr = compileAssembly(twin);
+    const rp = await evaluateIR(twinIr);
+    const sensitivity = alertSensitivity(rp.trace, twinIr, rp.effectiveDt);
+    rows.push({
+      role,
+      populationSeed: CONTROL_POPULATION_SEED,
+      individualId: selected.ind.individualId,
+      passive: true,
+      genotypeDigest: witnessDigest(twin),
+      fitness: null,
+      result: summarize(rp, twinIr),
+      sensitivity,
+      calibrationClean: sensitivity.alertAtDefault === null && sensitivity.alertAtHalf === null,
+    });
   }
   check('dt:controls', evaluation.effectiveDt === Math.fround(FIXED_DT),
     `effectiveDt ${evaluation.effectiveDt}`);
   return rows;
+}
+
+// The complete-population forensic scan — the reproducible source of the
+// prevalence claim (every characterization individual, driven, full trace,
+// alert/catastrophic classification). Numbers are OBSERVATIONS.
+async function prevalencePass(cfg) {
+  const perSeed = [];
+  for (const seed of cfg.prevalenceSeeds) {
+    const init = createInitialPopulation({ seed, populationSize: 20 });
+    const individuals = [];
+    for (const ind of init.population.individuals) {
+      const ir = compileAssembly(ind.genotype);
+      const r = await evaluateIR(ir);
+      const a = analyzeTrace(r.trace, {
+        bodies: bodyReachMetadataForIR(ir), captureDt: r.effectiveDt,
+      });
+      individuals.push({
+        individualId: ind.individualId,
+        genotypeDigest: witnessDigest(ind.genotype),
+        maxForwardDistance: r.vehicles[0].maxForwardDistance,
+        firstAlertStep: a.onset.firstAlertStep,
+        firstCatastrophicStep: a.onset.firstCatastrophicStep,
+        peakBodySpeed: Math.max(...a.perBody.map((b) => b.peakSpeed.value)),
+      });
+    }
+    perSeed.push({
+      populationSeed: seed,
+      individuals,
+      alertCount: individuals.filter((i) => i.firstAlertStep !== null).length,
+      catastrophicCount: individuals.filter((i) => i.firstCatastrophicStep !== null).length,
+      catastrophicIds: individuals
+        .filter((i) => i.firstCatastrophicStep !== null)
+        .map((i) => i.individualId),
+    });
+  }
+  return perSeed;
 }
 
 async function terrainPass(witnessSet, cfg) {
@@ -690,6 +827,11 @@ const ENGINE_ARMS = Object.freeze([
   { name: 'softCcd:0.1', changedVariable: 'setSoftCcdPrediction(0.1) (policy 1)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.1)) } },
   { name: 'softCcd:0.5', changedVariable: 'setSoftCcdPrediction(0.5)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.5)) } },
   { name: 'softCcd:2', changedVariable: 'setSoftCcdPrediction(2)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(2)) } },
+  {
+    name: 'zeroGravity',
+    changedVariable: 'world.gravity = 0 (free space: the ground-contact/internal-load discriminator — the vehicle spawns 0.02 m up and never falls)',
+    opts: { worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; } },
+  },
 ]);
 
 async function enginePass(witnessSet, cfg, check) {
@@ -720,19 +862,30 @@ async function enginePass(witnessSet, cfg, check) {
   return rows;
 }
 
-// Offline joint-anchor-stretch series from the full trace: for every S0
-// station, |chassisPose x localWheelCenter - wheelPos| (the drive-revolute
-// anchor separation — ~1e-6 m at creation); for every S1 station,
-// |hubPos - wheelPos| (hub and wheel are coaxial at the wheel center).
-// A separation of centimetres means the SOLVER left the constraint
-// violated — the constraint-divergence signature.
+// Offline joint-anchor telemetry from the full trace.
+//   S0 station:  stretch = |chassisPose x anchorLocal - wheelPos|  (the
+//                drive-revolute anchor separation — ~1e-6 m at creation).
+//   S1 station:  stretch = |hubPos - wheelPos| (the hub->wheel REVOLUTE
+//                anchor separation; hub and wheel are coaxial), PLUS the
+//                chassis->hub PRISMATIC decomposition: with a1 = chassisPose
+//                x suspensionAnchorLocal and axis = chassisRot x
+//                SUSPENSION_AXIS, delta = hubPos - a1 splits into the
+//                along-axis coordinate (compared against the [0, travel]
+//                limits) and the OFF-AXIS separation |delta - coord*axis| —
+//                the prismatic's own constraint-violation measure.
+// Separations of centimetres mean the SOLVER left the constraint violated —
+// the constraint-divergence signature.
 function jointStretchSeries(trace, ir) {
-  const s1 = new Set();
+  const stationsMeta = new Map(); // key -> {isS1, local, anchorLocal, travel}
   ir.axles.forEach((axle, i) => {
     const axleIndex = Number.isInteger(axle.index) ? axle.index : i;
-    if (axle.suspension.type === 'S1') {
-      axle.wheels.forEach((_, j) => s1.add(`${axleIndex}|${j}`));
-    }
+    axle.wheels.forEach((wheel, j) => {
+      stationsMeta.set(`${axleIndex}|${j}`, {
+        isS1: axle.suspension.type === 'S1',
+        anchorLocal: suspensionAnchorLocal(axle, wheel),
+        travel: axle.suspension.travel,
+      });
+    });
   });
   const locals = new Map();
   for (const t of vehicleWheelTransforms(ir, {})) {
@@ -749,14 +902,26 @@ function jointStretchSeries(trace, ir) {
       step[`${rec.bodyRole}|${rec.axleIndex}|${rec.wheelIndex}`] = rec.translation;
     }
   }
-  const stations = new Map(); // key -> { maxStretch, step, firstOver2cm }
+  const stations = new Map();
+  const stationState = (key) => {
+    if (!stations.has(key)) {
+      stations.set(key, {
+        maxStretch: 0,
+        step: null,
+        firstOver2cm: null,
+        prismatic: null,
+      });
+    }
+    return stations.get(key);
+  };
   for (const [stepIndex, step] of poses) {
     if (step.chassis === undefined) continue;
     for (const [key, local] of locals) {
+      const meta = stationsMeta.get(key);
       const wheelPos = step[`wheel|${key}`];
-      if (wheelPos === undefined) continue;
+      if (wheelPos === undefined || meta === undefined) continue;
       let expected;
-      if (s1.has(key)) {
+      if (meta.isS1) {
         expected = step[`hub|${key}`];
         if (expected === undefined) continue;
       } else {
@@ -771,20 +936,68 @@ function jointStretchSeries(trace, ir) {
       const dy = wheelPos.y - expected.y;
       const dz = wheelPos.z - expected.z;
       const stretch = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (!Number.isFinite(stretch)) continue;
-      if (!stations.has(key)) stations.set(key, { maxStretch: 0, step: null, firstOver2cm: null });
-      const s = stations.get(key);
-      if (stretch > s.maxStretch) {
-        s.maxStretch = stretch;
-        s.step = stepIndex;
+      if (Number.isFinite(stretch)) {
+        const s = stationState(key);
+        if (stretch > s.maxStretch) {
+          s.maxStretch = stretch;
+          s.step = stepIndex;
+        }
+        if (stretch > 0.02 && (s.firstOver2cm === null || stepIndex < s.firstOver2cm)) {
+          s.firstOver2cm = stepIndex;
+        }
       }
-      if (stretch > 0.02 && (s.firstOver2cm === null || stepIndex < s.firstOver2cm)) {
-        s.firstOver2cm = stepIndex;
+      if (meta.isS1) {
+        const hubPos = step[`hub|${key}`];
+        if (hubPos === undefined) continue;
+        const a1r = rotateByQuat(step.chassis.rot, meta.anchorLocal);
+        const a1 = {
+          x: step.chassis.pos.x + a1r.x,
+          y: step.chassis.pos.y + a1r.y,
+          z: step.chassis.pos.z + a1r.z,
+        };
+        const axis = rotateByQuat(step.chassis.rot, SUSPENSION_AXIS);
+        const d = { x: hubPos.x - a1.x, y: hubPos.y - a1.y, z: hubPos.z - a1.z };
+        const coord = d.x * axis.x + d.y * axis.y + d.z * axis.z;
+        const ox = d.x - coord * axis.x;
+        const oy = d.y - coord * axis.y;
+        const oz = d.z - coord * axis.z;
+        const offAxis = Math.sqrt(ox * ox + oy * oy + oz * oz);
+        if (!Number.isFinite(offAxis) || !Number.isFinite(coord)) continue;
+        const s = stationState(key);
+        if (s.prismatic === null) {
+          s.prismatic = {
+            maxOffAxis: 0,
+            offAxisStep: null,
+            firstOffAxisOver2cm: null,
+            coordMin: Infinity,
+            coordMax: -Infinity,
+            travel: meta.travel,
+          };
+        }
+        const p = s.prismatic;
+        if (offAxis > p.maxOffAxis) {
+          p.maxOffAxis = offAxis;
+          p.offAxisStep = stepIndex;
+        }
+        if (offAxis > 0.02 && (p.firstOffAxisOver2cm === null || stepIndex < p.firstOffAxisOver2cm)) {
+          p.firstOffAxisOver2cm = stepIndex;
+        }
+        if (coord < p.coordMin) p.coordMin = coord;
+        if (coord > p.coordMax) p.coordMax = coord;
       }
     }
   }
   return [...stations.entries()]
-    .map(([key, s]) => ({ station: key, suspension: s1.has(key) ? 'S1' : 'S0', ...s }))
+    .map(([key, s]) => ({
+      station: key,
+      suspension: stationsMeta.get(key).isS1 ? 'S1' : 'S0',
+      ...s,
+      prismatic: s.prismatic === null ? null : {
+        ...s.prismatic,
+        limitExceeded: s.prismatic.coordMin < -0.02
+          || s.prismatic.coordMax > s.prismatic.travel + 0.02,
+      },
+    }))
     .sort((a, b) => (a.firstOver2cm ?? Infinity) - (b.firstOver2cm ?? Infinity));
 }
 
@@ -840,6 +1053,13 @@ async function localPass(witnessSet) {
                 normal = flipped ? { x: -nm.x, y: -nm.y, z: -nm.z } : { x: nm.x, y: nm.y, z: nm.z };
               });
               if (numContacts > 0) {
+                if (normal === null) {
+                  // The manifold callback assigns the normal whenever
+                  // contacts exist — a null here would mean the probe's
+                  // invariant broke, and the wedge classifier below would
+                  // silently misbehave. Fail loud instead.
+                  throw new Error('probe-physics-explosion: contact pair with contacts but no manifold normal');
+                }
                 pairs.push({ body: id, partner, numContacts, minDist, maxImpulse, normal });
               }
             });
@@ -950,6 +1170,7 @@ export async function runProbe(config) {
     engineAblations: null,
     localization: null,
     reproducer: null,
+    prevalence: null,
   };
   const check = (name, ok, detail) => report.checks.push({ name, ok: ok === true, detail });
 
@@ -967,36 +1188,113 @@ export async function runProbe(config) {
   if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
   if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
   if (passes.includes('local')) report.localization = await localPass(witnessSet);
-  if (passes.includes('reproducer')) report.reproducer = await reproducerPass(check);
+  if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check);
+  if (passes.includes('prevalence')) report.prevalence = await prevalencePass(cfg);
   return report;
 }
 
 // The engine-upgrade rerun surface (see MINIMAL_REPRODUCER's header):
-// identity is HARD; the onset is an OBSERVATION — a future Rapier that
-// converges this island simply reports no alert, and the engine-limitation
-// ruling gets re-evaluated. Runs on BOTH flavors.
-async function reproducerPass(check) {
+// identity is HARD; every onset/outcome is an OBSERVATION — a future Rapier
+// that converges this island simply reports no alert, and the
+// engine-limitation ruling gets re-evaluated. The pass carries the FULL
+// closure matrix, so the necessary/sufficient claims regenerate from this
+// one command: the unchanged reproducer on both flavors, each documented
+// stabilizer (either axle removed, narrow track, heavy chassis), and the
+// free-space load discriminator (zero gravity, zero static contacts).
+const REPRODUCER_ARMS = Object.freeze([
+  'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis', 'freeSpace',
+]);
+
+async function reproducerPass(cfg, check) {
   const g = reproducerGenotype();
   check('identity:reproducer', witnessDigest(g) === MINIMAL_REPRODUCER.genotypeDigest,
     `expected ${MINIMAL_REPRODUCER.genotypeDigest}`);
   const ir = compileAssembly(g);
+  const overrides = { ...MINIMAL_REPRODUCER.terrainOverrides };
+  const arms = cfg.reproducerArms === null
+    ? [...REPRODUCER_ARMS]
+    : REPRODUCER_ARMS.filter((a) => cfg.reproducerArms.includes(a));
   const rows = [];
-  for (const deterministic of [true, false]) {
-    const r = await evaluateIR(ir, {
-      terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides }, deterministic,
-    });
-    if (deterministic) {
-      const r2 = await evaluateIR(ir, {
-        terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides }, deterministic,
-      });
-      check('repeat:reproducer', r.trace.digest === r2.trace.digest,
-        `digests ${r.trace.digest}/${r2.trace.digest}`);
+  for (const arm of arms) {
+    if (arm === 'original') {
+      for (const deterministic of [true, false]) {
+        const r = await evaluateIR(ir, { terrainOverrides: overrides, deterministic });
+        if (deterministic) {
+          const r2 = await evaluateIR(ir, { terrainOverrides: overrides, deterministic });
+          check('repeat:reproducer', tracesByteIdentical(r.trace, r2.trace),
+            `byte-exact record streams + checkpoints (digests ${r.trace.digest}/${r2.trace.digest})`);
+        }
+        rows.push({
+          arm,
+          flavor: deterministic ? 'deterministic' : 'ordinary',
+          changedVariable: 'none (the committed reproducer)',
+          genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+          staticContacts: null,
+          result: summarize(r, ir),
+        });
+      }
+      continue;
     }
+    if (arm === 'freeSpace') {
+      // Zero gravity: the vehicle spawns 0.02 m above the pad and never
+      // falls — the run counts vehicle-vs-STATIC contact pairs across every
+      // capture, so "no contact occurred" is measured, never assumed
+      // (vehicle self-pairs are collision-inert and excluded).
+      let staticContacts = 0;
+      const { result } = await composeRun(ir, {
+        terrainOverrides: overrides,
+        worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
+        buildInspect: ({ world, rec, handleMap }) => {
+          const colliders = [
+            ...rec.chassis.colliders,
+            ...rec.wheels.flatMap((st) => [st.wheel.collider,
+              ...(st.hub !== null && st.hub.collider !== undefined ? [st.hub.collider] : [])]),
+          ];
+          return () => {
+            for (const c of colliders) {
+              world.contactPairsWith(c, (other) => {
+                const partner = handleMap.get(other.handle);
+                if (partner !== undefined && partner.kind !== 'vehicle') staticContacts += 1;
+              });
+            }
+          };
+        },
+      });
+      rows.push({
+        arm,
+        flavor: 'deterministic',
+        changedVariable: 'world.gravity = 0 (free space; no static contact ever occurs — measured)',
+        genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+        staticContacts,
+        result: summarize(result, ir),
+      });
+      continue;
+    }
+    // The documented stabilizers, as canonical genotype edits (each arm
+    // records its own digest — repair keeps them in-band).
+    let edited;
+    let changedVariable;
+    if (arm === 'removeAxle:0' || arm === 'removeAxle:1') {
+      const i = Number(arm.split(':')[1]);
+      edited = { ...deepClone(g), axles: g.axles.filter((_, j) => j !== i) };
+      changedVariable = `axle ${i} removed (single-module stabilizer)`;
+    } else if (arm === 'narrowTrack') {
+      edited = { ...deepClone(g), axles: g.axles.map((a) => ({ ...deepClone(a), trackHalf: 0.2 })) };
+      changedVariable = 'trackHalf genes -> 0.2 (short lateral anchor arms)';
+    } else {
+      edited = { ...deepClone(g), frameDensity: 1 };
+      changedVariable = 'frameDensity gene -> 1 (~160 kg chassis)';
+    }
+    const armGenotype = repairGenotype(edited);
+    const armIr = compileAssembly(armGenotype);
+    const r = await evaluateIR(armIr, { terrainOverrides: overrides });
     rows.push({
-      flavor: deterministic ? 'deterministic' : 'ordinary',
-      genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
-      terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides },
-      result: summarize(r, ir),
+      arm,
+      flavor: 'deterministic',
+      changedVariable,
+      genotypeDigest: fnv1aHex(serializeGenotype(armGenotype)),
+      staticContacts: null,
+      result: summarize(r, armIr),
     });
   }
   return rows;
@@ -1112,36 +1410,62 @@ export function renderMarkdown(report) {
     L.push('## Localization (contact evidence, spawn geometry, joint stretch)');
     L.push('');
     table(
-      ['witness', 'onset', 'step0/step1 contact pairs', 'spawn clearance (wheel/belly m)', 'deepest penetration', 'hardest impulse', 'wedges', 'first joint >2cm stretch'],
-      report.localization.map((l) => [
-        l.witness,
-        onsetCell(l.onset),
-        `${l.step0Pairs}/${l.step1Pairs}`,
-        `${exp3(l.spawn.minWheelClearance)}/${exp3(l.spawn.bellyClearance)}`,
-        l.deepestPenetration === null ? 'none'
-          : `${exp3(l.deepestPenetration.minDist)} m @${l.deepestPenetration.step} (${l.deepestPenetration.partner.kind})`,
-        l.hardestImpulse === null ? 'none'
-          : `${exp3(l.hardestImpulse.maxImpulse)} @${l.hardestImpulse.step} (${l.hardestImpulse.partner.kind})`,
-        l.wedgeCandidates,
-        l.jointStretch.length === 0 ? 'none'
-          : `${l.jointStretch[0].suspension} ${l.jointStretch[0].station} @${l.jointStretch[0].firstOver2cm} (max ${exp3(l.jointStretch[0].maxStretch)} m)`,
-      ]),
+      ['witness', 'onset', 'step0/step1 contact pairs', 'spawn clearance (wheel/belly m)', 'deepest penetration', 'hardest impulse', 'wedges', 'first joint >2cm stretch', 'first prismatic off-axis >2cm'],
+      report.localization.map((l) => {
+        const firstPrismatic = l.jointStretch
+          .filter((s) => s.prismatic !== null && s.prismatic.firstOffAxisOver2cm !== null)
+          .sort((a, b) => a.prismatic.firstOffAxisOver2cm - b.prismatic.firstOffAxisOver2cm)[0];
+        return [
+          l.witness,
+          onsetCell(l.onset),
+          `${l.step0Pairs}/${l.step1Pairs}`,
+          `${exp3(l.spawn.minWheelClearance)}/${exp3(l.spawn.bellyClearance)}`,
+          l.deepestPenetration === null ? 'none'
+            : `${exp3(l.deepestPenetration.minDist)} m @${l.deepestPenetration.step} (${l.deepestPenetration.partner.kind})`,
+          l.hardestImpulse === null ? 'none'
+            : `${exp3(l.hardestImpulse.maxImpulse)} @${l.hardestImpulse.step} (${l.hardestImpulse.partner.kind})`,
+          l.wedgeCandidates,
+          l.jointStretch.length === 0 ? 'none'
+            : `${l.jointStretch[0].suspension} ${l.jointStretch[0].station} @${l.jointStretch[0].firstOver2cm} (max ${exp3(l.jointStretch[0].maxStretch)} m)`,
+          firstPrismatic === undefined ? 'none'
+            : `${firstPrismatic.station} @${firstPrismatic.prismatic.firstOffAxisOver2cm} (max ${exp3(firstPrismatic.prismatic.maxOffAxis)} m; coord [${exp3(firstPrismatic.prismatic.coordMin)}, ${exp3(firstPrismatic.prismatic.coordMax)}] vs travel ${exp3(firstPrismatic.prismatic.travel)})`,
+        ];
+      }),
     );
-    L.push('Window contact detail and full joint-stretch tables are in the JSON output.');
+    L.push('Window contact detail and full joint-stretch/prismatic tables are in the JSON output.');
     L.push('');
   }
   if (report.reproducer !== null && report.reproducer !== undefined) {
-    L.push('## Minimum reproducer (2 wide-track paired S0 axles, light chassis, undriven, flat ground)');
+    L.push('## Minimum reproducer + closure matrix (2 wide-track paired S0 axles, light chassis, undriven, flat ground)');
     L.push('');
     table(
-      ['flavor', 'digest', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
+      ['arm', 'flavor', 'changed variable', 'digest', 'static contacts', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
       report.reproducer.map((r) => [
-        r.flavor, r.genotypeDigest,
+        r.arm, r.flavor, r.changedVariable, r.genotypeDigest,
+        r.staticContacts === null ? '-' : r.staticContacts,
         exp3(r.result.maxForwardDistance),
         exp3(r.result.peakBodySpeed),
         onsetCell(r.result.onset),
       ]),
     );
+  }
+  if (report.prevalence !== null && report.prevalence !== undefined) {
+    L.push('## Prevalence (complete characterization populations, driven, forensic classification)');
+    L.push('');
+    table(
+      ['population seed', 'alerts', 'catastrophic', 'catastrophic ids (@first step)'],
+      report.prevalence.map((p) => [
+        p.populationSeed,
+        `${p.alertCount}/20`,
+        `${p.catastrophicCount}/20`,
+        p.individuals
+          .filter((i) => i.firstCatastrophicStep !== null)
+          .map((i) => `${i.individualId}@${i.firstCatastrophicStep}`)
+          .join(' '),
+      ]),
+    );
+    L.push('Per-individual rows (digest, maxFwd, alert/catastrophic steps, peak speed) are in the JSON output.');
+    L.push('');
   }
   return L.join('\n');
 }

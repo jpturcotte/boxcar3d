@@ -96,15 +96,32 @@ describe('probe schema smoke', () => {
     expect(Array.isArray(loc.jointStretch)).toBe(true);
     expect(Number.isInteger(loc.wedgeCandidates)).toBe(true);
 
-    // Reproducer: both flavors, identity + deterministic repeat hard-checked;
-    // onset values are OBSERVATIONS (no must-explode assertion, ever).
-    expect(report.reproducer.map((r) => r.flavor)).toEqual(['deterministic', 'ordinary']);
+    // Reproducer: both flavors + the smoke closure arm, identity +
+    // deterministic byte-exact repeat hard-checked; onset values are
+    // OBSERVATIONS (no must-explode assertion, ever).
+    expect(report.reproducer.map((r) => `${r.arm}:${r.flavor}`))
+      .toEqual(['original:deterministic', 'original:ordinary', 'freeSpace:deterministic']);
     expect(report.checks.some((c) => c.name === 'identity:reproducer')).toBe(true);
     expect(report.checks.some((c) => c.name === 'repeat:reproducer')).toBe(true);
     for (const r of report.reproducer) {
       expect(r.genotypeDigest).toMatch(HEX8);
       expect(Number.isFinite(r.result.maxForwardDistance)).toBe(true);
       expect(Object.keys(r.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
+    }
+    // The free-space arm MEASURES its no-static-contact premise.
+    const freeSpace = report.reproducer.find((r) => r.arm === 'freeSpace');
+    expect(Number.isInteger(freeSpace.staticContacts)).toBe(true);
+
+    // Prevalence: one smoke seed, all 20 members classified.
+    expect(report.prevalence).toHaveLength(1);
+    expect(report.prevalence[0].populationSeed).toBe(20260725);
+    expect(report.prevalence[0].individuals).toHaveLength(20);
+    expect(Number.isInteger(report.prevalence[0].alertCount)).toBe(true);
+    expect(Number.isInteger(report.prevalence[0].catastrophicCount)).toBe(true);
+    for (const i of report.prevalence[0].individuals) {
+      expect(i.genotypeDigest).toMatch(HEX8);
+      expect(Number.isFinite(i.maxForwardDistance)).toBe(true);
+      expect(Number.isFinite(i.peakBodySpeed)).toBe(true);
     }
 
     const md = renderMarkdown(report);
@@ -116,6 +133,7 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Engine ablations');
     expect(md).toContain('## Localization');
     expect(md).toContain('## Minimum reproducer');
+    expect(md).toContain('## Prevalence');
   });
 
   test('unknown passes and selectors fail loud', async () => {

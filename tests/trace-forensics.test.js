@@ -198,6 +198,51 @@ describe('trace-forensics', () => {
     expect(b.firstAwakeAfterSleepStep).toBe(6);
   });
 
+  test('captureDt scales per-capture thresholds and is echoed; speed thresholds stay absolute', () => {
+    // dx = 0.3 m in one capture: below the reference (1/60) alert
+    // displacement threshold (25/60 ~ 0.4167 m) but above the 1/120-scaled
+    // one (~0.2083 m) — the same trace classifies differently once the
+    // capture interval is declared, and the output says which was applied.
+    const records = [0, 1].map((k) => rec(k, {
+      translation: { x: k * 0.3, y: 0.5, z: 0 },
+      linvel: { x: 3, y: 0, z: 0 },
+    }));
+    const at60 = analyzeTrace(traceOf(records));
+    expect(at60.captureDt).toBe(1 / 60);
+    expect(at60.thresholds).toEqual(FORENSIC_THRESHOLD_DEFAULTS);
+    expect(at60.appliedThresholds.alertStepDisplacement)
+      .toBe(FORENSIC_THRESHOLD_DEFAULTS.alertStepDisplacement);
+    expect(at60.onset.firstAlertStep).toBeNull();
+    const at120 = analyzeTrace(traceOf(records), { captureDt: 1 / 120 });
+    expect(at120.captureDt).toBe(1 / 120);
+    expect(at120.appliedThresholds.alertStepDisplacement)
+      .toBeCloseTo(FORENSIC_THRESHOLD_DEFAULTS.alertStepDisplacement / 2, 12);
+    expect(at120.appliedThresholds.causalSpeedDelta)
+      .toBeCloseTo(FORENSIC_THRESHOLD_DEFAULTS.causalSpeedDelta / 2, 12);
+    expect(at120.appliedThresholds.alertSpeed).toBe(FORENSIC_THRESHOLD_DEFAULTS.alertSpeed);
+    expect(at120.appliedThresholds.catastrophicSpeed)
+      .toBe(FORENSIC_THRESHOLD_DEFAULTS.catastrophicSpeed);
+    expect(at120.onset.firstAlertStep).toBe(1);
+    expect(() => analyzeTrace(traceOf(records), { captureDt: 0 })).toThrow(/captureDt/);
+    expect(() => analyzeTrace(traceOf(records), { captureDt: NaN })).toThrow(/captureDt/);
+  });
+
+  test('reach metadata identity is validated completely', () => {
+    const full = traceOf([rec(0)]);
+    const chassisEntry = { vehicleIndex: 0, bodyRole: 'chassis', axleIndex: null, wheelIndex: null, reach: 1 };
+    expect(() => analyzeTrace(full, { bodies: [{ ...chassisEntry, vehicleIndex: -1 }] }))
+      .toThrow(/vehicleIndex/);
+    expect(() => analyzeTrace(full, { bodies: [{ ...chassisEntry, bodyRole: 'axle' }] }))
+      .toThrow(/bodyRole/);
+    expect(() => analyzeTrace(full, { bodies: [{ ...chassisEntry, axleIndex: 0 }] }))
+      .toThrow(/chassis carries no station/);
+    expect(() => analyzeTrace(full, {
+      bodies: [{ vehicleIndex: 0, bodyRole: 'wheel', axleIndex: null, wheelIndex: 0, reach: 1 }],
+    })).toThrow(/axleIndex/);
+    expect(() => analyzeTrace(full, { bodies: [chassisEntry, { ...chassisEntry }] }))
+      .toThrow(/duplicate body identity/);
+  });
+
   test('fail-loud validation: non-full traces, unknown/invalid thresholds, bad reach metadata', () => {
     const full = traceOf([rec(0)]);
     expect(() => analyzeTrace({ ...full, mode: 'digest', records: null })).toThrow(/full/);

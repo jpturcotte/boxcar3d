@@ -65,12 +65,34 @@ interleaved sampling; reference machine i7-14650HX, 2026-07-11: the
 deterministic flavor's stepping tax is a consistent **≈1.0–1.13×**; full
 table in
 [`docs/bench-physics-reference-2026-07-11.md`](docs/bench-physics-reference-2026-07-11.md),
-machine-specific, never a package property). Next: **GA Phase 1B —
-Mutation-Only Evolution** (selection, elitism, deterministic mutation,
-generational replacement), which must first decide how to handle the
-physics-explosion fitness tail; zone material response, S2 trailing arms,
-and worker sharding are deferred behind it, each in its own PR. The design
-docs in `docs/` define everything that comes after.
+machine-specific, never a package property). **Physics Integrity:
+Finite-Explosion Reproduction and Ablation — landed** (the corrective
+investigation between Phase 1A and Phase 1B): the explosion tail is **not**
+a terrain interaction — it is a Rapier 0.19.3 **engine limitation**
+(constraint-solver divergence on ill-conditioned multi-module joint
+islands: wide-track wheel anchors on light chassis) that reproduces on
+completely flat ground, undriven, on both engine flavors, with onset during
+the spawn settle and joint-anchor violation preceding any kinematic
+anomaly; no exposed engine parameter cures it (more solver iterations
+accelerate it, dt 1/120 can worsen it by ten orders of magnitude, CCD and
+gravity are irrelevant). The witnesses are frozen as reproducible
+identities, a materialized two-axle minimal reproducer is committed, and a
+forensic instrument (`npm run probe:physics-explosion`; identity-only hard
+checks, physics as observations, `-- --pass reproducer` as the
+engine-upgrade recheck) plus the full report
+([`docs/physics-integrity-finite-explosion-report-2026-07-13.md`](docs/physics-integrity-finite-explosion-report-2026-07-13.md))
+document the ruling. Prevalence is ~8% of generation-0 morphologies (5/60),
+two of which hide catastrophic internal speeds behind ordinary-looking
+fitness — so raw `maxForwardDistance` mis-ranks in both directions, on flat
+terrain included. No production physics changed; every lock and version
+constant is byte-identical; the score policy stays v1. Next: **GA Phase 1B
+— Mutation-Only Evolution** (selection, elitism, deterministic mutation,
+generational replacement) — which follows only after this physics-integrity
+result and therefore **begins by designing the numerical-integrity policy
+against the now-understood failure class**, using the committed forensic
+detector; zone material response, S2 trailing arms, and worker sharding are
+deferred behind it, each in its own PR. The design docs in `docs/` define
+everything that comes after.
 
 ## Quickstart
 

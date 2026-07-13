@@ -25,8 +25,13 @@ describe('population characterization schema', () => {
     expect(report.viability.length).toBe(1);
     expect(report.viability[0].valid).toBeLessThanOrEqual(report.viability[0].size);
     expect(report.viability[0].champion.individualId).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(report.viability[0].champion.peakChassisSpeed)).toBe(true);
+    expect(report.viability[0].bySuspension.length).toBeGreaterThanOrEqual(1);
+    expect(Number.isFinite(report.viability[0].rollback.median)).toBe(true);
 
-    expect(report.undriven.length).toBe(1);
+    // champion + a 3-way fitness-sorted sample, per master seed (1 in smoke)
+    expect(report.undriven.length).toBe(4);
+    expect(report.undriven.map((u) => u.label)).toEqual(['champion', 'min-fitness', 'median-fitness', 'max-fitness']);
     expect(Number.isFinite(report.undriven[0].passiveMaxForward)).toBe(true);
 
     expect(report.cost.length).toBe(2);

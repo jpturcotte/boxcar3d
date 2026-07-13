@@ -785,23 +785,35 @@ extended operators only if evidence supports (never promised as crossover):**
   `randomGenotype` (`24cd0dd5` untouched). `new Rng(seed).fork(individualId)`
   per member (order/size-independent), a documented 36+17n draw table:
   symmetry prior 0.8 (two-draw half-band split), CATEGORICAL S0/S1 suspType
-  (`(catIndex+v)/3` ⇒ S2 unreachable by construction), ≥1 axle, ≥1 driven
-  wheel by construction (forced-axle remap + the buildIR equal-split
-  fallback), `minInitialPowerGene 0` (full range — a nonzero prior only lands
+  (`(catIndex+v)/3` ⇒ S2 unreachable by construction), ≥1 axle, ≥1
+  DRIVE-ENABLED wheel by construction (forced-axle remap + the buildIR
+  equal-split fallback; driveTorque > 0 whenever the power gene > 0 — the
+  2⁻³² exact-zero-power corner is a legal zero-torque phenotype),
+  `minInitialPowerGene 0` (full range — a nonzero prior only lands
   deliberately/measured/version-bumped). Provenance is a SEPARATE manifest
   (`serializePopulationInitialization`); diagnostics (`wasRepaired`,
   keepRaw-gated `rawGenotype`) never serialize.
 - **Deterministic evaluator (`src/sim/population-evaluation.js`):** fitness =
   `maxForwardDistance` iff finite ∧ bodies ∧ joints valid, else 0
   (`FITNESS_POLICY_VERSION 1`; no drift/mass/efficiency/complexity/
-  normalization terms). `spawnPoseOnFlatStart` (pure; the fixture
+  normalization terms). This is a **reproducible baseline SCORE contract, NOT
+  a selection-ready fitness policy** for rough composite terrain (the
+  explosion tail below) — Phase 1B produces a policy v2 or constrains its
+  terrain before selection. The evaluator OWNS its inputs: it captures the
+  snapshot bytes synchronously before the first hook/await (a hook mutating a
+  post-compile genotype cannot re-attest the vector) and deep-copies +
+  deep-freezes the resolved terrain (`ownTerrain` — a hook cannot change what
+  a later individual runs on). `spawnPoseOnFlatStart` (pure; the fixture
   coherence-tooth formula, sled AABB fallback). Self-contained
   `serializeEvaluationSpec` (`EVALUATION_SPEC_VERSION 1`) binds EVERY resolved
   terrain knob (declared walk asserted set-equal to `TERRAIN_DEFAULTS`) +
   flavor/maxSteps/spawn/target/wheelFriction/termination — never leans on a
-  fixture version. `serializeFitnessVector` (`FITNESS_VECTOR_VERSION 1`) binds
-  the SNAPSHOT digest + spec digest, then id/validity-byte/exact-f64 fitness.
-  `championFromEvaluation` = argmax, exact tie → lowest id.
+  fixture version; every f64 write and the u32 maxSteps are canonical-value
+  gated (NaN/Inf/overflow rejected at the seam). `serializeFitnessVector`
+  (`FITNESS_VECTOR_VERSION 1`) binds the SNAPSHOT digest + spec digest, then
+  id/validity-byte/exact-f64 fitness (non-finite/negative rejected; invalid ⇒
+  fitness 0 enforced). `championFromEvaluation` = total order: greater fitness
+  → VALID over invalid on a tie → lowest id.
 - **THE COHORT-INVARIANCE RULING (measured, the centerpiece):**
   `POPULATION_WORLD_MODE = 'isolatedWorlds'` — one world per individual.
   Shared-world ghost evaluation is NOT invariant under cohort composition on

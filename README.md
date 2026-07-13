@@ -18,7 +18,7 @@ generator) turns a seed into 20-odd vehicles via one order-independent
 `Rng.fork(individualId)` stream each, with the GA biases the corpus must
 not have — bilateral symmetry defaults on (~80%), suspension is masked to
 the realizable S0/S1 set (S2 unreachable by construction), every individual
-has at least one axle and at least one genuinely driven wheel. The
+has at least one axle and at least one drive-enabled wheel. The
 **repaired** genotype (`compileAssembly(...).genotype`) is the heritable
 truth, carried as canonical population content
 (`src/sim/population.js`); a raw operator draw can never survive as a
@@ -26,7 +26,12 @@ hereditary record. Fitness is **maximum forward progress** from the spawn
 position — a new `maxForwardDistance` result field on the canonical runner
 (alongside `stepAtMaxForwardDistance` and `maxBackwardDistance`), folded
 from the same per-step chassis read the trace already consumes, so the
-existing A–D golden digests are byte-identical with no re-lock. The
+existing A–D golden digests are byte-identical with no re-lock. This is a
+**deterministic, reproducible baseline score contract** — exact and
+cross-environment-locked — **not yet a selection-ready fitness policy** for
+rough composite terrain (see the explosion-tail finding below); Phase 1B
+must produce a policy v2 or constrain its training terrain before building
+selection on it. The
 mandatory empirical question — does an individual's exact result change
 because unrelated ghost vehicles share its world or the cohort is permuted?
 — was measured before the evaluator was built, and the answer is **no

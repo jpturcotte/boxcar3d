@@ -93,6 +93,44 @@ const countBy = (arr, keyFn) => {
   for (const x of arr) { const k = keyFn(x); m.set(k, (m.get(k) ?? 0) + 1); }
   return [...m.entries()].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 };
+const quartiles = (xs) => {
+  const s = [...xs].sort((a, b) => a - b);
+  return { min: s[0], q1: quantile(s, 0.25), median: quantile(s, 0.5), q3: quantile(s, 0.75), max: s[s.length - 1] };
+};
+const speed = (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+
+// A displacement this far exceeds anything the ~120 m corridor can support in
+// 300 steps of real locomotion (≈100 m at 20 m/s), so it flags the finite
+// solver-explosion tail. A REPORT statistic, never a CI gate.
+const EXPLOSION_THRESHOLD = 200; // metres
+
+// Which repair rules moved a raw draw (repair writes ONLY these genes, so an
+// exact field compare against the canonical genotype attributes each change).
+function repairRulesFired(raw, canon) {
+  const fired = new Set();
+  if (canon.axles.length < raw.axles.length) fired.add('R1 axle-count cap');
+  if (raw.frameDensity !== canon.frameDensity) fired.add('R6 chassis mass');
+  const n = Math.min(raw.axles.length, canon.axles.length);
+  for (let i = 0; i < n; i += 1) {
+    const a = raw.axles[i];
+    const c = canon.axles[i];
+    if (a.radius !== c.radius) fired.add('R2 wheel clearance');
+    if (a.density !== c.density) fired.add('R3 wheel mass');
+    if (a.asym.sizeBias !== c.asym.sizeBias) fired.add('R3b size-bias feasibility');
+    if (a.trackHalf !== c.trackHalf || a.asym.centerOffset !== c.asym.centerOffset) fired.add('R4 track/offset vs walls');
+    if (a.posX01 !== c.posX01) fired.add('R5 longitudinal non-overlap');
+  }
+  return fired;
+}
+
+// Morphology category of a compiled individual, for the viability breakdowns.
+const suspensionClass = (ir) => {
+  const types = ir.axles.map((a) => a.suspension.type);
+  if (types.length === 0) return 'none';
+  if (types.every((t) => t === 'S0')) return 'S0-only';
+  if (types.every((t) => t === 'S1')) return 'S1-only';
+  return 'mixed';
+};
 
 // --- Pass: pure distributions ------------------------------------------------
 
@@ -106,6 +144,7 @@ function distributionPass(n) {
   let recompileStable = 0;
   let s2 = 0;
   let noDriven = 0;
+  const ruleFireCounts = new Map(); // rule -> #individuals it moved
   for (let id = 0; id < n; id += 1) {
     const raw = sampleInitialGenotype(root.fork(id), cfg);
     const ir = compileAssembly(raw);
@@ -115,6 +154,7 @@ function distributionPass(n) {
     rawEncodings.add(rawHex);
     canonicalEncodings.set(canonHex, (canonicalEncodings.get(canonHex) ?? 0) + 1);
     if (rawHex !== canonHex) repaired += 1;
+    for (const rule of repairRulesFired(raw, canon)) ruleFireCounts.set(rule, (ruleFireCounts.get(rule) ?? 0) + 1);
     if (bytesToHex(serializeGenotype(repairGenotype(canon))) === canonHex) recompileStable += 1;
     const wheels = ir.axles.flatMap((a) => a.wheels);
     if (ir.axles.some((a) => a.suspension.type === 'S2')) s2 += 1;
@@ -151,6 +191,7 @@ function distributionPass(n) {
     mass: { min: masses[0], median: quantile(masses, 0.5), max: masses[masses.length - 1] },
     maxRadius: { min: radii[0], median: quantile(radii, 0.5), max: radii[radii.length - 1] },
     repairFraction: repaired / n,
+    ruleFireCounts: [...ruleFireCounts.entries()].sort((a, b) => b[1] - a[1]),
     recompileStable,
     uniqueRaw: rawEncodings.size,
     uniqueCanonical: canonicalEncodings.size,
@@ -163,38 +204,95 @@ function distributionPass(n) {
 
 // --- Pass: physical viability ------------------------------------------------
 
+// Group evaluated individuals by a morphology key, reporting the learning
+// numbers per category: n, valid, median fitness, zero-fitness, explosions.
+function breakdown(rows, keyFn) {
+  const groups = new Map();
+  for (const r of rows) {
+    const k = keyFn(r);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(r);
+  }
+  return [...groups.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([key, g]) => ({
+      key,
+      n: g.length,
+      valid: g.filter((r) => r.valid).length,
+      medianFitness: quantile(g.map((r) => r.fitness).sort((a, b) => a - b), 0.5),
+      zeroFitness: g.filter((r) => r.fitness < 0.01).length,
+      explosions: g.filter((r) => r.fitness > EXPLOSION_THRESHOLD).length,
+    }));
+}
+
 async function viabilityPass(seeds, size) {
   const out = [];
   for (const seed of seeds) {
     const { population } = createInitialPopulation({ seed, populationSize: size });
     const ev = await evaluatePopulation(population, { ...VIABILITY_SPEC });
     const champion = championFromEvaluation(ev);
-    const fitnesses = ev.individuals.map((i) => i.fitness).sort((a, b) => a - b);
-    const rollbacks = ev.individuals.map((i) => i.diagnostics.maxForwardDistance - i.diagnostics.forwardDistance);
-    const validCount = ev.individuals.filter((i) => i.valid).length;
-    const level = (t) => ev.individuals.filter((i) => i.fitness >= t).length;
-    const maxBeforeFinal = ev.individuals.filter((i) => i.diagnostics.stepAtMaxForwardDistance < VIABILITY_SPEC.maxSteps).length;
+    // One row per individual carries fitness + morphology for the breakdowns.
+    const rows = ev.individuals.map((i) => {
+      const g = population.individuals.find((p) => p.individualId === i.individualId).genotype;
+      const ir = compileAssembly(g);
+      return {
+        fitness: i.fitness,
+        valid: i.valid,
+        finalDistance: i.diagnostics.forwardDistance,
+        rollback: i.diagnostics.maxForwardDistance - i.diagnostics.forwardDistance,
+        maxBeforeFinal: i.diagnostics.stepAtMaxForwardDistance < VIABILITY_SPEC.maxSteps,
+        suspClass: suspensionClass(ir),
+        symmetric: g.symmetric >= 0.5 ? 'symmetric' : 'asymmetric',
+        axles: g.axles.length,
+        wheels: ir.axles.flatMap((a) => a.wheels).length,
+      };
+    });
+    const level = (t) => rows.filter((r) => r.fitness >= t).length;
+    const champ = await championMorphology(population, champion);
     out.push({
       seed,
       size,
-      valid: validCount,
-      zeroFitness: ev.individuals.filter((i) => i.fitness < 0.01).length,
+      valid: rows.filter((r) => r.valid).length,
+      zeroFitness: rows.filter((r) => r.fitness < 0.01).length,
+      explosions: rows.filter((r) => r.fitness > EXPLOSION_THRESHOLD).length,
       atLeast1m: level(1),
       atLeast5m: level(5),
       atLeast10m: level(10),
-      fitnessQuartiles: [quantile(fitnesses, 0.25), quantile(fitnesses, 0.5), quantile(fitnesses, 0.75)],
-      fitnessMax: fitnesses[fitnesses.length - 1],
-      rollbackMax: Math.max(...rollbacks),
-      maxBeforeFinal,
-      champion: championMorphology(population, champion),
+      fitness: quartiles(rows.map((r) => r.fitness)),
+      finalDistance: quartiles(rows.map((r) => r.finalDistance)),
+      rollback: quartiles(rows.map((r) => r.rollback)),
+      maxBeforeFinal: rows.filter((r) => r.maxBeforeFinal).length,
+      bySuspension: breakdown(rows, (r) => r.suspClass),
+      bySymmetry: breakdown(rows, (r) => r.symmetric),
+      byAxleCount: breakdown(rows, (r) => `${r.axles}-axle`),
+      byWheelCount: breakdown(rows, (r) => `${String(r.wheels).padStart(2, '0')}-wheel`),
+      champion: champ,
     });
   }
   return out;
 }
 
-function championMorphology(population, champion) {
+async function championMorphology(population, champion) {
   const g = population.individuals.find((i) => i.individualId === champion.individualId).genotype;
   const ir = compileAssembly(g);
+  // A traced solo rerun recovers the PEAK chassis speed (the trace carries
+  // per-step velocity; the routine evaluator runs trace:'none'), making the
+  // solver-explosion magnitude reproducible from the committed instrument.
+  const r = await runEvaluation({
+    deterministic: true,
+    terrain: { ...VIABILITY_SPEC.terrain },
+    vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, VIABILITY_SPEC.spawn), targetWheelSurfaceSpeed: 5, wheelFriction: 1 }],
+    maxSteps: VIABILITY_SPEC.maxSteps,
+    trace: { mode: 'full' },
+  });
+  let peakSpeed = 0;
+  for (const rec of r.trace.records) {
+    const view = new DataView(rec.buffer, rec.byteOffset, rec.byteLength);
+    if (view.getUint8(16) !== 0) continue; // bodyRole 0 = chassis
+    const lv = { x: view.getFloat64(80, true), y: view.getFloat64(88, true), z: view.getFloat64(96, true) };
+    peakSpeed = Math.max(peakSpeed, speed(lv));
+  }
+  const v = r.vehicles[0];
   return {
     individualId: champion.individualId,
     fitness: champion.fitness,
@@ -206,10 +304,28 @@ function championMorphology(population, champion) {
     suspension: ir.axles.map((a) => a.suspension.type).join('/'),
     power: ir.power.budget,
     mass: ir.mass.total,
+    finalVx: v.finalVelocity.linvel.x,
+    finalSpeed: speed(v.finalVelocity.linvel),
+    peakChassisSpeed: peakSpeed,
   };
 }
 
 // --- Pass: undriven audit ----------------------------------------------------
+
+async function passiveMaxForward(genotype) {
+  // Zero every drive gene -> a canonical zero-drive twin (repair never reads
+  // driven, so it stays canonical). driveTorque collapses to 0.
+  const passive = repairGenotype({ ...deepClone(genotype), axles: genotype.axles.map((a) => ({ ...deepClone(a), driven: 0 })) });
+  const ir = compileAssembly(passive);
+  const r = await runEvaluation({
+    deterministic: true,
+    terrain: { ...VIABILITY_SPEC.terrain },
+    vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, VIABILITY_SPEC.spawn), targetWheelSurfaceSpeed: 5, wheelFriction: 1 }],
+    maxSteps: VIABILITY_SPEC.maxSteps,
+    trace: { mode: 'none' },
+  });
+  return { passiveMaxForward: fitnessFromVehicleResult(r.vehicles[0]), passiveFinal: r.vehicles[0].forwardDistance };
+}
 
 async function undrivenPass(seeds, size) {
   const out = [];
@@ -217,25 +333,22 @@ async function undrivenPass(seeds, size) {
     const { population } = createInitialPopulation({ seed, populationSize: size });
     const ev = await evaluatePopulation(population, { ...VIABILITY_SPEC });
     const champion = championFromEvaluation(ev);
-    const g = population.individuals.find((i) => i.individualId === champion.individualId).genotype;
-    // Zero every drive gene -> a canonical zero-drive twin (repair never
-    // reads driven, so it stays canonical). driveTorque collapses to 0.
-    const passive = repairGenotype({ ...deepClone(g), axles: g.axles.map((a) => ({ ...deepClone(a), driven: 0 })) });
-    const ir = compileAssembly(passive);
-    const r = await runEvaluation({
-      deterministic: true,
-      terrain: { ...VIABILITY_SPEC.terrain },
-      vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, VIABILITY_SPEC.spawn), targetWheelSurfaceSpeed: 5, wheelFriction: 1 }],
-      maxSteps: VIABILITY_SPEC.maxSteps,
-      trace: { mode: 'none' },
-    });
-    out.push({
-      seed,
-      championId: champion.individualId,
-      drivenFitness: champion.fitness,
-      passiveMaxForward: fitnessFromVehicleResult(r.vehicles[0]),
-      passiveFinal: r.vehicles[0].forwardDistance,
-    });
+    const byId = new Map(population.individuals.map((p) => [p.individualId, p.genotype]));
+    // A DECLARED representative sample beyond the champion: the fitness-sorted
+    // low / median / high individuals (drive is real, so passive progress here
+    // is the solver-pump / launch-transient contribution to the metric).
+    const sorted = [...ev.individuals].sort((a, b) => a.fitness - b.fitness);
+    const pick = (i, label) => ({ label, id: sorted[i].individualId, drivenFitness: sorted[i].fitness });
+    const samples = [
+      { label: 'champion', id: champion.individualId, drivenFitness: champion.fitness },
+      pick(0, 'min-fitness'),
+      pick(Math.floor(sorted.length / 2), 'median-fitness'),
+      pick(sorted.length - 1, 'max-fitness'),
+    ];
+    for (const s of samples) {
+      const p = await passiveMaxForward(byId.get(s.id));
+      out.push({ seed, ...s, ...p });
+    }
   }
   return out;
 }
@@ -279,7 +392,10 @@ async function recheckPass() {
     for (const b of r.trace.records) {
       const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
       if (view.getUint32(4, true) !== vi) continue;
-      const copy = b.slice();
+      // new Uint8Array(b) guarantees a fresh copying Uint8Array regardless of
+      // whether the record ever arrives as a Node Buffer (whose .slice() is a
+      // view, not a copy) — defensive; TraceWriter emits plain Uint8Arrays.
+      const copy = new Uint8Array(b);
       new DataView(copy.buffer).setUint32(4, 0, true);
       records.push(copy);
     }
@@ -324,35 +440,48 @@ function renderMarkdown(report) {
     table(['symmetry', 'count'], d.symmetric);
     L.push(`Suspension modules: S0 ${d.moduleMix.s0}, S1 ${d.moduleMix.s1}. S2 frequency: **${d.s2Frequency}** (must be 0). Undriven individuals: **${d.noDrivenFrequency}** (must be 0).`, '');
     L.push(`Power [${d.power.min.toFixed(1)}, ${d.power.max.toFixed(1)}] median ${d.power.median.toFixed(1)} N·m; mass [${d.mass.min.toFixed(1)}, ${d.mass.max.toFixed(1)}] median ${d.mass.median.toFixed(1)} kg; max wheel radius [${d.maxRadius.min.toFixed(3)}, ${d.maxRadius.max.toFixed(3)}] m.`, '');
-    L.push(`**Repair:** ${(d.repairFraction * 100).toFixed(1)}% of raw draws changed; recompile-stable ${d.recompileStable}/${d.n}.`);
+    L.push(`**Repair:** ${(d.repairFraction * 100).toFixed(1)}% of raw draws changed; recompile-stable ${d.recompileStable}/${d.n}.`, '');
+    table(['repair rule', `#individuals moved (of ${d.n})`], d.ruleFireCounts);
     L.push(`**Collapse:** ${d.uniqueRaw} unique raw encodings -> ${d.uniqueCanonical} unique canonical (collapse rate ${(d.collapseRate * 100).toFixed(2)}%, max canonical multiplicity ${d.maxCanonicalMultiplicity}).`, '');
   }
 
   if (report.viability) {
+    const q3 = (x) => `${x.q1.toFixed(2)}/${x.median.toFixed(2)}/${x.q3.toFixed(2)}`;
     L.push('## Physical viability (isolatedWorlds, composite terrain seed 20260727)', '');
+    L.push(`Explosion threshold: fitness > ${EXPLOSION_THRESHOLD} m (a report statistic flagging the finite solver-explosion tail, never a CI gate).`, '');
     table(
-      ['seed', 'size', 'valid', 'zero-fit', '>=1m', '>=5m', '>=10m', 'Q1/Q2/Q3 max-fwd', 'max', 'rollback-max', 'max<final#'],
+      ['seed', 'size', 'valid', 'zero-fit', 'explode', '>=1m', '>=5m', '>=10m', 'Q1/Q2/Q3 max-fwd', 'max-fwd max', 'max<final#'],
       report.viability.map((v) => [
-        v.seed, v.size, v.valid, v.zeroFitness, v.atLeast1m, v.atLeast5m, v.atLeast10m,
-        v.fitnessQuartiles.map((q) => q.toFixed(2)).join('/'), v.fitnessMax.toFixed(2),
-        v.rollbackMax.toFixed(3), v.maxBeforeFinal,
+        v.seed, v.size, v.valid, v.zeroFitness, v.explosions, v.atLeast1m, v.atLeast5m, v.atLeast10m,
+        q3(v.fitness), v.fitness.max.toExponential(2), v.maxBeforeFinal,
       ]),
     );
-    L.push('Champion morphologies:', '');
+    L.push('Final-displacement and rollback (max-fwd − final) distributions:', '');
     table(
-      ['seed', 'id', 'fitness', 'axles', 'wheels', 'driven', 'family', 'sym', 'suspension', 'power', 'mass'],
+      ['seed', 'Q1/Q2/Q3 final', 'final max', 'Q1/Q2/Q3 rollback', 'rollback max'],
+      report.viability.map((v) => [v.seed, q3(v.finalDistance), v.finalDistance.max.toExponential(2), q3(v.rollback), v.rollback.max.toExponential(2)]),
+    );
+    for (const v of report.viability) {
+      L.push(`Seed ${v.seed} — performance by category (n / valid / median-fit / zero-fit / explode):`, '');
+      const brk = (rows) => table(['category', 'n', 'valid', 'median-fit', 'zero-fit', 'explode'],
+        rows.map((b) => [b.key, b.n, b.valid, b.medianFitness.toFixed(2), b.zeroFitness, b.explosions]));
+      brk([...v.bySuspension, ...v.bySymmetry, ...v.byAxleCount, ...v.byWheelCount]);
+    }
+    L.push('Champion morphologies (finalVx / peak chassis speed make the explosion tail reproducible):', '');
+    table(
+      ['seed', 'id', 'fitness', 'axles', 'wheels', 'driven', 'family', 'sym', 'suspension', 'power', 'mass', 'finalVx', 'peak-speed'],
       report.viability.map((v) => {
         const c = v.champion;
-        return [v.seed, c.individualId, c.fitness.toFixed(2), c.axles, c.wheels, c.drivenWheels, c.family, c.symmetric, c.suspension, c.power.toFixed(0), c.mass.toFixed(0)];
+        return [v.seed, c.individualId, c.fitness.toExponential(2), c.axles, c.wheels, c.drivenWheels, c.family, c.symmetric, c.suspension, c.power.toFixed(0), c.mass.toFixed(0), c.finalVx.toExponential(2), c.peakChassisSpeed.toExponential(2)];
       }),
     );
   }
 
   if (report.undriven) {
-    L.push('## Undriven audit (champions, drive genes zeroed — diagnostic only, never subtracted)', '');
+    L.push('## Undriven audit (drive genes zeroed — champion + a declared fitness-sorted sample; diagnostic only, never subtracted)', '');
     table(
-      ['seed', 'champ id', 'driven fitness', 'passive max-fwd', 'passive final'],
-      report.undriven.map((u) => [u.seed, u.championId, u.drivenFitness.toFixed(3), u.passiveMaxForward.toFixed(3), u.passiveFinal.toFixed(3)]),
+      ['seed', 'sample', 'id', 'driven fitness', 'passive max-fwd', 'passive final'],
+      report.undriven.map((u) => [u.seed, u.label, u.id, u.drivenFitness.toExponential(2), u.passiveMaxForward.toExponential(2), u.passiveFinal.toExponential(2)]),
     );
   }
 

@@ -83,38 +83,101 @@ assumption.
 | recompile-stable | 1000 / 1000 |
 | unique raw → unique canonical | 1000 → 1000 (**collapse rate 0.00%**, max multiplicity 1) |
 
+**Repair-change counts by rule** (each rule writes distinct genes, so an exact
+raw-vs-canonical field compare attributes every change; an individual can
+trip several):
+
+| repair rule | individuals moved (of 1000) |
+| --- | --- |
+| R3b size-bias feasibility | 955 |
+| R3 wheel mass (density) | 937 |
+| R2 wheel-below-frame clearance | 869 |
+| R5 longitudinal non-overlap | 801 |
+| R6 chassis mass (frameDensity) | 568 |
+| R4 track/offset vs walls | 31 |
+
+The geometry rules (R2/R3/R3b/R5) fire on the large majority; R4 (wall
+clearance) is rarely needed because uniform track/offset draws seldom exceed
+the corridor half-width. This is the operator-facing consequence of "repair is
+the common path": a Phase-1B mutation touching radius, density, or spacing will
+almost always be re-clamped.
+
 ### 3.2 Physical viability (isolatedWorlds, composite terrain seed 20260727, 300 steps)
 
-| seed | valid | zero-fit | ≥1m | ≥5m | ≥10m | Q1/Q2/Q3 max-fwd (m) | **rollback-max (m)** |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 20260725 | 20/20 | 1 | 15 | 6 | 2 | 1.34 / 3.26 / 5.63 | 4.3×10⁶ |
-| 20260728 | 20/20 | 0 | 12 | 4 | 2 | 0.03 / 2.05 / 4.65 | 2.3×10⁷ |
-| 20260729 | 20/20 | 1 | 15 | 4 | 2 | 1.26 / 3.00 / 3.58 | 3.6×10⁶ |
+| seed | valid | zero-fit | explode (>200 m) | ≥1m | ≥5m | ≥10m | Q1/Q2/Q3 max-fwd (m) | max-fwd max (m) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 20260725 | 20/20 | 1 | 1 | 15 | 6 | 2 | 1.34 / 3.26 / 5.63 | 8.17×10⁶ |
+| 20260728 | 20/20 | 0 | 1 | 12 | 4 | 2 | 0.03 / 2.05 / 4.65 | 2.96×10³ |
+| 20260729 | 20/20 | 1 | 1 | 15 | 4 | 2 | 1.26 / 3.00 / 3.58 | 1.16×10³ |
+
+Final-displacement and rollback (max-fwd − final) distributions:
+
+| seed | Q1/Q2/Q3 final (m) | final max (m) | Q1/Q2/Q3 rollback (m) | rollback max (m) |
+| --- | --- | --- | --- | --- |
+| 20260725 | 0.03 / 2.33 / 4.90 | 3.82×10⁶ | 0.00 / 0.00 / 0.00 | 4.35×10⁶ |
+| 20260728 | 0.03 / 1.59 / 3.93 | 1.04×10¹ | 0.00 / 0.00 / 0.00 | 2.35×10⁷ |
+| 20260729 | 0.75 / 2.89 / 3.42 | 1.05×10¹ | 0.00 / 0.00 / 0.00 | 3.56×10⁶ |
 
 Median forward progress is **~2–3 m** across all three seeds; ~60–75% of
-individuals clear 1 m, ~20–30% clear 5 m, ~10% clear 10 m. **But the maxima
-and rollbacks are absurd** (millions of metres) — see the surprise below.
+individuals clear 1 m, ~20–30% clear 5 m, ~10% clear 10 m. Median rollback is
+**0** — most individuals do not backslide at all; the quartiles are 0 because
+rollback is concentrated in the single per-seed explosion individual (whose
+rollback reaches 10⁶–10⁷ m). Exactly **one** individual per seed exceeds the
+200 m explosion threshold, and it is the same one that produces the absurd
+max-fwd and rollback maxima — see §4.3.
 
-### 3.3 Undriven audit (champions, all drive genes zeroed — diagnostic only)
+**Performance by morphology** (seed 20260725 shown; the script tables all three).
+The category counts are small per 20-member population, so these are directional,
+not statistically robust — the point is *no category is starved and no category
+is uniquely fragile*:
 
-| seed | champ id | driven fitness (m) | passive max-fwd (m) |
-| --- | --- | --- | --- |
-| 20260725 | 19 | 8.17×10⁶ | 1.8×10⁷ |
-| 20260728 | 4 | 2.96×10³ | 0.53 |
-| 20260729 | 19 | 1.16×10³ | 9.5×10⁶ |
+| category | n | valid | median-fit (m) | zero-fit | explode |
+| --- | --- | --- | --- | --- | --- |
+| S0-only | 2 | 2 | 3.42 | 0 | 0 |
+| S1-only | 4 | 4 | 0.03 | 1 | 0 |
+| mixed S0/S1 | 14 | 14 | 4.23 | 0 | 1 |
+| symmetric | 16 | 16 | 2.69 | 1 | 0 |
+| asymmetric | 4 | 4 | 4.15 | 0 | 1 |
+| by axle count 1..6 | 3/2/4/5/3/3 | all valid | 0.03 / 3.31 / 2.72 / 4.67 / 5.77 / 2.51 | — | — |
+
+Reading: valid fraction is 100% in every category at every seed; the single
+zero-fitness and single explosion individuals land in different categories
+across seeds (no category is consistently inert or consistently exploding), so
+the tail is a physics/terrain interaction, not a morphology class.
+
+### 3.3 Undriven audit (drive genes zeroed — champion + a declared fitness-sorted sample; diagnostic only, never subtracted)
+
+Passive progress (all drive torque removed) on the same terrain quantifies how
+much of the *driven* fitness is solver-pump / launch-transient rather than
+propulsion:
+
+| seed | sample | id | driven fitness (m) | passive max-fwd (m) |
+| --- | --- | --- | --- | --- |
+| 20260725 | champion / max | 19 | 8.17×10⁶ | 1.80×10⁷ |
+| 20260725 | median | 14 | 3.63 | 1.28×10² |
+| 20260725 | min | 16 | 4.98×10⁻³ | 3.46×10⁻³ |
+| 20260728 | champion / max | 4 | 2.96×10³ | 0.53 |
+| 20260728 | median | 10 | 2.16 | 0.17 |
+| 20260729 | champion / max | 19 | 1.16×10³ | 9.47×10⁶ |
+| 20260729 | median | 9 | 3.02 | 0.94 |
+
+The explosion individuals move **further undriven than driven** (seed 20260725:
+1.8×10⁷ m passive vs 8.2×10⁶ driven; seed 20260729: 9.5×10⁶ passive vs 1.2×10³
+driven) — decisive evidence that the tail is a terrain-launch solver artifact,
+not locomotion. The median individuals coast a fraction of their driven
+progress (0.17–1.28×10² m), the ordinary solver-pump/transient contribution.
 
 ### 3.4 Cohort cost (WALL-CLOCK, machine-specific)
 
 | population size | total ms | ms/step | ms/individual |
 | --- | --- | --- | --- |
-| 5 | 154.9 | 0.516 | 31.0 |
-| 10 | 296.1 | 0.987 | 29.6 |
-| 20 | 664.3 | 2.214 | 33.2 |
+| 5 | 145.8 | 0.486 | 29.2 |
+| 10 | 311.6 | 1.039 | 31.2 |
+| 20 | 621.5 | 2.072 | 31.1 |
 
 Cost is ~linear in population size at ~30 ms/individual for a 300-step
-isolated-world evaluation (~3.7 ms/individual per 300 steps of a *simple*
-morphology; the average here includes 12-wheel individuals). A 20-individual
-generation costs ~0.7 s of physics on the reference machine.
+isolated-world evaluation. A 20-individual generation costs ~0.6 s of physics
+on the reference machine (i7-14650HX, 2026-07-12).
 
 ## 4. Surprises
 
@@ -136,19 +199,24 @@ generation costs ~0.7 s of physics on the reference machine.
    canonical forms distinct.)
 
 3. **THE BIG ONE — a finite physics-explosion tail dominates the raw metric on
-   rough terrain.** On composite terrain seed 20260727, a minority of initial
-   individuals hit terrain features (craters/ramps/logs) and are catapulted to
-   **enormous but FINITE displacement**: the seed-20260725 champion reaches
-   `maxForwardDistance = 8.17×10⁶ m` with a final chassis velocity of
-   **1.43×10⁸ m/s** while `valid` stays true (finite, all bodies/joints
-   valid). This is the trace PR's "velocities to 1e25 m/s stay finite" finding
-   manifesting at population scale: the solver does not produce NaN, so the
-   non-finite latch never fires, and the raw `maxForwardDistance` metric
-   faithfully rewards the blow-up. Median viability is sane (~2–3 m); the
-   *tail* is the problem. **The committed contract fixture is unaffected** —
-   population seed 20260721 on terrain seed 20260722 tops out at 12.48 m — so
-   this is a characterization-terrain phenomenon, not a contract defect, but
-   it is the single most important input to Phase 1B (§9).
+   rough terrain.** On composite terrain seed 20260727, exactly **one**
+   individual per seed hits terrain features (craters/ramps/logs) and is
+   catapulted to **enormous but FINITE displacement**: the seed-20260725
+   champion reaches `maxForwardDistance = 8.17×10⁶ m` with a final chassis
+   velocity of **−1.43×10⁸ m/s** and a **peak chassis speed of 3.26×10⁹ m/s**
+   (both now emitted by the committed instrument's champion-morphology pass, so
+   the diagnosis is reproducible), while `valid` stays true (finite, all
+   bodies/joints valid). This is the trace PR's "velocities to 1e25 m/s stay
+   finite" finding manifesting at population scale: the solver does not produce
+   NaN, so the non-finite latch never fires, and the raw `maxForwardDistance`
+   metric faithfully rewards the blow-up. The undriven audit (§3.3) is the
+   clincher — those individuals travel *further with drive removed* than with
+   it, so the displacement is a terrain-launch artifact, not propulsion. Median
+   viability is sane (~2–3 m); the *tail* is the problem. **The committed
+   contract fixture is unaffected** — population seed 20260721 on terrain seed
+   20260722 tops out at 12.48 m — so this is a characterization-terrain
+   phenomenon, not a contract defect, but it is the single most important input
+   to Phase 1B (§9).
 
 4. **Shared-world cohort evaluation is NOT invariant** (hypothesis 5 was
    wrong) — see §5.
@@ -249,6 +317,47 @@ generation costs ~0.7 s of physics on the reference machine.
   decimals (0.52 vs 0.5199999999999999). The coherence claim is `≤ EPSILON`;
   the helper's own arithmetic is locked exactly.
 
+**External review (round 2) — six findings, all fixed pre-merge; none moved a
+committed digest (the fixture population is all-finite, in-range, and its
+champion is the strict max):**
+- **The fitness vector could attest to a population that was never evaluated.**
+  `evaluatePopulation` serialized the input `population` for the snapshot digest
+  *after* the per-individual loop (hooks + awaits). A hook mutating a genotype
+  post-compile would leave the sim running the old IR while the vector bound the
+  new genotype. Fixed: the snapshot bytes are captured **synchronously before
+  the first hook or await**. Adversarial test: a hook mutating the caller's
+  population/terrain mid-run now provably changes nothing.
+- **Nested terrain config stayed mutable during evaluation.** The resolved
+  terrain was shallow-frozen, so `craterRadiusRange` / `featureTypeWeights`
+  remained shared references a concurrent caller could change between
+  individuals. Fixed: `ownTerrain` deep-copies every array/object and
+  deep-freezes — the evaluator exclusively owns its terrain.
+- **The public encoders accepted noncanonical numbers.** `maxSteps` was written
+  as u32 with no upper-bound check (a direct `serializeEvaluationSpec` call
+  above `0xffffffff` would wrap and alias a distinct identity); the
+  fitness-vector encoder accepted `NaN`/±Infinity/negative fitness and did not
+  enforce `valid === false ⇒ fitness === 0`. Both encoders now reject
+  internally-contradictory or nonportable inputs at the seam.
+- **Champion selection could prefer an invalid individual over a valid one.**
+  The tie-break was fitness → lowest id, so an invalid id 0 (fitness 0) beat an
+  equally-scoring **valid** id 1 — which Phase-1B elitism would then preserve.
+  Fixed to a total order: greater fitness → **valid over invalid** → lowest id.
+  The committed champion (id 10, the strict max) is unchanged.
+- **Reproducibility gap in the report.** An earlier draft cited the champion's
+  final velocity (1.43×10⁸ m/s) from an ad-hoc probe the committed script did
+  not emit. The characterization instrument now emits champion final velocity
+  AND peak chassis speed, so every cited number is reproducible from
+  `npm run probe:population`.
+- **Characterization was incomplete vs the approved plan.** Added: repair-change
+  counts by rule (R1–R6); final-displacement and rollback quartiles; per-category
+  performance breakdowns (suspension composition, symmetry, axle count, wheel
+  count); and an undriven audit of a declared fitness-sorted sample beyond the
+  champions.
+- **Terminology (the `b.slice()` / Buffer bot note).** Confirmed a non-defect
+  under the trace contract (TraceWriter emits `Uint8Array`, whose `.slice()`
+  copies); switched the recheck probe to `new Uint8Array(b)` as harmless
+  defensive coding anyway.
+
 ## 8. Known limitations
 
 - **One fixed terrain seed for the committed contract** (20260722). No
@@ -264,18 +373,30 @@ generation costs ~0.7 s of physics on the reference machine.
 
 ## 9. Consequences for GA Phase 1B (deterministic mutation-only evolution)
 
+0. **What Phase 1A's fitness output IS and IS NOT.** `FITNESS_POLICY_VERSION 1`
+   is a **deterministic, reproducible baseline SCORE contract** — exact, bound
+   to a canonical population and a fully-resolved evaluation spec, reproducible
+   across Node and Chromium. It is **not yet a selection-ready fitness policy
+   for rough composite terrain**: on such terrain the raw `maxForwardDistance`
+   rewards a finite solver artifact over locomotion (§4.3). The population,
+   evaluator isolation, encodings, identities, and diagnostics are trusted and
+   final; the *scoring semantics* are provisional. **Phase 1B must begin by
+   producing and validating a policy version 2 — or explicitly constraining its
+   training terrain to a regime without the explosion tail — before
+   implementing selection.** Preserving the transparent baseline metric here was
+   a deliberate Phase-1A scope decision, not an endorsement of it for selection.
+
 1. **The raw `maxForwardDistance` metric has a physics-explosion tail that
-   will dominate tournament/elitist selection on rough terrain.** A single
-   catapulted individual scoring 8×10⁶ m will win every tournament and
-   monopolize elitism, even though it is a solver artifact (1.4×10⁸ m/s), not
-   locomotion. **Phase 1B must decide how to handle this** — candidate
-   approaches (design inference, to be measured there): a physical-plausibility
-   validity bound (e.g. reject a result whose peak chassis speed exceeds a
-   generous multiple of the drive surface speed), a finite-but-bounded fitness
-   cap, or rank/tournament selection that is inherently robust to magnitude
-   outliers. This is the single most important carry-over. It does not change
-   the Phase-1A metric (scope), but Phase 1B should not build selection on the
-   raw metric without addressing it.
+   would dominate tournament/elitist selection on rough terrain.** A single
+   catapulted individual scoring 8×10⁶ m (peak chassis speed 3.26×10⁹ m/s) will
+   win every tournament and monopolize elitism, even though it is a solver
+   artifact, not locomotion. **Phase 1B must decide how to handle this** —
+   candidate approaches (design inference, to be measured there): a
+   physical-plausibility validity bound (e.g. reject a result whose peak chassis
+   speed exceeds a generous multiple of the drive surface speed — the champion
+   morphology pass already emits peak speed), a finite-but-bounded fitness cap,
+   or rank/tournament selection inherently robust to magnitude outliers. This is
+   the single most important carry-over.
 
 2. **Initial viability is real but modest:** median ~2–3 m, ~10% clearing
    10 m, ~5% effectively inert. Mutation has a viable but low base to improve —
@@ -297,11 +418,16 @@ generation costs ~0.7 s of physics on the reference machine.
    operator; structural mutation (add/remove axle, flip suspension, flip
    symmetry, change family) is the second.
 
-5. **Mutation rates:** the near-universal repair means small parametric jitter
-   is mostly absorbed by re-clamping — start **moderately aggressive** on
-   parametric rates (repair damps them) and **conservative** on structural
-   rates (they change vehicle character; spec §3.1.3 keeps them rarer). To be
-   measured in Phase 1B.
+5. **Mutation rates — measure, don't assume.** Structural rates should start
+   **conservative** (they change vehicle character; spec §3.1.3 keeps them
+   rarer). Parametric rates must be **measured in Phase 1B**, not assumed: the
+   99.5% figure is repair's behavior on *uniformly sampled raw* genomes, which
+   says nothing about how repair behaves in the *local neighborhood of a
+   canonical parent under small jitter* — a canonical parent already satisfies
+   R2/R3/R5, so a small perturbation may or may not re-trip them. A
+   mutation-neighborhood probe (perturb canonical parents by δ, measure the
+   repaired-vs-mutant delta) is the right first Phase-1B experiment; only then
+   is a "repair damps small jitter" claim earned.
 
 6. **Trusted contracts Phase 1B may build on** (stable, versioned, locked):
    `createInitialPopulation` / `sampleInitialGenotype` (draw table v1);

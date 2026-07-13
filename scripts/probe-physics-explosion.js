@@ -37,10 +37,28 @@
 //              genotype digest. These arms answer "does the repaired vehicle
 //              WITHOUT X explode?" — exact-component necessity needs the
 //              Stage-2 phenotype-preserving ablations.
-//   engine / local — RESERVED: they land with the Tier-2 stage (shared
-//              evaluation-loop seam + contact telemetry) once the decision
-//              record shows trace-only analysis cannot answer the remaining
-//              questions.
+//   engine   — Stage 2 (the earned shared-loop seam): DIAGNOSTIC engine
+//              arms composed through runRealizedEvaluationLoop, never
+//              through any production path — dt 1/120 x 600 steps (honest
+//              requestedDt), world.numSolverIterations 2/8/16, chassis
+//              additionalSolverIterations 0/8, hard/soft/both CCD off, soft
+//              prediction sweep. The first arm is the composed BASELINE
+//              whose digest must equal the canonical runEvaluation digest
+//              (a HARD check — the no-second-authority discipline). A
+//              parameter that stops the explosion is a SUPPRESSION, not a
+//              correction, until in-policy + both-flavor + cost-justified.
+//   local    — Stage 2 localization: one contact-collecting run per witness
+//              (read-only inspect; handle->identity map; subject-oriented
+//              normals via the flipped flag), the step-0 contact-graph
+//              population experiment (empirical, never assumed), the
+//              analytic spawn-clearance check, penetration/impulse extremes
+//              around the causal window, wedge candidates (>=2 distinct
+//              static partners, opposing oriented normals, penetrating),
+//              and the offline joint-anchor-stretch series from the trace.
+//   (vehicle additionally gains Stage-2 PHENOTYPE-PRESERVING arms — motor
+//   off / leading-station removal on the ORIGINAL realized vehicle, clearly
+//   labeled outside the genotype contract — the exact-component-necessity
+//   level the ecological arms cannot reach.)
 //
 // Check tiers (the probe-rapier-timing convention): HARD checks (exit 1) are
 // IDENTITY-class only — witness genotype digests, deterministic same-config
@@ -64,8 +82,13 @@
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { writeFileSync } from 'node:fs';
-import { runEvaluation } from '../src/sim/evaluation.js';
-import { createPhysics, FIXED_DT } from '../src/sim/physics/adapter.js';
+import { runEvaluation, runRealizedEvaluationLoop } from '../src/sim/evaluation.js';
+import {
+  addCorridor, addCorridorWithFeatures, createPhysics, FIXED_DT, realizeVehicle,
+  vehicleWheelTransforms,
+} from '../src/sim/physics/adapter.js';
+import { generateCorridorTerrain } from '../src/sim/terrain.js';
+import { decodeTraceRecord } from '../src/sim/trace.js';
 import {
   evaluatePopulation, isVehicleResultValid, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
@@ -99,29 +122,32 @@ const TERRAIN_VARIANTS = Object.freeze({
   }),
 });
 
-const IMPLEMENTED_PASSES = Object.freeze(['baseline', 'terrain', 'vehicle']);
-const RESERVED_PASSES = Object.freeze(['engine', 'local']);
+const IMPLEMENTED_PASSES = Object.freeze(['baseline', 'terrain', 'vehicle', 'engine', 'local']);
 
 export function smokeConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local'],
     witnesses: ['A'],
     ordinaryFlavor: false,
     controls: false,
     terrainVariants: ['full', 'flat'],
     vehicleArms: ['passive', 'powerZero', 'sled'],
+    componentArms: ['motorOff:all'],
+    engineArms: ['baselineComposed', 'solverIters:8'],
     argv: [],
   };
 }
 
 export function defaultConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local'],
     witnesses: ['A'],
     ordinaryFlavor: true,
     controls: true,
     terrainVariants: Object.keys(TERRAIN_VARIANTS),
     vehicleArms: null, // null = every arm
+    componentArms: null,
+    engineArms: null,
     argv: [],
   };
 }
@@ -152,15 +178,124 @@ function selectWitnesses(selector) {
 function selectPasses(selector) {
   const list = selector === 'all' ? [...IMPLEMENTED_PASSES] : String(selector).split(',');
   for (const p of list) {
-    if (RESERVED_PASSES.includes(p)) {
-      throw new Error(`probe-physics-explosion: pass '${p}' lands with the Tier-2 investigation `
-        + 'stage (shared evaluation-loop seam + contact telemetry) — see the module header');
-    }
     if (!IMPLEMENTED_PASSES.includes(p)) {
       throw new Error(`probe-physics-explosion: unknown pass '${p}' (${IMPLEMENTED_PASSES.join('/')} or all)`);
     }
   }
   return list;
+}
+
+// --- Stage-2 composition (the earned shared-loop seam) --------------------------
+
+// Rotate a vector by a unit quaternion (pure; scripts are outside the sim ban
+// but this uses only mul/add anyway).
+const rotateByQuat = (q, v) => {
+  const tx = 2 * (q.y * v.z - q.z * v.y);
+  const ty = 2 * (q.z * v.x - q.x * v.z);
+  const tz = 2 * (q.x * v.y - q.y * v.x);
+  return {
+    x: v.x + q.w * tx + (q.y * tz - q.z * ty),
+    y: v.y + q.w * ty + (q.z * tx - q.x * tz),
+    z: v.z + q.w * tz + (q.x * ty - q.y * tx),
+  };
+};
+
+const eachDynamicBody = (rec, fn) => {
+  fn(rec.chassis.body);
+  for (const st of rec.wheels) {
+    fn(st.wheel.body);
+    if (st.hub !== null) fn(st.hub.body);
+  }
+};
+
+/**
+ * Compose one DIAGNOSTIC run through runRealizedEvaluationLoop exactly as
+ * runEvaluation composes it (createPhysics -> terrain(+statics BVH step) ->
+ * staticColliders -> realizeVehicle -> loop), with the investigation-only
+ * extension points the production runner deliberately lacks:
+ *   worldTuning(world)         — timestep / numSolverIterations / maxCcdSubsteps
+ *   featureFilter(f, i)        — post-generation descriptor filtering (RNG-safe)
+ *   bodyTuning(rec, world)     — per-body CCD / solver-iteration setters,
+ *                                motor reconfiguration
+ *   stationFilter(st)          — PHENOTYPE-PRESERVING station removal: bodies
+ *                                leave the world AND the realized record, so
+ *                                the loop tracks survivors only
+ *   buildInspect({world, rec, handleMap}) -> inspect(stepIndex)
+ * The zero-extension composition must reproduce the canonical runEvaluation
+ * digest — the engine pass's first arm hard-checks exactly that.
+ */
+async function composeRun(ir, {
+  terrainOverrides = {},
+  featureFilter = null,
+  worldTuning = null,
+  requestedDt = FIXED_DT,
+  maxSteps = WITNESS_SPEC.maxSteps,
+  bodyTuning = null,
+  stationFilter = null,
+  buildInspect = null,
+  targetWheelSurfaceSpeed = WITNESS_SPEC.targetWheelSurfaceSpeed,
+  wheelFriction = WITNESS_SPEC.wheelFriction,
+} = {}) {
+  const { RAPIER, world } = await createPhysics({ deterministic: true });
+  try {
+    if (worldTuning !== null) worldTuning(world);
+    let terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN, ...terrainOverrides });
+    if (featureFilter !== null) {
+      terrain = { ...terrain, features: terrain.features.filter(featureFilter) };
+    }
+    const handleMap = new Map();
+    let corridor;
+    if (terrain.features.length > 0) {
+      corridor = addCorridorWithFeatures(RAPIER, world, terrain);
+      corridor.features.forEach((f, i) => {
+        handleMap.set(f.collider.handle, { kind: 'feature', index: i, type: f.feature.type });
+      });
+    } else {
+      corridor = addCorridor(RAPIER, world, terrain);
+      world.step(); // the [V1] statics-only query-BVH idiom
+    }
+    handleMap.set(corridor.floor.handle, { kind: 'floor' });
+    corridor.walls.forEach((wl, i) => handleMap.set(wl.handle, { kind: 'wall', index: i }));
+    const staticColliders = world.colliders.len();
+    const spawn = spawnPoseOnFlatStart(ir, { ...WITNESS_SPEC.spawn });
+    let rec = realizeVehicle(RAPIER, world, ir, {
+      position: spawn.position, targetWheelSurfaceSpeed, wheelFriction,
+    });
+    for (const c of rec.chassis.colliders) {
+      handleMap.set(c.handle, { kind: 'vehicle', role: 'chassis' });
+    }
+    for (const st of rec.wheels) {
+      handleMap.set(st.wheel.collider.handle, {
+        kind: 'vehicle', role: 'wheel', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+      });
+      if (st.hub !== null && st.hub.collider !== undefined) {
+        handleMap.set(st.hub.collider.handle, {
+          kind: 'vehicle', role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+        });
+      }
+    }
+    if (bodyTuning !== null) bodyTuning(rec, world);
+    if (stationFilter !== null) {
+      const keep = [];
+      for (const st of rec.wheels) {
+        if (stationFilter(st)) {
+          keep.push(st);
+        } else {
+          // The engine removes joints attached to a removed body.
+          world.removeRigidBody(st.wheel.body);
+          if (st.hub !== null) world.removeRigidBody(st.hub.body);
+        }
+      }
+      rec = { ...rec, wheels: keep };
+    }
+    const inspect = buildInspect === null ? null : buildInspect({ world, rec, handleMap });
+    const result = runRealizedEvaluationLoop(world, [rec], {
+      requestedDt, maxSteps, traceMode: 'full', checkpointInterval: 1, staticColliders, inspect,
+    });
+    return { result, spawn };
+  } finally {
+    world.free();
+  }
 }
 
 /** One canonical-runner evaluation of a compiled IR under the witness spec. */
@@ -419,6 +554,7 @@ async function vehiclePass(witnessSet, cfg) {
       const armDigest = fnv1aHex(serializeGenotype(repairGenotype(arm.genotype)));
       const row = {
         witness: w.label,
+        kind: 'ecological',
         arm: arm.name,
         changedVariable: arm.changedVariable,
         armGenotypeDigest: armDigest,
@@ -437,6 +573,359 @@ async function vehiclePass(witnessSet, cfg) {
       }
       rows.push(row);
     }
+    // Stage-2 PHENOTYPE-PRESERVING arms (investigation-only, OUTSIDE the
+    // genotype contract): the ORIGINAL vehicle is realized, then only the
+    // implicated component is disabled/removed — every unrelated body,
+    // transform, mass, and terrain element preserved. This is the
+    // exact-component-necessity level the ecological arms cannot reach
+    // (genotype removal re-spaces and re-masses the survivors).
+    if (cfg.componentArms === null || cfg.componentArms.length > 0) {
+      const ir = compileAssembly(genotype);
+      const base = await composeRun(ir, {});
+      const baseOnset = analyzeTrace(base.result.trace, {
+        bodies: bodyReachMetadataForIR(ir),
+      }).onset;
+      const lead = baseOnset.leadingBody;
+      const isLeadStation = (st) => lead !== null && lead.axleIndex !== null
+        && st.axleIndex === lead.axleIndex && st.wheelIndex === lead.wheelIndex;
+      const componentArms = [
+        {
+          name: 'motorOff:all',
+          changedVariable: 'every drive motor reconfigured to zero gain post-realization',
+          opts: {
+            bodyTuning: (rec) => {
+              for (const st of rec.wheels) {
+                if (st.irWheel.driven && st.irWheel.driveTorque > 0) {
+                  st.driveJoint.configureMotorVelocity(0, 0);
+                }
+              }
+            },
+          },
+        },
+        {
+          name: 'motorOff:leading',
+          changedVariable: `drive motor of the leading station (${lead === null ? 'n/a' : `${lead.axleIndex},${lead.wheelIndex}`}) zeroed post-realization`,
+          opts: {
+            bodyTuning: (rec) => {
+              for (const st of rec.wheels) {
+                if (isLeadStation(st) && st.irWheel.driven && st.irWheel.driveTorque > 0) {
+                  st.driveJoint.configureMotorVelocity(0, 0);
+                }
+              }
+            },
+          },
+        },
+        {
+          name: 'stationRemoved:leading',
+          changedVariable: `leading station (${lead === null ? 'n/a' : `${lead.axleIndex},${lead.wheelIndex}`}) bodies removed post-realization; everything else untouched`,
+          opts: { stationFilter: (st) => !isLeadStation(st) },
+        },
+      ].filter((a) => cfg.componentArms === null || cfg.componentArms.includes(a.name));
+      for (const arm of componentArms) {
+        const row = {
+          witness: w.label,
+          kind: 'phenotype-preserving',
+          arm: arm.name,
+          changedVariable: arm.changedVariable,
+          armGenotypeDigest: w.genotypeDigest, // the ORIGINAL genotype — that is the point
+          armEqualsWitness: true,
+          result: null,
+          error: null,
+        };
+        try {
+          const { result } = await composeRun(ir, arm.opts);
+          row.result = summarize(result, ir);
+        } catch (e) {
+          row.error = String(e && e.message ? e.message : e);
+        }
+        rows.push(row);
+      }
+    }
+  }
+  return rows;
+}
+
+// --- Stage-2 passes --------------------------------------------------------------
+
+const ENGINE_ARMS = Object.freeze([
+  { name: 'baselineComposed', changedVariable: 'none (equivalence hard check vs runEvaluation)', opts: {} },
+  {
+    name: 'dtHalf',
+    changedVariable: 'world.timestep = 1/120, 600 steps (same 5 s of sim time)',
+    opts: { worldTuning: (w) => { w.timestep = 1 / 120; }, requestedDt: 1 / 120, maxSteps: 600 },
+  },
+  { name: 'solverIters:2', changedVariable: 'world.numSolverIterations = 2 (default 4)', opts: { worldTuning: (w) => { w.numSolverIterations = 2; } } },
+  { name: 'solverIters:8', changedVariable: 'world.numSolverIterations = 8', opts: { worldTuning: (w) => { w.numSolverIterations = 8; } } },
+  { name: 'solverIters:16', changedVariable: 'world.numSolverIterations = 16', opts: { worldTuning: (w) => { w.numSolverIterations = 16; } } },
+  {
+    name: 'addlIters:0',
+    changedVariable: 'chassis setAdditionalSolverIterations(0) (policy 4)',
+    opts: { bodyTuning: (rec) => rec.chassis.body.setAdditionalSolverIterations(0) },
+  },
+  {
+    name: 'addlIters:8',
+    changedVariable: 'chassis setAdditionalSolverIterations(8)',
+    opts: { bodyTuning: (rec) => rec.chassis.body.setAdditionalSolverIterations(8) },
+  },
+  {
+    name: 'hardCcdOff',
+    changedVariable: 'enableCcd(false) on every dynamic body (soft CCD kept)',
+    opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.enableCcd(false)) },
+  },
+  {
+    name: 'softCcdOff',
+    changedVariable: 'setSoftCcdPrediction(0) on every dynamic body (hard CCD kept)',
+    opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0)) },
+  },
+  {
+    name: 'bothCcdOff',
+    changedVariable: 'hard AND soft CCD off on every dynamic body',
+    opts: {
+      bodyTuning: (rec) => eachDynamicBody(rec, (b) => {
+        b.enableCcd(false);
+        b.setSoftCcdPrediction(0);
+      }),
+    },
+  },
+  { name: 'softCcd:0.1', changedVariable: 'setSoftCcdPrediction(0.1) (policy 1)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.1)) } },
+  { name: 'softCcd:0.5', changedVariable: 'setSoftCcdPrediction(0.5)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(0.5)) } },
+  { name: 'softCcd:2', changedVariable: 'setSoftCcdPrediction(2)', opts: { bodyTuning: (rec) => eachDynamicBody(rec, (b) => b.setSoftCcdPrediction(2)) } },
+]);
+
+async function enginePass(witnessSet, cfg, check) {
+  const rows = [];
+  for (const w of witnessSet) {
+    const ir = compileAssembly(witnessGenotype(w.populationSeed, w.individualId));
+    let reference = null;
+    let arms = ENGINE_ARMS;
+    if (cfg.engineArms !== null) arms = arms.filter((a) => cfg.engineArms.includes(a.name));
+    for (const arm of arms) {
+      const { result } = await composeRun(ir, arm.opts);
+      if (arm.name === 'baselineComposed') {
+        reference = await evaluateIR(ir);
+        check(`composed:${w.label}`, result.trace.digest === reference.trace.digest,
+          `composed ${result.trace.digest} vs canonical ${reference.trace.digest}`);
+      }
+      rows.push({
+        witness: w.label,
+        arm: arm.name,
+        changedVariable: arm.changedVariable,
+        requestedDt: result.requestedDt,
+        effectiveDt: result.effectiveDt,
+        executedSteps: result.executedSteps,
+        result: summarize(result, ir),
+      });
+    }
+  }
+  return rows;
+}
+
+// Offline joint-anchor-stretch series from the full trace: for every S0
+// station, |chassisPose x localWheelCenter - wheelPos| (the drive-revolute
+// anchor separation — ~1e-6 m at creation); for every S1 station,
+// |hubPos - wheelPos| (hub and wheel are coaxial at the wheel center).
+// A separation of centimetres means the SOLVER left the constraint
+// violated — the constraint-divergence signature.
+function jointStretchSeries(trace, ir) {
+  const s1 = new Set();
+  ir.axles.forEach((axle, i) => {
+    const axleIndex = Number.isInteger(axle.index) ? axle.index : i;
+    if (axle.suspension.type === 'S1') {
+      axle.wheels.forEach((_, j) => s1.add(`${axleIndex}|${j}`));
+    }
+  });
+  const locals = new Map();
+  for (const t of vehicleWheelTransforms(ir, {})) {
+    locals.set(`${t.axleIndex}|${t.wheelIndex}`, t.local);
+  }
+  const poses = new Map(); // step -> { chassis, [key]: {role, pos} }
+  for (const bytes of trace.records) {
+    const rec = decodeTraceRecord(bytes);
+    if (!poses.has(rec.stepIndex)) poses.set(rec.stepIndex, {});
+    const step = poses.get(rec.stepIndex);
+    if (rec.bodyRole === 'chassis') {
+      step.chassis = { pos: rec.translation, rot: rec.rotation };
+    } else {
+      step[`${rec.bodyRole}|${rec.axleIndex}|${rec.wheelIndex}`] = rec.translation;
+    }
+  }
+  const stations = new Map(); // key -> { maxStretch, step, firstOver2cm }
+  for (const [stepIndex, step] of poses) {
+    if (step.chassis === undefined) continue;
+    for (const [key, local] of locals) {
+      const wheelPos = step[`wheel|${key}`];
+      if (wheelPos === undefined) continue;
+      let expected;
+      if (s1.has(key)) {
+        expected = step[`hub|${key}`];
+        if (expected === undefined) continue;
+      } else {
+        const r = rotateByQuat(step.chassis.rot, local);
+        expected = {
+          x: step.chassis.pos.x + r.x,
+          y: step.chassis.pos.y + r.y,
+          z: step.chassis.pos.z + r.z,
+        };
+      }
+      const dx = wheelPos.x - expected.x;
+      const dy = wheelPos.y - expected.y;
+      const dz = wheelPos.z - expected.z;
+      const stretch = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      if (!Number.isFinite(stretch)) continue;
+      if (!stations.has(key)) stations.set(key, { maxStretch: 0, step: null, firstOver2cm: null });
+      const s = stations.get(key);
+      if (stretch > s.maxStretch) {
+        s.maxStretch = stretch;
+        s.step = stepIndex;
+      }
+      if (stretch > 0.02 && (s.firstOver2cm === null || stepIndex < s.firstOver2cm)) {
+        s.firstOver2cm = stepIndex;
+      }
+    }
+  }
+  return [...stations.entries()]
+    .map(([key, s]) => ({ station: key, suspension: s1.has(key) ? 'S1' : 'S0', ...s }))
+    .sort((a, b) => (a.firstOver2cm ?? Infinity) - (b.firstOver2cm ?? Infinity));
+}
+
+async function localPass(witnessSet) {
+  const rows = [];
+  for (const w of witnessSet) {
+    const ir = compileAssembly(witnessGenotype(w.populationSeed, w.individualId));
+    const contactSteps = [];
+    const { result, spawn } = await composeRun(ir, {
+      buildInspect: ({ world, rec, handleMap }) => {
+        const subjects = [
+          ...rec.chassis.colliders.map((c) => ({ c, id: { role: 'chassis', axleIndex: null, wheelIndex: null } })),
+          ...rec.wheels.flatMap((st) => {
+            const arr = [{
+              c: st.wheel.collider,
+              id: { role: 'wheel', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex },
+            }];
+            if (st.hub !== null && st.hub.collider !== undefined) {
+              arr.push({
+                c: st.hub.collider,
+                id: { role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex },
+              });
+            }
+            return arr;
+          }),
+        ];
+        return (stepIndex) => {
+          const pairs = [];
+          for (const { c, id } of subjects) {
+            world.contactPairsWith(c, (other) => {
+              const partner = handleMap.get(other.handle);
+              if (partner === undefined) {
+                throw new Error(`probe-physics-explosion: unmapped collider handle ${other.handle}`);
+              }
+              if (partner.kind === 'vehicle') return; // self-pairs are filtered by groups anyway
+              let numContacts = 0;
+              let minDist = Infinity;
+              let maxImpulse = 0;
+              let normal = null;
+              world.contactPair(c, other, (m, flipped) => {
+                const n = m.numContacts();
+                numContacts += n;
+                for (let i = 0; i < n; i += 1) {
+                  const d = m.contactDist(i);
+                  if (d < minDist) minDist = d;
+                  const imp = m.contactImpulse(i);
+                  if (imp > maxImpulse) maxImpulse = imp;
+                }
+                const nm = m.normal();
+                // Subject-oriented: flipped means the callback saw
+                // (other, c) order — negate so the normal always points the
+                // same way relative to the SUBJECT body.
+                normal = flipped ? { x: -nm.x, y: -nm.y, z: -nm.z } : { x: nm.x, y: nm.y, z: nm.z };
+              });
+              if (numContacts > 0) {
+                pairs.push({ body: id, partner, numContacts, minDist, maxImpulse, normal });
+              }
+            });
+          }
+          contactSteps.push({ step: stepIndex, pairs });
+        };
+      },
+    });
+    const forensics = analyzeTrace(result.trace, { bodies: bodyReachMetadataForIR(ir) });
+    const onset = forensics.onset;
+    const causal = onset.firstCausalCandidateStep ?? onset.firstAlertStep;
+
+    // The step-0 contact-graph population experiment (empirical — an empty
+    // capture-0 set is NEVER read as "no initial overlap").
+    const pairsAt = (k) => (contactSteps.find((s) => s.step === k)?.pairs ?? []);
+    const step0Pairs = pairsAt(0).length;
+    const step1Pairs = pairsAt(1).length;
+
+    // Analytic spawn clearance (pure; the pad is exactly-elevation-0):
+    // wheel bottoms and chassis belly vs the pad plane at spawn.
+    let minWheelClearance = Infinity;
+    for (const t of vehicleWheelTransforms(ir, {})) {
+      const wheel = ir.axles.find((a, i) => (Number.isInteger(a.index) ? a.index : i) === t.axleIndex)
+        .wheels[t.wheelIndex];
+      const bottom = spawn.position.y + t.local.y - wheel.radius;
+      if (bottom < minWheelClearance) minWheelClearance = bottom;
+    }
+    const bellyClearance = spawn.position.y + ir.chassis.aabb.min.y;
+
+    // Penetration/impulse extremes and the causal-window contact picture.
+    let deepest = null;
+    let hardest = null;
+    const wedges = [];
+    for (const s of contactSteps) {
+      const statics = new Map(); // body key -> [{partner, normal, minDist, maxImpulse}]
+      for (const p of s.pairs) {
+        if (p.minDist < (deepest?.minDist ?? Infinity)) deepest = { step: s.step, ...p };
+        if (p.maxImpulse > (hardest?.maxImpulse ?? 0)) hardest = { step: s.step, ...p };
+        const key = `${p.body.role}|${p.body.axleIndex}|${p.body.wheelIndex}`;
+        if (!statics.has(key)) statics.set(key, []);
+        statics.get(key).push(p);
+      }
+      for (const [key, list] of statics) {
+        if (list.length < 2) continue;
+        for (let i = 0; i < list.length; i += 1) {
+          for (let j = i + 1; j < list.length; j += 1) {
+            const a = list[i];
+            const b = list[j];
+            const samePartner = JSON.stringify(a.partner) === JSON.stringify(b.partner);
+            const dot = a.normal.x * b.normal.x + a.normal.y * b.normal.y + a.normal.z * b.normal.z;
+            if (!samePartner && dot < -0.5 && a.minDist < 0 && b.minDist < 0
+              && a.maxImpulse > 0 && b.maxImpulse > 0) {
+              wedges.push({ step: s.step, body: key, partners: [a.partner, b.partner], dot });
+            }
+          }
+        }
+      }
+    }
+    const windowLo = Math.max(0, (causal ?? 0) - 3);
+    const windowHi = (onset.firstAlertStep ?? causal ?? 0) + 3;
+    const windowContacts = contactSteps
+      .filter((s) => s.step >= windowLo && s.step <= windowHi)
+      .map((s) => ({
+        step: s.step,
+        pairs: s.pairs.map((p) => ({
+          body: `${p.body.role}(${p.body.axleIndex ?? '-'},${p.body.wheelIndex ?? '-'})`,
+          partner: p.partner.kind === 'feature' ? `feature[${p.partner.index}]:${p.partner.type}` : p.partner.kind,
+          numContacts: p.numContacts,
+          minDist: p.minDist,
+          maxImpulse: p.maxImpulse,
+        })),
+      }));
+    const stretch = jointStretchSeries(result.trace, ir);
+    rows.push({
+      witness: w.label,
+      onset,
+      step0Pairs,
+      step1Pairs,
+      spawn: { minWheelClearance, bellyClearance },
+      deepestPenetration: deepest,
+      hardestImpulse: hardest,
+      wedgeCandidates: wedges.length,
+      wedgeSample: wedges.slice(0, 3),
+      windowContacts,
+      jointStretch: stretch.slice(0, 6),
+    });
   }
   return rows;
 }
@@ -458,6 +947,8 @@ export async function runProbe(config) {
     controls: null,
     terrain: null,
     vehicle: null,
+    engineAblations: null,
+    localization: null,
   };
   const check = (name, ok, detail) => report.checks.push({ name, ok: ok === true, detail });
 
@@ -473,6 +964,8 @@ export async function runProbe(config) {
   }
   if (passes.includes('terrain')) report.terrain = await terrainPass(witnessSet, cfg);
   if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
+  if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
+  if (passes.includes('local')) report.localization = await localPass(witnessSet);
   return report;
 }
 
@@ -551,17 +1044,58 @@ export function renderMarkdown(report) {
     );
   }
   if (report.vehicle !== null) {
-    L.push('## Vehicle ablations (ecological genotype-level arms)');
+    L.push('## Vehicle ablations (ecological genotype arms + phenotype-preserving component arms)');
     L.push('');
     table(
-      ['witness', 'arm', 'changed variable', 'arm digest', 'maxFwd (m)', 'peak body (m/s)', 'onset / error'],
+      ['witness', 'kind', 'arm', 'changed variable', 'arm digest', 'maxFwd (m)', 'peak body (m/s)', 'onset / error'],
       report.vehicle.map((v) => [
-        v.witness, v.arm, v.changedVariable, v.armGenotypeDigest,
+        v.witness, v.kind, v.arm, v.changedVariable, v.armGenotypeDigest,
         v.result === null ? '-' : exp3(v.result.maxForwardDistance),
         v.result === null ? '-' : exp3(v.result.peakBodySpeed),
         v.error !== null ? `ERROR: ${v.error}` : onsetCell(v.result.onset),
       ]),
     );
+  }
+  if (report.engineAblations !== null) {
+    L.push('## Engine ablations (diagnostic; composed through the shared loop — NEVER production settings)');
+    L.push('');
+    L.push('A parameter that stops the explosion is a SUPPRESSION, not a correction, '
+      + 'until it is in-policy, justified for the general population on both flavors '
+      + 'with bench cost, and introduces no new failure mode.');
+    L.push('');
+    table(
+      ['witness', 'arm', 'changed variable', 'dt (req/eff)', 'steps', 'maxFwd (m)', 'peak body (m/s)', 'onset'],
+      report.engineAblations.map((e) => [
+        e.witness, e.arm, e.changedVariable,
+        `${exp3(e.requestedDt)}/${exp3(e.effectiveDt)}`,
+        e.executedSteps,
+        exp3(e.result.maxForwardDistance),
+        exp3(e.result.peakBodySpeed),
+        onsetCell(e.result.onset),
+      ]),
+    );
+  }
+  if (report.localization !== null) {
+    L.push('## Localization (contact evidence, spawn geometry, joint stretch)');
+    L.push('');
+    table(
+      ['witness', 'onset', 'step0/step1 contact pairs', 'spawn clearance (wheel/belly m)', 'deepest penetration', 'hardest impulse', 'wedges', 'first joint >2cm stretch'],
+      report.localization.map((l) => [
+        l.witness,
+        onsetCell(l.onset),
+        `${l.step0Pairs}/${l.step1Pairs}`,
+        `${exp3(l.spawn.minWheelClearance)}/${exp3(l.spawn.bellyClearance)}`,
+        l.deepestPenetration === null ? 'none'
+          : `${exp3(l.deepestPenetration.minDist)} m @${l.deepestPenetration.step} (${l.deepestPenetration.partner.kind})`,
+        l.hardestImpulse === null ? 'none'
+          : `${exp3(l.hardestImpulse.maxImpulse)} @${l.hardestImpulse.step} (${l.hardestImpulse.partner.kind})`,
+        l.wedgeCandidates,
+        l.jointStretch.length === 0 ? 'none'
+          : `${l.jointStretch[0].suspension} ${l.jointStretch[0].station} @${l.jointStretch[0].firstOver2cm} (max ${exp3(l.jointStretch[0].maxStretch)} m)`,
+      ]),
+    );
+    L.push('Window contact detail and full joint-stretch tables are in the JSON output.');
+    L.push('');
   }
   return L.join('\n');
 }

@@ -61,13 +61,40 @@ describe('probe schema smoke', () => {
       expect(Object.keys(t.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
     }
 
-    // Vehicle: the 3 smoke arms, each with its own canonical arm digest.
-    expect(report.vehicle.map((v) => v.arm)).toEqual(['passive', 'powerZero', 'sled']);
+    // Vehicle: the 3 smoke ecological arms + the smoke phenotype-preserving
+    // arm, each with its own canonical arm digest.
+    expect(report.vehicle.map((v) => v.arm))
+      .toEqual(['passive', 'powerZero', 'sled', 'motorOff:all']);
+    expect(report.vehicle.map((v) => v.kind))
+      .toEqual(['ecological', 'ecological', 'ecological', 'phenotype-preserving']);
     for (const v of report.vehicle) {
       expect(v.armGenotypeDigest).toMatch(HEX8);
       expect(v.error).toBeNull();
       expect(Number.isFinite(v.result.maxForwardDistance)).toBe(true);
     }
+
+    // Engine: the smoke arms — the composed baseline (whose digest equality
+    // vs runEvaluation is a HARD check, asserted green above) + one solver
+    // arm; honest dt reporting present on every row.
+    expect(report.engineAblations.map((e) => e.arm)).toEqual(['baselineComposed', 'solverIters:8']);
+    expect(report.checks.some((c) => c.name === 'composed:A')).toBe(true);
+    for (const e of report.engineAblations) {
+      expect(Number.isFinite(e.requestedDt)).toBe(true);
+      expect(Number.isFinite(e.effectiveDt)).toBe(true);
+      expect(Number.isFinite(e.result.maxForwardDistance)).toBe(true);
+    }
+
+    // Localization: one row per witness with the mandated evidence fields.
+    expect(report.localization).toHaveLength(1);
+    const loc = report.localization[0];
+    expect(loc.witness).toBe('A');
+    expect(Number.isInteger(loc.step0Pairs)).toBe(true);
+    expect(Number.isInteger(loc.step1Pairs)).toBe(true);
+    expect(Number.isFinite(loc.spawn.minWheelClearance)).toBe(true);
+    expect(Number.isFinite(loc.spawn.bellyClearance)).toBe(true);
+    expect(Array.isArray(loc.windowContacts)).toBe(true);
+    expect(Array.isArray(loc.jointStretch)).toBe(true);
+    expect(Number.isInteger(loc.wedgeCandidates)).toBe(true);
 
     const md = renderMarkdown(report);
     expect(md).toContain('# Physics-explosion probe');
@@ -75,11 +102,11 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Baseline (witness reproduction)');
     expect(md).toContain('## Terrain ablations');
     expect(md).toContain('## Vehicle ablations');
+    expect(md).toContain('## Engine ablations');
+    expect(md).toContain('## Localization');
   });
 
-  test('reserved Tier-2 passes and unknown selectors fail loud', async () => {
-    await expect(runProbe({ ...smokeConfig(), passes: ['engine'] }))
-      .rejects.toThrow(/Tier-2/);
+  test('unknown passes and selectors fail loud', async () => {
     await expect(runProbe({ ...smokeConfig(), passes: ['bogus'] }))
       .rejects.toThrow(/unknown pass/);
     await expect(runProbe({ ...smokeConfig(), witnesses: ['Z'] }))

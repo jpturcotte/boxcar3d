@@ -256,15 +256,19 @@ No arm abolishes the event for any witness:
   standard.
 - **CCD arms** (hard off / soft off / both off / prediction 0.1–2):
   magnitude shuffling only; onset essentially unchanged. H4 eliminated.
-- **Gravity magnitude — the committed `gravity9.81` reproducer arm**:
-  reducing gravity from the project's 20 to 9.81 did NOT change the
-  reproducer's classification (both cat@46). The elevated g = 20 policy is
-  therefore not required for divergence. Gravity is NOT irrelevant, though:
-  it is one possible EXCITATION — for the fully-unloaded reproducer,
-  gravity-driven floor settle is the only load, so removing it (the
-  static-free `freeSpace` arm: no floor, zero gravity) leaves the unloaded
-  island quiescent. Gravity is one excitation among several (spring preload,
-  motor torque), none individually necessary.
+- **Gravity — three committed reproducer arms that separate magnitude from
+  presence**: `gravity9.81` (floor + g = 9.81) still goes catastrophic at
+  cat@46, identical to `original` (floor + g = 20) — the elevated g = 20
+  MAGNITUDE is not the cause. `gravityOff` (floor KEPT, g = 0) is the
+  single-variable isolator — its ONLY difference from `original` is gravity —
+  and it is QUIESCENT (peak body speed 0, no alert). So gravity's PRESENCE
+  (the settle load), not its magnitude, is what excites the undriven
+  reproducer: with g = 0 the vehicle never falls onto the pad and nothing
+  loads the island. (The static-free `freeSpace` arm removes the floor AND
+  gravity — it is the fully-unloaded control, NOT the gravity isolator, and
+  cannot by itself attribute the quiescence to gravity.) Gravity is thus one
+  excitation among several (spring preload, motor torque), none individually
+  necessary; its magnitude is immaterial.
 - Restitution arms were not run: the onset contact partner is the floor,
   whose restitution is already 0 (adapter default); no stored-contact-energy
   path exists at onset. Statics creation-order arms were not run: no static
@@ -283,13 +287,15 @@ event: either axle alone (stable), trackHalf genes ≤ ~0.2 (stable),
 frameDensity 1 (~160 kg chassis, stable), and zero load (the genuinely
 static-free `freeSpace` arm — no floor at all, zero gravity, staticColliders
 0 hard-checked — leaves this undriven island quiescent, peak body speed 0).
-The `gravity9.81` arm confirms the g = 20 magnitude is not required (same
-cat@46 classification). Axle co-location is contributory, not necessary
-(spread axles still diverge). **The complete closure matrix is
-instrumented**: the committed `reproducer` pass runs the unchanged
-reproducer on both flavors plus every stabilizer arm, the gravity-magnitude
-control, and the static-free discriminator, so the closure regenerates from
-one command. Rerun after any engine bump:
+Two gravity arms separate magnitude from presence: `gravity9.81` (floor +
+g = 9.81) still explodes at cat@46, so the g = 20 magnitude is not the cause;
+`gravityOff` (floor kept, g = 0 — the single-variable partner of `original`)
+is quiescent, so gravity's presence (the settle load) is the excitation.
+Axle co-location is contributory, not necessary (spread axles still diverge).
+**The complete closure matrix is instrumented**: the committed `reproducer`
+pass runs the unchanged reproducer on both flavors plus every stabilizer arm,
+both gravity controls, and the static-free discriminator, so the closure
+regenerates from one command. Rerun after any engine bump:
 `npm run probe:physics-explosion -- --pass reproducer` (identity and
 deterministic byte-exact repeatability are hard checks; every onset/outcome
 is an observation — no committed test asserts the explosion occurs).
@@ -319,8 +325,10 @@ is an observation — no committed test asserts the explosion occurs).
   axle co-location; S1 chains (raise magnitude; not necessary); drive
   torque (changes displacement outcome only); gravity as one EXCITATION —
   its settle load can initiate divergence in an otherwise-unloaded island
-  (removing it stabilizes the unloaded reproducer), but it is not necessary
-  (internal loads substitute) and its magnitude is immaterial.
+  (the single-variable `gravityOff` arm — floor kept, g = 0 — is quiescent
+  while `original` at g = 20 is catastrophic), but it is not necessary
+  (internal loads substitute) and its magnitude is immaterial (`gravity9.81`
+  same cat@46).
 - **Correlated only**: terrain features, craters, roughness (they scatter
   the post-onset ballistics — the Phase-1A "hit terrain features" inference
   was a final-state artifact); CCD; dt; gravity MAGNITUDE (9.81 vs 20 give
@@ -442,9 +450,10 @@ terrain 20260727).
   energy source.
 - The deterministic build: the ordinary flavor reproduces onset-for-onset.
 - The elevated g = 20 policy as a cause: the `gravity9.81` reproducer arm
-  gives the same classification (cat@46). (Gravity's PRESENCE is still one
-  excitation — the static-free unloaded reproducer is quiescent — but its
-  MAGNITUDE is not the cause.)
+  gives the same classification (cat@46), so the MAGNITUDE is not the cause.
+  (Gravity's PRESENCE is still one excitation — the `gravityOff` arm, floor
+  kept and g = 0, the single-variable partner of `original`, is quiescent —
+  but that is presence, not magnitude.)
 - A knife-edge numeric coincidence: 2-decimal gene rounding reproduces.
 
 ## 15. Known limitations
@@ -547,6 +556,8 @@ terrain 20260727).
   (`effectiveDt`); and precise excitation-vs-energy-source wording matters
   ("drive can excite the island but is not the energy source" is the honest
   claim, not "drive is never the energy source").
-- **Wall-clock** (machine-specific): the full Stage-1 matrix (~230 runs)
-  9.5 s; the Stage-2 engine/local/vehicle matrix 10.2 s; the prevalence
-  scan (60 traced runs) ~7 s.
+- **Wall-clock** (machine-specific, reference i7-14650HX; noisy, not a
+  contract): the full `--witness all --pass all` matrix — all four witnesses
+  across baseline/terrain/vehicle/engine/load/local/reproducer/prevalence,
+  incl. the static-free load crossing and the 60-member prevalence scan —
+  runs in ~15 s.

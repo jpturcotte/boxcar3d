@@ -131,7 +131,7 @@ describe('probe schema smoke', () => {
     // OBSERVATIONS (no must-explode assertion, ever).
     expect(report.reproducer.map((r) => `${r.arm}:${r.flavor}`))
       .toEqual(['original:deterministic', 'original:ordinary',
-        'gravity9.81:deterministic', 'freeSpace:deterministic']);
+        'gravity9.81:deterministic', 'gravityOff:deterministic', 'freeSpace:deterministic']);
     expect(report.checks.some((c) => c.name === 'identity:reproducer')).toBe(true);
     expect(report.checks.some((c) => c.name === 'repeat:reproducer')).toBe(true);
     for (const r of report.reproducer) {
@@ -150,6 +150,12 @@ describe('probe schema smoke', () => {
     // not a free-space arm) — it contacts the pad.
     const gravityArm = report.reproducer.find((r) => r.arm === 'gravity9.81');
     expect(Number.isInteger(gravityArm.contacts.touchingContacts)).toBe(true);
+    // The gravity-PRESENCE isolator keeps the floor but zeroes gravity — the
+    // single-variable partner of `original`. Its outcome stays an OBSERVATION
+    // (no must-be-quiescent assertion), but it carries a contacts shape.
+    const gravityOff = report.reproducer.find((r) => r.arm === 'gravityOff');
+    expect(Number.isInteger(gravityOff.contacts.touchingContacts)).toBe(true);
+    expect(Object.keys(gravityOff.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
 
     // Prevalence: one smoke seed, all 20 members classified.
     expect(report.prevalence).toHaveLength(1);

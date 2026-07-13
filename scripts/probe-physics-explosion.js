@@ -146,7 +146,7 @@ export function smokeConfig() {
     componentArms: ['motorOff:all'],
     engineArms: ['baselineComposed', 'solverIters:8'],
     loadArms: ['original', 'passiveAllS0'],
-    reproducerArms: ['original', 'gravity9.81', 'freeSpace'],
+    reproducerArms: ['original', 'gravity9.81', 'gravityOff', 'freeSpace'],
     prevalenceSeeds: [20260725],
     argv: [],
   };
@@ -1382,7 +1382,7 @@ export async function runProbe(config) {
 // static-free discriminator (no floor at all, quiescent).
 const REPRODUCER_ARMS = Object.freeze([
   'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis',
-  'gravity9.81', 'freeSpace',
+  'gravity9.81', 'gravityOff', 'freeSpace',
 ]);
 
 async function reproducerPass(cfg, check) {
@@ -1429,6 +1429,32 @@ async function reproducerPass(cfg, check) {
         arm,
         flavor: 'deterministic',
         changedVariable: 'world.gravity.y = -9.81 (vs the project policy -20)',
+        genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+        contacts: { ...counter.state },
+        result: summarize(result, ir),
+      });
+      continue;
+    }
+    if (arm === 'gravityOff') {
+      // The gravity-PRESENCE isolator: floor KEPT, gravity = 0. This is
+      // the single-variable partner of `original` (floor + g = 20) — the
+      // ONLY difference is gravity, so it attributes any change to gravity
+      // alone (the static-free `freeSpace` arm removes the floor AND gravity
+      // and cannot). For the undriven all-S0 reproducer, gravity-driven
+      // floor settle is the only load; with g = 0 it never falls onto the
+      // pad, so if this is quiescent while `original` is catastrophic, the
+      // settle load — gravity's PRESENCE, not its magnitude — is the
+      // excitation.
+      const counter = staticContactCounter();
+      const { result } = await composeRun(ir, {
+        terrainOverrides: overrides,
+        worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
+        buildInspect: counter.buildInspect,
+      });
+      rows.push({
+        arm,
+        flavor: 'deterministic',
+        changedVariable: 'world.gravity = 0, floor KEPT (single-variable vs original; isolates gravity as the excitation)',
         genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
         contacts: { ...counter.state },
         result: summarize(result, ir),

@@ -99,8 +99,8 @@ import {
   analyzeTrace, bodyReachMetadataForIR, scaledThresholds,
 } from '../src/sim/trace-forensics.js';
 import {
-  EXPLOSION_WITNESSES, WITNESS_SPEC, WITNESS_TERRAIN,
-  passiveTwinOf, witnessDigest, witnessGenotype,
+  EXPLOSION_WITNESSES, MINIMAL_REPRODUCER, WITNESS_SPEC, WITNESS_TERRAIN,
+  passiveTwinOf, reproducerGenotype, witnessDigest, witnessGenotype,
 } from './explosion-witnesses.js';
 
 export const PROBE_SCHEMA = 'boxcar3d.physics-explosion/1';
@@ -122,11 +122,11 @@ const TERRAIN_VARIANTS = Object.freeze({
   }),
 });
 
-const IMPLEMENTED_PASSES = Object.freeze(['baseline', 'terrain', 'vehicle', 'engine', 'local']);
+const IMPLEMENTED_PASSES = Object.freeze(['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer']);
 
 export function smokeConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer'],
     witnesses: ['A'],
     ordinaryFlavor: false,
     controls: false,
@@ -140,7 +140,7 @@ export function smokeConfig() {
 
 export function defaultConfig() {
   return {
-    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local'],
+    passes: ['baseline', 'terrain', 'vehicle', 'engine', 'local', 'reproducer'],
     witnesses: ['A'],
     ordinaryFlavor: true,
     controls: true,
@@ -949,6 +949,7 @@ export async function runProbe(config) {
     vehicle: null,
     engineAblations: null,
     localization: null,
+    reproducer: null,
   };
   const check = (name, ok, detail) => report.checks.push({ name, ok: ok === true, detail });
 
@@ -966,7 +967,39 @@ export async function runProbe(config) {
   if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
   if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
   if (passes.includes('local')) report.localization = await localPass(witnessSet);
+  if (passes.includes('reproducer')) report.reproducer = await reproducerPass(check);
   return report;
+}
+
+// The engine-upgrade rerun surface (see MINIMAL_REPRODUCER's header):
+// identity is HARD; the onset is an OBSERVATION — a future Rapier that
+// converges this island simply reports no alert, and the engine-limitation
+// ruling gets re-evaluated. Runs on BOTH flavors.
+async function reproducerPass(check) {
+  const g = reproducerGenotype();
+  check('identity:reproducer', witnessDigest(g) === MINIMAL_REPRODUCER.genotypeDigest,
+    `expected ${MINIMAL_REPRODUCER.genotypeDigest}`);
+  const ir = compileAssembly(g);
+  const rows = [];
+  for (const deterministic of [true, false]) {
+    const r = await evaluateIR(ir, {
+      terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides }, deterministic,
+    });
+    if (deterministic) {
+      const r2 = await evaluateIR(ir, {
+        terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides }, deterministic,
+      });
+      check('repeat:reproducer', r.trace.digest === r2.trace.digest,
+        `digests ${r.trace.digest}/${r2.trace.digest}`);
+    }
+    rows.push({
+      flavor: deterministic ? 'deterministic' : 'ordinary',
+      genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+      terrainOverrides: { ...MINIMAL_REPRODUCER.terrainOverrides },
+      result: summarize(r, ir),
+    });
+  }
+  return rows;
 }
 
 // --- Markdown ------------------------------------------------------------------
@@ -1096,6 +1129,19 @@ export function renderMarkdown(report) {
     );
     L.push('Window contact detail and full joint-stretch tables are in the JSON output.');
     L.push('');
+  }
+  if (report.reproducer !== null && report.reproducer !== undefined) {
+    L.push('## Minimum reproducer (2 wide-track paired S0 axles, light chassis, undriven, flat ground)');
+    L.push('');
+    table(
+      ['flavor', 'digest', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
+      report.reproducer.map((r) => [
+        r.flavor, r.genotypeDigest,
+        exp3(r.result.maxForwardDistance),
+        exp3(r.result.peakBodySpeed),
+        onsetCell(r.result.onset),
+      ]),
+    );
   }
   return L.join('\n');
 }

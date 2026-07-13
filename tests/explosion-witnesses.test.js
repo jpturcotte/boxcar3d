@@ -12,8 +12,8 @@
 
 import { describe, test, expect } from 'vitest';
 import {
-  EXPLOSION_WITNESSES, WITNESS_SPEC, WITNESS_TERRAIN,
-  passiveTwinOf, witnessDigest, witnessGenotype,
+  EXPLOSION_WITNESSES, MINIMAL_REPRODUCER, WITNESS_SPEC, WITNESS_TERRAIN,
+  passiveTwinOf, reproducerGenotype, witnessDigest, witnessGenotype,
 } from '../scripts/explosion-witnesses.js';
 import { createInitialPopulation } from '../src/sim/population-initializer.js';
 import { compileAssembly, repairGenotype, serializeGenotype } from '../src/sim/assembly.js';
@@ -119,5 +119,34 @@ describe('witness identity', () => {
   test('an unknown witness fails loud', () => {
     expect(() => witnessGenotype(20260725, 3)).toThrow(/unknown witness/);
     expect(() => witnessGenotype(1, 19)).toThrow(/unknown witness/);
+  });
+});
+
+describe('the minimum reproducer (identity + inputs only — NEVER a must-explode assertion)', () => {
+  test('the materialized genotype matches its committed digest and is canonical', () => {
+    const g = reproducerGenotype();
+    expect(witnessDigest(g)).toBe(MINIMAL_REPRODUCER.genotypeDigest);
+    expect(bytesEqual(serializeGenotype(repairGenotype(g)), serializeGenotype(g))).toBe(true);
+  });
+
+  test('it compiles to the documented minimal phenotype', () => {
+    const ir = compileAssembly(reproducerGenotype());
+    expect(ir.axles.length).toBe(2);
+    expect(ir.axles.map((a) => a.kind)).toEqual(['paired', 'paired']);
+    expect(ir.axles.map((a) => a.suspension.type)).toEqual(['S0', 'S0']);
+    const wheels = ir.axles.flatMap((a) => a.wheels);
+    expect(wheels.length).toBe(4);
+    // Undriven by construction — the explosion needs no motor.
+    expect(ir.power.drivenWheelCount).toBe(0);
+    expect(wheels.every((w) => w.driveTorque === 0)).toBe(true);
+    // The documented conditioning ingredients: light chassis, wide track.
+    expect(ir.mass.chassis).toBeLessThan(25);
+    expect(Math.max(...wheels.map((w) => Math.abs(w.z)))).toBeGreaterThan(1.5);
+  });
+
+  test('the declared reproducer terrain is the flat ablation variant', () => {
+    expect(MINIMAL_REPRODUCER.terrainOverrides).toEqual({
+      craterDensity: 0, featureDensity: 0, macroAmp: 0, microAmp: 0,
+    });
   });
 });

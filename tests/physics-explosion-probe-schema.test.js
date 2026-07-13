@@ -96,6 +96,17 @@ describe('probe schema smoke', () => {
     expect(Array.isArray(loc.jointStretch)).toBe(true);
     expect(Number.isInteger(loc.wedgeCandidates)).toBe(true);
 
+    // Reproducer: both flavors, identity + deterministic repeat hard-checked;
+    // onset values are OBSERVATIONS (no must-explode assertion, ever).
+    expect(report.reproducer.map((r) => r.flavor)).toEqual(['deterministic', 'ordinary']);
+    expect(report.checks.some((c) => c.name === 'identity:reproducer')).toBe(true);
+    expect(report.checks.some((c) => c.name === 'repeat:reproducer')).toBe(true);
+    for (const r of report.reproducer) {
+      expect(r.genotypeDigest).toMatch(HEX8);
+      expect(Number.isFinite(r.result.maxForwardDistance)).toBe(true);
+      expect(Object.keys(r.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
+    }
+
     const md = renderMarkdown(report);
     expect(md).toContain('# Physics-explosion probe');
     expect(md).toContain('## Checks');
@@ -104,6 +115,7 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Vehicle ablations');
     expect(md).toContain('## Engine ablations');
     expect(md).toContain('## Localization');
+    expect(md).toContain('## Minimum reproducer');
   });
 
   test('unknown passes and selectors fail loud', async () => {

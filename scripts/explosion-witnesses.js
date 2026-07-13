@@ -213,3 +213,106 @@ export function passiveTwinOf(genotype) {
     axles: genotype.axles.map((a) => ({ ...deepClone(a), driven: 0 })),
   });
 }
+
+// --- The minimum reproducer (investigation verdict evidence) -------------------
+//
+// MATERIALIZED canonical genotype (a literal, not a reconstruction):
+// derived from witness A's axles 2+5 (both S0), every gene rounded to two
+// decimals, re-repaired — the values below INCLUDE repair's exact writes
+// (radius/sizeBias carry repair's f64 output; never re-round them). It is the
+// smallest configuration found that reproduces the finite explosion:
+//
+//   2 paired wide-track S0 axles (wheel centers z ~ +/-2.3 / +/-1.9 m),
+//   4 UNDRIVEN wheels (8.8-22 kg), one 18 kg chassis (79 kg total),
+//   NO motors, NO S1, on a completely FLAT corridor (craterDensity 0,
+//   featureDensity 0, macroAmp 0, microAmp 0) at the standard spawn
+//   => catastrophic (>1000 m/s body speeds) by step ~46 of 300,
+//      IDENTICALLY on both Rapier 0.19.3 flavors.
+//
+// Measured stabilizers — removing ANY single ingredient abolishes the event
+// (the necessary/sufficient closure; docs/physics-integrity-finite-explosion-
+// report-2026-07-13.md carries the full matrix):
+//   - either axle alone (every single-module arm is stable),
+//   - trackHalf genes <= ~0.2 (short lateral anchor arms),
+//   - frameDensity 1 (a ~160 kg chassis instead of 18 kg).
+// Gravity 9.81 vs 20, drive, dt 1/120, CCD on/off, and terrain content do
+// NOT change the classification.
+//
+// RERUN ON RAPIER BUMP:
+//   npm run probe:physics-explosion -- --pass reproducer
+// (identity is a hard check; the onset is an OBSERVATION — if a future
+// engine converges this island, the probe reports the disappearance and the
+// engine-limitation ruling is re-evaluated; no committed test asserts the
+// explosion occurs.)
+export const MINIMAL_REPRODUCER = Object.freeze({
+  label: 'R',
+  genotypeDigest: '9fde1f1c',
+  terrainOverrides: Object.freeze({
+    craterDensity: 0, featureDensity: 0, macroAmp: 0, microAmp: 0,
+  }),
+  genotype: Object.freeze({
+    version: 1,
+    hue: 0.2,
+    symmetric: 0.22,
+    power: 0.19,
+    frameDensity: 0.09,
+    frame: Object.freeze({
+      family: 0.18,
+      segments: Object.freeze([Object.freeze({
+        nodeCount: 0.13,
+        nodes: Object.freeze([
+          Object.freeze({ gap: 0.72, height: 0.19, halfWidth: 0.32, thickness: 0.71 }),
+          Object.freeze({ gap: 0.19, height: 0.07, halfWidth: 0.37, thickness: 0.51 }),
+          Object.freeze({ gap: 0.71, height: 0.34, halfWidth: 0.79, thickness: 0.3 }),
+          Object.freeze({ gap: 0.95, height: 0.83, halfWidth: 0.42, thickness: 0.19 }),
+          Object.freeze({ gap: 0.86, height: 0.42, halfWidth: 0.16, thickness: 0.29 }),
+          Object.freeze({ gap: 0.6, height: 0.29, halfWidth: 0.88, thickness: 0.87 }),
+        ]),
+        fam: Object.freeze({
+          spine: Object.freeze({ beamWidthFrac: 0.76 }),
+          ladder: Object.freeze({ crossFrac: 0.02 }),
+          hull: Object.freeze({ bulge: 0.34 }),
+        }),
+      })]),
+    }),
+    axles: Object.freeze([
+      Object.freeze({
+        posX01: 1,
+        paired: 0.94,
+        trackHalf: 0.76,
+        radius: 0.2140000000000001,
+        width: 0.33,
+        density: 0.03,
+        suspType: 0.27,
+        stiffness: 0.54,
+        damping: 0.95,
+        travel: 0.69,
+        restLength: 0.35,
+        driven: 0.02,
+        share: 0.9,
+        asym: Object.freeze({ driveBias: 0.86, sizeBias: 0.5000000000000001, centerOffset: 0.1 }),
+      }),
+      Object.freeze({
+        posX01: 1,
+        paired: 0.6,
+        trackHalf: 0.6,
+        radius: 0.29,
+        width: 0.74,
+        density: 0.04,
+        suspType: 0.21,
+        stiffness: 0.47,
+        damping: 0.49,
+        travel: 0.89,
+        restLength: 0.53,
+        driven: 0.26,
+        share: 0.17,
+        asym: Object.freeze({ driveBias: 0.89, sizeBias: 0.49, centerOffset: 0.52 }),
+      }),
+    ]),
+  }),
+});
+
+/** The reproducer genotype as mutable plain data (compile/repair inputs). */
+export function reproducerGenotype() {
+  return deepClone(MINIMAL_REPRODUCER.genotype);
+}

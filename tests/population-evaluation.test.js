@@ -144,6 +144,19 @@ describe('championFromEvaluation', () => {
     expect(c.valid).toBe(false);
   });
 
+  test('a VALID individual outranks an equally-scoring invalid one — even at a higher id', () => {
+    // Invalid id 0 (fitness 0) vs valid id 1 (fitness 0): the champion must be
+    // the VALID id 1, so Phase 1B elitism never preserves an unrealizable
+    // genotype over an equally-scoring viable one. Order-independent.
+    expect(championFromEvaluation(ev([[0, 0, false], [1, 0, true]])).individualId).toBe(1);
+    expect(championFromEvaluation(ev([[1, 0, true], [0, 0, false]])).individualId).toBe(1);
+    // Among several valid zero-fitness ties, the lowest id still wins.
+    expect(championFromEvaluation(ev([[5, 0, false], [3, 0, true], [7, 0, true]])).individualId).toBe(3);
+    // Greater fitness still beats validity: an invalid higher score is champion
+    // (fitness is the primary key; validity only breaks an EXACT tie).
+    expect(championFromEvaluation(ev([[0, 9, false], [1, 4, true]])).individualId).toBe(0);
+  });
+
   test('a near-tie one ulp apart is NOT a tie', () => {
     const lo = 5;
     const hi = 5 + Number.EPSILON * 4; // > 5 by ulps
@@ -271,6 +284,17 @@ describe('evaluation-spec encoding v1', () => {
       expect(() => serializeEvaluationSpec(s)).toThrow(/population-evaluation: invalid/);
     }
   });
+
+  test('a maxSteps above u32 range fails loud at the seam (a direct call cannot silently wrap)', () => {
+    // maxSteps is a u32 on the wire; 0x100000000 would wrap to 0 and alias a
+    // distinct evaluation identity. serializeEvaluationSpec is a public export
+    // and cannot assume it was routed through resolveSpec's domain check.
+    for (const bad of [0x100000000, 2 ** 40, 0, -1, 1.5]) {
+      const s = resolved();
+      s.maxSteps = bad;
+      expect(() => serializeEvaluationSpec(s), `maxSteps ${bad}`).toThrow(/population-evaluation: invalid/);
+    }
+  });
 });
 
 describe('fitness-vector encoding v1', () => {
@@ -319,6 +343,20 @@ describe('fitness-vector encoding v1', () => {
   test('rejects non-ascending individualIds loud (canonical order is the contract)', () => {
     expect(() => serializeFitnessVector(synth([[5, 1, true], [3, 1, true]])))
       .toThrow(/strictly ascending/);
+  });
+
+  test('rejects a non-finite or negative fitness (NaN/Inf would emit implementation-defined bytes)', () => {
+    for (const bad of [NaN, Infinity, -Infinity, -0.0001]) {
+      expect(() => serializeFitnessVector(synth([[0, bad, true]])), `fitness ${bad}`)
+        .toThrow(/population-evaluation: invalid/);
+    }
+  });
+
+  test('rejects an internally contradictory vector: invalid with nonzero fitness', () => {
+    // valid === false must imply fitness === 0 (the max-progress policy gates
+    // an invalid result to 0); the encoder refuses to attest otherwise.
+    expect(() => serializeFitnessVector(synth([[0, 3.5, false]])))
+      .toThrow(/invalid individual must have fitness 0/);
   });
 });
 
@@ -419,6 +457,35 @@ describe('evaluatePopulation (deterministic flavor)', () => {
       reversed.individuals.map(({ individualId, fitness, valid }) => ({ individualId, fitness, valid })),
       'permuted individuals',
     );
+  });
+
+  test('adversarial: a hook mutating the caller population/terrain mid-run changes nothing (the evaluator owns its inputs)', { timeout: 240000 }, async () => {
+    // A hook (or any caller retaining the input) can mutate a genotype after
+    // it was compiled to an IR, or a nested terrain array/object after it was
+    // resolved. The evaluator captures the snapshot bytes and deep-copies the
+    // terrain BEFORE the first hook, and each sim runs its pre-compiled IR, so
+    // nothing the hook touches can leak into the bound fitness vector.
+    const withNested = () => ({ ...FLAT_TERRAIN, craterRadiusRange: [2, 5], featureTypeWeights: { boulder: 3, ramp: 2, log: 1 } });
+    const clean = await evaluatePopulation(
+      popOf(member(5, s0PlainGenotype()), member(9, mixedRadiusGenotype())),
+      { ...baseSpec(), terrain: withNested() },
+    );
+    const pop = popOf(member(5, s0PlainGenotype()), member(9, mixedRadiusGenotype()));
+    const terrain = withNested();
+    const dirty = await evaluatePopulation(pop, {
+      ...baseSpec(),
+      terrain,
+      hooks: {
+        onIndividual: () => {
+          pop.individuals[0].genotype.hue = 0.99; // genotype: compiled IR already captured
+          terrain.craterRadiusRange[0] = 999; // nested array: deep-copied at resolveSpec
+          terrain.featureTypeWeights.boulder = 999; // nested object: deep-copied
+          terrain.startFlatLength = 3; // top-level scalar
+        },
+      },
+    });
+    expect(dirty.fitnessVector.digest).toBe(clean.fitnessVector.digest);
+    expect(bytesEqual(dirty.fitnessVector.bytes, clean.fitnessVector.bytes)).toBe(true);
   });
 
   test('a zero-axle sled imported into a population evaluates as a valid ~0-fitness individual', { timeout: 240000 }, async () => {

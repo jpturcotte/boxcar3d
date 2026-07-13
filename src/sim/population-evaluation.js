@@ -187,7 +187,7 @@ function resolveSpec(spec) {
   for (const k of Object.keys(terrain)) {
     if (!Object.prototype.hasOwnProperty.call(TERRAIN_DEFAULTS, k)) fail(`terrain.${k}`, 'unknown key');
   }
-  if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 0xffffffff) fail('maxSteps', maxSteps);
   if (typeof deterministic !== 'boolean') fail('deterministic', deterministic);
   if (typeof spawn !== 'object' || spawn === null) fail('spawn', spawn);
   for (const k of Object.keys(spawn)) {
@@ -206,7 +206,7 @@ function resolveSpec(spec) {
   if (hooks.onIndividual !== undefined && typeof hooks.onIndividual !== 'function') {
     fail('hooks.onIndividual', hooks.onIndividual);
   }
-  const resolvedTerrain = { ...TERRAIN_DEFAULTS, ...terrain };
+  const resolvedTerrain = ownTerrain({ ...TERRAIN_DEFAULTS, ...terrain });
   // The flat-pad guard: the whole vehicle must sit on exactly-flat ground.
   const padStart = -resolvedTerrain.length / 2;
   const padEnd = padStart + resolvedTerrain.startFlatLength;
@@ -223,6 +223,26 @@ function resolveSpec(spec) {
     terrain: resolvedTerrain,
     onIndividual: hooks.onIndividual ?? null,
   };
+}
+
+// Deep-copy every array / nested object of a resolved terrain and deep-freeze
+// the result, so the evaluator EXCLUSIVELY owns it. A hook or a concurrent
+// caller mutating the input's nested `craterRadiusRange` array or
+// `featureTypeWeights` object cannot then change what a later individual runs
+// on (the shallow `{...TERRAIN_DEFAULTS, ...terrain}` merge shares those
+// references), and the serialized evaluation spec binds exactly what ran.
+function ownTerrain(terrain) {
+  const out = {};
+  for (const [k, v] of Object.entries(terrain)) {
+    if (Array.isArray(v)) {
+      out[k] = Object.freeze(v.slice());
+    } else if (v !== null && typeof v === 'object') {
+      out[k] = Object.freeze({ ...v });
+    } else {
+      out[k] = v;
+    }
+  }
+  return Object.freeze(out);
 }
 
 /** Serialize a RESOLVED spec (the object evaluatePopulation stores at
@@ -243,6 +263,9 @@ export function serializeEvaluationSpec(resolvedSpec) {
   }
   const term = TERMINATIONS.indexOf(s.termination);
   if (term < 0) fail('termination', s.termination);
+  // maxSteps is a u32 on the wire — reject anything that would silently wrap
+  // (a public export cannot assume it was routed through resolveSpec).
+  if (!Number.isInteger(s.maxSteps) || s.maxSteps < 1 || s.maxSteps > 0xffffffff) fail('maxSteps', s.maxSteps);
 
   // Size pass, then write pass (explicit, no push-buffers).
   let size = 2 + 1 + 1 + 4 + 8 * 5 + 1;
@@ -339,8 +362,17 @@ export async function evaluatePopulation(population, evaluationSpec) {
     spawn: Object.freeze({ ...resolved.spawn }),
     targetWheelSurfaceSpeed: resolved.targetWheelSurfaceSpeed,
     wheelFriction: resolved.wheelFriction,
-    terrain: Object.freeze({ ...resolved.terrain }),
+    terrain: resolved.terrain, // already deep-copied + deep-frozen by ownTerrain — the evaluator owns it
   });
+
+  // Capture the population snapshot bytes SYNCHRONOUSLY, before the first hook
+  // or await. A hook (onIndividual) — or any caller retaining the input — can
+  // mutate a genotype after it was compiled to an IR; the simulations run the
+  // captured IR, so the returned fitness vector must bind the population that
+  // was actually evaluated, not a later mutation. Hashing here freezes that
+  // identity into bytes the loop cannot disturb.
+  const snapshotBytes = serializePopulationSnapshot(population);
+  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
 
   const individuals = [];
   let effectiveDt = null;
@@ -387,13 +419,12 @@ export async function evaluatePopulation(population, evaluationSpec) {
     });
   }
 
-  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population));
   const evaluation = {
     worldMode: POPULATION_WORLD_MODE,
     effectiveDt,
     executedSteps: spec.maxSteps,
     spec,
-    populationSnapshotDigestState: snapshotState,
+    populationSnapshotDigestState: snapshotState, // captured pre-hook (see above)
     individuals,
   };
   const bytes = serializeFitnessVector(evaluation);
@@ -431,7 +462,13 @@ export function serializeFitnessVector(evaluation) {
       fail('individualId', ind.individualId);
     }
     if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
-    if (typeof ind.fitness !== 'number') fail(`individual ${ind.individualId} fitness`, ind.fitness);
+    // The fitness contract is a non-negative finite score: NaN/Infinity would
+    // emit implementation-defined bytes (the cross-engine hazard the codec
+    // exists to prevent), and a negative fitness contradicts the max-progress
+    // policy (maxForwardDistance ≥ 0, invalid ⇒ 0). Reject an internally
+    // contradictory vector rather than faithfully serialize it.
+    if (!Number.isFinite(ind.fitness) || ind.fitness < 0) fail(`individual ${ind.individualId} fitness`, ind.fitness);
+    if (!ind.valid && ind.fitness !== 0) fail(`individual ${ind.individualId} fitness`, `invalid individual must have fitness 0, got ${ind.fitness}`);
     view.setUint32(o, ind.individualId, true); o += 4;
     view.setUint8(o, ind.valid ? 1 : 0); o += 1;
     view.setFloat64(o, ind.fitness, true); o += 8;
@@ -440,22 +477,29 @@ export function serializeFitnessVector(evaluation) {
 }
 
 /**
- * The deterministic champion: maximum fitness; an EXACT fitness tie keeps
- * the LOWEST individualId (the ascending scan updates only on strictly
- * greater fitness). An all-invalid population yields {lowest id, fitness 0,
- * valid false} — well-defined.
+ * The deterministic champion, by a total order robust to input arrangement:
+ *   1. greater fitness;
+ *   2. on an EXACT fitness tie, VALID over invalid;
+ *   3. then the LOWEST individualId.
+ * The validity rank matters at a zero-fitness tie: without it an invalid
+ * individual (fitness 0) could out-rank an equally-scoring VALID one purely on
+ * a lower id, and Phase 1B elitism would then preserve an unrealizable genotype
+ * over a viable one. An all-invalid population still yields a well-defined
+ * {lowest id, fitness 0, valid false} champion.
  */
 export function championFromEvaluation(evaluation) {
   if (typeof evaluation !== 'object' || evaluation === null
     || !Array.isArray(evaluation.individuals) || evaluation.individuals.length === 0) {
     fail('evaluation.individuals', evaluation && evaluation.individuals);
   }
+  const better = (a, b) => {
+    if (a.fitness !== b.fitness) return a.fitness > b.fitness;
+    if (a.valid !== b.valid) return a.valid; // valid outranks invalid on a fitness tie
+    return a.individualId < b.individualId;
+  };
   let champion = evaluation.individuals[0];
   for (const ind of evaluation.individuals) {
-    if (ind.fitness > champion.fitness
-      || (ind.fitness === champion.fitness && ind.individualId < champion.individualId)) {
-      champion = ind;
-    }
+    if (better(ind, champion)) champion = ind;
   }
   return champion;
 }

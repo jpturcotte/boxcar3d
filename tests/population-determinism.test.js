@@ -82,14 +82,15 @@ describe('population lock staleness teeth', () => {
     for (const ind of LOCK.individuals) {
       if (!ind.valid) expect(ind.fitness).toBe(0);
     }
-    // champion === argmax with EXACT ties keeping the lowest individualId,
-    // recomputed in-test from the lock's own entries.
+    // champion === the total order (greater fitness; VALID over invalid on an
+    // exact tie; then lowest individualId), recomputed in-test from the lock's
+    // own entries — must match championFromEvaluation's rule.
     let expected = LOCK.individuals[0];
     for (const ind of LOCK.individuals) {
-      if (ind.fitness > expected.fitness
-        || (ind.fitness === expected.fitness && ind.individualId < expected.individualId)) {
-        expected = ind;
-      }
+      const better = ind.fitness !== expected.fitness
+        ? ind.fitness > expected.fitness
+        : (ind.valid !== expected.valid ? ind.valid : ind.individualId < expected.individualId);
+      if (better) expected = ind;
     }
     expect(LOCK.champion.individualId).toBe(expected.individualId);
     expect(Object.is(LOCK.champion.fitness, expected.fitness)).toBe(true);

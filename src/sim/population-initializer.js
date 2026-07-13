@@ -4,7 +4,12 @@
 // the biases the corpus must not have — symmetry defaults ON (spec §3.1.2),
 // suspension categories masked to the realizable set (the Phase-1A S2 rule:
 // the MASK, not landing S2, satisfies S2-before-GA), at least one axle, and
-// at least one genuinely driven wheel BY CONSTRUCTION (no rejection loop).
+// at least one DRIVE-ENABLED wheel BY CONSTRUCTION (no rejection loop) — its
+// driveTorque is > 0 whenever the power gene is > 0, which holds for every
+// draw except the 2^-32 exact-zero-power corner (a legal zero-torque
+// phenotype; see the DRIVEN-WHEEL GUARANTEE below). "Drive-enabled" is the
+// precise invariant; "genuinely driven" (nonzero torque) holds for all but
+// that corner.
 //
 // Stream architecture (ruling D7): one child stream per stable individualId —
 //   new Rng(populationSeed).fork(individualId)

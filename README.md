@@ -6,58 +6,71 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** Phase 1, the per-wheel surface-speed drive law landed. The
-shared −10 rad/s wheel-speed target is gone: one `targetWheelSurfaceSpeed`
-(default 5 m/s) now derives every driven wheel's own no-load target from
-its radius (ω = −speed/radius), so mixed-radius vehicles stop fighting
-themselves over a phantom driveshaft — each wheel's exact stall torque
-(its share of the stall-torque budget) and the measured ForceBased gain
-ruling are unchanged (what is preserved is the stall-torque budget, not
-mechanical power). All three earlier golden fixtures were deliberately re-locked
-under the documented workflow (step-0 spawn states identical; divergence
-enters with the first motor step; fixture A's digest even reproduced, its
-target shift being below the engine's f32 state resolution), and a fourth
-locked fixture — genuinely mixed 0.3 m / 0.6 m radii on the flat pad —
-now pins the per-wheel law across the same environments. This built on
-the deterministic-evaluation trace and physics-budget gate: one canonical
-headless runner (`src/sim/evaluation.js`, wall-clock-free) owns terrain
-construction, vehicle realization, the fixed-step loop, and a versioned
-per-step trace of every dynamic vehicle body (pose, velocities,
-sleep/validity bits — raw little-endian f64, fixed 128-byte records,
-streaming FNV-1a digests with per-step checkpoint states). The declared
-fixtures are golden-locked on the deterministic Rapier flavor — ordinary
-S0, mixed S0/S1 on the full composite corridor (craters/features/zones
-on), the maximum 25-body/24-joint all-S1 topology, and the mixed-radius
-lock — and reproduce **bit-exact across Ubuntu, Windows, and macOS
-(Node 22) and pinned Chromium 149** (`npm run test:determinism`,
-`npm run test:browser`; the browser gate transitively proves the whole
-terrain path — noise, craters, zones, feature ray-seating — identical in
-Chromium). `npm run bench:physics` measures the cost baseline on a real composite
-corridor with the profiler off, using paired interleaved sampling (arms
-run back-to-back, order alternated, median of per-pair ratios — which
-cancels the run-order noise that unpaired medians cannot): on the
-reference machine (i7-14650HX, Windows 11, Node 22, 2026-07-11) the
-deterministic flavor's stepping tax is a consistent **≈1.0–1.13×** on
-both composite and flat terrain, the determinism-trace instrument adds
-**1.05–1.07×**, and 50 vehicles of the worst-case 25-body max-topology
-fixture step at ≈21 ms/step on composite (≈29 ms on flat — the fully
-active flat fleet is the true worst case) — comfortably affordable for
-ordinary fixtures (≈3–3.7 ms/step at 50 vehicles) but over the 60-FPS
-budget for 50 max-topology vehicles. The full labelled table is in
-[`docs/bench-physics-reference-2026-07-11.md`](docs/bench-physics-reference-2026-07-11.md)
-(machine-specific numbers, never a package property). Measured engine findings this PR recorded: `world.timestep`
-reads back `Math.fround(1/60)` (the engine stores f32); the profiler's
-`timing*()` methods are per-step milliseconds gated on `profilerEnabled`;
-a pose read on a removed body panics the wasm module (the runner's
-validity guard is load-bearing); and no legal input produces NaN on
-0.19.3 — extreme velocities stay finite or panic loud. S1's rulings
-stand unchanged (springs are honest N/m; the S1 witness, hub records,
-and every earlier locked fingerprint are byte-identical). Backend R is
-formally dropped (O3 resolved — Backend J is the sole canonical
-backend). Next: GA Phase 1a — headless deterministic evolution (the
-population seeder masks `suspType` away from S2); zone material response
-and S2 are deferred behind it, each in its own PR. The design docs in
-`docs/` define everything that comes after.
+**Status:** GA Phase 1A — the Deterministic Population and Fitness
+Foundation — landed. This is the scientific instrument the genetic
+algorithm will trust: given a population seed and a declared evaluation
+configuration, BoxCar3D now produces a canonical repaired population and an
+exact, reproducible fitness vector whose per-individual results are
+independent of cohort membership and ordering. Selection and mutation are
+deliberately NOT in this stage (that is Phase 1B). A live initializer
+(`src/sim/population-initializer.js`, separate from the locked test-corpus
+generator) turns a seed into 20-odd vehicles via one order-independent
+`Rng.fork(individualId)` stream each, with the GA biases the corpus must
+not have — bilateral symmetry defaults on (~80%), suspension is masked to
+the realizable S0/S1 set (S2 unreachable by construction), every individual
+has at least one axle and at least one drive-enabled wheel. The
+**repaired** genotype (`compileAssembly(...).genotype`) is the heritable
+truth, carried as canonical population content
+(`src/sim/population.js`); a raw operator draw can never survive as a
+hereditary record. Fitness is **maximum forward progress** from the spawn
+position — a new `maxForwardDistance` result field on the canonical runner
+(alongside `stepAtMaxForwardDistance` and `maxBackwardDistance`), folded
+from the same per-step chassis read the trace already consumes, so the
+existing A–D golden digests are byte-identical with no re-lock. This is a
+**deterministic, reproducible baseline score contract** — exact and
+cross-environment-locked — **not yet a selection-ready fitness policy** for
+rough composite terrain (see the explosion-tail finding below); Phase 1B
+must produce a policy v2 or constrain its training terrain before building
+selection on it. The
+mandatory empirical question — does an individual's exact result change
+because unrelated ghost vehicles share its world or the cohort is permuted?
+— was measured before the evaluator was built, and the answer is **no
+under isolation, not under shared worlds**: a zero-axle sled's trajectory
+diverges at the f64 bit level depending on cohort composition (with no
+contact, proximity, or monotone rule required), so the evaluator runs **one
+isolated world per individual** and an individual's result depends only on
+its own genotype and the declared spec. A committed 20-individual fixture
+(`population-a-initial-composite`) locks the canonical population digest,
+the exact fitness-vector digest, every per-member fitness, the deterministic
+champion, and the champion's trace digest, reproduced **bit-exact across
+Ubuntu, Windows, and macOS (Node 22) and pinned Chromium 149**
+(`npm run test:determinism`, `npm run test:browser`). The
+[characterization report](docs/ga-phase-1a-population-fitness-report-2026-07-12.md)
+(`npm run probe:population`) records what the seeder actually produces:
+repair touches ~99.5% of raw draws (the repaired-ownership ruling is the
+common path), distinct raw genomes never collapse to duplicate canonical
+ones, and — the load-bearing Phase-1B finding — the raw max-progress metric
+has a finite-physics-explosion tail on rough terrain (a minority of
+individuals hit terrain features and are catapulted to enormous but finite
+displacement), which future selection must handle. This builds on the
+per-wheel surface-speed drive law and the deterministic-evaluation trace
+and physics-budget gate: one canonical headless runner
+(`src/sim/evaluation.js`, wall-clock-free) owning terrain construction,
+vehicle realization, the fixed-step loop, and a versioned per-step trace
+(raw little-endian f64, fixed 128-byte records, streaming FNV-1a digests
+with per-step checkpoint states), with S0/S1 realization, honest N/m
+springs, and every earlier locked fingerprint byte-identical.
+`npm run bench:physics` still measures the physics cost baseline (paired
+interleaved sampling; reference machine i7-14650HX, 2026-07-11: the
+deterministic flavor's stepping tax is a consistent **≈1.0–1.13×**; full
+table in
+[`docs/bench-physics-reference-2026-07-11.md`](docs/bench-physics-reference-2026-07-11.md),
+machine-specific, never a package property). Next: **GA Phase 1B —
+Mutation-Only Evolution** (selection, elitism, deterministic mutation,
+generational replacement), which must first decide how to handle the
+physics-explosion fitness tail; zone material response, S2 trailing arms,
+and worker sharding are deferred behind it, each in its own PR. The design
+docs in `docs/` define everything that comes after.
 
 ## Quickstart
 

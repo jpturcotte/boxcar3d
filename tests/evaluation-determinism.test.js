@@ -63,6 +63,9 @@ describe('gate (a): same-process fresh-world byte-identity (deterministic flavor
       expect(b.trace.digest).toBe(a.trace.digest);
       // Bitwise-identical physics must produce identical readback metrics too.
       expect(b.vehicles.map((v) => v.forwardDistance)).toEqual(a.vehicles.map((v) => v.forwardDistance));
+      expect(b.vehicles.map((v) => v.maxForwardDistance)).toEqual(a.vehicles.map((v) => v.maxForwardDistance));
+      expect(b.vehicles.map((v) => v.stepAtMaxForwardDistance)).toEqual(a.vehicles.map((v) => v.stepAtMaxForwardDistance));
+      expect(b.vehicles.map((v) => v.maxBackwardDistance)).toEqual(a.vehicles.map((v) => v.maxBackwardDistance));
       expect(b.vehicles.map((v) => v.finalPose)).toEqual(a.vehicles.map((v) => v.finalPose));
       expect(b.vehicles.map((v) => v.finalVelocity)).toEqual(a.vehicles.map((v) => v.finalVelocity));
       expect(b.counts).toEqual(a.counts);

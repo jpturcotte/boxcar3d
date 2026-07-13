@@ -166,6 +166,36 @@ export function readBodyState(body) {
 }
 
 /**
+ * Per-capture forward-progress fold (exported pure seam, the readBodyState
+ * precedent: its defensive branches are unreachable from legal inputs on
+ * rapier 0.19.3 — no legal input produces NaN — so they are tested here, at
+ * the seam). dx = chassis translation.x − origin.x for one capture. Capture 0
+ * always feeds dx = 0 exactly (origin IS the capture-0 chassis translation,
+ * snapshotted at realize time with no step in between), so both accumulators
+ * baseline at 0: maximum forward progress can never be negative, and a
+ * reverse-only vehicle scores 0 attained at step 0. STRICT comparisons keep
+ * the EARLIEST capture index on exact ties. Non-finite samples are skipped —
+ * a NaN reaching the comparisons would silently freeze the fold (every
+ * NaN-comparison is false), destroying the accumulator without a trace.
+ * maxBackwardDistance is the nonnegative distance (m) the chassis ever got
+ * BEHIND spawn (0 for a vehicle that never crossed behind its origin); the
+ * `-dx > 0` gate keeps it exactly +0 until a genuinely negative dx arrives.
+ */
+export function createProgressState() {
+  return { maxForwardDistance: 0, stepAtMaxForwardDistance: 0, maxBackwardDistance: 0 };
+}
+
+export function foldProgress(state, stepIndex, dx) {
+  if (!Number.isFinite(dx)) return state;
+  if (dx > state.maxForwardDistance) {
+    state.maxForwardDistance = dx;
+    state.stepAtMaxForwardDistance = stepIndex;
+  }
+  if (-dx > state.maxBackwardDistance) state.maxBackwardDistance = -dx;
+  return state;
+}
+
+/**
  * Run one headless evaluation. See the header for the step-index, termination,
  * and dt contracts. Options:
  *
@@ -247,7 +277,12 @@ export async function runEvaluation(options) {
           body: st.wheel.body, jointState: () => (st.driveJoint.isValid() ? 'valid' : 'invalid'),
         });
       }
-      return { rec, joints, bodies, origin: { ...rec.chassis.body.translation() }, latched: null };
+      return {
+        rec, joints, bodies,
+        origin: { ...rec.chassis.body.translation() },
+        latched: null,
+        progress: createProgressState(),
+      };
     });
 
     const writer = cfg.traceMode === 'none'
@@ -263,6 +298,20 @@ export async function runEvaluation(options) {
         const reads = t.bodies.map((b) => readBodyState(b.body));
         if (t.latched === null && reads.some((r) => !r.finite)) {
           t.latched = { step: stepIndex, reason: 'nonFinite' };
+        }
+        // Progress folds from the SAME chassis read the latch and trace
+        // consume (reads[0] — bodies[0] is the chassis by construction).
+        // Gated on the WHOLE-vehicle latch (fires when ANY body goes
+        // non-finite), so the fold freezes at the last fully-finite capture.
+        // That is deliberate: once latched the vehicle is invalid and its
+        // fitness is 0 regardless of progress, so accumulating chassis motion
+        // after a wheel exploded would be meaningless. A trace-based
+        // recompute therefore agrees with these fields only while
+        // latched === null (unreachable divergence otherwise on 0.19.3 — no
+        // legal input goes non-finite). The fold's own finite guard is the
+        // second net.
+        if (t.latched === null) {
+          foldProgress(t.progress, stepIndex, reads[0].translation.x - t.origin.x);
         }
         if (writer !== null) {
           const terminated = t.latched !== null;
@@ -308,6 +357,14 @@ export async function runEvaluation(options) {
       const bodyReads = t.bodies.map((b) => readBodyState(b.body));
       return {
         forwardDistance: chassis.translation.x - t.origin.x,
+        // Maximum-progress metrics (derived, per-step, sim-time pure): the
+        // fold above saw every captured state 0..maxSteps, so
+        // maxForwardDistance >= max(0, forwardDistance) whenever the vehicle
+        // stayed finite. These are RESULT fields only — they never enter the
+        // trace bytes, so no golden digest can move.
+        maxForwardDistance: t.progress.maxForwardDistance,
+        stepAtMaxForwardDistance: t.progress.stepAtMaxForwardDistance,
+        maxBackwardDistance: t.progress.maxBackwardDistance,
         origin: t.origin,
         finalPose: { translation: chassis.translation, rotation: chassis.rotation },
         finalVelocity: { linvel: chassis.linvel, angvel: chassis.angvel },

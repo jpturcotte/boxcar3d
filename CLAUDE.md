@@ -51,13 +51,18 @@ evidence notes. Reference only; never import from `legacy/`.
 - `npm test` / `npm run test:watch` — Vitest (Node env, headless Rapier works;
   excludes `tests/browser/**`)
 - `npm run test:determinism` — the narrow golden-lock + fresh-module gate
-  (the two files CI's 3-OS matrix runs)
+  (the FOUR files CI's 3-OS matrix runs: the two evaluation files plus
+  `cohort-determinism` and `population-determinism`)
 - `npm run test:browser` — the Chromium gate (vitest browser mode + pinned
   playwright; one-time local setup: `npx playwright install chromium`)
 - `npm run bench:physics` — the physics cost matrix (an INSTRUMENT, results
   pasted into PRs — never a CI threshold; `-- --smoke` for a quick pass)
 - `npm run probe:timing` — the retained Rapier timing/timestep-semantics
   probe (exits 1 on engine-semantics DRIFT; re-run on any Rapier upgrade)
+- `npm run probe:population` — the GA-population characterization instrument
+  (distributions/viability/undriven-audit/cost/shared-world-recheck; markdown
+  to stdout, `--json`; defaults SMALL for a light local run, big sweep opt-in;
+  never a CI gate — its only touchpoint is the schema smoke)
 - `npm run lint` — includes the determinism ban on `src/sim`
 - `npm run build` — production bundle; CI deploys `dist/` to GitHub Pages
 
@@ -75,10 +80,18 @@ evidence notes. Reference only; never import from `legacy/`.
   `evaluation.js` (the ONE canonical headless runner — `runEvaluation`),
   `evaluation-fixtures.js` (declared fixtures A/B/C + `evaluationOptionsFor`),
   `evaluation-locks.js` (golden digests + per-step checkpoint states; literals
-  only), later: GA operators.
+  only), `population.js` (canonical population CONTENT + snapshot encoding),
+  `population-initializer.js` (the live seed→generation-0 policy: draw table,
+  symmetry prior, S0/S1 mask, driven-by-construction, + the provenance
+  manifest), `population-evaluation.js` (the deterministic per-individual
+  evaluator on ISOLATED worlds: fitness policy, spawn placement, evaluation-
+  spec + fitness-vector encodings, champion selection), `population-fixtures.js`
+  + `population-locks.js` (the committed population/fitness contract, literals
+  only), later: GA operators (selection/mutation — Phase 1B).
   Must run headless in Node (tests and CI depend on it).
 - `scripts/` — Node-only instruments OUTSIDE the sim ESLint ban (wall clock
-  allowed): `probe-rapier-timing.js`, `bench-physics.js`.
+  allowed): `probe-rapier-timing.js`, `bench-physics.js`,
+  `characterize-population.js`.
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -115,10 +128,21 @@ evidence notes. Reference only; never import from `legacy/`.
   hashes), `trace.test.js` + `trace-writer.test.js` (the 128-byte codec
   contract, capture modes, checkpoints, every compare mismatch class),
   `evaluation.test.js` (runner + fixture contract, `readBodyState`
-  classifications against real engine states), `evaluation-determinism.test.js`
+  classifications against real engine states), `evaluation-progress.test.js`
+  (the max-forward-progress metrics: pure fold contract + both-flavor
+  trace-recompute witnesses), `evaluation-determinism.test.js`
   + `evaluation-golden.test.js` (the golden-lock gates — `test:determinism`),
-  `bench-schema.test.js` (the bench's only CI touchpoint), and
-  `tests/browser/evaluation-determinism.test.js` (the Chromium gate, own
+  `population.test.js` + `population-initializer.test.js` (the pure population
+  layer: encodings, draw-table invariants, config validation),
+  `population-evaluation.test.js` (evaluator + fitness + spawn + champion),
+  `cohort-invariance.test.js` (the full heterogeneous isolation-contract
+  protocol) + `cohort-determinism.test.js` (its matrix-narrowed cross-OS
+  gate — `test:determinism`), `population-determinism.test.js` (the committed
+  population/fitness golden gate — `test:determinism`),
+  `population-probe-schema.test.js` (the characterization instrument's only
+  CI touchpoint), `bench-schema.test.js` (the bench's only CI touchpoint),
+  and `tests/browser/evaluation-determinism.test.js` +
+  `tests/browser/population-determinism.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
   committed instruments `s1-calibration-probe.js` (`npm run probe:s1`) —
   NOT tests.
@@ -737,25 +761,121 @@ behavior:**
   composite corridor (was ~53 m — the r 0.4 wheels' no-load surface speed
   rose 4→5 m/s).
 
-Next — **GA Phase 1a: headless deterministic evolution** (this PR's handoff
-per the maintainer re-prioritization; SUPERSEDES the prior zone-response
-recommendation — GA is the critical path and the drive law was its first
-prerequisite). The canonical runner, the golden gate, the ghost-isolation
-bit-equality lock, and the affordable ≈1.0–1.13× deterministic tax exist
-precisely so the evolution loop can be built on them — that loop is now the
-missing piece. Phase 1a = the population seeder (symmetry default-on bias
-lives there; it MUST mask `suspType` away from S2 — that mask, NOT landing
-S2, is how the S2-before-GA rule is satisfied) + GA operators (spec §3.3) +
-a generational loop through `runEvaluation`, fitness = forward distance,
-sim-time pure. **Zone material response AND S2 trailing arms are explicitly
-deferred behind Phase 1a** (zone response stays cheap and ready — `zoneAt`
-is pure, fixture B already carries the zone grid through the gate; S2
-unblocks via its own PR or stays masked). **Explicitly deferred (unchanged):**
-worker sharding with the 1-vs-4-workers equality test (the ghost-isolation
-lock is its precondition, in place), full replay closure (record→re-run→
-compare a GA session does not yet exist), and the solver-pump / residual-
-overlap rulings (unchanged). The **mixed-radius ruling is CLOSED** by this
-PR. Open ruling question carried from PR #10 review: are visually-
-overlapping wheels acceptable for evolution? Physics ignores them
-(collision-inert, stable, no detach), but they read as one thick wheel on
-screen.
+**GA Phase 1A landed — Deterministic Population and Fitness Foundation
+(the scientific instrument the GA will trust; NO selection/mutation). Roadmap
+naming adopted: GA Phase 1 — Headless Deterministic Evolution, with peer
+stages Phase 1A (this PR) and Phase 1B — Mutation-Only Evolution; Phase 1C
+extended operators only if evidence supports (never promised as crossover):**
+- **Max-progress metrics on `runEvaluation` (`src/sim/evaluation.js`):**
+  per-vehicle `maxForwardDistance` / `stepAtMaxForwardDistance` /
+  `maxBackwardDistance`, folded in `captureStep` from the SAME chassis read
+  the latch and trace consume (`createProgressState`/`foldProgress`, exported
+  pure). Strict `>` keeps the earliest tie; capture 0 baselines both at
+  exactly 0 (reverse-only ⇒ 0); latch/finite-guarded. **Result fields only —
+  zero trace-byte change; A–D golden digests
+  (`5a219735`/`02a80181`/`6b83729e`/`e2fc7625`) byte-identical, NO re-lock.**
+- **Canonical population content (`src/sim/population.js`,
+  `POPULATION_SNAPSHOT_VERSION 1`):** individualId is explicit uint32 identity
+  (never array position); seams accept any order, canonicalize by sorting a
+  copy; only repair-IDENTICAL genotypes are storable (raw draws as heredity
+  fail loud); snapshot encoding = version + genotype-version + count + per
+  individual (id-ascending) id/length/`serializeGenotype` bytes.
+- **Live initializer (`src/sim/population-initializer.js`,
+  `POPULATION_INITIALIZER_VERSION 1`)** — SEPARATE from the locked
+  `randomGenotype` (`24cd0dd5` untouched). `new Rng(seed).fork(individualId)`
+  per member (order/size-independent), a documented 36+17n draw table:
+  symmetry prior 0.8 (two-draw half-band split), CATEGORICAL S0/S1 suspType
+  (`(catIndex+v)/3` ⇒ S2 unreachable by construction), ≥1 axle, ≥1
+  DRIVE-ENABLED wheel by construction (forced-axle remap + the buildIR
+  equal-split fallback; driveTorque > 0 whenever the power gene > 0 — the
+  2⁻³² exact-zero-power corner is a legal zero-torque phenotype),
+  `minInitialPowerGene 0` (full range — a nonzero prior only lands
+  deliberately/measured/version-bumped). Provenance is a SEPARATE manifest
+  (`serializePopulationInitialization`); diagnostics (`wasRepaired`,
+  keepRaw-gated `rawGenotype`) never serialize.
+- **Deterministic evaluator (`src/sim/population-evaluation.js`):** fitness =
+  `maxForwardDistance` iff finite ∧ bodies ∧ joints valid, else 0
+  (`FITNESS_POLICY_VERSION 1`; no drift/mass/efficiency/complexity/
+  normalization terms). This is a **reproducible baseline SCORE contract, NOT
+  a selection-ready fitness policy** for rough composite terrain (the
+  explosion tail below) — Phase 1B produces a policy v2 or constrains its
+  terrain before selection. The evaluator OWNS its inputs: it captures the
+  snapshot bytes synchronously before the first hook/await (a hook mutating a
+  post-compile genotype cannot re-attest the vector) and deep-copies +
+  deep-freezes the resolved terrain (`ownTerrain` — a hook cannot change what
+  a later individual runs on). `spawnPoseOnFlatStart` (pure; the fixture
+  coherence-tooth formula, sled AABB fallback). Self-contained
+  `serializeEvaluationSpec` (`EVALUATION_SPEC_VERSION 1`) binds EVERY resolved
+  terrain knob (declared walk asserted set-equal to `TERRAIN_DEFAULTS`) +
+  flavor/maxSteps/spawn/target/wheelFriction/termination — never leans on a
+  fixture version; every f64 write and the u32 maxSteps are canonical-value
+  gated (NaN/Inf/overflow rejected at the seam). `serializeFitnessVector`
+  (`FITNESS_VECTOR_VERSION 1`) binds the SNAPSHOT digest + spec digest, then
+  id/validity-byte/exact-f64 fitness (non-finite/negative rejected; invalid ⇒
+  fitness 0 enforced). `championFromEvaluation` = total order: greater fitness
+  → VALID over invalid on a tie → lowest id.
+- **THE COHORT-INVARIANCE RULING (measured, the centerpiece):**
+  `POPULATION_WORLD_MODE = 'isolatedWorlds'` — one world per individual.
+  Shared-world ghost evaluation is NOT invariant under cohort composition on
+  0.19.3 deterministic: a zero-axle sled diverges at the f64 bit level (from
+  its initial contact solve; ~1e-4 m by step ~100) depending on which OTHER
+  vehicles share its world, with NO contact / NO proximity / NO monotone-rule
+  dependence needed. Every WHEELED member and the fixture-A identical-ghost
+  lock stayed bit-identical — rounding coincidences, not an engine contract.
+  The divergence is RECORDED (report + headers), never enshrined as a
+  must-still-diverge assertion; a shared-world recheck probe ships in
+  `probe:population --pass recheck` for engine-upgrade re-runs. Result: an
+  individual's exact result depends only on its own genotype + declared spec.
+- **Committed contract (`population-a-initial-composite` v1, seeds 20260721
+  population / 20260722 terrain):** 20 individuals, composite terrain,
+  isolated worlds, 300 steps. Locks (`src/sim/population-locks.js`, literals
+  only): snapshot `cae92db7`, initialization `7acb271d`, spec `1bc14aba`,
+  fitness-vector `bded0d30`, 20 exact per-member f64 fitness literals,
+  champion id 10 (12.484905242919922, genotype `51370bfa`), champion solo
+  trace `f5c5f0c7`. Node 3-OS (`cohort-determinism` + `population-determinism`
+  appended to `test:determinism`) + pinned Chromium agree — Chromium on the
+  FIRST run.
+- **Seeds allocated:** 20260721 population · 20260722 pop-lock terrain ·
+  20260723 cohort-gate terrain · 20260724 rollback-witness terrain ·
+  20260725/28/29 characterization masters · 20260726 pure property sample ·
+  20260727 characterization viability terrain.
+- **Characterization findings (`docs/ga-phase-1a-population-fitness-report-
+  2026-07-12.md`, `npm run probe:population`):** repair is NEARLY UNIVERSAL
+  (99.5% of raw draws changed — the repaired-ownership ruling is the common
+  path); ZERO canonical collapse (1000 raw → 1000 canonical); and **the
+  load-bearing Phase-1B finding — the raw `maxForwardDistance` metric has a
+  finite-physics-EXPLOSION tail on rough terrain**: a minority of individuals
+  hit terrain features and are catapulted to enormous but FINITE displacement
+  (8.17e6 m at 1.43e8 m/s, `valid` true — the non-finite latch never fires),
+  which would dominate selection. Median viability is sane (~2–3 m). The
+  COMMITTED fixture (terrain 20260722) is unaffected (max 12.48 m).
+- Full suite green both flavors; noise/terrain/boulder-hull/`24cd0dd5`/
+  `39bcd6c4` and A–D fingerprints byte-identical; `GENOTYPE_VERSION`,
+  `ASSEMBLY_IR_VERSION`, `EVALUATION_TRACE_VERSION` unchanged.
+
+Next — **GA Phase 1B: Mutation-Only Evolution** (the peer milestone that
+delivers the evolutionary process: selection, elitism, deterministic
+mutation, generational replacement, champion history — a generational loop
+over `evaluatePopulation`, sim-time pure). Build it on the Phase-1A trusted
+contracts: `createInitialPopulation`, the snapshot/initialization/spec/
+fitness-vector encodings, `evaluatePopulation` (isolatedWorlds, id-keyed),
+`championFromEvaluation`, and the max-progress result fields. **DECIDE FIRST
+(with a probe, before building selection): the physics-explosion-tail policy**
+— the raw `maxForwardDistance` metric rewards finite solver blow-ups on rough
+terrain (report §9.1); a plausibility validity bound, a finite fitness cap, or
+rank/tournament selection robust to magnitude outliers are candidates.
+Empirical guidance: initial viability is real but modest (median ~2–3 m);
+repair is near-universal (perturb genes freely, rely on repair); no category
+is starved (parametric mutation first, structural second); start parametric
+rates moderately aggressive (repair damps them), structural rates
+conservative (spec §3.1.3). **Deferred (unchanged):** Phase 1C extended
+operators (evidence-driven, NOT promised as crossover); worker sharding with
+the 1-vs-4-workers equality test (the ghost-isolation lock is its
+precondition, in place — note isolated-world population evaluation is
+trivially shard-invariant); full replay closure; zone material response
+(`zoneAt` pure, fixture B carries the grid through the gate); S2 trailing
+arms; an evolvable per-genotype surface-speed gene; the solver-pump /
+residual-overlap rulings. Open ruling question carried from PR #10 review:
+are visually-overlapping wheels acceptable for evolution? Physics ignores
+them (collision-inert, stable, no detach), but they read as one thick wheel
+on screen.

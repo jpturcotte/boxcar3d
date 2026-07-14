@@ -353,6 +353,14 @@ jobs:
               --browser-json "${RES}/browser.json" \
               --reproducer-json "${RES}/reproducer.json" || fail=1
           fi
+          # Write an explicit machine-readable verdict into the arm artifact
+          # BEFORE exiting, so the compare job can require adjudication PASSED
+          # (a merely-existing results dir must never read as a passing arm).
+          passed=$([ "$fail" = "0" ] && echo true || echo false)
+          heavy=$([ "${HEAVY}" = "true" ] && echo true || echo false)
+          printf '{"schema":"boxcar3d.adjudication/1","arm":"%s","passed":%s,"heavy":%s}\n' \
+            "${ARM}" "${passed}" "${heavy}" > "${RES}/adjudication.json"
+          cat "${RES}/adjudication.json"
           if [ "$fail" != "0" ]; then echo "ARM ${ARM} FAILED adjudication."; exit 1; fi
           echo "ARM ${ARM} passed adjudication."
       - name: Upload arm results
@@ -406,8 +414,14 @@ jobs:
           # bench-physics's `--json` is a string option that REQUIRES a filename
           # (the JSON is written to that path; stdout is always the markdown
           # report, so redirecting stdout can never yield JSON). Pass an
-          # absolute path and capture stdout+stderr as the log.
-          bench() { arm="$1"; i="$2"; ( cd "perf-${arm}" && npm run bench:physics -- --smoke --json "$GITHUB_WORKSPACE/perf/bench-${arm}-${i}.json" ) > "perf/bench-${arm}-${i}.log" 2>&1 || echo "bench ${arm}#${i} exit $?"; }
+          # absolute path, capture stdout+stderr as the log, and RECORD the
+          # bench's own exit code (never swallow it with `|| echo`).
+          bench() {
+            arm="$1"; i="$2"
+            ( cd "perf-${arm}" && npm run bench:physics -- --smoke --json "$GITHUB_WORKSPACE/perf/bench-${arm}-${i}.json" ) \
+              > "perf/bench-${arm}-${i}.log" 2>&1
+            echo "$?" > "perf/exit-bench-${arm}-${i}.txt"
+          }
           bench stable 1
           bench candidate 1
           bench candidate 2
@@ -415,11 +429,23 @@ jobs:
           node -e '
             const fs = require("node:fs");
             const load = (f) => { try { return JSON.parse(fs.readFileSync(`perf/${f}`,"utf8")); } catch { return null; } };
+            const readExit = (f) => { try { return Number(fs.readFileSync(`perf/${f}`,"utf8").trim()); } catch { return null; } };
             const runs = [["stable",1],["candidate",1],["candidate",2],["stable",2]]
-              .map(([arm,i]) => ({ arm, i, json: load(`bench-${arm}-${i}.json`) }));
-            const summary = { order: runs.map(r => `${r.arm}#${r.i}`), note: "raw bench JSON collected; ratio computed in C5 once the bench shape is confirmed" };
+              .map(([arm,i]) => ({ arm, i, exit: readExit(`exit-bench-${arm}-${i}.txt`), json: load(`bench-${arm}-${i}.json`) }));
+            const parsed = runs.filter(r => r.json !== null).length;
+            const errored = runs.filter(r => r.json && r.json.status === "error").length;
+            const allParsed = parsed === runs.length && runs.every(r => r.exit === 0) && errored === 0;
+            const summary = {
+              order: runs.map(r => `${r.arm}#${r.i}`),
+              status: allParsed ? "ok" : "incomplete",
+              allParsed, parsed, total: runs.length, errored,
+              note: allParsed
+                ? "four bench runs parsed; paired ratio computed in C5"
+                : `INCOMPLETE — only ${parsed}/${runs.length} bench JSON parsed (exits ${runs.map(r=>r.exit).join(",")})${errored?`, ${errored} errored`:""}`,
+            };
             fs.writeFileSync("perf/perf.json", JSON.stringify({ schema: "boxcar3d.spike-perf/1", summary, runs }, null, 2));
             console.log(summary);
+            if (!allParsed) { console.error("perf: rejecting incomplete/errored bench set (finding 4)"); process.exit(1); }
           '
       - name: Upload perf
         if: always()

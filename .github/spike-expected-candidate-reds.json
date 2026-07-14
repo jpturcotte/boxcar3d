@@ -4,6 +4,19 @@
   "node": {
     "reporter": "npm test (vitest run --reporter=json), Node, deterministic + ordinary flavors, tests/browser/** excluded",
     "totalExpectedFailures": 11,
+    "mustPassAssertionSubstrings": [
+      "two fresh worlds agree",
+      "same-process repeatability only",
+      "profiler neutrality",
+      "capture-mode invariance",
+      "f32-backedness",
+      "ghost isolation",
+      "relational fitness identities",
+      "snapshot and initialization-manifest",
+      "champion genotype digest",
+      "structural heterogeneity"
+    ],
+    "mustPassRationale": "These single-leaf title substrings identify the internal-determinism gate-(a) checks (two fresh worlds agree run-to-run) and the pure/structural teeth (no-physics genotype/snapshot/spec digests, f32-backedness, ghost isolation) that MUST stay GREEN on the candidate — the PR's 'internal determinism enforced from the start' claim. classify FAILS the arm if ANY of them is in the failing set, closing the hole where a NEW gate-(a) regression could take the slot of an expected golden failure at constant per-file count. Substrings are within one describe/it leaf, so they are independent of however the vitest json reporter joins the describe chain (the exact full failing-title SET is the first-heavy-run tightening; titlesPendingFirstHeavyRun).",
     "byFile": {
       "tests/evaluation-determinism.test.js": {
         "expectedFailures": 5,
@@ -34,7 +47,11 @@
   },
   "browser": {
     "reporter": "npm run test:browser (vitest run --config vitest.browser.config.js --reporter=json), pinned Chromium",
-    "note": "The local historical spike SKIPPED test:browser, so per-file browser counts are FIRST MEASURED by the heavy CI dispatch (C5); tighten this section from that run's observed failing set. The two browser determinism files are expected to fail on the same class-(c) golden digests that moved on Node — and the load-bearing invariant is that the candidate's MEASURED browser digest equals its MEASURED Node digest (Node<->Chromium agreement), asserted separately by --mode classify.",
+    "note": "The local historical spike SKIPPED test:browser, so per-file browser counts are FIRST MEASURED by the heavy CI dispatch (C5); tighten this section from that run's observed failing set. The two browser determinism files are expected to fail on the same class-(c) golden digests that moved on Node — and the load-bearing invariant is that the candidate's MEASURED browser digest equals its MEASURED Node digest (Node<->Chromium agreement), asserted separately by --mode invariants (semantic-key matched).",
+    "mustPassAssertionSubstrings": [
+      "pure initializer locks: snapshot + initialization"
+    ],
+    "mustPassRationale": "The Chromium population 'pure initializer locks' test hashes PURE genotype/initializer data (no physics), so it MUST stay green on the candidate — a failure there is a real regression, not an engine golden move. Enforced even while browser per-file counts remain bootstrap (null).",
     "byFile": {
       "tests/browser/evaluation-determinism.test.js": {
         "expectedFailures": null,

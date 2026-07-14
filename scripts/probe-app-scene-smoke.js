@@ -65,6 +65,7 @@ function startPreview() {
       if (m !== null && !settled) {
         settled = true;
         clearTimer(timer);
+        // vite disables ANSI colour when stdout is piped (non-TTY), so the URL is clean.
         resolve({ proc, url: m[1] });
       }
     };

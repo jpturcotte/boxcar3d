@@ -111,6 +111,23 @@ function classify({ testJsonPath, expectedPath, label }) {
       errors.push(`UNEXPECTED FAILURE — ${file} is not in the expected candidate-red inventory`);
     }
   }
+  // 3. assertions that MUST stay green on the candidate (internal-determinism
+  //    gate-(a) + pure/structural teeth) may NOT appear in the failing set.
+  //    This closes the count-masking hole: a NEW gate-(a) regression cannot
+  //    silently take the slot of an expected golden failure at a constant
+  //    per-file count. The substrings live within one describe/it leaf, so
+  //    they are independent of however the reporter joins the describe chain.
+  const mustPass = section.mustPassAssertionSubstrings ?? [];
+  for (const info of Object.values(observed)) {
+    for (const name of info.failedNames) {
+      for (const sub of mustPass) {
+        if (String(name).includes(sub)) {
+          errors.push(`MUST-STAY-GREEN ASSERTION FAILED — "${name}" matches "${sub}" `
+            + '(internal-determinism / pure-structural regression — NOT an allowed class-(c) golden move)');
+        }
+      }
+    }
+  }
 
   if (errors.length > 0) {
     console.error(`\nCLASSIFY FAIL (${label}) — the candidate failed-test set does not match the inventory:`);
@@ -253,8 +270,41 @@ function borrowErrorScan(dir) {
   return { scanned, matches };
 }
 
-// Best-effort digest extraction from a determinism vitest json's failure
-// messages (for Node<->Chromium agreement). Returns { fixture -> digest }.
+// The Node and Chromium determinism assertions for the SAME fixture digest
+// carry DELIBERATELY DIFFERENT titles (Node "eval-a-s0-flat: run matches the
+// committed lock ..." vs Chromium "eval-a-s0-flat: digest, counts, and every
+// checkpoint state match the golden lock"; population likewise), so keying a
+// digest by the raw vitest fullName can NEVER match across environments — the
+// agreement check would find zero shared keys and hard-fail on every run for
+// a reason unrelated to determinism. These rules map both environments' titles
+// to ONE stable SEMANTIC key. Each pattern lives entirely within a single
+// describe/it leaf, so it is independent of however the reporter joins the
+// describe chain.
+const DIGEST_SEMANTIC_RULES = [
+  // Evaluation fixtures A-D: both env titles carry the `eval-<x>-...:` fixture
+  // token AND render the divergence as `... actual <hex> ...` (the same
+  // first-divergent checkpoint state, identical cross-env under determinism).
+  { re: /(eval-[a-z0-9-]+):/, key: (m) => `evaluation:${m[1]}` },
+  // Population fitness-vector digest (Node "two fresh evaluations agree
+  // byte-for-byte, and the second matches the committed lock" fails at the
+  // fitnessVector .toBe; Chromium "evaluation: fitness-vector digest, ...").
+  { re: /two fresh evaluations agree byte-for-byte|fitness-vector digest/, key: () => 'population:fitness-vector' },
+  // Population champion solo-trace digest (both env titles share the phrase).
+  { re: /champion solo digest-mode rerun/, key: () => 'population:champion-trace' },
+];
+
+function semanticDigestKey(fullName) {
+  for (const rule of DIGEST_SEMANTIC_RULES) {
+    const m = rule.re.exec(fullName);
+    if (m !== null) return rule.key(m);
+  }
+  return null;
+}
+
+// Digest extraction from a determinism vitest json's failure messages, keyed by
+// SEMANTIC fixture identity (see DIGEST_SEMANTIC_RULES) so Node and Chromium
+// digests for the same fixture compare. Assertions with no semantic key
+// (version pins, non-digest teeth) are skipped. Returns { semanticKey -> digest }.
 function measuredDigests(vitestJson) {
   const out = {};
   if (vitestJson === null) return out;
@@ -262,12 +312,15 @@ function measuredDigests(vitestJson) {
     if (!/determinism/.test(relTestKey(suite.name))) continue;
     for (const a of suite.assertionResults ?? []) {
       if (a.status !== 'failed') continue;
+      const key = semanticDigestKey(a.fullName ?? a.title ?? '');
+      if (key === null || out[key] !== undefined) continue;
       const msg = (a.failureMessages ?? []).join('\n');
-      // Prefer an explicit "actual"/"received" digest; else the first hex8.
+      // Prefer an explicit "actual"/"received" digest; else the first hex8
+      // (vitest renders the received value first in a `.toBe` diff).
       const actual = /(?:actual|received|got)[^0-9a-f]{0,20}([0-9a-f]{8})/i.exec(msg);
       const any = HEX8.exec(msg);
       const digest = actual ? actual[1] : (any ? any[0] : null);
-      if (digest !== null) out[a.fullName ?? a.title] = digest;
+      if (digest !== null) out[key] = digest;
     }
   }
   return out;
@@ -290,7 +343,10 @@ function compare({ artifacts, out }) {
   push('# Rapier core-0.34 spike — controlled stable-vs-candidate comparison');
   push('');
 
-  // Arm presence (explicit MISSING, never silent).
+  // Arm presence + USABILITY. An arm's directory existing is NOT enough — the
+  // Outcome-B verdict may only rest on an arm whose adjudication PASSED, whose
+  // reproducer classification exists, and (heavy) whose prevalence file is
+  // present. A partial/failed arm still leaves a dir behind.
   const armReports = {};
   for (const arm of ARMS) {
     const dir = armDir(artifacts, arm);
@@ -301,19 +357,35 @@ function compare({ artifacts, out }) {
     const npmTest = present ? readJsonIf(join(dir, 'npm-test.json')) : null;
     const browser = present ? readJsonIf(join(dir, 'browser.json')) : null;
     const armManifest = present ? readJsonIf(join(dir, 'arm-manifest.json')) : null;
-    armReports[arm] = { present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest };
+    const adjudication = present ? readJsonIf(join(dir, 'adjudication.json')) : null;
+    const issues = [];
+    if (!present) issues.push('artifact dir missing (job did not upload — build failure, cancelled, or skipped)');
+    else {
+      if (adjudication === null) issues.push('adjudication.json missing (arm did not reach the adjudicate step)');
+      else if (adjudication.passed !== true) issues.push('adjudication FAILED');
+      if (reproducerSummary(reproducer)?.original?.classification == null) issues.push('reproducer original classification missing');
+      if (armManifest?.heavy === true && prevalence === null) issues.push('heavy run but prevalence.json missing');
+    }
+    const usable = issues.length === 0;
+    armReports[arm] = {
+      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication, usable, issues,
+    };
     manifest.arms[arm] = {
       present,
+      usable,
+      issues,
+      adjudicationPassed: adjudication?.passed ?? null,
       rapierVersion: rapierVersionOf(reproducer) ?? rapierVersionOf(prevalence),
       resolvedSha: armManifest?.resolvedSha ?? null,
       npmTestFailures: npmTest?.numFailedTests ?? null,
     };
   }
   const missing = ARMS.filter((a) => !armReports[a].present);
-  if (missing.length > 0) {
-    push(`> **WARNING — missing arm(s): ${missing.join(', ')}.** The comparison below is INCOMPLETE; `
-      + 'a missing arm means its job did not upload results (build failure, cancelled, or skipped). '
-      + 'This is reported, not silently skipped.');
+  const unusable = ARMS.filter((a) => !armReports[a].usable);
+  if (unusable.length > 0) {
+    push(`> **WARNING — unusable arm(s): ${unusable.map((a) => `${a} (${armReports[a].issues.join('; ')})`).join(' · ')}.** `
+      + 'The verdict below is INCOMPLETE and does NOT establish Outcome B. This is reported, not silently skipped, '
+      + 'and the compare step exits nonzero.');
     push('');
   }
 
@@ -419,32 +491,61 @@ function compare({ artifacts, out }) {
   }
   push('');
 
-  // Paired bench.
+  // Paired bench. NOT decision-relevant to Outcome B, but the summary must not
+  // claim JSON was collected when it wasn't: validate the four run objects and
+  // report perf as INCOMPLETE/ERRORED explicitly instead of echoing a fixed note.
   push('## Paired bench (same-runner, alternating)');
   const perf = readJsonIf(join(artifacts, 'perf', 'perf.json'));
+  let perfStatus = 'missing';
   if (perf === null) {
     push('- perf.json MISSING — the perf job did not upload results.');
   } else {
-    push('```json');
-    push(JSON.stringify(perf.summary ?? perf, null, 2).slice(0, 4000));
-    push('```');
+    const runs = Array.isArray(perf.runs) ? perf.runs : [];
+    const parsed = runs.filter((r) => r && r.json !== null && r.json !== undefined);
+    const errored = parsed.filter((r) => r.json && r.json.status === 'error');
+    const declaredOk = perf.summary?.status === 'ok' || perf.summary?.allParsed === true;
+    perfStatus = (runs.length >= 4 && parsed.length === runs.length && errored.length === 0 && declaredOk)
+      ? 'ok'
+      : `incomplete (${parsed.length}/${runs.length || 4} JSON parsed${errored.length ? `, ${errored.length} errored` : ''})`;
+    if (perfStatus === 'ok') {
+      push('```json');
+      push(JSON.stringify(perf.summary ?? perf, null, 2).slice(0, 4000));
+      push('```');
+    } else {
+      push(`> **perf INCOMPLETE/ERRORED — ${perfStatus}.** The paired bench did not produce four parseable runs; `
+        + 'its numbers are NOT reported as valid. (Perf is not decision-relevant to Outcome B.)');
+    }
   }
-  manifest.findings.perf = perf?.summary ?? perf ?? null;
+  manifest.findings.perf = { status: perfStatus, summary: perf?.summary ?? null };
   push('');
 
-  // Verdict line (classification-level).
-  const cStable = repro.stable?.original?.classification;
-  const cCand = repro.candidate?.original?.classification;
-  const mStable = repro.stable?.multibody?.classification;
-  const mCand = repro.candidate?.multibody?.classification;
+  // Verdict (classification level) — established ONLY when both arms are usable
+  // and both original-reproducer classifications exist. When either is missing,
+  // undefined===undefined must NOT read as "SAME class"; emit INCONCLUSIVE.
+  const bothUsable = ARMS.every((a) => armReports[a].usable);
+  const cStable = repro.stable?.original?.classification ?? null;
+  const cCand = repro.candidate?.original?.classification ?? null;
+  const mStable = repro.stable?.multibody?.classification ?? null;
+  const mCand = repro.candidate?.multibody?.classification ?? null;
+  const canJudge = bothUsable && cStable !== null && cCand !== null;
+  const impulseSame = canJudge ? (cStable === cCand) : null;
   push('## Verdict (classification level)');
-  push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
-    + `→ ${cStable === cCand ? 'SAME class (Outcome B holds)' : 'DIFFERENT — re-examine'}`);
+  if (!canJudge) {
+    push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
+      + '→ **INCONCLUSIVE — verdict NOT established** (a missing/failed arm or absent classification; NOT "Outcome B holds")');
+  } else {
+    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** `
+      + `→ ${impulseSame ? 'SAME class (Outcome B reproduced)' : 'DIFFERENT — re-examine'}`);
+  }
   push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}**`);
   manifest.verdict = {
-    reproducerImpulse: { stable: cStable ?? null, candidate: cCand ?? null, sameClass: cStable === cCand },
-    reproducerMultibody: { stable: mStable ?? null, candidate: mCand ?? null },
+    established: canJudge,
+    reproducerImpulse: { stable: cStable, candidate: cCand, sameClass: impulseSame },
+    reproducerMultibody: { stable: mStable, candidate: mCand },
+    bothArmsUsable: bothUsable,
+    armIssues: Object.fromEntries(ARMS.map((a) => [a, armReports[a].issues])),
     missingArms: missing,
+    perfStatus,
   };
 
   const md = L.join('\n');
@@ -452,6 +553,14 @@ function compare({ artifacts, out }) {
   writeFileSync(join(out, 'result-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
   console.log(`comparison.md + result-manifest.json written to ${out}`);
+  // Exit nonzero when the verdict is not established, so a green compare job
+  // genuinely means "controlled pair complete + Outcome B judged" (the review's
+  // finding 1: a merely-existing arm dir must never read as SAME class).
+  if (!canJudge) {
+    console.error(`\nCOMPARISON INCONCLUSIVE — verdict NOT established. Arm issues: `
+      + `${JSON.stringify(Object.fromEntries(ARMS.map((a) => [a, armReports[a].issues])))}`);
+    process.exit(1);
+  }
   if (missing.length > 0) console.log(`NOTE: ${missing.length} arm(s) missing — comparison is incomplete.`);
 }
 

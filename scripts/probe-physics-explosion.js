@@ -83,10 +83,14 @@
 //   node scripts/probe-physics-explosion.js
 //   node scripts/probe-physics-explosion.js --witness all --pass all
 //   node scripts/probe-physics-explosion.js --witness 20260725:19 --pass baseline,terrain
+//   node scripts/probe-physics-explosion.js --pass reproducer --arm multibody
+//   node scripts/probe-physics-explosion.js --pass prevalence --prevalence-seeds 20260730
 //   node scripts/probe-physics-explosion.js --json physics-explosion.json
 //
 // Witness selector: 'all', labels ('A,B'), or 'seed:id' pairs. Passes:
-// comma list of baseline,terrain,vehicle (or 'all').
+// comma list of baseline,terrain,vehicle (or 'all'). --arm selects ONE
+// reproducer arm (e.g. multibody); --prevalence-seeds is a comma list of
+// canonical uint32 seeds — both validate loud (unknown arm / invalid seed).
 
 /* eslint no-console: 0 */
 
@@ -215,6 +219,40 @@ function selectPasses(selector) {
 export function normalizePasses(selector) {
   const entries = Array.isArray(selector) ? selector : [selector];
   return [...new Set(entries.flatMap((p) => selectPasses(p)))];
+}
+
+/**
+ * Validate a single reproducer-arm name against the REPRODUCER_ARMS registry
+ * and return it. Evaluated at CALL time (REPRODUCER_ARMS is declared further
+ * down — a module-level const capture here would hit the TDZ), so the CLI and
+ * the programmatic API share the one fail-loud authority (the selectPasses
+ * pattern; same `probe-physics-explosion:` prefix + allowed-list).
+ */
+export function selectReproducerArm(name) {
+  if (!REPRODUCER_ARMS.includes(name)) {
+    throw new Error(`probe-physics-explosion: unknown reproducer arm '${name}' `
+      + `(${REPRODUCER_ARMS.join('/')})`);
+  }
+  return name;
+}
+
+/**
+ * Parse a comma-separated prevalence-seed list into canonical uint32 seeds.
+ * Rejects empty/blank entries (both `Number('')` and `Number(' ')` coerce to
+ * 0 — a silent seed-0 alias under a different identifier), non-decimal-integer
+ * text, and anything outside `0 <= seed <= 0xffffffff` (the terrain-seed
+ * canonical-uint32 ruling). Throws with the `probe-physics-explosion:` prefix.
+ */
+export function parsePrevalenceSeeds(str) {
+  return String(str).split(',').map((raw) => {
+    const trimmed = raw.trim();
+    const seed = Number(trimmed);
+    if (trimmed === '' || !/^\d+$/.test(trimmed)
+      || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+      throw new Error(`probe-physics-explosion: invalid prevalence seed '${raw}'`);
+    }
+    return seed;
+  });
 }
 
 // --- Stage-2 composition (the earned shared-loop seam) --------------------------
@@ -1813,13 +1851,23 @@ export function renderMarkdown(report) {
 
 // --- CLI -----------------------------------------------------------------------
 
-async function main() {
+/**
+ * Parse an argv slice into a runProbe config. Extracted from main() (mirrors
+ * the normalizePasses extraction) so programmatic tests exercise the EXACT
+ * same parse + validation the CLI runs. `config.argv` records the passed argv
+ * (not `process.argv`), so a test-supplied argv round-trips into report.argv.
+ * `config.jsonOut` carries the --json target for main() (runProbe ignores it).
+ */
+export function configFromArgs(argv) {
   const { values } = parseArgs({
+    args: argv,
     options: {
       smoke: { type: 'boolean', default: false },
       witness: { type: 'string' },
       pass: { type: 'string' },
       json: { type: 'string' },
+      arm: { type: 'string' },
+      'prevalence-seeds': { type: 'string' },
     },
   });
   const config = values.smoke ? smokeConfig() : defaultConfig();
@@ -1827,13 +1875,22 @@ async function main() {
   // runProbe normalizes ('all' / comma lists) — the CLI and the
   // programmatic API flow through the one normalizePasses authority.
   if (values.pass !== undefined) config.passes = values.pass;
-  config.argv = process.argv.slice(2);
+  if (values.arm !== undefined) config.reproducerArms = [selectReproducerArm(values.arm)];
+  if (values['prevalence-seeds'] !== undefined) {
+    config.prevalenceSeeds = parsePrevalenceSeeds(values['prevalence-seeds']);
+  }
+  config.argv = [...argv];
+  config.jsonOut = values.json ?? null;
+  return config;
+}
 
+async function main() {
+  const config = configFromArgs(process.argv.slice(2));
   const report = await runProbe(config);
   console.log(renderMarkdown(report));
-  if (values.json !== undefined) {
-    writeFileSync(values.json, JSON.stringify(report, null, 2));
-    console.log(`\nJSON written to ${values.json}`);
+  if (config.jsonOut !== null) {
+    writeFileSync(config.jsonOut, JSON.stringify(report, null, 2));
+    console.log(`\nJSON written to ${config.jsonOut}`);
   }
   const failed = report.checks.filter((c) => !c.ok);
   if (failed.length > 0) {

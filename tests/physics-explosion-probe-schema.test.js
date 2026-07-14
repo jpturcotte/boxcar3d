@@ -126,16 +126,18 @@ describe('probe schema smoke', () => {
     expect(Array.isArray(loc.jointStretch)).toBe(true);
     expect(Number.isInteger(loc.wedgeCandidates)).toBe(true);
 
-    // Reproducer: both flavors + the smoke closure arm, identity +
+    // Reproducer: both flavors + the smoke closure arms, identity +
     // deterministic byte-exact repeat hard-checked; onset values are
     // OBSERVATIONS (no must-explode assertion, ever).
     expect(report.reproducer.map((r) => `${r.arm}:${r.flavor}`))
       .toEqual(['original:deterministic', 'original:ordinary',
-        'gravity9.81:deterministic', 'gravityOff:deterministic', 'freeSpace:deterministic']);
+        'gravity9.81:deterministic', 'gravityOff:deterministic', 'freeSpace:deterministic',
+        'multibody:deterministic']);
     expect(report.checks.some((c) => c.name === 'identity:reproducer')).toBe(true);
     expect(report.checks.some((c) => c.name === 'repeat:reproducer')).toBe(true);
     for (const r of report.reproducer) {
       expect(r.genotypeDigest).toMatch(HEX8);
+      if (r.unsupported === true) continue; // record-and-drop rows carry no result
       expect(Number.isFinite(r.result.maxForwardDistance)).toBe(true);
       expect(Object.keys(r.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
     }
@@ -156,6 +158,16 @@ describe('probe schema smoke', () => {
     const gravityOff = report.reproducer.find((r) => r.arm === 'gravityOff');
     expect(Number.isInteger(gravityOff.contacts.touchingContacts)).toBe(true);
     expect(Object.keys(gravityOff.result.onset).sort()).toEqual([...ONSET_KEYS].sort());
+    // The multibody representation discriminator: SUPPORTED on this pinned
+    // 0.19.3 build (this test already pins rapierVersion above, so the
+    // capability assertion is version-scoped, not a physics claim). The
+    // swap's structural premise is a hard check; the outcome — does the
+    // reduced-coordinate island diverge? — stays an OBSERVATION.
+    const multibody = report.reproducer.find((r) => r.arm === 'multibody');
+    expect(multibody.unsupported).toBe(false);
+    expect(Number.isInteger(multibody.contacts.touchingContacts)).toBe(true);
+    expect(Number.isFinite(multibody.result.maxForwardDistance)).toBe(true);
+    expect(report.checks.some((c) => c.name === 'multibody:reproducer')).toBe(true);
 
     // Prevalence: one smoke seed, all 20 members classified.
     expect(report.prevalence).toHaveLength(1);

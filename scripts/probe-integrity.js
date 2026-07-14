@@ -71,7 +71,7 @@ import {
   FIXED_DT, addCorridor, addCorridorWithFeatures, createPhysics, realizeVehicle,
 } from '../src/sim/physics/adapter.js';
 import { generateCorridorTerrain } from '../src/sim/terrain.js';
-import { analyzeTrace, bodyReachMetadataForIR } from '../src/sim/trace-forensics.js';
+import { analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView } from '../src/sim/trace-forensics.js';
 import { INTEGRITY_POLICY_VERSION, INTEGRITY_THRESHOLDS } from '../src/sim/integrity.js';
 import {
   evaluatePopulation, fitnessFromVehicleResult, isVehicleResultSelectable,
@@ -177,23 +177,11 @@ async function evaluateSubject(ir, { terrainOverrides = {}, maxSteps = WITNESS_S
   });
 }
 
-// The offline (analyzeTrace) view mapped onto the online contract's fields —
-// the same mapping tests/integrity.test.js pins.
+// The offline (analyzeTrace) view mapped onto the online contract's fields via
+// the SHARED projection (trace-forensics.offlineIntegrityView) — the same
+// function tests/integrity.test.js consumes, so the mapping cannot drift.
 function offlineView(traceResult, ir, captureDt) {
-  const a = analyzeTrace(traceResult, { bodies: bodyReachMetadataForIR(ir), captureDt });
-  const maxOf = (sel) => a.perBody.reduce((m, b) => (sel(b).value > m ? sel(b).value : m), 0);
-  const minOf = (sel) => a.perBody.reduce((m, b) => {
-    const v = sel(b);
-    return v !== null && (m === null || v < m) ? v : m;
-  }, null);
-  return {
-    peakBodySpeed: maxOf((b) => b.peakSpeed),
-    peakSpeedDelta: maxOf((b) => b.peakSpeedDelta),
-    peakStepDisplacement: maxOf((b) => b.peakStepDisplacement),
-    firstAlertStep: a.onset.firstAlertStep,
-    firstCatastrophicStep: a.onset.firstCatastrophicStep,
-    firstNonFiniteStep: minOf((b) => b.firstNonFiniteStep),
-  };
+  return offlineIntegrityView(analyzeTrace(traceResult, { bodies: bodyReachMetadataForIR(ir), captureDt }));
 }
 
 function onlineOfflineAgree(online, offline) {

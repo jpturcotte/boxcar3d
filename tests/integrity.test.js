@@ -17,7 +17,10 @@ import {
   INTEGRITY_STATUS, INTEGRITY_THRESHOLDS,
   createIntegrityState, dist3, finalizeIntegrity, foldIntegrity, norm3,
 } from '../src/sim/integrity.js';
-import { FORENSIC_THRESHOLD_DEFAULTS, REFERENCE_CAPTURE_DT, analyzeTrace, bodyReachMetadataForIR } from '../src/sim/trace-forensics.js';
+import {
+  FORENSIC_THRESHOLD_DEFAULTS, REFERENCE_CAPTURE_DT,
+  analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView,
+} from '../src/sim/trace-forensics.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
 import { compileAssembly } from '../src/sim/assembly.js';
 import { FIXTURE_A, evaluationOptionsFor } from '../src/sim/evaluation-fixtures.js';
@@ -245,25 +248,10 @@ describe('classification semantics (pure fold)', () => {
 
 // --- Online ≡ offline equivalence (deterministic flavor, outcome-agnostic) -------
 
-// Derive the vehicle-level classification analyzeTrace implies, mapped onto
-// the online contract's fields. Used ONLY to compare against the online block
-// from the same run — never to assert what the engine did.
-function offlineExpectations(analysis) {
-  const maxOf = (sel) => analysis.perBody.reduce((m, b) => (sel(b).value > m ? sel(b).value : m), 0);
-  const minOf = (sel) => analysis.perBody.reduce((m, b) => {
-    const v = sel(b);
-    return v !== null && (m === null || v < m) ? v : m;
-  }, null);
-  return {
-    peakBodySpeed: maxOf((b) => b.peakSpeed),
-    peakSpeedDelta: maxOf((b) => b.peakSpeedDelta),
-    peakStepDisplacement: maxOf((b) => b.peakStepDisplacement),
-    firstAlertStep: analysis.onset.firstAlertStep,
-    firstCatastrophicStep: analysis.onset.firstCatastrophicStep,
-    firstNonFiniteStep: minOf((b) => b.firstNonFiniteStep),
-  };
-}
-
+// The vehicle-level view analyzeTrace implies is the SHARED
+// trace-forensics.offlineIntegrityView (the same projection probe-integrity
+// consumes) — used ONLY to compare against the online block from the same run,
+// never to assert what the engine did.
 async function equivalenceSubject(runOptions, ir) {
   const r = await runEvaluation({ ...runOptions, trace: { mode: 'full', checkpointInterval: 1 } });
   const online = r.vehicles[0].integrity;
@@ -271,7 +259,7 @@ async function equivalenceSubject(runOptions, ir) {
     bodies: bodyReachMetadataForIR(ir),
     captureDt: r.effectiveDt, // the pinned convention: BOTH arms use the engine readback
   });
-  const offline = offlineExpectations(analysis);
+  const offline = offlineIntegrityView(analysis);
   // Bitwise agreement on every shared observation.
   expect(Object.is(online.observations.peakBodySpeed, offline.peakBodySpeed)).toBe(true);
   expect(Object.is(online.observations.peakSpeedDelta, offline.peakSpeedDelta)).toBe(true);

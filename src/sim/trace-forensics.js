@@ -383,3 +383,31 @@ export function analyzeTrace(traceResult, {
     },
   };
 }
+
+/**
+ * Project an `analyzeTrace` result onto the ONLINE integrity contract's
+ * vehicle-level observation shape (src/sim/integrity.js `finalizeIntegrity`):
+ * the per-body peaks aggregated to their maxima, the onset alert/catastrophic
+ * steps, and the earliest non-finite step (for classification). This is the
+ * ONE offline→online mapping — the online/offline equivalence witnesses (the
+ * probe's `agreement` hard check and tests/integrity.test.js) both consume it,
+ * so a field-set change cannot drift between the two sites. Pure.
+ */
+export function offlineIntegrityView(analysis) {
+  if (typeof analysis !== 'object' || analysis === null || !Array.isArray(analysis.perBody)) {
+    fail('analysis', analysis);
+  }
+  const maxOf = (sel) => analysis.perBody.reduce((m, b) => (sel(b).value > m ? sel(b).value : m), 0);
+  const minOf = (sel) => analysis.perBody.reduce((m, b) => {
+    const v = sel(b);
+    return v !== null && (m === null || v < m) ? v : m;
+  }, null);
+  return {
+    peakBodySpeed: maxOf((b) => b.peakSpeed),
+    peakSpeedDelta: maxOf((b) => b.peakSpeedDelta),
+    peakStepDisplacement: maxOf((b) => b.peakStepDisplacement),
+    firstAlertStep: analysis.onset.firstAlertStep,
+    firstCatastrophicStep: analysis.onset.firstCatastrophicStep,
+    firstNonFiniteStep: minOf((b) => b.firstNonFiniteStep),
+  };
+}

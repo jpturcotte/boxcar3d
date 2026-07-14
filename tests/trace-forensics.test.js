@@ -7,7 +7,7 @@ import { describe, test, expect } from 'vitest';
 import { EVALUATION_TRACE_VERSION, RECORD_BYTES, encodeTraceRecord } from '../src/sim/trace.js';
 import {
   FORENSIC_THRESHOLD_DEFAULTS, TRACE_FORENSICS_SCHEMA,
-  analyzeTrace, bodyReachMetadataForIR, scaledThresholds,
+  analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView, scaledThresholds,
 } from '../src/sim/trace-forensics.js';
 
 const rec = (stepIndex, overrides = {}) => ({
@@ -267,5 +267,39 @@ describe('trace-forensics', () => {
     }
     expect(() => scaledThresholds(0)).toThrow(/factor/);
     expect(() => scaledThresholds(-1)).toThrow(/factor/);
+  });
+
+  // The shared offline→online projection (consumed by probe-integrity AND
+  // tests/integrity.test.js so the online/offline equivalence mapping cannot
+  // drift between the two sites).
+  test('offlineIntegrityView aggregates per-body peaks to maxima + onset + earliest non-finite step', () => {
+    // Two bodies: the chassis peaks at speed 60 (step 7); a wheel goes
+    // non-finite at step 8 while carrying a larger speed delta earlier.
+    const records = [
+      ...escalatingStream, // chassis stream (peaks speed 2000, but see below)
+      wheelRec(0, { linvel: { x: 0, y: 0, z: 0 } }),
+      wheelRec(1, { linvel: { x: 100, y: 0, z: 0 } }), // Δv 100 at step 1
+      wheelRec(2, { linvel: { x: 100, y: 0, z: 0 } }),
+      wheelRec(3, { finiteState: false, linvel: { x: NaN, y: 0, z: 0 } }), // non-finite at step 3
+    ];
+    const a = analyzeTrace(traceOf(records));
+    const view = offlineIntegrityView(a);
+    // peakBodySpeed is the MAX over both bodies (chassis reaches 2000).
+    expect(view.peakBodySpeed).toBe(2000);
+    // peakSpeedDelta is the max one-capture Δv over both bodies: the chassis
+    // jumps 60 -> 2000 (Δ1940) at step 8, exceeding the wheel's Δ100 at step 1.
+    expect(view.peakSpeedDelta).toBe(1940);
+    expect(view.firstAlertStep).toBe(a.onset.firstAlertStep);
+    expect(view.firstCatastrophicStep).toBe(a.onset.firstCatastrophicStep);
+    expect(view.firstNonFiniteStep).toBe(3); // the wheel's non-finite capture
+    expect(Object.keys(view).sort()).toEqual([
+      'firstAlertStep', 'firstCatastrophicStep', 'firstNonFiniteStep',
+      'peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement',
+    ]);
+  });
+
+  test('offlineIntegrityView fails loud on a non-analysis argument', () => {
+    expect(() => offlineIntegrityView(null)).toThrow(/analysis/);
+    expect(() => offlineIntegrityView({ onset: {} })).toThrow(/analysis/);
   });
 });

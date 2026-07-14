@@ -66,6 +66,18 @@ jobs:
           repository: dimforge/rapier
           ref: ${{ inputs.upstream_ref }}
           path: rapier-upstream
+      - name: Resolve the upstream ref to an immutable SHA
+        run: |
+          set -euo pipefail
+          # The input accepts a commit OR a tag/branch; a moving ref could build
+          # different commits across two runs with the same recorded upstreamRef.
+          # Pin the ACTUAL checked-out commit and drive the identity suffix +
+          # provenance from it (the default input is already an immutable SHA,
+          # for which this is a no-op).
+          RESOLVED="$(git -C rapier-upstream rev-parse HEAD)"
+          echo "UPSTREAM_SHA=${RESOLVED}" >> "$GITHUB_ENV"
+          echo "UPSTREAM_SHORT=$(echo "${RESOLVED}" | cut -c1-8)" >> "$GITHUB_ENV"
+          echo "Requested ref '${{ inputs.upstream_ref }}' -> resolved ${RESOLVED}"
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -88,8 +100,9 @@ jobs:
         working-directory: rapier-upstream/typescript
         run: |
           set -euo pipefail
-          SHORT="$(echo '${{ inputs.upstream_ref }}' | cut -c1-8)"
-          sed -i "s/^version = \"0.19.3\"$/version = \"0.19.3-${SHORT}.0\"/" \
+          # Suffix from the RESOLVED commit short SHA, never the (possibly
+          # moving) input ref.
+          sed -i "s/^version = \"0.19.3\"$/version = \"0.19.3-${UPSTREAM_SHORT}.0\"/" \
             builds/prepare_builds/templates/Cargo.toml.tera
           grep '^version' builds/prepare_builds/templates/Cargo.toml.tera
       - name: Prepare flavor crates + compat tools
@@ -177,9 +190,11 @@ jobs:
             const fs = require("node:fs");
             const sha = (f) => (f && fs.existsSync(f)) ? execSync(`sha256sum "${f}"`).toString().split(" ")[0] : null;
             const prov = {
-              schema: "boxcar3d.candidate-provenance/1",
+              schema: "boxcar3d.candidate-provenance/2",
               resolvedSha: process.env.SHA,
-              upstreamRef: process.env.UPSTREAM_REF,
+              requestedUpstreamRef: process.env.UPSTREAM_REF,
+              resolvedUpstreamSha: process.env.UPSTREAM_SHA,
+              identitySuffix: `0.19.3-${process.env.UPSTREAM_SHORT}.0`,
               wasmPack: execSync("wasm-pack --version").toString().trim(),
               rustc: execSync("rustc --version").toString().trim(),
               node: process.version,

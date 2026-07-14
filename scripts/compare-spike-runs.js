@@ -68,18 +68,28 @@ function failingByFile(vitestJson) {
   const out = {};
   for (const suite of vitestJson.testResults ?? []) {
     const key = relTestKey(suite.name);
-    const failedAssertions = (suite.assertionResults ?? [])
+    let failedAssertions = (suite.assertionResults ?? [])
       .filter((a) => a.status === 'failed')
       .map((a) => ({
         name: String(a.fullName ?? a.title ?? ''),
         message: (a.failureMessages ?? []).join('\n'),
       }));
+    // A suite that FAILED at the module/suite level (an import panic — e.g. a
+    // wasm "unreachable" on an engine swap — or a throwing beforeAll/afterAll)
+    // can report status 'failed' with ZERO failing assertions. Synthesize one
+    // so the file is never invisible to the file-set and count checks.
+    if (failedAssertions.length === 0 && suite.status === 'failed') {
+      failedAssertions = [{
+        name: `${key} > <suite-level failure>`,
+        message: String(suite.message ?? '(suite failed with no assertion-level failures — import/hook error?)'),
+      }];
+    }
     if (failedAssertions.length > 0) {
-      out[key] = {
-        failed: failedAssertions.length,
-        failedNames: failedAssertions.map((f) => f.name),
-        failedAssertions,
-      };
+      // Merge duplicate relTestKey suites by ACCUMULATION (never last-write-wins,
+      // which would let a second entry silently discard the first's regression).
+      const prior = out[key]?.failedAssertions ?? [];
+      const merged = [...prior, ...failedAssertions];
+      out[key] = { failed: merged.length, failedNames: merged.map((f) => f.name), failedAssertions: merged };
     }
   }
   return out;
@@ -279,17 +289,34 @@ function armDir(artifacts, arm) {
 // The reproducer 'original' + 'multibody' rows (deterministic flavor).
 function reproducerSummary(report) {
   if (report === null || !Array.isArray(report.reproducer)) return null;
-  const pick = (arm) => report.reproducer.find((r) => r.arm === arm && r.flavor === 'deterministic')
-    ?? report.reproducer.find((r) => r.arm === arm);
-  const describe = (row) => {
+  // Require EXACTLY ONE deterministic row per arm. Zero = missing; more than
+  // one = malformed (a duplicate/fabricated catastrophic row must not win
+  // first-match over a genuine quiescent one). No cross-flavor fallback — the
+  // verdict is about the DETERMINISTIC flavor, so ordinary-flavor data must
+  // never be silently substituted under a "deterministic" label.
+  const pick = (arm) => report.reproducer.filter((r) => r.arm === arm && r.flavor === 'deterministic');
+  const describe = (rows) => {
+    if (rows.length !== 1) return null;
+    const row = rows[0];
     if (row === undefined || row.result === null || row.result === undefined) return null;
-    const cat = row.result.onset?.firstCatastrophicStep ?? null;
+    // An arm that declares the reproducer UNSUPPORTED on this build has no
+    // valid measurement — treat as missing, never surface a live classification.
+    if (row.unsupported === true) return null;
+    // Absence is MISSING (=> arm unusable), NOT quiescent. Only an onset object
+    // that OWNS a firstCatastrophicStep of exactly null is a valid explicit
+    // quiescent result; a non-negative integer is catastrophic; anything else
+    // (missing onset, missing key, non-finite, negative, non-integer) is a
+    // malformed report and must not classify as a scientific outcome.
+    const { onset } = row.result;
+    if (onset === null || onset === undefined || !Object.hasOwn(onset, 'firstCatastrophicStep')) return null;
+    const cat = onset.firstCatastrophicStep;
+    if (cat !== null && (!Number.isInteger(cat) || cat < 0)) return null;
     return {
       peakBodySpeed: row.result.peakBodySpeed ?? null,
       firstCatastrophicStep: cat,
       classification: cat === null ? 'quiescent' : 'catastrophic',
       maxForwardDistance: row.result.maxForwardDistance ?? null,
-      unsupported: row.unsupported ?? false,
+      unsupported: false,
     };
   };
   return { original: describe(pick('original')), multibody: describe(pick('multibody')) };
@@ -353,7 +380,11 @@ const DIGEST_SEMANTIC_RULES = [
   // Evaluation fixtures A-D: both env titles carry the `eval-<x>-...:` fixture
   // token AND render the divergence as `... actual <hex> ...` (the same
   // first-divergent checkpoint state, identical cross-env under determinism).
-  { re: /(eval-[a-z0-9-]+):/, key: (m) => `evaluation:${m[1]}` },
+  // GUARD to the GOLDEN-lock assertion titles only ("run matches the committed
+  // lock" / "match the golden lock") — the gate-(a) "two fresh worlds agree"
+  // title ALSO carries the eval token, and a gate-(a) run-to-run divergence
+  // hex must never be mistaken for (and first-wins over) the golden digest.
+  { re: /(eval-[a-z0-9-]+):/, guard: /committed lock|golden lock/, key: (m) => `evaluation:${m[1]}` },
   // Population fitness-vector digest (Node "two fresh evaluations agree
   // byte-for-byte, and the second matches the committed lock" fails at the
   // fitnessVector .toBe; Chromium "evaluation: fitness-vector digest, ...").
@@ -364,6 +395,7 @@ const DIGEST_SEMANTIC_RULES = [
 
 function semanticDigestKey(fullName) {
   for (const rule of DIGEST_SEMANTIC_RULES) {
+    if (rule.guard !== undefined && !rule.guard.test(fullName)) continue;
     const m = rule.re.exec(fullName);
     if (m !== null) return rule.key(m);
   }
@@ -440,7 +472,13 @@ function compare({ artifacts, out }) {
       if (adjudication === null) issues.push('adjudication.json missing (arm did not reach the adjudicate step)');
       else if (adjudication.passed !== true) issues.push('adjudication FAILED');
       if (reproducerSummary(reproducer)?.original?.classification == null) issues.push('reproducer original classification missing');
-      if (armManifest?.heavy === true && prevalence === null) issues.push('heavy run but prevalence.json missing');
+      // A heavy run's prevalence must be a NON-EMPTY, well-formed array — an
+      // empty or malformed prevalence.json (present but `{}` / `{prevalence:[]}`)
+      // must not pass the "heavy run has full prevalence" evidence bar.
+      if (armManifest?.heavy === true
+        && !(Array.isArray(prevalence?.prevalence) && prevalence.prevalence.length > 0)) {
+        issues.push('heavy run but prevalence.json missing or malformed (no non-empty prevalence array)');
+      }
     }
     const usable = issues.length === 0;
     armReports[arm] = {
@@ -470,7 +508,9 @@ function compare({ artifacts, out }) {
   push(mdTable(['field', 'value'], [
     ['resolved BoxCar3D SHA (stable)', armReports.stable.armManifest?.resolvedSha],
     ['resolved BoxCar3D SHA (candidate)', armReports.candidate.armManifest?.resolvedSha],
-    ['upstream Rapier ref', prov?.upstreamRef],
+    ['upstream Rapier ref (requested)', prov?.requestedUpstreamRef ?? prov?.upstreamRef],
+    ['upstream Rapier SHA (resolved)', prov?.resolvedUpstreamSha],
+    ['candidate identity suffix', prov?.identitySuffix],
     ['candidate wasm-pack', prov?.wasmPack],
     ['candidate rapierVersion()', rapierVersionOf(armReports.candidate.reproducer)],
     ['stable rapierVersion()', rapierVersionOf(armReports.stable.reproducer)],
@@ -595,9 +635,15 @@ function compare({ artifacts, out }) {
   manifest.findings.perf = { status: perfStatus, summary: perf?.summary ?? null };
   push('');
 
-  // Verdict (classification level) — established ONLY when both arms are usable
-  // and both original-reproducer classifications exist. When either is missing,
-  // undefined===undefined must NOT read as "SAME class"; emit INCONCLUSIVE.
+  // Verdict (classification level). Three distinct states, never conflated:
+  //   INCONCLUSIVE   — a missing/failed arm or an absent/malformed classification
+  //                    (undefined===undefined must NOT read as "SAME class").
+  //   CONTRADICTS    — the experiment ran cleanly but the impulse reproducer is
+  //                    NOT catastrophic on BOTH arms (candidate quiescent =>
+  //                    the divergence was FIXED on core 0.34; stable quiescent
+  //                    => the control/harness is broken). Either way the run
+  //                    does NOT reproduce Outcome B and must exit nonzero.
+  //   REPRODUCED     — catastrophic on both; heavy=true => citable for C5.
   const bothUsable = ARMS.every((a) => armReports[a].usable);
   const cStable = repro.stable?.original?.classification ?? null;
   const cCand = repro.candidate?.original?.classification ?? null;
@@ -605,24 +651,38 @@ function compare({ artifacts, out }) {
   const mCand = repro.candidate?.multibody?.classification ?? null;
   const canJudge = bothUsable && cStable !== null && cCand !== null;
   const impulseSame = canJudge ? (cStable === cCand) : null;
-  // Only a heavy=true run (full all-witness + 60-member prevalence) may be
-  // cited in the decision record (C5); a heavy=false debug run can still show a
-  // real catastrophic-on-both classification, so label it PROVISIONAL rather
-  // than let a green debug compare read as citable evidence.
+  // Outcome B = the impulse reproducer diverges (catastrophic) on BOTH the
+  // stable control and the candidate. "Experiment executed" (canJudge) is NOT
+  // "Outcome B reproduced": a DIFFERENT classification (candidate quiescent)
+  // is a scientific contradiction that must fail the gate, not a green run.
+  const outcomeBReproduced = canJudge && cStable === 'catastrophic' && cCand === 'catastrophic';
   const isHeavy = ARMS.every((a) => armReports[a].armManifest?.heavy === true);
-  const citable = canJudge && isHeavy;
+  // Citable in the decision record (C5) ONLY when Outcome B reproduced on a
+  // full heavy=true run; a heavy=false reproduction is PROVISIONAL.
+  const citable = outcomeBReproduced && isHeavy;
   push('## Verdict (classification level)');
   if (!canJudge) {
     push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
-      + '→ **INCONCLUSIVE — verdict NOT established** (a missing/failed arm or absent classification; NOT "Outcome B holds")');
+      + '→ **INCONCLUSIVE — verdict NOT established** (a missing/failed arm or absent/malformed classification; NOT "Outcome B holds")');
+  } else if (!outcomeBReproduced) {
+    const detail = impulseSame
+      ? 'SAME class but QUIESCENT — the stable control did not diverge, so the harness/reproducer is broken (stable 0.19.3 is known catastrophic)'
+      : 'DIFFERENT — the classification changed (the candidate may have FIXED the divergence on core 0.34); re-examine';
+    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** `
+      + `→ **CONTRADICTS Outcome B — ${detail}.** `
+      + 'The controlled run executed but did NOT reproduce catastrophic-on-both; this run is NOT citable and the '
+      + 'compare job fails so the result cannot be silently folded in as Outcome-B evidence.');
   } else {
-    const tag = impulseSame ? 'SAME class (Outcome B reproduced)' : 'DIFFERENT — re-examine';
-    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** → ${tag}`
+    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** → SAME class (Outcome B reproduced)`
       + (citable ? '' : ' _(PROVISIONAL — heavy=false debug run; NOT citable for C5)_'));
   }
-  push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}**`);
+  push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}** `
+    + '_(OBSERVATIONAL — the multibody quiescence is the representation-lever finding, NOT part of the '
+    + 'Outcome-B gate; it does not affect established/citable)_');
   manifest.verdict = {
     established: canJudge,
+    multibodyIsGating: false,
+    outcomeBReproduced,
     citable,
     heavy: isHeavy,
     reproducerImpulse: { stable: cStable, candidate: cCand, sameClass: impulseSame },
@@ -638,14 +698,20 @@ function compare({ artifacts, out }) {
   writeFileSync(join(out, 'result-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
   console.log(`comparison.md + result-manifest.json written to ${out}`);
-  // Nonzero when the verdict is not established, so a green compare job
-  // genuinely means "controlled pair complete + Outcome B judged" (the review's
-  // finding 1: a merely-existing arm dir must never read as SAME class).
+  // Nonzero unless the controlled pair REPRODUCED Outcome B (catastrophic on
+  // both), so a green compare job cannot mean "inconclusive" OR "the candidate
+  // fixed the divergence" — only "controlled pair complete + Outcome B held".
   // comparison.md/manifest are already written above — the if:always upload
   // preserves the evidence either way.
   if (!canJudge) {
-    console.error(`\nCOMPARISON INCONCLUSIVE — verdict NOT established. Arm issues: `
+    console.error('\nCOMPARISON INCONCLUSIVE — verdict NOT established. Arm issues: '
       + `${JSON.stringify(Object.fromEntries(ARMS.map((a) => [a, armReports[a].issues])))}`);
+    return { ok: false, manifest };
+  }
+  if (!outcomeBReproduced) {
+    console.error(`\nCONTROLLED RESULT CONTRADICTS Outcome B — stable ${cStable}, candidate ${cCand} `
+      + '(expected catastrophic on both). The experiment executed; the scientific conclusion changed. '
+      + 'Failing the compare job so this is reviewed, not folded in as Outcome-B evidence.');
     return { ok: false, manifest };
   }
   if (missing.length > 0) console.log(`NOTE: ${missing.length} arm(s) missing — comparison is incomplete.`);
@@ -768,7 +834,7 @@ function main() {
 export {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
-  passedCountsBySubstring, relTestKey, F32_DT,
+  passedCountsBySubstring, relTestKey, reproducerSummary, F32_DT,
 };
 
 const entry = process.argv[1];

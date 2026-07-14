@@ -7,13 +7,18 @@
 > production dependency, and no golden lock is re-locked during the spike.
 > PR-A's results are frozen BEFORE the draft-PR-#18 comparison (§9).
 
-**Status: COMPLETE. Verdict: OUTCOME B** — core 0.34 retains substantially the
-same divergence (reproducer still catastrophic on both flavors; prevalence
-5/60, same individuals; +2/20 on a fresh seed). The candidate is otherwise
-clean (internally deterministic, every project contract preserved, no
-regression, no borrow error reproduced) — but there is no divergence-fix to
-adopt. **PR-B (the numerical-integrity policy) proceeds on stable 0.19.3 as
-planned; the multibody binding-extension investigation is the named follow-up.**
+**Status: local investigation COMPLETE; controlled CI reproduction PENDING the
+first `heavy=true` dispatch (§2/§4, Part C). Verdict: OUTCOME B** — core 0.34
+retains substantially the same divergence (reproducer still catastrophic on
+both flavors; prevalence 5/60, same individuals; +2/20 on a fresh seed). The
+candidate is otherwise clean **over the surfaces the local run exercised**
+(internally deterministic, every project contract preserved, no Class-1/3/4
+regression on the Node suite + probes, no borrow error reproduced — see §6 for
+the exact surfaces, and note candidate Chromium / Vite build + app smoke /
+paired bench are the local run's SKIPS, run only by the controlled CI
+experiment) — but there is no divergence-fix to adopt. **PR-B (the
+numerical-integrity policy) proceeds on stable 0.19.3 as planned; the multibody
+binding-extension investigation is the named follow-up.**
 The multibody 2×2 shows the joint REPRESENTATION / constraint-enforcement regime
 (not the engine version) is the lever — measured for the UNDRIVEN reproducer
 only — but ALL multibody motor/limit methods are commented out of both bindings,

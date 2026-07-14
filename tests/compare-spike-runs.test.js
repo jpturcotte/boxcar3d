@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import {
   classify, invariants, timingGate, compare,
-  failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
+  failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
 } from '../scripts/compare-spike-runs.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
@@ -186,6 +186,30 @@ describe('classify — assertion-level candidate-red enforcement (node)', () => 
     expect(r.errors.join('\n')).toContain('MUST-PASS PRESENCE');
   });
 
+  test('a NON-inventory file that crashes at the SUITE level (0 failing assertions) is caught', () => {
+    // An import panic / throwing beforeAll reports status:'failed' with an empty
+    // assertionResults — it must not be invisible to the file-set check.
+    const rep = nodeCandidateReport();
+    rep.testResults.push({ name: '/w/tests/chassis-drop.test.js', status: 'failed', message: 'RuntimeError: unreachable — wasm import panic', assertionResults: [] });
+    const r = classify({ testJsonPath: writeJson('c-suitecrash.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('UNEXPECTED FAILURE');
+  });
+
+  test('DUPLICATE suite entries for the same file are ACCUMULATED, not last-write-wins (a hidden gate-(a) regression surfaces)', () => {
+    const rep = nodeCandidateReport();
+    // A second evaluation-determinism entry carrying a gate-(a) failure; a
+    // last-write-wins failingByFile would discard the FIRST entry's real reds.
+    rep.testResults.push({
+      name: '/w/tests/evaluation-determinism.test.js',
+      status: 'failed',
+      assertionResults: [failed('gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics', 'run-to-run divergence')],
+    });
+    const r = classify({ testJsonPath: writeJson('c-dupsuite.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toMatch(/MUST-STAY-GREEN|SIGNATURE COUNT/);
+  });
+
   test('an unexpected failing file and an expected-red that fully passed both fail', () => {
     const extra = nodeCandidateReport();
     extra.testResults.push({ name: '/w/tests/chassis-drop.test.js', assertionResults: [failed('chassis-drop > containment', 'body escaped')] });
@@ -256,6 +280,21 @@ describe('invariants — complete required Node<->Chromium digest set', () => {
     const nD = measuredDigests(nodeCandidateReport({ champState: '0000dcba' }));
     expect(nD['population:champion-trace']).toBe('0000dcba');
   });
+
+  test('a gate-(a) failure carrying the eval token is NOT keyed as the golden digest (guarded rule)', () => {
+    // The gate-(a) title carries "eval-a-s0-flat:" but is NOT a golden-lock
+    // assertion — it must not be extracted as evaluation:eval-a-s0-flat and
+    // first-win over the real golden digest.
+    expect(semanticDigestKey('gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics')).toBeNull();
+    // Even if the gate-(a) assertion FAILS with a divergence hex and precedes
+    // the golden, measuredDigests must record the GOLDEN digest, not the gate-(a) one.
+    const rep = nodeCandidateReport({ evalActual: 'deadbeef' });
+    rep.testResults[0].assertionResults.unshift(failed(
+      'gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics',
+      'expected state 11112222 actual 99998888',
+    ));
+    expect(measuredDigests(rep)['evaluation:eval-a-s0-flat']).toBe('deadbeef');
+  });
 });
 
 // --- timing: the DRIFT allowlist --------------------------------------------------
@@ -290,7 +329,8 @@ describe('compare — verdict established only from usable arms', () => {
   function buildArtifacts(opts = {}) {
     const {
       candidatePassed = true, candidateReproPresent = true, heavy = false,
-      prevalencePresent = true, perfOk = true,
+      prevalencePresent = true, perfOk = true, prevalenceMalformed = false,
+      stableCat = 46, candidateCat = 107, // null => quiescent classification
     } = opts;
     const root = mkdtempSync(join(tmpdir(), 'spike-compare-'));
     const mk = (p) => mkdirSync(join(root, p), { recursive: true });
@@ -305,16 +345,18 @@ describe('compare — verdict established only from usable arms', () => {
       ],
     });
     const prev = (ver) => ({ engine: { rapierVersion: ver }, prevalence: [{ populationSeed: 20260725, catastrophicCount: 3, individuals: [] }] });
-    wj('results-stable/reproducer.json', repro('0.19.3', 46));
+    wj('results-stable/reproducer.json', repro('0.19.3', stableCat));
     wj('results-stable/freshseed.json', prev('0.19.3'));
     wj('results-stable/arm-manifest.json', { arm: 'stable', resolvedSha: 'abc', heavy });
     wj('results-stable/adjudication.json', { schema: 'boxcar3d.adjudication/1', arm: 'stable', passed: true, heavy });
     if (heavy) wj('results-stable/prevalence.json', prev('0.19.3'));
-    if (candidateReproPresent) wj('results-candidate/reproducer.json', repro('0.19.3-c13133ad.0', 107));
+    if (candidateReproPresent) wj('results-candidate/reproducer.json', repro('0.19.3-c13133ad.0', candidateCat));
     wj('results-candidate/freshseed.json', prev('0.19.3-c13133ad.0'));
     wj('results-candidate/arm-manifest.json', { arm: 'candidate', resolvedSha: 'abc', heavy });
     wj('results-candidate/adjudication.json', { schema: 'boxcar3d.adjudication/1', arm: 'candidate', passed: candidatePassed, heavy });
-    if (heavy && prevalencePresent) wj('results-candidate/prevalence.json', prev('0.19.3-c13133ad.0'));
+    if (heavy && prevalencePresent) {
+      wj('results-candidate/prevalence.json', prevalenceMalformed ? { engine: {}, prevalence: [] } : prev('0.19.3-c13133ad.0'));
+    }
     const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
     const parsed = runs.filter((r) => r.json !== null).length;
@@ -362,6 +404,99 @@ describe('compare — verdict established only from usable arms', () => {
     expect(r.ok).toBe(true); // perf is not decision-relevant to the verdict
     expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
     expect(r.manifest.findings.perf.status).not.toBe('ok');
+  });
+
+  // P1a (round-6): a DIFFERENT scientific outcome must NOT produce a green,
+  // citable run — "experiment executed" is not "Outcome B reproduced".
+  test('candidate QUIESCENT (divergence fixed) on a heavy run is CONTRADICTS + nonzero + not citable', () => {
+    const root = buildArtifacts({ heavy: true, candidateCat: null });
+    const r = compare({ artifacts: root, out: join(root, 'out') });
+    expect(r.ok).toBe(false);
+    expect(r.manifest.verdict.established).toBe(true); // the experiment DID execute
+    expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    expect(md(root)).toContain('CONTRADICTS Outcome B');
+    expect(md(root)).not.toContain('Outcome B reproduced');
+  });
+
+  test('a QUIESCENT stable control (candidate still catastrophic) is CONTRADICTS DIFFERENT + nonzero', () => {
+    const root = buildArtifacts({ heavy: true, stableCat: null });
+    const r = compare({ artifacts: root, out: join(root, 'out') });
+    expect(r.ok).toBe(false);
+    expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
+    expect(md(root)).toContain('DIFFERENT');
+  });
+
+  test('BOTH arms quiescent (harness broken — stable 0.19.3 is known catastrophic) is CONTRADICTS + nonzero', () => {
+    const root = buildArtifacts({ heavy: true, stableCat: null, candidateCat: null });
+    const r = compare({ artifacts: root, out: join(root, 'out') });
+    expect(r.ok).toBe(false);
+    expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
+    expect(md(root)).toContain('harness/reproducer is broken');
+  });
+
+  test('catastrophic-on-both heavy run is the ONLY citable state', () => {
+    const root = buildArtifacts({ heavy: true });
+    const r = compare({ artifacts: root, out: join(root, 'out') });
+    expect(r.ok).toBe(true);
+    expect(r.manifest.verdict.outcomeBReproduced).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(true);
+  });
+
+  // Sweep hole: a heavy run whose prevalence.json is PRESENT but empty/malformed
+  // must not pass the "heavy run has full prevalence" bar.
+  test('a heavy run with an empty/malformed prevalence array is unusable (not just missing-file)', () => {
+    const root = buildArtifacts({ heavy: true, prevalenceMalformed: true });
+    const r = compare({ artifacts: root, out: join(root, 'out') });
+    expect(r.ok).toBe(false);
+    expect(md(root)).toContain('missing or malformed');
+  });
+});
+
+// P1b (round-6): reproducerSummary must treat ABSENCE as missing (=> arm
+// unusable), never silently classify a malformed report as quiescent. Only an
+// onset object OWNING firstCatastrophicStep===null is a valid quiescent result.
+describe('reproducerSummary — malformed reports are missing, not quiescent', () => {
+  const row = (result) => ({ reproducer: [{ arm: 'original', flavor: 'deterministic', result }] });
+  const cls = (result) => reproducerSummary(row(result))?.original?.classification ?? 'MISSING';
+
+  test('explicit null firstCatastrophicStep is the ONLY valid quiescent', () => {
+    expect(cls({ onset: { firstCatastrophicStep: null } })).toBe('quiescent');
+  });
+  test('a valid non-negative integer is catastrophic', () => {
+    expect(cls({ onset: { firstCatastrophicStep: 107 } })).toBe('catastrophic');
+    expect(cls({ onset: { firstCatastrophicStep: 0 } })).toBe('catastrophic');
+  });
+  test('missing onset / missing firstCatastrophicStep are MISSING (not quiescent)', () => {
+    expect(cls({})).toBe('MISSING');
+    expect(cls({ onset: {} })).toBe('MISSING');
+    expect(cls({ onset: undefined })).toBe('MISSING');
+    expect(cls({ onset: null })).toBe('MISSING');
+  });
+  test('non-integer / negative / non-finite firstCatastrophicStep are MISSING', () => {
+    expect(cls({ onset: { firstCatastrophicStep: -1 } })).toBe('MISSING');
+    expect(cls({ onset: { firstCatastrophicStep: 1.5 } })).toBe('MISSING');
+    expect(cls({ onset: { firstCatastrophicStep: 'NaN' } })).toBe('MISSING');
+    expect(cls({ onset: { firstCatastrophicStep: Number.NaN } })).toBe('MISSING');
+  });
+  test('a null/absent result row is MISSING', () => {
+    expect(cls(null)).toBe('MISSING');
+    expect(cls(undefined)).toBe('MISSING');
+  });
+
+  // Sibling holes surfaced by the round-6 adversarial sweep.
+  const clsRaw = (reproducer) => reproducerSummary({ reproducer })?.original?.classification ?? 'MISSING';
+  test('an unsupported:true row is MISSING, not a live classification', () => {
+    expect(clsRaw([{ arm: 'original', flavor: 'deterministic', unsupported: true, result: { onset: { firstCatastrophicStep: 46 } } }])).toBe('MISSING');
+  });
+  test('DUPLICATE deterministic rows are MISSING (a fabricated catastrophic must not first-win over a real quiescent)', () => {
+    expect(clsRaw([
+      { arm: 'original', flavor: 'deterministic', result: { onset: { firstCatastrophicStep: 46 } } },
+      { arm: 'original', flavor: 'deterministic', result: { onset: { firstCatastrophicStep: null } } },
+    ])).toBe('MISSING');
+  });
+  test('NO deterministic row (only ordinary flavor) is MISSING — no cross-flavor fallback under a "deterministic" verdict', () => {
+    expect(clsRaw([{ arm: 'original', flavor: 'ordinary', result: { onset: { firstCatastrophicStep: 46 } } }])).toBe('MISSING');
   });
 });
 

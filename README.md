@@ -99,13 +99,27 @@ document the ruling. Prevalence — regenerable from the committed
 which hide catastrophic internal speeds behind ordinary-looking fitness —
 so raw `maxForwardDistance` mis-ranks in both directions, on flat terrain
 included. No production physics changed; every lock and version constant is
-byte-identical; the score policy stays v1. Next: **GA Phase 1B
-— Mutation-Only Evolution** (selection, elitism, deterministic mutation,
-generational replacement) — which follows only after this physics-integrity
-result and therefore **begins by designing the numerical-integrity policy
-against the now-understood failure class**, using the committed forensic
-detector; zone material response, S2 trailing arms, and worker sharding are
-deferred behind it, each in its own PR. The design docs in `docs/` define
+byte-identical; the score policy stays v1. **A Rapier core-0.34 verification
+spike then landed** (a Layer-2 diagnostic, not a dependency change): the npm
+pins are the latest stable JS packages (core ~0.30.1), and the current upstream
+monorepo (`dimforge/rapier@c13133ad`, core 0.34) was built from source and run
+against every committed contract. **Verdict: the divergence persists on core
+0.34** — the reproducer stays catastrophic on both flavors, prevalence is the
+same 5/60, and a fresh seed adds 2/20 — while the candidate is otherwise clean
+(internally deterministic, no contract regression, no borrow error reproduced).
+A new `--arm multibody` reproducer arm shows reduced-coordinate realization is
+quiescent on both cores, so the joint *representation* (not the engine version)
+is the lever — but multibody motors/limits stay unavailable in the JS bindings,
+so that path is not yet usable for the driven phenotype. Full evidence and the
+`engine-assertion-taxonomy` triage map are in
+[`docs/rapier-034-spike-2026-07.md`](docs/rapier-034-spike-2026-07.md); no
+production dependency or lock changed. Next: the **numerical-integrity policy
+PR**, then **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
+deterministic mutation, generational replacement) — the integrity policy is
+built on stable 0.19.3 using the committed forensic detector; the multibody
+binding-extension feasibility investigation, zone material response, S2
+trailing arms, and worker sharding are deferred behind it, each in its own PR.
+The design docs in `docs/` define
 everything that comes after.
 
 ## Quickstart

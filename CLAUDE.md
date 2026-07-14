@@ -988,12 +988,76 @@ direction, not a defect. Full evidence:
   fingerprints and version constants byte-identical, `FITNESS_POLICY_VERSION`
   stays 1 by mission ruling (no fitness cap/plausibility threshold here).
 
-Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
-deterministic mutation, generational replacement, champion history — a
-generational loop over `evaluatePopulation`, sim-time pure), which follows
-only after the physics-integrity result — now in hand. **Phase 1B BEGINS by
-designing the numerical-integrity policy against the now-understood failure
-class** (solver divergence on ill-conditioned islands): the forensic
+**The Rapier core-0.34 verification spike landed (PR-A) — a Layer-2 diagnostic,
+NOT a roadmap stage and NOT a production dependency change. Verdict OUTCOME B:
+the current upstream Rapier core (0.34) retains substantially the same
+constraint-solver divergence; PR #17's conclusions extend to it. Full evidence:
+`docs/rapier-034-spike-2026-07.md`:**
+- **The version model (corrected):** the npm pins
+  `@dimforge/rapier3d{,-deterministic}-compat@0.19.3` are the LATEST stable JS
+  packages (Nov 2025), built on Rust core ~0.30.1 — current, not stale. The JS
+  package number (0.19.x) and the Rust core number (0.30+) are separate streams.
+  Upstream merged rapier.js into the `dimforge/rapier` monorepo on 2026-07-12
+  (commit `c13133ad`); its in-tree TS bindings still self-id as 0.19.3 but build
+  against in-repo core **0.34**.
+- **The spike:** built both compat flavors from source at `c13133ad` (core
+  0.34.0) with a packaging-only identity patch (crate version
+  `0.19.3-c13133ad.0`, so `RAPIER.version()` is distinguishable and the
+  staleness teeth fire honestly), consumed them as `npm pack` tarballs on an
+  isolated worktree (branch `spike/rapier-034-c13133ad`, never merged), and ran
+  the rerun matrix. Tarball + wasm SHA-256s are in the decision record §3.
+  Windows deviations were packaging-only (Git Bash for the `.sh` scripts;
+  trimmed `gen_src`/rollup to the two 3D flavors). Artifacts preserved under
+  `C:\Users\jp2k5\GitHub\rapier-034-spike-artifacts\` (tarballs + logs); the
+  build tree is disposable.
+- **The verdict (measured, both flavors):** the committed minimal reproducer
+  (`9fde1f1c`) is STILL catastrophic (~4,785 m/s; onset delayed cat 46→107 but
+  classification unchanged); prevalence is **5/60 — the SAME five individuals**,
+  both fitness-hidden cases (20260725 ids 1, 14) intact; a fresh seed
+  (**20260730**, allocated) adds 2/20, removing the selection confound (7/80).
+  The candidate is otherwise CLEAN: internally deterministic (determinism gate
+  (a) byte-identical on A–D), every project contract (all 13 class-(a) gates)
+  preserved, NO Class-1/3/4 regression, and the PR #18 `world.free()` borrow
+  error did NOT reproduce across hundreds of frees (a recorded reproducibility
+  finding). The 11 unit-suite reds are all expected class-(c) golden/version
+  movement.
+- **The multibody 2×2 (the representation-vs-solver discriminator, via the new
+  `probe:physics-explosion --pass reproducer --arm multibody`):** re-expressing
+  the UNDRIVEN reproducer's revolutes as reduced-coordinate multibody joints is
+  quiescent on BOTH cores (0.30.1: 1.42 m/s; 0.34: 1.40 m/s) while the impulse
+  path is catastrophic on both. The divergence is impulse-solver-specific AND
+  representation-dependent, not version-specific. BUT multibody revolute/
+  prismatic MOTORS and settable LIMITS remain commented out of the TS bindings
+  on both 0.19.3 and core 0.34 (verified in `src.ts`), so the motorized S0/S1
+  phenotype cannot use that path today without upstream binding work.
+- **New instruments (main-side, green on stable 0.19.3, no dependency/lock
+  change):** `docs/engine-assertion-taxonomy-2026-07.md` (every committed
+  assertion classified (a) project-contract / (b) engine-finding / (c) golden,
+  the triage map for any engine swap — reusable, load-bearing for Outcome C
+  disambiguation); the `--arm multibody` reproducer arm (observation-only, hard
+  check is the swap's structural premise, never a physics outcome);
+  `scripts/probe-rapier-package-smoke.js` (`npm run probe:package-smoke`, the
+  pre-suite consumability check — `version()`/dt readback as observations,
+  deterministic repeat bit-identical). Full suite green both flavors on stable;
+  every fingerprint byte-identical.
+- **Consequence:** do NOT adopt the source build (no divergence-fix to gain).
+  PR-B (numerical-integrity policy) proceeds on stable 0.19.3 as planned; the
+  multibody/binding-extension feasibility investigation is the named follow-up
+  (can a small upstreamable TS patch expose the revolute/prismatic multibody
+  motors + limits the driven phenotype needs?). Re-run
+  `probe:physics-explosion -- --pass reproducer` on the next official npm
+  release carrying core ≥0.33 — the reproducer stays the engine-upgrade
+  tripwire.
+
+Next — the **numerical-integrity policy PR (PR-B)**, then **GA Phase 1B:
+Mutation-Only Evolution** (selection, elitism, deterministic mutation,
+generational replacement, champion history — a generational loop over
+`evaluatePopulation`, sim-time pure), which follows only after the
+physics-integrity result AND the core-0.34 spike — both now in hand (the spike
+confirmed the integrity policy must be built on stable 0.19.3, and calibrated
+against it). **PR-B designs the numerical-integrity policy against the
+now-understood failure class** (solver divergence on ill-conditioned islands):
+the forensic
 detector exists (`analyzeTrace` alert/catastrophic classification catches
 all 5/60 affected individuals, including the two whose fitness looks
 ordinary), and the raw `maxForwardDistance` metric mis-ranks in BOTH

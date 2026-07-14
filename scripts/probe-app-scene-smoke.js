@@ -121,6 +121,10 @@ async function main() {
 
     // Wait for the ready HUD; throw fast (rejecting waitForFunction) on boot
     // failure so we don't burn the full timeout on a known-dead page.
+    // waitForFunction's signature is (pageFunction, ARG, options) — the second
+    // parameter is the page-function argument, so the options object must be
+    // THIRD (with an explicit undefined arg) or the timeout/polling are
+    // silently ignored.
     await page.waitForFunction(
       () => {
         const hud = document.querySelector('#hud');
@@ -129,6 +133,7 @@ async function main() {
         if (text.startsWith('boot failed:')) throw new Error(`HUD boot failure: ${text}`);
         return Boolean(canvas) && text.includes('corridor') && text.includes('fixed steps:');
       },
+      undefined,
       { timeout: PAGE_READY_TIMEOUT_MS, polling: 250 },
     );
 

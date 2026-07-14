@@ -16,6 +16,16 @@
 //     failing test's fullName so the first heavy run yields the exact titles to
 //     tighten the inventory with (titlesPendingFirstHeavyRun).
 //
+//   --mode timing  (the matrix job's candidate-arm probe:timing GATE)
+//     node scripts/compare-spike-runs.js --mode timing \
+//       --log <timing.log> --exit <code> --expected <expected-reds.json>
+//     Parses the probe's `  DRIFT <check name>[ — detail]` lines and asserts
+//     every drifted check is in timing.allowedDriftChecks — the expected
+//     class-(b) drift may not be a blanket pass for UNRELATED semantic drifts.
+//     Exit-code/DRIFT-line inconsistency (exit 0 with drifts, exit 1 with none
+//     — a crash, not a drift) fails. An allowlisted drift that VANISHED is
+//     reported as a class-(b) flip-watch, not fatal (recorded, not a contract).
+//
 //   --mode compare  (the compare job)
 //     node scripts/compare-spike-runs.js --mode compare \
 //       --artifacts <downloaded-artifacts-dir> --out <dir>
@@ -108,6 +118,68 @@ function classify({ testJsonPath, expectedPath, label }) {
     process.exit(1);
   }
   console.log(`\nCLASSIFY OK (${label}) — failing set matches the committed inventory exactly.`);
+}
+
+// --- timing mode ----------------------------------------------------------------
+
+// probe-rapier-timing.js prints `  DRIFT <name>[ — <detail>]` per drifted check
+// (per flavor; the same check name may appear once per flavor — occurrences are
+// not constrained, identities are). `obs`/`OK` lines and the trailing
+// `N checks, M DRIFT` summary never match this shape.
+function parseDriftLines(logText) {
+  const names = [];
+  for (const line of logText.split(/\r?\n/)) {
+    const m = /^\s*DRIFT (.+)$/.exec(line);
+    if (m !== null) names.push(m[1].split(' — ')[0].trim());
+  }
+  return names;
+}
+
+function timingGate({ logPath, exitCode, expectedPath }) {
+  const expected = readJson(expectedPath);
+  const allowed = expected.timing?.allowedDriftChecks;
+  if (!Array.isArray(allowed)) {
+    console.error('timing: expected-reds has no timing.allowedDriftChecks array');
+    process.exit(1);
+  }
+  if (!existsSync(logPath)) {
+    console.error(`timing: log missing (${logPath}) — cannot verify the drift set`);
+    process.exit(1);
+  }
+  const drifts = parseDriftLines(readFileSync(logPath, 'utf8'));
+  const uniqueDrifts = [...new Set(drifts)];
+  const errors = [];
+
+  console.log('# candidate probe:timing drift classification');
+  console.log(`probe exit: ${exitCode}; DRIFT lines: ${drifts.length} (${uniqueDrifts.length} distinct)`);
+  for (const d of uniqueDrifts) console.log(`  - ${d}${allowed.includes(d) ? '  (allowlisted)' : '  (NOT allowlisted)'}`);
+
+  for (const d of uniqueDrifts) {
+    if (!allowed.includes(d)) {
+      errors.push(`UNEXPECTED DRIFT — "${d}" is not in timing.allowedDriftChecks (a real semantic drift, not the recorded class-(b) finding)`);
+    }
+  }
+  // Exit-code / DRIFT-line consistency: the probe exits 1 iff it saw >=1 drift.
+  if (exitCode === '0' && drifts.length > 0) {
+    errors.push(`INCONSISTENT — probe exit 0 but ${drifts.length} DRIFT line(s) parsed`);
+  }
+  if (exitCode !== '0' && drifts.length === 0) {
+    errors.push(`INCONSISTENT — probe exit ${exitCode} with NO DRIFT lines (a crash or format change, not a drift; read the log)`);
+  }
+  if (exitCode !== '0' && exitCode !== '1') {
+    errors.push(`ABNORMAL EXIT — probe exit ${exitCode} is neither 0 (green) nor 1 (drift); read the log`);
+  }
+
+  if (errors.length > 0) {
+    console.error(`\nTIMING GATE FAIL:\n  ${errors.join('\n  ')}`);
+    process.exit(1);
+  }
+  const vanished = allowed.filter((a) => !uniqueDrifts.includes(a));
+  if (vanished.length > 0) {
+    console.log(`\nFLIP-WATCH — allowlisted class-(b) drift(s) did NOT appear: ${vanished.join('; ')}`);
+    console.log('The recorded engine-finding vanished on this run — re-triage the finding (not fatal; it is recorded, not a contract).');
+  }
+  console.log('\nTIMING GATE OK — every drifted check is allowlisted and the exit code is consistent.');
 }
 
 // --- compare mode ---------------------------------------------------------------
@@ -413,6 +485,19 @@ function invariants({ nodeJson, browserJson, reproducerJson }) {
     if (nD[k] === cD[k]) console.log(`  OK   Node==Chromium on "${k}" (${nD[k]})`);
     else errors.push(`node<->chromium disagree on "${k}": Node ${nD[k]} vs Chromium ${cD[k]}`);
   }
+  // Unmatched keys are never silently ignored. Node-only keys are EXPECTED
+  // (Node runs more determinism files than the two browser gates) — reported.
+  // A Chromium-only key is an UNVERIFIABLE cross-env claim (its Node
+  // counterpart failed extraction or title-matching) — that fails, and the
+  // fix is tightening measuredDigests()/the key mapping from the printed
+  // messages (the declared first-heavy-run bootstrap step).
+  const nodeOnly = Object.keys(nD).filter((k) => !(k in cD));
+  const chromiumOnly = Object.keys(cD).filter((k) => !(k in nD));
+  if (nodeOnly.length > 0) console.log(`  note Node-only digest keys (no Chromium twin — expected for Node-only determinism files): ${nodeOnly.join('; ')}`);
+  for (const k of chromiumOnly) {
+    errors.push(`node<->chromium: Chromium digest "${k}" (${cD[k]}) has NO extracted Node counterpart — `
+      + 'cannot verify agreement for it; tighten measuredDigests()/key matching from the printed messages');
+  }
 
   if (errors.length > 0) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
@@ -433,6 +518,8 @@ function main() {
       'node-json': { type: 'string' },
       'browser-json': { type: 'string' },
       'reproducer-json': { type: 'string' },
+      log: { type: 'string' },
+      exit: { type: 'string' },
     },
   });
   if (values.mode === 'classify') {
@@ -449,8 +536,14 @@ function main() {
       browserJson: values['browser-json'],
       reproducerJson: values['reproducer-json'],
     });
+  } else if (values.mode === 'timing') {
+    if (values.log === undefined || values.exit === undefined || values.expected === undefined) {
+      console.error('compare-spike-runs: --mode timing needs --log, --exit, and --expected');
+      process.exit(2);
+    }
+    timingGate({ logPath: values.log, exitCode: values.exit, expectedPath: values.expected });
   } else {
-    console.error("compare-spike-runs: --mode must be 'classify', 'compare', or 'invariants'");
+    console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', or 'timing'");
     process.exit(2);
   }
 }

@@ -4,8 +4,10 @@
 # candidate Rapier (upstream monorepo core 0.34) FROM SOURCE, then runs the rerun
 # matrix on a controlled same-commit pair {stable npm 0.19.3, candidate tarballs}
 # so the docs/rapier-034-spike-2026-07.md figures become re-dispatchable and
-# artifact-audited. Outcome B is already established locally; this closes the
-# auditability / controlled-pair / skipped-matrix review blockers.
+# artifact-audited. Outcome B is already established locally; this is the
+# committed instrument for the auditability / controlled-pair / skipped-matrix
+# review blockers — they CLOSE when the first heavy=true dispatch succeeds and
+# its comparison is folded into the decision record (C5), not at commit time.
 #
 # The candidate build is the heaviest step and the wasm bytes are NOT
 # byte-reproducible across environments — the verdict reproduces at
@@ -122,9 +124,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/tarballs"
-          # The built compat package dirs (best-effort discovery: 3D compat only).
-          mapfile -t PKGS < <(find . -name package.json -path '*rapier3d*compat*' -not -path '*/node_modules/*' | sort -u)
-          echo "Found candidate 3D compat package.json files:"; printf '  %s\n' "${PKGS[@]}"
+          # The built compat package manifests. Build logs confirm the two flavor
+          # dirs are builds/3d and builds/3d-deterministic (wasm pkg at
+          # builds/<flavor>/wasm-build; the compat package assembled under
+          # builds/<flavor>). The string "rapier3d-compat" lives in the package
+          # NAME, not the filesystem PATH, so a `-path '*rapier3d*compat*'` glob
+          # matches nothing — discover by scanning those two confirmed dirs and
+          # filter by the exact `.name` below.
+          mapfile -t PKGS < <(find builds/3d builds/3d-deterministic -name package.json -not -path '*/node_modules/*' | sort -u)
+          echo "Found candidate package.json under builds/3d[-deterministic]:"; printf '  %s\n' "${PKGS[@]}"
           for pj in "${PKGS[@]}"; do
             dir="$(dirname "$pj")"
             name="$(node -p "require('./$pj').name")"
@@ -139,10 +147,31 @@ jobs:
           ( cd tarballs && sha256sum ./*.tgz > sha256.txt && cat sha256.txt )
           # Export the discovered paths as env vars the node block reads directly
           # (these are SHELL vars — never reference them via ${{ env.* }}).
-          export ORD_WASM="$(find rapier-upstream -name 'rapier_wasm3d_bg.wasm' -path '*non-deterministic*' | head -n1 || true)"
-          export DET_WASM="$(find rapier-upstream -name 'rapier_wasm3d_bg.wasm' -path '*deterministic*' | head -n1 || true)"
+          # Explicit flavor dirs: the ordinary build's feature postfix is EMPTY
+          # upstream, so its wasm lands at builds/3d/wasm-build — a
+          # '*non-deterministic*' path glob matches NOTHING (and a bare
+          # '*deterministic*' would match the ordinary dir's sibling only by
+          # luck). Build logs confirm both paths.
+          COMPAT="rapier-upstream/typescript/rapier-compat"
+          export ORD_WASM="$COMPAT/builds/3d/wasm-build/rapier_wasm3d_bg.wasm"
+          export DET_WASM="$COMPAT/builds/3d-deterministic/wasm-build/rapier_wasm3d_bg.wasm"
+          for w in "$ORD_WASM" "$DET_WASM"; do
+            [ -f "$w" ] || { echo "MISSING expected wasm: $w"; find rapier-upstream -name 'rapier_wasm3d_bg.wasm' | head; exit 1; }
+          done
           export ORD_TGZ="$(ls tarballs/dimforge-rapier3d-compat-*.tgz 2>/dev/null | head -n1 || true)"
           export DET_TGZ="$(ls tarballs/dimforge-rapier3d-deterministic-compat-*.tgz 2>/dev/null | head -n1 || true)"
+          # Assemble the FULL provenance bundle in ONE flat dir (a single upload
+          # path, so download-artifact yields artifacts/provenance/<file> with no
+          # extra nesting — a multi-path upload preserves directory prefixes and
+          # would bury the record under provenance/provenance/). Contents: the
+          # ACTUAL upstream patch (not just --stat), the generated package
+          # manifests extracted from the tarballs themselves, the tarball
+          # hashes, and the JSON record.
+          mkdir -p provenance
+          git -C rapier-upstream diff > provenance/upstream.patch
+          cp tarballs/sha256.txt provenance/
+          if [ -n "$ORD_TGZ" ]; then tar -xzOf "$ORD_TGZ" package/package.json > provenance/manifest-ordinary.json; fi
+          if [ -n "$DET_TGZ" ]; then tar -xzOf "$DET_TGZ" package/package.json > provenance/manifest-deterministic.json; fi
           node -e '
             const { execSync } = require("node:child_process");
             const fs = require("node:fs");
@@ -156,12 +185,13 @@ jobs:
               node: process.version,
               tarballs: { ordinary: sha(process.env.ORD_TGZ), deterministic: sha(process.env.DET_TGZ) },
               wasm: { ordinary: sha(process.env.ORD_WASM), deterministic: sha(process.env.DET_WASM) },
+              upstreamPatchSha256: sha("provenance/upstream.patch"),
               gitDiffStat: execSync("git -C rapier-upstream diff --stat").toString(),
             };
-            fs.mkdirSync("provenance", { recursive: true });
             fs.writeFileSync("provenance/candidate-provenance.json", JSON.stringify(prov, null, 2));
             console.log(prov);
           '
+          ls -l provenance
       - name: Upload candidate tarballs
         if: always()
         uses: actions/upload-artifact@v4
@@ -174,9 +204,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: provenance
-          path: |
-            provenance/candidate-provenance.json
-            tarballs/sha256.txt
+          path: provenance
+          if-no-files-found: warn
 
   # The rerun matrix: {stable, candidate} on the SAME resolved SHA. Every command
   # runs, its exit code + JSON captured, and NOTHING fails the run step — the
@@ -216,6 +245,12 @@ jobs:
           set -euo pipefail
           npm install ./dl/dimforge-rapier3d-compat-*.tgz ./dl/dimforge-rapier3d-deterministic-compat-*.tgz
           echo "Installed candidate tarballs:"; ls -l dl
+          # Archive the candidate-INSTALL state (amendment 8): the rewritten
+          # package.json + package-lock.json ride the results-candidate artifact
+          # so the exact dependency rewrite is auditable alongside the results.
+          mkdir -p "results-${ARM}"
+          cp package.json "results-${ARM}/candidate-package.json"
+          cp package-lock.json "results-${ARM}/candidate-package-lock.json"
       - name: Playwright Chromium (cached, version-keyed)
         id: pw
         run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
@@ -298,8 +333,15 @@ jobs:
             for g in timing npmtest browser; do gate "$g"; done
           else
             # Candidate: the reds are EXPECTED — enforce the exact inventory +
-            # the must-pass invariants instead of raw green. timing may DRIFT
-            # (class-(b)); OBSERVE, do not gate.
+            # the must-pass invariants instead of raw green. timing is gated by
+            # its own DRIFT allowlist (the single class-(b) profiler re-enable
+            # drift the local run recorded): any drift OUTSIDE the allowlist,
+            # or an exit/DRIFT-line inconsistency, fails; an allowlisted drift
+            # that vanished is reported (flip-watch), not fatal.
+            node scripts/compare-spike-runs.js --mode timing \
+              --log "${RES}/timing.log" \
+              --exit "$(cat "${RES}/exit-timing.txt" 2>/dev/null || echo missing)" \
+              --expected .github/spike-expected-candidate-reds.json || fail=1
             node scripts/compare-spike-runs.js --mode classify \
               --test-json "${RES}/npm-test.json" \
               --expected .github/spike-expected-candidate-reds.json --label node || fail=1
@@ -340,6 +382,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          # Both checkouts live under perf-*/ — there is NO workspace-root
+          # package-lock.json, and setup-node throws when `cache: npm` cannot
+          # resolve a lockfile. Point it at the stable checkout's lock.
+          cache-dependency-path: perf-stable/package-lock.json
       - name: Install stable + candidate side by side
         run: |
           set -euo pipefail
@@ -357,7 +403,11 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p perf
-          bench() { arm="$1"; i="$2"; ( cd "perf-${arm}" && npm run bench:physics -- --smoke --json ) > "perf/bench-${arm}-${i}.json" 2> "perf/bench-${arm}-${i}.log" || echo "bench ${arm}#${i} exit $?"; }
+          # bench-physics's `--json` is a string option that REQUIRES a filename
+          # (the JSON is written to that path; stdout is always the markdown
+          # report, so redirecting stdout can never yield JSON). Pass an
+          # absolute path and capture stdout+stderr as the log.
+          bench() { arm="$1"; i="$2"; ( cd "perf-${arm}" && npm run bench:physics -- --smoke --json "$GITHUB_WORKSPACE/perf/bench-${arm}-${i}.json" ) > "perf/bench-${arm}-${i}.log" 2>&1 || echo "bench ${arm}#${i} exit $?"; }
           bench stable 1
           bench candidate 1
           bench candidate 2
@@ -382,7 +432,10 @@ jobs:
   # manifest to $GITHUB_STEP_SUMMARY and as committable artifacts. Reports any
   # MISSING/failed arm explicitly (never silently skips).
   compare:
-    needs: [matrix, perf]
+    # `resolve` must be a DIRECT dependency: the `needs` context contains only
+    # direct deps, so without it `needs.resolve.outputs.sha` silently evaluates
+    # to the empty string and the checkout falls back to the default ref.
+    needs: [resolve, matrix, perf]
     if: always()
     runs-on: ubuntu-latest
     steps:

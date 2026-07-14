@@ -1061,7 +1061,12 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   experiment (`.github/workflows/rapier-034-spike-experiment.yml`,
   `scripts/compare-spike-runs.js`, `scripts/probe-app-scene-smoke.js`) that
   builds the candidate from source and runs the controlled stable-vs-candidate
-  pair with machine-enforced expected-red classification. Full suite green both
+  pair with machine-enforced expected-red classification — a BOOTSTRAP
+  classifier until the first post-merge `heavy=true` dispatch (browser
+  per-file counts + assertion titles are first measured by that run and the
+  inventory tightened from it; the Node counts, the probe:timing DRIFT
+  allowlist, and the dt/internal-determinism/Node↔Chromium invariants are
+  enforced from the start). Full suite green both
   flavors on stable; every fingerprint byte-identical.
 - **Consequence:** do NOT adopt the source build (no divergence-fix to gain).
   PR-B (numerical-integrity policy) proceeds on stable 0.19.3 as planned; the

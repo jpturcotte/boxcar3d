@@ -53,8 +53,12 @@
     "internalDeterminismGateA": "the determinism gate's 'two fresh worlds agree on digest + every checkpoint' (internal repeatability) PASSES on the candidate for A-D; only gate (d) 'matches committed lock' is allowed to move",
     "nodeChromiumAgreement": "the candidate's MEASURED digests are identical between the Node and Chromium determinism-gate failure printouts (cross-env determinism holds on the new engine)"
   },
-  "classBFlipWatch": {
-    "probe:timing profiler re-enable DRIFT": "the single class-(b) engine-finding the local run saw (exit 1 on probe:timing, adoption-critical sub-checks green); recorded, not a contract"
+  "timing": {
+    "gate": "compare-spike-runs.js --mode timing parses the candidate's probe:timing log: every `DRIFT <check name>` line must name a check in allowedDriftChecks (any OTHER drift fails the arm — ten unrelated API-contract drifts must not hide behind one expected exit 1), and the probe's exit code must be consistent with the parsed DRIFT lines (exit 0 with drifts, or exit 1 with none, is a parse/crash inconsistency and fails). An allowlisted drift that VANISHED (probe fully green) is reported loudly as a class-(b) flip-watch, not fatal — the drift is recorded, not a contract.",
+    "allowedDriftChecks": [
+      "re-enable resumes per-step updates"
+    ],
+    "note": "the single class-(b) engine-finding the local run saw (exit 1 on probe:timing, 36 checks / 1 DRIFT, adoption-critical sub-checks green: dt readback, isValid/isSleeping, timing member surface)"
   },
   "titlesPendingFirstHeavyRun": true
 }

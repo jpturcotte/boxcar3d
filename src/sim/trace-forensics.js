@@ -50,6 +50,7 @@
 // reclassified rather than force-fit.
 
 import { EVALUATION_TRACE_VERSION, RECORD_BYTES, decodeTraceRecord } from './trace.js';
+import { norm3, dist3 } from './integrity.js';
 
 export const TRACE_FORENSICS_SCHEMA = 'boxcar3d.trace-forensics/1';
 
@@ -106,13 +107,10 @@ export function scaledThresholds(factor, thresholds = FORENSIC_THRESHOLD_DEFAULT
   return Object.freeze(out);
 }
 
-const norm3 = (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-const dist3 = (a, b) => {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-};
+// norm3/dist3 moved to src/sim/integrity.js (the ONLINE detector) and imported
+// back here so the two detectors provably share one vector arithmetic — the
+// online/offline exact-equivalence contract depends on it. Pure refactor:
+// identical implementations, identical results.
 
 const bodyKey = (r) => `${r.vehicleIndex}|${r.bodyRole}|${r.axleIndex === null ? '-' : r.axleIndex}|${r.wheelIndex === null ? '-' : r.wheelIndex}`;
 

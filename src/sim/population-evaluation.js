@@ -26,13 +26,28 @@
 // recheck probe rides in scripts/characterize-population.js for deliberate
 // re-runs on engine upgrades.
 //
-// FITNESS RULING (FITNESS_POLICY_VERSION 1):
-//   fitness = maxForwardDistance   when finite && bodies.allValid && joints.allValid
-//           = 0                    otherwise
-// Maximum progress includes capture 0, so a valid reverse-only vehicle
-// scores 0 (never negative). NO drift subtraction, mass division, efficiency
-// reward, wheel-count penalty, complexity bonus, terrain normalization, or
-// multiobjective scoring — one transparent baseline metric.
+// FITNESS RULING (FITNESS_POLICY_VERSION 2 — the numerical-integrity gate):
+//   selectable = isVehicleResultValid(v) && v.integrity.status === 'ok'
+//   fitness    = maxForwardDistance   when selectable
+//              = 0                    otherwise
+// v2 composes the UNCHANGED narrow validity predicate (finite && bodies &&
+// joints — isVehicleResultValid keeps meaning exactly what it meant) with the
+// integrity policy v1 classification (src/sim/integrity.js): solver
+// divergence reaches enormous-but-FINITE internal speeds that validity never
+// sees, and two of the five known generation-0 cases hide behind
+// ordinary-looking forward distance — so integrity failure must be
+// non-selectable REGARDLESS of the distance scored. Raw task metrics stay
+// observable in diagnostics (never silently zeroed); the integrity block
+// itself rides along in full. Maximum progress includes capture 0, so a
+// selectable reverse-only vehicle scores 0 (never negative). Still NO drift
+// subtraction, mass division, efficiency reward, wheel-count penalty,
+// complexity bonus, terrain normalization, or multiobjective scoring.
+//
+// CHAMPION ELIGIBILITY (v2): selection consumes selectableChampionFromEvaluation,
+// which returns the best SELECTABLE individual or null when none exists — an
+// integrity-failed individual must never become the evolutionary champion
+// merely because every fitness is zero. championFromEvaluation stays as the
+// DIAGNOSTIC best-observed selector (reports, never selection or elitism).
 //
 // EVALUATION-SPEC ENCODING v1 (EVALUATION_SPEC_VERSION; explicit little-
 // endian walk): the SELF-CONTAINED evaluation identity. Two evaluations
@@ -48,15 +63,20 @@
 //   scalars as f64; ranges as u8 length + f64s; featureTypeWeights as
 //   u8 count + (u8 declared-type index + f64) in WEIGHT_KEYS order.
 //
-// FITNESS-VECTOR ENCODING v1 (FITNESS_VECTOR_VERSION): binds the SNAPSHOT
-// digest (content identity — never the initialization manifest) and the
-// spec digest, then per individual in ascending-individualId order the
-// exact f64 fitness with an explicit validity byte (an invalid 0 is never
-// indistinguishable from a valid 0):
-//   u16 fitnessVectorVersion | u16 fitnessPolicyVersion | u16 snapshotVersion
+// FITNESS-VECTOR ENCODING v2 (FITNESS_VECTOR_VERSION): binds the SNAPSHOT
+// digest (content identity — never the initialization manifest), the spec
+// digest, AND the integrity policy version, then per individual in
+// ascending-individualId order the exact f64 fitness with an explicit
+// validity byte and an integrity-status byte (an integrity-failed 0 is never
+// indistinguishable from a merely-poor valid 0). Engine identity is
+// deliberately NOT in the vector — it is a lock-layer attestation, and a
+// source-built engine can truthfully misreport its version string:
+//   u16 fitnessVectorVersion | u16 fitnessPolicyVersion
+//   u16 integrityPolicyVersion | u16 snapshotVersion
 //   u32 populationSnapshotDigestState | u16 evaluationSpecVersion
 //   u32 evaluationSpecDigestState | u32 count
-//   per individual: u32 individualId | u8 validity | f64 fitness
+//   per individual: u32 individualId | u8 validity
+//                 | u8 integrityStatus (INTEGRITY_STATUS index) | f64 fitness
 
 import { runEvaluation } from './evaluation.js';
 import { TERRAIN_DEFAULTS } from './terrain.js';
@@ -68,9 +88,10 @@ import {
 } from './physics/adapter.js';
 import { POPULATION_SNAPSHOT_VERSION, serializePopulationSnapshot, validatePopulation } from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
+import { INTEGRITY_POLICY_VERSION, INTEGRITY_STATUS } from './integrity.js';
 
-export const FITNESS_POLICY_VERSION = 1;
-export const FITNESS_VECTOR_VERSION = 1;
+export const FITNESS_POLICY_VERSION = 2; // v2: the numerical-integrity gate (see the ruling above)
+export const FITNESS_VECTOR_VERSION = 2; // v2: +integrityPolicyVersion header, +integrityStatus byte
 export const EVALUATION_SPEC_VERSION = 1;
 export const POPULATION_WORLD_MODE = 'isolatedWorlds'; // see the world-mode ruling above
 export const REALIZABLE_SUSPENSION_TYPES = Object.freeze(['S0', 'S1']); // engine capability, not policy
@@ -94,8 +115,36 @@ export function isVehicleResultValid(vehicleResult) {
     && vehicleResult.joints.allValid === true;
 }
 
+// The integrity block is MANDATORY on every result the fitness policy
+// consumes (the runner emits it unconditionally on every production path; the
+// core-loop diagnostic off-arm yields integrity: null, which this policy
+// refuses — a fitness computed while the detector was off would be a
+// different, unversioned policy).
+function requireIntegrity(vehicleResult) {
+  const block = vehicleResult.integrity;
+  if (typeof block !== 'object' || block === null
+    || block.policyVersion !== INTEGRITY_POLICY_VERSION
+    || !INTEGRITY_STATUS.includes(block.status)) {
+    fail('vehicleResult.integrity', block === null || block === undefined
+      ? `${String(block)} (fitness policy v${FITNESS_POLICY_VERSION} requires the integrity block — was the detector disabled?)`
+      : `policyVersion ${block.policyVersion}, status ${String(block.status)}`);
+  }
+  return block;
+}
+
+/**
+ * The v2 eligibility predicate: valid (the unchanged narrow body/joint/finite
+ * contract) AND integrity-clean. Distinct from isVehicleResultValid by
+ * design — validity means "the physical result is well-formed evidence";
+ * selectable means "that evidence may compete for selection".
+ */
+export function isVehicleResultSelectable(vehicleResult) {
+  return isVehicleResultValid(vehicleResult)
+    && requireIntegrity(vehicleResult).status === 'ok';
+}
+
 export function fitnessFromVehicleResult(vehicleResult) {
-  return isVehicleResultValid(vehicleResult) ? vehicleResult.maxForwardDistance : 0;
+  return isVehicleResultSelectable(vehicleResult) ? vehicleResult.maxForwardDistance : 0;
 }
 
 // --- Spawn placement (pure) --------------------------------------------------
@@ -401,6 +450,12 @@ export async function evaluatePopulation(population, evaluationSpec) {
       individualId,
       fitness: fitnessFromVehicleResult(v),
       valid: isVehicleResultValid(v),
+      // The integrity classification rides at member level (serialized into
+      // the fitness vector) AND in full inside diagnostics — an
+      // integrity-failed individual stays OBSERVABLE (status, first failure
+      // step, reasons, bounded observations, raw task metrics), never
+      // silently converted to a bare zero.
+      integrityStatus: v.integrity.status,
       diagnostics: {
         forwardDistance: v.forwardDistance,
         maxForwardDistance: v.maxForwardDistance,
@@ -415,6 +470,7 @@ export async function evaluatePopulation(population, evaluationSpec) {
         joints: v.joints,
         mass: v.mass,
         stationCount: v.stationCount,
+        integrity: v.integrity,
       },
     });
   }
@@ -448,10 +504,11 @@ export function serializeFitnessVector(evaluation) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
     }
   }
-  const view = new DataView(new ArrayBuffer(2 + 2 + 2 + 4 + 2 + 4 + 4 + individuals.length * (4 + 1 + 8)));
+  const view = new DataView(new ArrayBuffer(2 + 2 + 2 + 2 + 4 + 2 + 4 + 4 + individuals.length * (4 + 1 + 1 + 8)));
   let o = 0;
   view.setUint16(o, FITNESS_VECTOR_VERSION, true); o += 2;
   view.setUint16(o, FITNESS_POLICY_VERSION, true); o += 2;
+  view.setUint16(o, INTEGRITY_POLICY_VERSION, true); o += 2;
   view.setUint16(o, POPULATION_SNAPSHOT_VERSION, true); o += 2;
   view.setUint32(o, populationSnapshotDigestState, true); o += 4;
   view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
@@ -462,30 +519,38 @@ export function serializeFitnessVector(evaluation) {
       fail('individualId', ind.individualId);
     }
     if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
+    const statusIndex = INTEGRITY_STATUS.indexOf(ind.integrityStatus);
+    if (statusIndex === -1) fail(`individual ${ind.individualId} integrityStatus`, ind.integrityStatus);
     // The fitness contract is a non-negative finite score: NaN/Infinity would
     // emit implementation-defined bytes (the cross-engine hazard the codec
     // exists to prevent), and a negative fitness contradicts the max-progress
-    // policy (maxForwardDistance ≥ 0, invalid ⇒ 0). Reject an internally
-    // contradictory vector rather than faithfully serialize it.
+    // policy (maxForwardDistance ≥ 0, unselectable ⇒ 0). Reject an internally
+    // contradictory vector rather than faithfully serialize it: fitness must
+    // be 0 unless the member is BOTH valid and integrity-clean (policy v2).
     if (!Number.isFinite(ind.fitness) || ind.fitness < 0) fail(`individual ${ind.individualId} fitness`, ind.fitness);
-    if (!ind.valid && ind.fitness !== 0) fail(`individual ${ind.individualId} fitness`, `invalid individual must have fitness 0, got ${ind.fitness}`);
+    if ((!ind.valid || ind.integrityStatus !== 'ok') && ind.fitness !== 0) {
+      fail(`individual ${ind.individualId} fitness`,
+        `unselectable individual (valid ${ind.valid}, integrity ${ind.integrityStatus}) must have fitness 0, got ${ind.fitness}`);
+    }
     view.setUint32(o, ind.individualId, true); o += 4;
     view.setUint8(o, ind.valid ? 1 : 0); o += 1;
+    view.setUint8(o, statusIndex); o += 1;
     view.setFloat64(o, ind.fitness, true); o += 8;
   }
   return new Uint8Array(view.buffer);
 }
 
 /**
- * The deterministic champion, by a total order robust to input arrangement:
+ * DIAGNOSTIC best-observed individual (reports and instrumentation ONLY —
+ * selection and elitism must consume selectableChampionFromEvaluation below).
+ * Total order robust to input arrangement:
  *   1. greater fitness;
  *   2. on an EXACT fitness tie, VALID over invalid;
  *   3. then the LOWEST individualId.
- * The validity rank matters at a zero-fitness tie: without it an invalid
- * individual (fitness 0) could out-rank an equally-scoring VALID one purely on
- * a lower id, and Phase 1B elitism would then preserve an unrealizable genotype
- * over a viable one. An all-invalid population still yields a well-defined
- * {lowest id, fitness 0, valid false} champion.
+ * An all-invalid population still yields a well-defined {lowest id, fitness 0,
+ * valid false} best-observed row. Under fitness policy v2 this can surface an
+ * integrity-failed individual at a zero-fitness tie — which is exactly why it
+ * is diagnostic, not selective.
  */
 export function championFromEvaluation(evaluation) {
   if (typeof evaluation !== 'object' || evaluation === null
@@ -500,6 +565,37 @@ export function championFromEvaluation(evaluation) {
   let champion = evaluation.individuals[0];
   for (const ind of evaluation.individuals) {
     if (better(ind, champion)) champion = ind;
+  }
+  return champion;
+}
+
+/**
+ * The SELECTION champion (fitness policy v2's eligibility contract): the best
+ * individual among those that are BOTH valid AND integrity-clean
+ * (integrityStatus === 'ok'), by greater fitness then lowest individualId —
+ * or **null** when no selectable individual exists. Returning an explicit
+ * null (never a least-bad unselectable member) is the point: an
+ * integrity-failed individual must not become the evolutionary champion
+ * merely because every fitness is zero; a generation with no selectable
+ * member is a condition Phase 1B must handle deliberately, not paper over.
+ */
+export function selectableChampionFromEvaluation(evaluation) {
+  if (typeof evaluation !== 'object' || evaluation === null
+    || !Array.isArray(evaluation.individuals) || evaluation.individuals.length === 0) {
+    fail('evaluation.individuals', evaluation && evaluation.individuals);
+  }
+  let champion = null;
+  for (const ind of evaluation.individuals) {
+    if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
+    if (!INTEGRITY_STATUS.includes(ind.integrityStatus)) {
+      fail(`individual ${ind.individualId} integrityStatus`, ind.integrityStatus);
+    }
+    if (!(ind.valid && ind.integrityStatus === 'ok')) continue;
+    if (champion === null
+      || ind.fitness > champion.fitness
+      || (ind.fitness === champion.fitness && ind.individualId < champion.individualId)) {
+      champion = ind;
+    }
   }
   return champion;
 }

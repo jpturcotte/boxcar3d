@@ -41,8 +41,9 @@ export const POPULATION_GOLDEN_LOCKS = Object.freeze({
     fixtureVersion: 1,
     populationSnapshotVersion: 1,
     populationInitializerVersion: 1,
-    fitnessPolicyVersion: 1,
-    fitnessVectorVersion: 1,
+    fitnessPolicyVersion: 2, // v2: the numerical-integrity gate (deliberate re-lock, 2026-07-14)
+    fitnessVectorVersion: 2, // v2: +integrityPolicyVersion header, +integrityStatus byte
+    integrityPolicyVersion: 1,
     evaluationSpecVersion: 1,
     genotypeVersion: 1,
     traceVersion: 1,
@@ -58,7 +59,14 @@ export const POPULATION_GOLDEN_LOCKS = Object.freeze({
     populationSnapshotDigest: 'cae92db7',
     populationInitializationDigest: '7acb271d',
     evaluationSpecDigest: '1bc14aba',
-    fitnessVectorDigest: 'bded0d30',
+    // Deliberate re-lock 2026-07-14 (cause: intended policy/encoding change —
+    // fitness policy v2 + fitness-vector encoding v2). MEASURED before the
+    // re-lock: all 20 members are integrity-clean (status 'ok', zero alerts),
+    // so every per-member fitness/valid literal below is UNCHANGED bit-exact
+    // from the v1 lock, as are the champion and the champion trace — only the
+    // vector bytes moved (new header field + per-member status byte).
+    // v1 digest was 'bded0d30'.
+    fitnessVectorDigest: 'a6d04f75',
     orderedIndividualIds: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]),
     individuals: Object.freeze([
     Object.freeze({ individualId: 0, valid: true, fitness: 1.0603141784667969, stepAtMaxForwardDistance: 300, forwardDistance: 1.0603141784667969, maxBackwardDistance: 0.0081024169921875 }),

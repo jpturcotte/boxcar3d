@@ -25,8 +25,9 @@ import { POPULATION_FIXTURE_A, populationEvaluationInputsFor } from '../src/sim/
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   POPULATION_WORLD_MODE, championFromEvaluation, evaluatePopulation,
-  serializeEvaluationSpec, spawnPoseOnFlatStart,
+  selectableChampionFromEvaluation, serializeEvaluationSpec, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
+import { INTEGRITY_POLICY_VERSION } from '../src/sim/integrity.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from '../src/sim/population.js';
 import { POPULATION_INITIALIZER_VERSION, serializePopulationInitialization } from '../src/sim/population-initializer.js';
 import { GENOTYPE_VERSION, compileAssembly, serializeGenotype } from '../src/sim/assembly.js';
@@ -52,6 +53,7 @@ describe('population lock staleness teeth', () => {
     expect(LOCK.populationInitializerVersion).toBe(POPULATION_INITIALIZER_VERSION);
     expect(LOCK.fitnessPolicyVersion).toBe(FITNESS_POLICY_VERSION);
     expect(LOCK.fitnessVectorVersion).toBe(FITNESS_VECTOR_VERSION);
+    expect(LOCK.integrityPolicyVersion).toBe(INTEGRITY_POLICY_VERSION);
     expect(LOCK.evaluationSpecVersion).toBe(EVALUATION_SPEC_VERSION);
     expect(LOCK.genotypeVersion).toBe(GENOTYPE_VERSION);
     expect(LOCK.traceVersion).toBe(EVALUATION_TRACE_VERSION);
@@ -191,6 +193,15 @@ describe('population evaluation gate (deterministic flavor)', () => {
     const champion = championFromEvaluation(b);
     expect(champion.individualId).toBe(LOCK.champion.individualId);
     expect(Object.is(champion.fitness, LOCK.champion.fitness)).toBe(true);
+    // Policy v2 re-attestation: the SELECTION champion (selectable members
+    // only) picks the SAME individual — the committed fixture measured
+    // 20/20 integrity-clean at the v2 re-lock, so the eligibility filter is
+    // a no-op here by measurement, not by assumption.
+    const selectable = selectableChampionFromEvaluation(b);
+    expect(selectable).not.toBeNull();
+    expect(selectable.individualId).toBe(LOCK.champion.individualId);
+    expect(selectable.integrityStatus).toBe('ok');
+    expect(b.individuals.every((i) => i.integrityStatus === 'ok')).toBe(true);
   });
 
   test('champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)', { timeout: 240000 }, async () => {

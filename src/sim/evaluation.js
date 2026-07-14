@@ -36,6 +36,7 @@ import {
 } from './physics/adapter.js';
 import { generateCorridorTerrain, TERRAIN_DEFAULTS } from './terrain.js';
 import { EVALUATION_TRACE_VERSION, MAX_STEP_INDEX, TERMINATION_REASONS, TRACE_MODES, TraceWriter } from './trace.js';
+import { createIntegrityState, finalizeIntegrity, foldIntegrity } from './integrity.js';
 
 export { EVALUATION_TRACE_VERSION, TERMINATION_REASONS }; // one import point for consumers
 
@@ -225,6 +226,7 @@ export function runRealizedEvaluationLoop(world, realized, {
   maxSteps,
   traceMode = 'none',
   checkpointInterval = 1,
+  integrity = true,
   staticColliders,
   profile = false,
   inspect = null,
@@ -243,6 +245,12 @@ export function runRealizedEvaluationLoop(world, realized, {
   if (inspect !== null && typeof inspect !== 'function') {
     fail('runRealizedEvaluationLoop.inspect', inspect);
   }
+  // The integrity toggle exists ONLY at this direct-caller seam (the `inspect`
+  // precedent): production (runEvaluation) never passes it, so integrity is
+  // ALWAYS ON through every public path — a policy, not an option. The off
+  // arm exists for cost measurement and non-interference witnesses
+  // (tests/evaluation-core.test.js, scripts/probe-integrity.js).
+  if (typeof integrity !== 'boolean') fail('runRealizedEvaluationLoop.integrity', integrity);
   // Honest-dt contract: the declaration must MATCH the engine readback (the
   // engine stores dt as f32) — a composition running 1/120 while declaring
   // 1/60 must fail loud here, never report a misleading requestedDt.
@@ -282,6 +290,10 @@ export function runRealizedEvaluationLoop(world, realized, {
       origin: { ...rec.chassis.body.translation() },
       latched: null,
       progress: createProgressState(),
+      // The online numerical-integrity fold (policy v1, src/sim/integrity.js):
+      // per-capture thresholds scale from the EFFECTIVE dt (the f32 engine
+      // readback), never the f64 request — the pinned captureDt convention.
+      integrity: integrity ? createIntegrityState(bodies.length, effectiveDt) : null,
     };
   });
 
@@ -313,6 +325,12 @@ export function runRealizedEvaluationLoop(world, realized, {
       if (t.latched === null) {
         foldProgress(t.progress, stepIndex, reads[0].translation.x - t.origin.x);
       }
+      // Integrity folds from the SAME reads, deliberately NOT gated on the
+      // latch: classification keeps observing after a non-finite latch (the
+      // NaN samples are arithmetic-inert — no peak, no predicate — and other
+      // still-finite bodies keep classifying). Result-only, like progress:
+      // nothing here enters the trace bytes.
+      if (t.integrity !== null) foldIntegrity(t.integrity, stepIndex, reads);
       if (writer !== null) {
         const terminated = t.latched !== null;
         for (let bi = 0; bi < t.bodies.length; bi += 1) {
@@ -383,6 +401,11 @@ export function runRealizedEvaluationLoop(world, realized, {
       },
       mass: t.rec.mass,
       stationCount: t.rec.wheels.length,
+      // The numerical-integrity classification (policy v1) — a RESULT field
+      // only, the maxForwardDistance precedent: never enters the trace bytes,
+      // so no golden digest can move. `null` only under the direct-caller
+      // diagnostic off-arm; every production result carries the block.
+      integrity: t.integrity === null ? null : finalizeIntegrity(t.integrity),
     };
   });
   return {

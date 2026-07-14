@@ -541,16 +541,27 @@ storage-precision change would move.
 | Group | Class | Asserts | Anchor |
 | --- | --- | --- | --- |
 | smoke config: versioned report shape, all hard checks green | (a) | structure + identity-class hard checks only | `:24` |
-| pass selection normalizes identically (API and CLI) | (a) | dispatch normalization | `:185` |
-| `['baseline,terrain']` dispatches exactly those passes | (a) | dispatch | `:196` |
-| single-pass run reports the real global timestep, never null | (a)/(b) | dt readback echoed | `:212` |
-| unknown passes/selectors fail loud | (a) | fail-loud | `:232` |
+| pass selection normalizes identically (API and CLI) | (a) | dispatch normalization | `:197` |
+| `['baseline,terrain']` dispatches exactly those passes | (a) | dispatch | `:208` |
+| single-pass run reports the real global timestep, never null | (a)/(b) | dt readback echoed | `:224` |
+| unknown passes/selectors fail loud | (a) | fail-loud | `:244` |
+| multibody arm: `unsupported === false`, `multibody:reproducer` structural check present, finite maxForwardDistance | (a) version-scoped | the swap's structural PREMISE (`stations>0 ∧ impulseAfter===0 ∧ multibodyAfter===stations`) — never a physics outcome; the capability read is scoped by the file's own `rapierVersion === '0.19.3'` pin, not a physics claim | `:161` |
+| CLI parser: `--arm` selects one arm; `--prevalence-seeds` parses a canonical uint32 list; `argv` round-trips; unknown `--arm`/invalid seed fail loud; strict `parseArgs` rejects unknown options | (a) | argv → config parse + fail-loud (the P2 fix: `--arm`/`--prevalence-seeds` proven WIRED, not just documented) | `:255` |
 
 By design the probe asserts identity-class facts only (genotype digests,
 deterministic-repeat over full record streams + checkpoints, f32 dt). No
 committed check asserts the explosion occurs — a future engine that converges
 the ill-conditioned islands turns the probe's magnitudes quiet without a red,
 and the ruling gets re-evaluated (see `docs/physics-integrity-finite-explosion-report-2026-07-13.md` §12, §16).
+
+**Self-coverage note (this PR's own new assertions).** The `--arm multibody`
+structural check and the two new CLI options are classified in the rows above,
+all class (a) — they are project-contract structure/fail-loud/dispatch
+assertions that do NOT move on an engine change (the multibody capability read
+is version-scoped by the file's existing `rapierVersion` pin, itself class (c) —
+row "smoke config"). The one CI-touchpoint literal that IS class (c) here is the
+`engine.rapierVersion` pin (`0.19.3`), already inventoried in §4.2. The new
+package-smoke instrument is §10.6.
 
 ### 10.3 `tests/explosion-witnesses.test.js` — witness/reproducer identities (pure)
 
@@ -580,6 +591,29 @@ that turns this smoke red on an engine bump.
 | Group | Class | Asserts | Anchor |
 | --- | --- | --- | --- |
 | smoke report well-formed, hard invariants hold, renders to markdown | (a) | structure + hard invariants | `:11` |
+
+### 10.6 `scripts/probe-rapier-package-smoke.js` — the pre-suite consumability check (instrument, no CI test)
+
+Added in the core-0.34 spike PR (`docs/rapier-034-spike-2026-07.md`). A Node-only
+instrument (`npm run probe:package-smoke`), the FIRST command to run against any
+candidate package pair before a suite touches it. **Adapter-free by design** — it
+imports the two packages by name (the namespace import, verified working on
+0.19.3: the CJS→ESM interop exposes `init`/`version`/`World`/`ColliderDesc`/
+`RigidBodyDesc` as named exports; the review's "must use `.default`" P1 is a
+false positive) and nothing from `src/sim`, so it still runs when a candidate
+breaks the adapter's API preflights.
+
+| Group | Class | Asserts | Anchor |
+| --- | --- | --- | --- |
+| import + `init()`; world constructed + 10 steps; final state finite; ball fell under gravity | (a) consumability (exit 1) | the engine is loadable/initializable/steppable at all — NOT a physics-calibrated gate | `:75,:87` |
+| deterministic flavor same-config repeat **bit-identical** | (a) determinism (exit 1) | a "deterministic" build that lost its determinism feature is not consumable | `:94` |
+| `version()` string | OBSERVATION (never asserted) | the identity trap — a source build truthfully reports the stable string (wasm bakes `CARGO_PKG_VERSION`); tarball hashes + upstream SHA are the only reliable engine identity | `:83` |
+| `world.timestep` f32 readback | OBSERVATION (printed) | the HARD dt-semantics check lives in `probe:timing` (§10.1), never here | `:85` |
+
+No golden digest, no `rapierVersion` assertion, no physics-magnitude check — so
+this instrument stays green across an engine swap unless the engine is
+genuinely unusable. It has NO committed CI touchpoint test (like `probe:s1` /
+`probe:timing`): its contract is its own exit code.
 
 ---
 

@@ -14,16 +14,23 @@ clean (internally deterministic, every project contract preserved, no
 regression, no borrow error reproduced) — but there is no divergence-fix to
 adopt. **PR-B (the numerical-integrity policy) proceeds on stable 0.19.3 as
 planned; the multibody binding-extension investigation is the named follow-up.**
-The multibody 2×2 shows the joint REPRESENTATION (not the engine version) is the
-lever, but motors are unavailable on multibody revolute/prismatic joints in both
-bindings. Full evidence below; gate rationale in §10.
+The multibody 2×2 shows the joint REPRESENTATION / constraint-enforcement regime
+(not the engine version) is the lever — measured for the UNDRIVEN reproducer
+only — but ALL multibody motor/limit methods are commented out of both bindings,
+so the driven phenotype cannot take that path. Full evidence below; gate
+rationale in §10.
 
 Spike artifacts (identifiable by hash, §3): candidate tarballs +
-build/probe logs preserved under `C:\Users\jp2k5\GitHub\rapier-upstream\`
-(tarballs/, spike-logs/); the from-source build tree is disposable (Outcome B —
-not adopting). The fresh-seed 20260730 arm was run programmatically via
-`runProbe({ passes:['prevalence'], prevalenceSeeds:[20260730] })` (the CLI does
-not expose `prevalenceSeeds`).
+build/probe logs preserved locally under
+`C:\Users\jp2k5\GitHub\rapier-034-spike-artifacts\` (the two `.tgz` at the root
++ `spike-logs/`); the from-source build tree is disposable (Outcome B — not
+adopting). These are the **historical local build** (§2); the reproducible,
+artifact-audited evidence is the committed `workflow_dispatch` experiment
+(`.github/workflows/rapier-034-spike-experiment.yml`, §2/§4). The fresh-seed
+20260730 arm was originally run programmatically via
+`runProbe({ passes:['prevalence'], prevalenceSeeds:[20260730] })`; the probe CLI
+now exposes it directly too:
+`npm run probe:physics-explosion -- --pass prevalence --prevalence-seeds 20260730`.
 
 ---
 
@@ -40,12 +47,18 @@ not expose `prevalenceSeeds`).
 | BoxCar3D base SHA | `7bf46d1` (main; PR #17 landed) |
 | BoxCar3D PR-A branch | `claude/numerical-integrity-rapier-policy-ac0a39` |
 | Stable dep pins under test-against | `@dimforge/rapier3d-compat@0.19.3`, `@dimforge/rapier3d-deterministic-compat@0.19.3` (core ~0.30.1) |
-| Toolchain | rustc/cargo 1.90.0, wasm-pack 0.13.1, Node 22.19.0, wasm-bindgen (wasm-pack-managed), Windows 11 x64 |
+| Toolchain (historical local build) | rustc/cargo 1.90.0, wasm-pack 0.13.1, Node 22.19.0, wasm-bindgen (wasm-pack-managed), Windows 11 x64 |
+| Toolchain (CI experiment arm) | asserted per run — `command -v wasm-pack` absolute path + `wasm-pack --version` recorded BEFORE the build and written into the provenance bundle (§2); `build-rust.sh` is invoked directly, NOT via `npm run`, so upstream's `typescript/package.json` wasm-pack **0.12.1** devDep cannot PATH-shadow the intended system wasm-pack |
+| Committed `package-lock.json` SHA-256 | `16882aeda3d037d26830d04b6cbbb06b516714b9e8985fb37f3b9f75f0a37ffa` (the stable-dependency lock the candidate arm rewrites; recorded so the candidate-install delta is auditable) |
+| CI experiment commit SHA | resolved per dispatch to an immutable 40-char `github.sha` and written into every workflow artifact (§2) — deliberately NOT pinned in this record (the decision-record commit is legitimately newer than the experiment commit; pinning a "final PR-A head SHA" would be a self-reference loop) |
 | npm dist-tags (2026-07-14) | `latest: 0.19.3`, `canary: 0.0.0-0fd32c1-20251105` (the canary is an OLDER commit than c13133ad — no published canary carries core 0.34 yet) |
 
-Packaging identity patch (the ONLY local change to the upstream tree; keeps
+Packaging identity patch (the only change to engine/wasm **source** — the CI
+experiment arm, §2, runs upstream's packaging scripts UNMODIFIED, so on that
+reproducible arm this patch is the sole tree edit; the historical local build
+additionally trimmed packaging-only scripts, disclosed in §2). Keeps
 `RAPIER.version()` distinguishable — the wasm bakes `CARGO_PKG_VERSION` at build
-time, `typescript/src/lib.rs:16-17`):
+time, `typescript/src/lib.rs:16-17`:
 
 ```diff
 # typescript/builds/prepare_builds/templates/Cargo.toml.tera
@@ -56,6 +69,22 @@ time, `typescript/src/lib.rs:16-17`):
 Tarball / wasm-binary / patched-file SHA-256 hashes: §3.
 
 ## 2. Build recipe (reproducible from the pinned commit)
+
+> **Two builds, one verdict.** The §3–§5 evidence was first produced by a
+> **historical local build** (Windows, 3D flavors only, with the packaging
+> deviations disclosed below under "Build progress / deviations"). The
+> **reproducible, artifact-audited arm** is the committed `workflow_dispatch`
+> experiment (`.github/workflows/rapier-034-spike-experiment.yml`): it builds
+> all six flavors from the pinned commit with upstream's packaging scripts
+> **unmodified** (no `gen_src`/`rollup` trim), invokes `build-rust.sh` directly
+> in the required order (deterministic-3D first), and asserts its own toolchain
+> — so on the CI arm the §1 identity patch genuinely is the only tree edit. The
+> exact CI recipe and its measured artifact hashes fold into §2/§3/§4 once a
+> `heavy=true` dispatch lands (C5). **wasm is not byte-reproducible across
+> environments**, so the CI wasm/tarball hashes will differ from §3's local
+> hashes; the Outcome-B verdict reproduces at **classification level**
+> (catastrophic vs quiescent, prevalence counts), not to the last m/s (§10).
+> The historical local recipe follows.
 
 Day-0 discovery findings (read before building):
 
@@ -80,12 +109,17 @@ Day-0 discovery findings (read before building):
   `src.ts/dynamics/multibody_joint.ts`, 2026-07-14):** `RevoluteMultibodyJoint`
   and `PrismaticMultibodyJoint` both extend `UnitMultibodyJoint`, whose
   `limitsEnabled`/`configureMotorModel`/`configureMotorVelocity`/
-  `configureMotorPosition`/`configureMotor` are **still commented out**
-  (lines 150–180). Only `SphericalMultibodyJoint` (a 3-DOF ball joint, lines
-  200–214) has ACTIVE motor methods, and they take `Vector`/`Quaternion`
-  targets — unusable for a 1-DOF wheel revolute or a 1-DOF suspension
-  prismatic. The Rust-0.34 multibody armature/per-DoF-spring features are not
-  exposed through TS either. **Conclusion unchanged from 0.19.3: the motorized
+  `configureMotorPosition`/`configureMotor` are **all commented out**
+  (lines 147–182). `SphericalMultibodyJoint` (a 3-DOF ball joint, lines
+  200–221) is the same story — its four motor methods sit inside a
+  `/* Unsupported by this alpha release. */` block, i.e. **also commented
+  out** (and, taking `Vector`/`Quaternion` targets, unusable for a 1-DOF
+  wheel revolute or a 1-DOF suspension prismatic even if they were exposed).
+  So **EVERY** multibody motor/limit method — Unit and Spherical — is
+  commented out on BOTH 0.19.3 and core 0.34; the Rust-0.34 multibody
+  armature/per-DoF-spring features are not exposed through TS either.
+  **Conclusion unchanged from 0.19.3 and in fact strengthened: NO multibody
+  joint exposes a motor or a settable limit from JS, so the motorized
   production phenotype (S0 revolute velocity motor; S1 prismatic
   position-motor + limits) cannot be realized on multibody joints from JS,
   even on core 0.34.** The undriven multibody reproducer arm needs neither, so
@@ -207,6 +241,17 @@ Steps SKIPPED and why (all defensible under Outcome B — see §10):
   ("only if Outcome A is live"); a paired stable-vs-candidate cost comparison is
   not decision-relevant when the recommendation is to stay on stable. Deferred.
 
+> **Update (Part C) — the skip framing above is superseded for the reproducible
+> arm.** Deferring these as "Outcome-A-only" *after* observing Outcome B is
+> exactly the auditability gap the review flagged, so the committed
+> `workflow_dispatch` experiment (§2) RUNS every one of them on BOTH the stable
+> and candidate arms of a controlled same-commit pair — candidate Chromium
+> (step 5, Node↔Chromium digest agreement), the Vite build + app-scene smoke
+> (step 6, a **GATE**), and paired `bench:physics --smoke` (step 11). They are
+> no longer skipped-then-reclassified; their measured results fold into
+> §4/§5/§8 once a `heavy=true` dispatch lands (C5). The local run's skips remain
+> recorded above as the honest historical state.
+
 ## 5. Headline comparison (0.19.3 frozen vs core-0.34 measured)
 
 ### 5.1 Minimum reproducer — the divergence PERSISTS on core 0.34
@@ -240,14 +285,23 @@ new core.
 The divergence is **impulse-solver-specific AND representation-dependent, not
 version-specific.** Re-expressing the identical undriven island (same bodies,
 masses, anchors, axis) as reduced-coordinate multibody joints removes it on
-BOTH cores. The lever is the JOINT REPRESENTATION, not the engine version — a
-result the version-only spike could not have produced without the arm.
-**Caveat (load-bearing):** this quiescence is measured only for the UNDRIVEN
-reproducer. The production S0/S1 phenotype needs a revolute velocity motor and
-a prismatic position-motor + limits, and §2 confirms those multibody motor/limit
-methods are commented out of the TS bindings on BOTH 0.19.3 and core 0.34. So
-multibody is a demonstrated fix for the *failure mechanism* but NOT a usable
-production path today without upstream binding work.
+BOTH cores. This is not a relabeling: the swap changes the
+**constraint-enforcement regime**. Reduced-coordinate multibody joints
+eliminate the constrained DOFs from the coordinate space and enforce the joint
+as a HARD constraint; the impulse path keeps maximal coordinates and enforces
+the joint as a SOFT constraint the solver satisfies iteratively (and, on these
+ill-conditioned islands, fails to converge — the PR #17 mechanism). The lever is
+the joint REPRESENTATION / constraint-enforcement regime, not the engine
+version — a result the version-only spike could not have produced without the
+arm. **Caveat (load-bearing):** this quiescence is measured only for the
+UNDRIVEN reproducer. The production S0/S1 phenotype needs a revolute velocity
+motor and a prismatic position-motor + limits, and §2 confirms EVERY multibody
+motor/limit method (Unit and Spherical) is commented out of the TS bindings on
+BOTH 0.19.3 and core 0.34. So multibody demonstrably removes the divergence for
+the *undriven failure mechanism*, but it is NOT a usable production path today —
+and the undriven result does not by itself establish that a MOTORIZED multibody
+realization (with the extra constraint forces a motor and limits inject) would
+stay quiescent — without upstream binding work.
 
 ### 5.3 Prevalence + witnesses + fresh-seed arm
 
@@ -260,9 +314,30 @@ production path today without upstream binding work.
 | fresh seed 20260730 (20) | not previously run | **2/20** (ids 0@106, 5@48) |
 | **combined** | — | **7/80 catastrophic on core 0.34** |
 
+> **Controlled-pair note (B4/Blocker 3).** In THIS (historical local) table the
+> stable column is the **frozen PR #17 corpus**, not a fresh rerun, and the
+> fresh seed 20260730 was measured on the **candidate only** ("not previously
+> run" on stable). That is exactly the controlled-pair gap the review flagged.
+> The committed `workflow_dispatch` experiment (§2, Part C) closes it: it runs
+> a **fresh same-commit stable rerun** alongside the candidate — including
+> 20260730 on **both** arms — from one immutable `github.sha`, and the
+> generated `comparison.md` reports both columns side by side. Regenerable via
+> `npm run probe:physics-explosion -- --pass prevalence --prevalence-seeds 20260730`.
+> The frozen columns here are replaced by the CI pair's measured stable rerun
+> once a `heavy=true` dispatch lands (C5).
+
 - The **witnesses are confirmed by the prevalence classification itself**:
   A (20260725:19) cat@51, B (20260728:4) cat@45, C (20260729:19) cat@62,
   S (20260725:14) cat@227 — all four still catastrophic on core 0.34.
+- **Onset-window margin (flag):** the classification window is
+  `WITNESS_SPEC.maxSteps = 300`. The reproducer (`cat@107`) and witnesses A/B/C
+  (cat@45–62) have wide margin, but witness S's catastrophic onset is `@227` —
+  only ~73 steps inside the window. A future onset DELAY like the reproducer's
+  own 46→107 shift on this very core could push a marginal case past step 300
+  and silently reclassify it *quiescent*, blinding the tripwire. Recommend
+  widening `WITNESS_SPEC.maxSteps` (or asserting a per-witness onset-margin
+  floor) on the next engine bump so the classification cannot go dark by onset
+  drift alone.
 - The **two fitness-hidden cases persist**: 20260725 id 1 (peak 89,035 m/s) and
   id 14 (peak 6.45e7 m/s) are catastrophic on internal speed while their forward
   distance looks ordinary — exactly the pattern no displacement cutoff catches.
@@ -288,6 +363,18 @@ discriminator held, and prevalence did not worsen (5/60, same individuals).
 The only Class-1-shaped observation is the single **profiler re-enable DRIFT**
 in `probe:timing` — a class-(b) engine-finding (profiler semantics), not a
 contract. The PR #18 `world.free()` borrow error did **not** reproduce (§9).
+
+**Scope of this claim (honest).** "No Class-1/3/4 regression" is asserted over
+the surfaces the historical local build exercised: the full Node unit suite
+(all 13 class-(a) gates), `probe:timing`, and the reproducer/prevalence probes.
+Candidate **Chromium** (Node↔Chromium determinism agreement on the new digests),
+the **Vite build + app-scene smoke**, and the **paired bench** were NOT exercised
+locally — §4 "Steps SKIPPED" recorded them as Outcome-A adoption preconditions.
+The committed CI experiment (§2/§4, Part C) closes exactly those surfaces on a
+controlled same-commit pair; its candidate arm additionally asserts Node↔Chromium
+digest agreement. So once a `heavy=true` dispatch lands (C5), this claim is
+**substantiated across the required surfaces** rather than scoped to the
+Node-only local run — and until then it is honestly the narrower claim.
 
 ## 7. Lock-migration inventory (would re-lock ONLY on a future adoption)
 
@@ -321,7 +408,11 @@ part of any future adoption evaluation, not this diagnostic.
 ## 9. PR #18 comparison (frozen-first)
 
 PR-A's numbers (§3–§5) were measured and recorded **before** consulting PR #18's
-archived observations. Comparison against the draft-#18 record (per the plan):
+archived observations. **PR #18 is an UNCOMMITTED draft comparator** (not in the
+repo history), so this section is CORROBORATION, not primary evidence — the
+primary same-commit stable-vs-candidate evidence is the controlled CI pair
+(§2/§4, Part C), whose fresh stable rerun stands independently of #18.
+Comparison against the draft-#18 record (per the plan):
 
 | Observation | PR #18 (archived) | PR-A (independent) | Verdict |
 | --- | --- | --- | --- |
@@ -363,9 +454,11 @@ frozen evidence (§5, §9):
    stabilizer still stabilizes.
 2. Prevalence is **5/60 — the identical five individuals**, both fitness-hidden
    cases intact; a fresh seed adds 2/20, removing the selection confound.
-3. The **multibody 2×2** shows the lever is the joint REPRESENTATION, not the
-   engine version — but the motorized S0/S1 phenotype cannot use multibody
-   joints in either binding (§2, §5.2).
+3. The **multibody 2×2** shows the lever is the joint REPRESENTATION /
+   constraint-enforcement regime (reduced-coordinate hard constraints vs
+   maximal-coordinate soft impulses), not the engine version — but this is
+   measured for the UNDRIVEN reproducer only, and the motorized S0/S1 phenotype
+   cannot use multibody joints in either binding (§2, §5.2).
 4. The candidate is otherwise **excellent**: internally deterministic, every
    project contract preserved, no Class-1/3/4 regression, no borrow error
    reproduced. The 11 test reds are all expected class-(c) golden/version
@@ -381,20 +474,23 @@ frozen evidence (§5, §9):
   as planned. No spike outcome changed its contract.
 - **The multibody/binding-extension investigation is the named follow-up** (NOT
   this PR): the 2×2 makes reduced-coordinate realization the most promising
-  structural fix, but it is blocked on exposing multibody revolute velocity
-  motors + prismatic position-motors/limits through the TS/Wasm bindings — an
-  upstreamable patch whose cost must be weighed against staying on impulse +
-  the (small) integrity detector. That evaluation is future work.
+  structural DIRECTION (demonstrated only for the undriven mechanism), but it is
+  blocked on exposing multibody revolute velocity motors + prismatic
+  position-motors/limits through the TS/Wasm bindings — an upstreamable patch
+  whose cost must be weighed against staying on impulse + the (small) integrity
+  detector, and whose payoff is unproven until a MOTORIZED multibody realization
+  is measured. That evaluation is future work.
 - **Do NOT adopt the source build.** There is no divergence-fix to adopt
   (Outcome A's premise fails), and adopting an unreleased, self-built,
   version-mislabeled binding to gain only "delayed onset" would take on private
   fork cost for no correctness benefit. Stay on stable npm 0.19.3.
 
 **Backend-comparison trigger status:** not yet met. The impulse divergence
-persists, but the multibody representation is a demonstrated in-engine mitigation
-path (pending binding work), so a whole-backend comparison is premature. Revisit
-only if the multibody binding-extension proves infeasible AND the integrity
-detector grows beyond a small contract (the §-plan triggers).
+persists, but the multibody representation is a candidate in-engine mitigation
+path — demonstrated for the undriven mechanism only, pending binding work — so a
+whole-backend comparison is premature. Revisit only if the multibody
+binding-extension proves infeasible AND the integrity detector grows beyond a
+small contract (the §-plan triggers).
 
 ### Named follow-ups
 1. **PR-B — numerical-integrity policy** (next; contract frozen in the plan).

@@ -1,0 +1,145 @@
+name: Rapier 0.34 source smoke
+
+on:
+  push:
+    branches:
+      - experiment/rapier-034-source-smoke
+
+permissions:
+  contents: read
+
+jobs:
+  source-build-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RAPIER_COMMIT: c13133ad293ee70c7f9cec9e498eac016c362169
+    steps:
+      - name: Checkout BoxCar3D experiment branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust 1.86 and wasm target
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+          targets: wasm32-unknown-unknown
+
+      - name: Install source-build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen
+          cargo install wasm-pack --locked --version 0.13.1
+
+      - name: Check out pinned upstream Rapier source
+        run: |
+          git clone https://github.com/dimforge/rapier.git "$RUNNER_TEMP/rapier"
+          git -C "$RUNNER_TEMP/rapier" checkout "$RAPIER_COMMIT"
+          test "$(git -C "$RUNNER_TEMP/rapier" rev-parse HEAD)" = "$RAPIER_COMMIT"
+          grep '^version = "0.34.0"' "$RUNNER_TEMP/rapier/Cargo.toml"
+          grep 'rapier{{ dimension }}d = { version = "0.34"' \
+            "$RUNNER_TEMP/rapier/typescript/builds/prepare_builds/templates/Cargo.toml.tera"
+
+      - name: Generate 3D ordinary and deterministic binding projects
+        working-directory: ${{ runner.temp }}/rapier/typescript
+        run: |
+          cargo run -p prepare_builds -- -d dim3 -f non-deterministic
+          cargo run -p prepare_builds -- -d dim3 -f deterministic
+          grep '"enhanced-determinism"' builds/rapier3d-deterministic/Cargo.toml
+
+      - name: Build 3D compat Wasm packages against core 0.34
+        working-directory: ${{ runner.temp }}/rapier/typescript/rapier-compat
+        run: |
+          npm install
+          npm run clean
+          npm run build-rust-3d-non-deterministic
+          npm run build-rust-3d-deterministic
+
+          # Generate only the 3D TypeScript trees needed by this experiment.
+          mkdir -p gen3d
+          cp -r ../src.ts/* gen3d/
+          rm -f gen3d/raw.ts gen3d/init.ts
+          cp -r src3d/* gen3d/
+          find gen3d/ -type f -print0 | LC_ALL=C xargs -0 sed -i.bak '\:#if DIM2:,\:#endif:d'
+          find gen3d/ -type f -name '*.bak' -delete
+
+          for feature in 3d 3d-deterministic; do
+            mkdir -p "builds/${feature}/pkg"
+            cp "builds/${feature}/wasm-build/rapier_wasm3d"* "builds/${feature}/pkg/"
+            cp -r gen3d "builds/${feature}/"
+            cp tsconfig.common.json tsconfig.json "builds/${feature}/"
+            cp tsconfig.pkg3d.json "builds/${feature}/tsconfig.pkg.json"
+            sed -i.bak 's/import.meta.url/"<deleted>"/g' "builds/${feature}/pkg/rapier_wasm3d.js"
+            rm -f "builds/${feature}/pkg/"*.bak
+          done
+
+          # Restrict Rollup to the two packages built above.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('rollup.config.js')
+          s = p.read_text()
+          start = s.index('export default [')
+          s = s[:start] + '''export default [\n    config("3d", "3d"),\n    config("3d", "3d-deterministic"),\n];\n'''
+          p.write_text(s)
+          PY
+
+          npm run build-js
+          npm run fix-raw-file
+
+          test -f builds/3d/pkg/rapier.mjs
+          test -f builds/3d-deterministic/pkg/rapier.mjs
+          node --input-type=module - <<'NODE'
+          const normal = await import('./builds/3d/pkg/rapier.mjs');
+          const deterministic = await import('./builds/3d-deterministic/pkg/rapier.mjs');
+          await normal.init({});
+          await deterministic.init({});
+          console.log(JSON.stringify({
+            normalVersion: normal.version(),
+            deterministicVersion: deterministic.version(),
+            normalMultibody: typeof normal.MultibodyJointSet,
+            deterministicMultibody: typeof deterministic.MultibodyJointSet,
+            prismaticMultibodyMotor: typeof normal.PrismaticMultibodyJoint?.prototype?.configureMotorPosition,
+          }, null, 2));
+          NODE
+
+      - name: Install BoxCar3D dependencies and substitute source-built packages
+        run: |
+          npm ci
+          rm -rf node_modules/@dimforge/rapier3d-compat \
+                 node_modules/@dimforge/rapier3d-deterministic-compat
+          ln -s "$RUNNER_TEMP/rapier/typescript/rapier-compat/builds/3d/pkg" \
+                node_modules/@dimforge/rapier3d-compat
+          ln -s "$RUNNER_TEMP/rapier/typescript/rapier-compat/builds/3d-deterministic/pkg" \
+                node_modules/@dimforge/rapier3d-deterministic-compat
+          node --input-type=module - <<'NODE'
+          const normal = await import('@dimforge/rapier3d-compat');
+          const deterministic = await import('@dimforge/rapier3d-deterministic-compat');
+          await normal.init({});
+          await deterministic.init({});
+          console.log(`BoxCar3D resolved ordinary ${normal.version()} deterministic ${deterministic.version()}`);
+          NODE
+
+      - name: Run API, build, and deterministic contract smoke
+        run: |
+          npm run lint
+          npm run build
+          npm run test:determinism
+
+      - name: Run PR 17 reproducer and probe smoke
+        run: |
+          mkdir -p rapier-034-results
+          npm run probe:physics-explosion -- --pass reproducer | tee rapier-034-results/reproducer.txt
+          npm run probe:physics-explosion -- --smoke | tee rapier-034-results/probe-smoke.txt
+
+      - name: Upload experiment logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapier-034-source-smoke-results
+          path: rapier-034-results
+          if-no-files-found: warn

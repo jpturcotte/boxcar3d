@@ -196,6 +196,17 @@ describe('classify — assertion-level candidate-red enforcement (node)', () => 
     expect(r.errors.join('\n')).toContain('UNEXPECTED FAILURE');
   });
 
+  test('an expected-red file carrying ALL its reds PLUS a file-level error (afterAll/teardown) is caught', () => {
+    // The round-6 fix only handled the ZERO-assertion case; a file with its
+    // normal golden failures AND a suite.message must still be rejected.
+    const rep = nodeCandidateReport();
+    rep.testResults[0].status = 'failed';
+    rep.testResults[0].message = 'RuntimeError: unreachable in afterAll';
+    const r = classify({ testJsonPath: writeJson('c-filelevel.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toMatch(/SIGNATURE MISMATCH|COUNT MISMATCH|file-level/);
+  });
+
   test('DUPLICATE suite entries for the same file are ACCUMULATED, not last-write-wins (a hidden gate-(a) regression surfaces)', () => {
     const rep = nodeCandidateReport();
     // A second evaluation-determinism entry carrying a gate-(a) failure; a
@@ -326,17 +337,31 @@ describe('timing — probe:timing DRIFT allowlist', () => {
 // --- compare: verdict integrity ----------------------------------------------------
 
 describe('compare — verdict established only from usable arms', () => {
+  // Small declared coverage the fixtures satisfy (real inventory = 3 masters +
+  // fresh, 20 each; the shape is what matters here, not the numbers).
+  const TEST_HEAVY = { prevalenceSeeds: [700, 701], freshSeeds: [730], individualsPerSeed: 3 };
+  const mkPrev = (seeds, perSeed = TEST_HEAVY.individualsPerSeed) => ({
+    engine: {},
+    prevalence: seeds.map((seed) => ({
+      populationSeed: seed,
+      catastrophicCount: 1,
+      individuals: Array.from({ length: perSeed }, (_, id) => ({ individualId: id, firstCatastrophicStep: id === 0 ? 5 : null })),
+    })),
+  });
   function buildArtifacts(opts = {}) {
     const {
       candidatePassed = true, candidateReproPresent = true, heavy = false,
       prevalencePresent = true, perfOk = true, prevalenceMalformed = false,
+      prevalenceSeeds = TEST_HEAVY.prevalenceSeeds, freshseedMissing = false,
+      bootstrapComplete = true,
       stableCat = 46, candidateCat = 107, // null => quiescent classification
     } = opts;
     const root = mkdtempSync(join(tmpdir(), 'spike-compare-'));
     const mk = (p) => mkdirSync(join(root, p), { recursive: true });
     const wj = (p, o) => writeFileSync(join(root, p), JSON.stringify(o, null, 2));
     mk('provenance'); mk('results-stable'); mk('results-candidate'); mk('perf'); mk('out');
-    wj('provenance/candidate-provenance.json', { upstreamRef: 'c13133ad', wasmPack: 'wasm-pack 0.13.1', tarballs: {} });
+    wj('expected.json', { bootstrapComplete, heavyEvidence: TEST_HEAVY });
+    wj('provenance/candidate-provenance.json', { requestedUpstreamRef: 'c13133ad', resolvedUpstreamSha: 'c13133ad293', wasmPack: 'wasm-pack 0.13.1', tarballs: {} });
     const repro = (ver, cat) => ({
       engine: { rapierVersion: ver, effectiveDt: 0.01666666753590107 },
       reproducer: [
@@ -344,18 +369,16 @@ describe('compare — verdict established only from usable arms', () => {
         { arm: 'multibody', flavor: 'deterministic', result: { peakBodySpeed: 1.4, maxForwardDistance: 0.1, onset: { firstCatastrophicStep: null } } },
       ],
     });
-    const prev = (ver) => ({ engine: { rapierVersion: ver }, prevalence: [{ populationSeed: 20260725, catastrophicCount: 3, individuals: [] }] });
-    wj('results-stable/reproducer.json', repro('0.19.3', stableCat));
-    wj('results-stable/freshseed.json', prev('0.19.3'));
-    wj('results-stable/arm-manifest.json', { arm: 'stable', resolvedSha: 'abc', heavy });
-    wj('results-stable/adjudication.json', { schema: 'boxcar3d.adjudication/1', arm: 'stable', passed: true, heavy });
-    if (heavy) wj('results-stable/prevalence.json', prev('0.19.3'));
-    if (candidateReproPresent) wj('results-candidate/reproducer.json', repro('0.19.3-c13133ad.0', candidateCat));
-    wj('results-candidate/freshseed.json', prev('0.19.3-c13133ad.0'));
-    wj('results-candidate/arm-manifest.json', { arm: 'candidate', resolvedSha: 'abc', heavy });
-    wj('results-candidate/adjudication.json', { schema: 'boxcar3d.adjudication/1', arm: 'candidate', passed: candidatePassed, heavy });
-    if (heavy && prevalencePresent) {
-      wj('results-candidate/prevalence.json', prevalenceMalformed ? { engine: {}, prevalence: [] } : prev('0.19.3-c13133ad.0'));
+    for (const [arm, ver, cat] of [['stable', '0.19.3', stableCat], ['candidate', '0.19.3-c13133ad.0', candidateCat]]) {
+      if (!(arm === 'candidate' && !candidateReproPresent)) wj(`results-${arm}/reproducer.json`, repro(ver, cat));
+      if (!freshseedMissing) wj(`results-${arm}/freshseed.json`, mkPrev(TEST_HEAVY.freshSeeds));
+      wj(`results-${arm}/arm-manifest.json`, { arm, resolvedSha: 'abc', heavy });
+      wj(`results-${arm}/adjudication.json`, { schema: 'boxcar3d.adjudication/1', arm, passed: arm === 'candidate' ? candidatePassed : true, heavy });
+      if (heavy && (arm === 'stable' || prevalencePresent)) {
+        // Malformed = no prevalence array at all (hits the array guard); an
+        // empty array is instead caught by the seed-coverage check.
+        wj(`results-${arm}/prevalence.json`, prevalenceMalformed ? { engine: {} } : mkPrev(prevalenceSeeds));
+      }
     }
     const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
@@ -363,54 +386,90 @@ describe('compare — verdict established only from usable arms', () => {
     wj('perf/perf.json', { schema: 'boxcar3d.spike-perf/1', summary: { status: parsed === 4 ? 'ok' : 'incomplete', allParsed: parsed === 4, parsed, total: 4 }, runs });
     return root;
   }
+  const runCompare = (root) => compare({ artifacts: root, out: join(root, 'out'), expectedPath: join(root, 'expected.json') });
   const md = (root) => readFileSync(join(root, 'out', 'comparison.md'), 'utf8');
 
-  test('both arms usable -> established; heavy=false is PROVISIONAL, heavy=true citable', () => {
+  test('both arms usable -> established; heavy=false is PROVISIONAL; heavy=true + bootstrapComplete is citable', () => {
     let root = buildArtifacts({ heavy: false });
-    let r = compare({ artifacts: root, out: join(root, 'out') });
+    let r = runCompare(root);
     expect(r.ok).toBe(true);
     expect(r.manifest.verdict.established).toBe(true);
     expect(r.manifest.verdict.citable).toBe(false);
     expect(md(root)).toContain('PROVISIONAL');
 
-    root = buildArtifacts({ heavy: true });
-    r = compare({ artifacts: root, out: join(root, 'out') });
+    root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    r = runCompare(root);
     expect(r.manifest.verdict.citable).toBe(true);
     expect(md(root)).not.toContain('PROVISIONAL');
   });
 
+  // P1b (round-7): the two-stage citability gate. The FIRST heavy run is the
+  // BOOTSTRAP run — structurally non-citable even when Outcome B reproduces,
+  // because the browser inventory is not finalized yet.
+  test('bootstrapComplete=false forces citable=false even on a catastrophic-on-both heavy run', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: false });
+    const r = runCompare(root);
+    expect(r.ok).toBe(true); // Outcome B DID reproduce (the experiment succeeded)
+    expect(r.manifest.verdict.outcomeBReproduced).toBe(true);
+    expect(r.manifest.verdict.bootstrapComplete).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    expect(md(root)).toContain('BOOTSTRAP run');
+  });
+
   test('a FAILED candidate adjudication or a MISSING reproducer classification is INCONCLUSIVE, never "Outcome B"', () => {
     let root = buildArtifacts({ candidatePassed: false });
-    let r = compare({ artifacts: root, out: join(root, 'out') });
+    let r = runCompare(root);
     expect(r.ok).toBe(false);
     expect(r.manifest.verdict.established).toBe(false);
     expect(md(root)).toContain('INCONCLUSIVE');
     expect(md(root)).not.toContain('Outcome B reproduced');
 
     root = buildArtifacts({ candidateReproPresent: false });
-    r = compare({ artifacts: root, out: join(root, 'out') });
+    r = runCompare(root);
     expect(r.ok).toBe(false);
     expect(r.manifest.verdict.reproducerImpulse.sameClass).toBeNull();
     expect(md(root)).not.toContain('SAME class');
   });
 
-  test('a heavy run missing the candidate prevalence file is unusable; incomplete perf reports honestly', () => {
-    let root = buildArtifacts({ heavy: true, prevalencePresent: false });
-    expect(compare({ artifacts: root, out: join(root, 'out') }).ok).toBe(false);
-    expect(md(root)).toContain('prevalence.json missing');
-
-    root = buildArtifacts({ perfOk: false });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
+  test('incomplete perf reports honestly (but does not sink the verdict)', () => {
+    const root = buildArtifacts({ perfOk: false });
+    const r = runCompare(root);
     expect(r.ok).toBe(true); // perf is not decision-relevant to the verdict
     expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
     expect(r.manifest.findings.perf.status).not.toBe('ok');
+  });
+
+  // P2 (round-7): heavy evidence must cover the EXACT declared seed set +
+  // per-seed cardinality on both arms, not merely be a non-empty array.
+  test('a heavy run missing a declared prevalence seed is unusable', () => {
+    const root = buildArtifacts({ heavy: true, prevalenceSeeds: [700] }); // 701 missing
+    expect(runCompare(root).ok).toBe(false);
+    expect(md(root)).toContain('declared seed 701 MISSING');
+  });
+
+  test('a heavy run with an empty/malformed prevalence array is unusable', () => {
+    const root = buildArtifacts({ heavy: true, prevalenceMalformed: true });
+    expect(runCompare(root).ok).toBe(false);
+    expect(md(root)).toContain('missing or malformed');
+  });
+
+  test('a heavy run missing the fresh-seed report is unusable', () => {
+    const root = buildArtifacts({ heavy: true, freshseedMissing: true });
+    expect(runCompare(root).ok).toBe(false);
+    expect(md(root)).toContain('freshseed.json');
+  });
+
+  test('a heavy run missing the candidate prevalence file is unusable', () => {
+    const root = buildArtifacts({ heavy: true, prevalencePresent: false });
+    expect(runCompare(root).ok).toBe(false);
+    expect(md(root)).toContain('prevalence.json');
   });
 
   // P1a (round-6): a DIFFERENT scientific outcome must NOT produce a green,
   // citable run — "experiment executed" is not "Outcome B reproduced".
   test('candidate QUIESCENT (divergence fixed) on a heavy run is CONTRADICTS + nonzero + not citable', () => {
     const root = buildArtifacts({ heavy: true, candidateCat: null });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
+    const r = runCompare(root);
     expect(r.ok).toBe(false);
     expect(r.manifest.verdict.established).toBe(true); // the experiment DID execute
     expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
@@ -421,7 +480,7 @@ describe('compare — verdict established only from usable arms', () => {
 
   test('a QUIESCENT stable control (candidate still catastrophic) is CONTRADICTS DIFFERENT + nonzero', () => {
     const root = buildArtifacts({ heavy: true, stableCat: null });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
+    const r = runCompare(root);
     expect(r.ok).toBe(false);
     expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
     expect(md(root)).toContain('DIFFERENT');
@@ -429,27 +488,18 @@ describe('compare — verdict established only from usable arms', () => {
 
   test('BOTH arms quiescent (harness broken — stable 0.19.3 is known catastrophic) is CONTRADICTS + nonzero', () => {
     const root = buildArtifacts({ heavy: true, stableCat: null, candidateCat: null });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
+    const r = runCompare(root);
     expect(r.ok).toBe(false);
     expect(r.manifest.verdict.outcomeBReproduced).toBe(false);
     expect(md(root)).toContain('harness/reproducer is broken');
   });
 
-  test('catastrophic-on-both heavy run is the ONLY citable state', () => {
-    const root = buildArtifacts({ heavy: true });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
+  test('catastrophic-on-both heavy run with bootstrapComplete is the ONLY citable state', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    const r = runCompare(root);
     expect(r.ok).toBe(true);
     expect(r.manifest.verdict.outcomeBReproduced).toBe(true);
     expect(r.manifest.verdict.citable).toBe(true);
-  });
-
-  // Sweep hole: a heavy run whose prevalence.json is PRESENT but empty/malformed
-  // must not pass the "heavy run has full prevalence" bar.
-  test('a heavy run with an empty/malformed prevalence array is unusable (not just missing-file)', () => {
-    const root = buildArtifacts({ heavy: true, prevalenceMalformed: true });
-    const r = compare({ artifacts: root, out: join(root, 'out') });
-    expect(r.ok).toBe(false);
-    expect(md(root)).toContain('missing or malformed');
   });
 });
 
@@ -523,5 +573,11 @@ describe('helpers and the committed inventory', () => {
     expect(total).toBe(inv.node.totalExpectedFailures);
     expect(inv.nodeChromiumRequiredKeys).toHaveLength(6);
     expect(inv.timing.allowedDriftChecks).toEqual(['re-enable resumes per-step updates']);
+    // The committed inventory ships bootstrapComplete=false (the browser
+    // section is not finalized yet), and heavyEvidence declares the coverage.
+    expect(inv.bootstrapComplete).toBe(false);
+    expect(inv.heavyEvidence.prevalenceSeeds).toEqual([20260725, 20260728, 20260729]);
+    expect(inv.heavyEvidence.freshSeeds).toEqual([20260730]);
+    expect(inv.heavyEvidence.individualsPerSeed).toBe(20);
   });
 });

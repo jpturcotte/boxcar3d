@@ -494,7 +494,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p spike-out
-          node scripts/compare-spike-runs.js --mode compare --artifacts artifacts --out spike-out
+          node scripts/compare-spike-runs.js --mode compare --artifacts artifacts --out spike-out \
+            --expected .github/spike-expected-candidate-reds.json
       - name: Upload comparison
         if: always()
         uses: actions/upload-artifact@v4

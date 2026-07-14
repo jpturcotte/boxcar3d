@@ -1077,11 +1077,21 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   The adjudicator itself is under ordinary CI:
   `tests/compare-spike-runs.test.js` (pure JSON fixtures with verbatim
   titles/messages, no physics, bound to the committed
-  `.github/spike-expected-candidate-reds.json` schema/2 inventory). Still
-  bootstrap until the first post-merge `heavy=true` dispatch: BROWSER
-  per-file counts + signatures are first measured by that run and tightened
-  from it. Full suite green both
-  flavors on stable; every fingerprint byte-identical.
+  `.github/spike-expected-candidate-reds.json` schema/2 inventory).
+  **The two-stage citability gate (`bootstrapComplete`, machine-enforced):**
+  the inventory ships `bootstrapComplete: false`, so `compare()` forces
+  `citable=false` on EVERY run — the FIRST `heavy=true` dispatch is the
+  BOOTSTRAP run (it reproduces Outcome B and exits 0, but is structurally
+  non-citable because the browser inventory is not finalized). C5's human
+  step commits the browser counts/signatures from that run AND flips the
+  flag; only a SECOND heavy run can be citable. The verdict also separates
+  "experiment executed" from "Outcome B reproduced" (catastrophic on BOTH
+  impulse arms — a candidate that came back quiescent CONTRADICTS and exits
+  nonzero), rejects malformed/absent/duplicate/unsupported/wrong-flavor
+  reproducer rows as unusable, and enforces the DECLARED heavy coverage
+  (`heavyEvidence`: prevalence seeds 20260725/28/29 + fresh 20260730, 20
+  individuals each, both arms) rather than a non-empty array. Full suite
+  green both flavors on stable; every fingerprint byte-identical.
 - **Consequence:** do NOT adopt the source build (no divergence-fix to gain).
   PR-B (numerical-integrity policy) proceeds on stable 0.19.3 as planned; the
   multibody/binding-extension feasibility investigation is the named follow-up

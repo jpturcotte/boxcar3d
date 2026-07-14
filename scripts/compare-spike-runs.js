@@ -68,21 +68,28 @@ function failingByFile(vitestJson) {
   const out = {};
   for (const suite of vitestJson.testResults ?? []) {
     const key = relTestKey(suite.name);
-    let failedAssertions = (suite.assertionResults ?? [])
+    const failedAssertions = (suite.assertionResults ?? [])
       .filter((a) => a.status === 'failed')
       .map((a) => ({
         name: String(a.fullName ?? a.title ?? ''),
         message: (a.failureMessages ?? []).join('\n'),
       }));
-    // A suite that FAILED at the module/suite level (an import panic — e.g. a
-    // wasm "unreachable" on an engine swap — or a throwing beforeAll/afterAll)
-    // can report status 'failed' with ZERO failing assertions. Synthesize one
-    // so the file is never invisible to the file-set and count checks.
+    // vitest 3.2.7 reports a FILE-LEVEL error (a throwing afterAll/beforeAll,
+    // a teardown/module/wasm error) in `suite.message`, INDEPENDENTLY of
+    // assertion failures — a file can carry all its expected golden reds AND a
+    // file-level error. Append a synthetic failure whenever `message` is
+    // non-empty (so counts/signatures no longer match) regardless of how many
+    // assertions also failed.
+    if (typeof suite.message === 'string' && suite.message.trim() !== '') {
+      failedAssertions.push({ name: `${key} > <file-level error>`, message: suite.message.trim() });
+    }
+    // Fallback: a suite that FAILED with NEITHER assertion failures NOR a
+    // message (status 'failed' alone) is still not invisible.
     if (failedAssertions.length === 0 && suite.status === 'failed') {
-      failedAssertions = [{
+      failedAssertions.push({
         name: `${key} > <suite-level failure>`,
-        message: String(suite.message ?? '(suite failed with no assertion-level failures — import/hook error?)'),
-      }];
+        message: '(suite failed with no assertion-level failures or message — import/hook error?)',
+      });
     }
     if (failedAssertions.length > 0) {
       // Merge duplicate relTestKey suites by ACCUMULATION (never last-write-wins,
@@ -322,6 +329,27 @@ function reproducerSummary(report) {
   return { original: describe(pick('original')), multibody: describe(pick('multibody')) };
 }
 
+// Heavy-evidence coverage: the report must cover EXACTLY the declared seeds,
+// each with the declared number of UNIQUE individuals — not merely a non-empty
+// array. Returns issue strings (empty = ok).
+function prevalenceCoverageIssues(report, expectedSeeds, perSeed, label) {
+  const rows = Array.isArray(report?.prevalence) ? report.prevalence : null;
+  if (rows === null) return [`${label}: prevalence array missing or malformed`];
+  const issues = [];
+  const bySeed = new Map(rows.map((r) => [r.populationSeed, r]));
+  for (const seed of expectedSeeds) {
+    const row = bySeed.get(seed);
+    if (row === undefined) { issues.push(`${label}: declared seed ${seed} MISSING`); continue; }
+    const ids = (row.individuals ?? []).map((i) => i.individualId);
+    const uniq = new Set(ids);
+    if (uniq.size !== perSeed) issues.push(`${label}: seed ${seed} has ${uniq.size} unique individuals, expected ${perSeed}`);
+  }
+  for (const r of rows) {
+    if (!expectedSeeds.includes(r.populationSeed)) issues.push(`${label}: UNDECLARED seed ${r.populationSeed} present (coverage must be exact)`);
+  }
+  return issues;
+}
+
 // prevalence: { seed -> { catastrophic, total, ids } }
 function prevalenceSummary(report) {
   if (report === null || !Array.isArray(report.prevalence)) return null;
@@ -443,10 +471,16 @@ function mdTable(headers, rows) {
   ].join('\n');
 }
 
-function compare({ artifacts, out }) {
+function compare({ artifacts, out, expectedPath }) {
   const L = [];
   const manifest = { schema: 'boxcar3d.spike-comparison/1', arms: {}, findings: {} };
   const push = (s) => L.push(s);
+  // The committed inventory drives the two-stage citability gate + the heavy
+  // coverage contract. Absent/unreadable => fail-safe: bootstrapComplete false
+  // (never citable) and the heavy check falls back to a non-empty array.
+  const expected = expectedPath !== undefined ? readJsonIf(expectedPath) : null;
+  const bootstrapComplete = expected?.bootstrapComplete === true;
+  const heavyEvidence = expected?.heavyEvidence ?? null;
 
   push('# Rapier core-0.34 spike — controlled stable-vs-candidate comparison');
   push('');
@@ -472,12 +506,17 @@ function compare({ artifacts, out }) {
       if (adjudication === null) issues.push('adjudication.json missing (arm did not reach the adjudicate step)');
       else if (adjudication.passed !== true) issues.push('adjudication FAILED');
       if (reproducerSummary(reproducer)?.original?.classification == null) issues.push('reproducer original classification missing');
-      // A heavy run's prevalence must be a NON-EMPTY, well-formed array — an
-      // empty or malformed prevalence.json (present but `{}` / `{prevalence:[]}`)
-      // must not pass the "heavy run has full prevalence" evidence bar.
-      if (armManifest?.heavy === true
-        && !(Array.isArray(prevalence?.prevalence) && prevalence.prevalence.length > 0)) {
-        issues.push('heavy run but prevalence.json missing or malformed (no non-empty prevalence array)');
+      // A heavy run must carry the DECLARED evidence coverage — the exact
+      // prevalence seed set (each with the declared individual count) AND the
+      // fresh-seed report — not merely a non-empty array. A one-row or
+      // missing-fresh-seed artifact must not participate in a citable verdict.
+      if (armManifest?.heavy === true) {
+        if (heavyEvidence !== null) {
+          issues.push(...prevalenceCoverageIssues(prevalence, heavyEvidence.prevalenceSeeds, heavyEvidence.individualsPerSeed, 'prevalence.json'));
+          issues.push(...prevalenceCoverageIssues(freshseed, heavyEvidence.freshSeeds, heavyEvidence.individualsPerSeed, 'freshseed.json'));
+        } else if (!(Array.isArray(prevalence?.prevalence) && prevalence.prevalence.length > 0)) {
+          issues.push('heavy run but prevalence.json missing or malformed (no declared heavyEvidence to check against)');
+        }
       }
     }
     const usable = issues.length === 0;
@@ -658,8 +697,11 @@ function compare({ artifacts, out }) {
   const outcomeBReproduced = canJudge && cStable === 'catastrophic' && cCand === 'catastrophic';
   const isHeavy = ARMS.every((a) => armReports[a].armManifest?.heavy === true);
   // Citable in the decision record (C5) ONLY when Outcome B reproduced on a
-  // full heavy=true run; a heavy=false reproduction is PROVISIONAL.
-  const citable = outcomeBReproduced && isHeavy;
+  // full heavy=true run AND the browser inventory has been finalized
+  // (bootstrapComplete). The FIRST heavy run is the bootstrap run: it is
+  // structurally non-citable, whatever it shows, because an unrelated browser
+  // regression cannot yet be caught (null browser counts / no signatures).
+  const citable = outcomeBReproduced && isHeavy && bootstrapComplete;
   push('## Verdict (classification level)');
   if (!canJudge) {
     push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
@@ -673,8 +715,14 @@ function compare({ artifacts, out }) {
       + 'The controlled run executed but did NOT reproduce catastrophic-on-both; this run is NOT citable and the '
       + 'compare job fails so the result cannot be silently folded in as Outcome-B evidence.');
   } else {
-    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** → SAME class (Outcome B reproduced)`
-      + (citable ? '' : ' _(PROVISIONAL — heavy=false debug run; NOT citable for C5)_'));
+    let note = '';
+    if (!citable) {
+      const why = !isHeavy ? 'heavy=false debug run'
+        : (!bootstrapComplete ? 'BOOTSTRAP run — browser inventory not yet finalized (bootstrapComplete=false); commit the browser counts/signatures from this run, flip the flag, and re-dispatch'
+          : 'not citable');
+      note = ` _(PROVISIONAL — ${why}; NOT citable for C5)_`;
+    }
+    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** → SAME class (Outcome B reproduced)${note}`);
   }
   push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}** `
     + '_(OBSERVATIONAL — the multibody quiescence is the representation-lever finding, NOT part of the '
@@ -684,6 +732,7 @@ function compare({ artifacts, out }) {
     multibodyIsGating: false,
     outcomeBReproduced,
     citable,
+    bootstrapComplete,
     heavy: isHeavy,
     reproducerImpulse: { stable: cStable, candidate: cCand, sameClass: impulseSame },
     reproducerMultibody: { stable: mStable, candidate: mCand },
@@ -803,7 +852,7 @@ function main() {
     }
     result = classify({ testJsonPath: values['test-json'], expectedPath: values.expected, label: values.label });
   } else if (values.mode === 'compare') {
-    result = compare({ artifacts: values.artifacts, out: values.out });
+    result = compare({ artifacts: values.artifacts, out: values.out, expectedPath: values.expected });
   } else if (values.mode === 'invariants') {
     if (values.expected === undefined) {
       console.error('compare-spike-runs: --mode invariants needs --expected (the required cross-env key set)');

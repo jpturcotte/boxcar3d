@@ -159,5 +159,13 @@
     ],
     "note": "the single class-(b) engine-finding the local run saw (exit 1 on probe:timing, 36 checks / 1 DRIFT, adoption-critical sub-checks green: dt readback, isValid/isSleeping, timing member surface)"
   },
+  "heavyEvidence": {
+    "prevalenceSeeds": [20260725, 20260728, 20260729],
+    "freshSeeds": [20260730],
+    "individualsPerSeed": 20,
+    "rationale": "The DECLARED coverage of a heavy=true run, enforced by compare()'s arm-usability check on BOTH arms: `--pass prevalence` (defaultConfig, no --smoke) generates the three Phase-1A characterization masters each with 20 unique individuals, and `--prevalence-seeds 20260730` generates the fresh seed with 20. A one-row / missing-seed / missing-fresh-seed prevalence artifact must NOT participate in a citable heavy verdict — the scientific catastrophic COUNTS stay observations, but the experiment's declared coverage (which seeds, how many individuals) is a contract. Derived from scripts/probe-physics-explosion.js smokeConfig/defaultConfig (populationSize 20)."
+  },
+  "bootstrapComplete": false,
+  "bootstrapCompleteRationale": "The TWO-STAGE citability gate (machine-enforced, not narrated). While false: the browser byFile inventory is NOT finalized (null counts, no allowedFailureSignatures), so an unrelated browser-contract regression in an expected-red browser file cannot be caught — therefore compare() forces `citable=false` on EVERY run, no matter how clean. The first heavy=true dispatch is the BOOTSTRAP run: it produces the browser observed failing set; a human commits those counts + signatures into the browser section AND flips this flag to true; only a SECOND heavy run (against the finalized inventory) can be citable. This makes 'the browser inventory was finalized before we certified no-hidden-regression' a structural precondition, not a promise. `titlesPendingFirstHeavyRun` is the human-readable twin of this flag.",
   "titlesPendingFirstHeavyRun": true
 }

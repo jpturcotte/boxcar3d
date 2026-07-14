@@ -529,17 +529,26 @@ function compare({ artifacts, out }) {
   const mCand = repro.candidate?.multibody?.classification ?? null;
   const canJudge = bothUsable && cStable !== null && cCand !== null;
   const impulseSame = canJudge ? (cStable === cCand) : null;
+  // Only a heavy=true run (full all-witness + 60-member prevalence) may be
+  // cited in the decision record (C5); a heavy=false debug run can still show a
+  // real catastrophic-on-both classification, so label it PROVISIONAL rather
+  // than let a green debug compare read as citable evidence.
+  const isHeavy = ARMS.every((a) => armReports[a].armManifest?.heavy === true);
+  const citable = canJudge && isHeavy;
   push('## Verdict (classification level)');
   if (!canJudge) {
     push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
       + '→ **INCONCLUSIVE — verdict NOT established** (a missing/failed arm or absent classification; NOT "Outcome B holds")');
   } else {
-    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** `
-      + `→ ${impulseSame ? 'SAME class (Outcome B reproduced)' : 'DIFFERENT — re-examine'}`);
+    const tag = impulseSame ? 'SAME class (Outcome B reproduced)' : 'DIFFERENT — re-examine';
+    push(`- reproducer (impulse): stable **${cStable}**, candidate **${cCand}** → ${tag}`
+      + (citable ? '' : ' _(PROVISIONAL — heavy=false debug run; NOT citable for C5)_'));
   }
   push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}**`);
   manifest.verdict = {
     established: canJudge,
+    citable,
+    heavy: isHeavy,
     reproducerImpulse: { stable: cStable, candidate: cCand, sameClass: impulseSame },
     reproducerMultibody: { stable: mStable, candidate: mCand },
     bothArmsUsable: bothUsable,

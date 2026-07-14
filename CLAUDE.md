@@ -898,10 +898,16 @@ better-conditioned representation preserving the phenotype is an open
 direction, not a defect. Full evidence:
 `docs/physics-integrity-finite-explosion-report-2026-07-13.md`:**
 - **The mechanism (measured, both flavors):** onset occurs on the
-  exactly-flat start pad during settle (all four witnesses; onset step and
-  leading body IDENTICAL across every terrain variant incl. fully flat);
-  contacts at onset are ordinary floor contacts (penetrations 1e-4–2e-3 m,
-  impulses 10–140 N·s, zero wedges, no birth penetration — captures 0/1 are
+  exactly-flat start pad during settle (all four witnesses; onset unchanged
+  across the four terrain-CONTENT variants, and on fully flat ground shifts
+  only for the marginal witness S — alert 43→37 — with B/C/S leading body
+  flipping between the hub and its coaxial wheel of the same station; A/B/C
+  alert steps identical everywhere; all four still diverge on flat, the
+  load-bearing point);
+  contacts at onset are ordinary floor contacts (all partners the floor,
+  zero wedges at onset, no birth penetration; penetrations grow from settle
+  scale ~1e-3 m to ~6e-2 m and impulses to ~570 N·s through the window as
+  the divergence builds — captures 0/1 are
   contact-free, spawn clearances +0.02 m); the earliest measurable event is
   JOINT-CONSTRAINT VIOLATION, directly measured for BOTH joint types —
   revolute anchor separation (witness A's leading S0 station > 2 cm at step
@@ -913,21 +919,25 @@ direction, not a defect. Full evidence:
   catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s; no
   TESTED exposed engine setting cured it (the committed `gravity9.81`
   reproducer arm gives the same cat@46 as g=20 — the g=20 magnitude is not
-  the cause; CCD inert). Drive is NOT necessary and cannot account for the
-  catastrophic energy (passive + power→0 + motor-off arms reach the same
-  1e9+ m/s), though motor torque can EXCITE the island; single modules and
-  sleds are ALL stable (≥ 2 modules required). **The trigger is SOME
-  ordinary load, not ground contact per se — the committed `load` pass runs
-  the crossing in GENUINELY free space (NO floor/corridor at all,
-  staticColliders 0 hard-checked, zero gravity), so a divergence there is
-  unambiguously internal-load-driven: the fully unloaded island is quiescent
-  on all four witnesses (peak 0); S1 springs alone reach catastrophic on all
-  four; drive motors alone reach catastrophic on A/B/C and the alert regime
-  (782 m/s, no catastrophe in 300 steps) on S. Each internal load source
-  independently INITIATES the divergence; no PARTICULAR load is necessary;
-  floor contact is the observed initiating load in evaluation context. These
-  conditions are necessary in every tested witness reduction and the
-  minimal-reproducer closure — not asserted as a universal theorem.**
+  the cause; CCD inert). Drive is NOT necessary — every drive-removed arm
+  still reaches catastrophic (>1000 m/s), though the peak MAGNITUDE varies by
+  witness (A ~8.8e9, B ~6.4e3), so drive is not the energy source; motor
+  torque can EXCITE the island. Single modules and sleds are ALL stable (≥ 2
+  modules required). **The trigger is SOME ordinary load, not ground contact
+  per se — the committed `load` pass runs the crossing in GENUINELY free
+  space (NO floor/corridor at all, staticColliders 0 hard-checked, zero
+  gravity). Two conclusions are CLEAN (single-variable): the fully unloaded
+  all-S0 island is quiescent on all four (peak 0); and MOTOR load alone
+  initiates the divergence with no contact — drivenAllS0 vs the quiescent
+  passiveAllS0 differ only in drive, catastrophic on A/B/C and alert-only on
+  S (782 m/s). An undriven S1 realization also diverges without contact, but
+  that arm changes the S1 topology (hub bodies/mass, prismatics, chain) as
+  well as the spring, so it does NOT isolate "springs alone" — a
+  phenotype-preserving spring-off arm is the deferred isolator. No PARTICULAR
+  load is necessary; floor contact is the observed initiating load in
+  evaluation context. Track-width and mass-ratio necessity are established
+  only in the minimal-reproducer closure (narrowTrack/heavyChassis arms), not
+  every witness reduction — not asserted as a universal theorem.**
 - **Witness identities frozen** (`scripts/explosion-witnesses.js` +
   `tests/explosion-witnesses.test.js`): A 20260725:19 `ec8d42cf`,
   B 20260728:4 `393f7e0e`, C 20260729:19 `57faad4e`, S 20260725:14

@@ -77,10 +77,12 @@ It reproduces on completely flat ground, undriven, on both engine flavors —
 and under some ordinary load. The committed `load` pass runs the crossing in
 genuinely free space (no floor at all, static colliders 0, zero gravity), so
 a divergence there is unambiguously internal-load-driven: the fully unloaded
-island is quiescent on all four witnesses, S1 springs alone reach
-catastrophic on all four, and drive motors alone on three of four. Drive is
-not necessary and cannot account for the catastrophic energy, though motor
-torque can excite the island. Directly measured constraint violations
+all-S0 island is quiescent on all four witnesses, and drive-motor load alone
+(a single-variable comparison against that quiescent island) initiates the
+divergence with no contact on three of four. An undriven S1 vehicle diverges
+too, though that arm does not separate spring preload from the S1 topology.
+Drive is not necessary and cannot account for the catastrophic energy, though
+motor torque can excite the island. Directly measured constraint violations
 (revolute anchors and prismatic off-axis errors > 2 cm, coordinates through
 their limits) precede the kinematic anomaly; no tested exposed engine
 setting cured it (more solver iterations accelerate it, dt 1/120 can worsen

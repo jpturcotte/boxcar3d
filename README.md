@@ -65,12 +65,48 @@ interleaved sampling; reference machine i7-14650HX, 2026-07-11: the
 deterministic flavor's stepping tax is a consistent **≈1.0–1.13×**; full
 table in
 [`docs/bench-physics-reference-2026-07-11.md`](docs/bench-physics-reference-2026-07-11.md),
-machine-specific, never a package property). Next: **GA Phase 1B —
-Mutation-Only Evolution** (selection, elitism, deterministic mutation,
-generational replacement), which must first decide how to handle the
-physics-explosion fitness tail; zone material response, S2 trailing arms,
-and worker sharding are deferred behind it, each in its own PR. The design
-docs in `docs/` define everything that comes after.
+machine-specific, never a package property). **Physics Integrity:
+Finite-Explosion Reproduction and Ablation — landed** (the corrective
+investigation between Phase 1A and Phase 1B): the explosion tail is **not**
+a terrain interaction — it is **Rapier 0.19.3 constraint-solver divergence
+under the project's current legal multi-module joint realization**
+(wide-track wheel anchors on a light chassis; no incorrect spawn, terrain,
+motor, CCD, or initial-joint setup was found, while the realization
+architecture itself remains a possibly-mitigable open design direction).
+It reproduces on completely flat ground, undriven, on both engine flavors —
+and under some ordinary load. The committed `load` pass runs the crossing in
+genuinely free space (no floor at all, static colliders 0, zero gravity), so
+a divergence there is unambiguously internal-load-driven: the fully unloaded
+all-S0 island is quiescent on all four witnesses, and drive-motor load alone
+(a single-variable comparison against that quiescent island) initiates the
+divergence with no contact on three of four. An undriven S1 vehicle diverges
+too, though that arm does not separate spring preload from the S1 topology.
+Drive is not necessary and cannot account for the catastrophic energy, though
+motor torque can excite the island. Directly measured constraint violations
+(revolute anchors and prismatic off-axis errors > 2 cm, coordinates through
+their limits) precede the kinematic anomaly; no tested exposed engine
+setting cured it (more solver iterations accelerate it, dt 1/120 can worsen
+it by ten orders of magnitude, CCD is inert, and gravity magnitude is
+immaterial — 9.81 and the project's 20 give the same classification). The witnesses are frozen as reproducible
+identities, a materialized two-axle minimal reproducer with its full
+instrumented closure matrix is committed, and a forensic instrument
+(`npm run probe:physics-explosion`; identity-only hard checks, physics as
+observations, `-- --pass reproducer` as the engine-upgrade recheck) plus
+the full report
+([`docs/physics-integrity-finite-explosion-report-2026-07-13.md`](docs/physics-integrity-finite-explosion-report-2026-07-13.md))
+document the ruling. Prevalence — regenerable from the committed
+`prevalence` pass — is ~8% of generation-0 morphologies (5/60), two of
+which hide catastrophic internal speeds behind ordinary-looking fitness —
+so raw `maxForwardDistance` mis-ranks in both directions, on flat terrain
+included. No production physics changed; every lock and version constant is
+byte-identical; the score policy stays v1. Next: **GA Phase 1B
+— Mutation-Only Evolution** (selection, elitism, deterministic mutation,
+generational replacement) — which follows only after this physics-integrity
+result and therefore **begins by designing the numerical-integrity policy
+against the now-understood failure class**, using the committed forensic
+detector; zone material response, S2 trailing arms, and worker sharding are
+deferred behind it, each in its own PR. The design docs in `docs/` define
+everything that comes after.
 
 ## Quickstart
 

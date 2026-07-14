@@ -59,6 +59,14 @@ evidence notes. Reference only; never import from `legacy/`.
   pasted into PRs — never a CI threshold; `-- --smoke` for a quick pass)
 - `npm run probe:timing` — the retained Rapier timing/timestep-semantics
   probe (exits 1 on engine-semantics DRIFT; re-run on any Rapier upgrade)
+- `npm run probe:physics-explosion` — the finite-explosion forensic
+  instrument (witness reproduction, terrain/vehicle/engine ablations, the
+  zero-gravity `load`-taxonomy matrix with vehicle-vs-static contact
+  counting, contact localization, the minimal reproducer + its closure
+  matrix, the complete-population prevalence scan; HARD checks are
+  identity-class only — physics magnitudes are observations; `-- --smoke`
+  for a light pass, `-- --witness all --pass all` for the full matrix,
+  `-- --pass reproducer` is the engine-upgrade recheck)
 - `npm run probe:population` — the GA-population characterization instrument
   (distributions/viability/undriven-audit/cost/shared-world-recheck; markdown
   to stdout, `--json`; defaults SMALL for a light local run, big sweep opt-in;
@@ -77,7 +85,14 @@ evidence notes. Reference only; never import from `legacy/`.
   `realizeVehicle`'s explicit dispatch), `fnv1a.js` (the extracted house lock
   hash — streaming state-passing fold), `trace.js` (the versioned per-step
   trace: 128-byte records, TraceWriter, checkpoint + divergence diagnostics),
-  `evaluation.js` (the ONE canonical headless runner — `runEvaluation`),
+  `evaluation.js` (the ONE canonical headless runner — `runEvaluation` — plus
+  `runRealizedEvaluationLoop`, the extracted simulate/capture/collect loop it
+  composes verbatim: the physics-integrity investigation seam with explicit
+  `requestedDt` and a read-only per-step `inspect` hook the production path
+  never passes), `trace-forensics.js` (pure offline full-trace analysis:
+  per-body kinematic series + the alert/catastrophic/causal-candidate onset
+  split; thresholds are DIAGNOSTIC options, consumed by no lock and no
+  fitness path),
   `evaluation-fixtures.js` (declared fixtures A/B/C + `evaluationOptionsFor`),
   `evaluation-locks.js` (golden digests + per-step checkpoint states; literals
   only), `population.js` (canonical population CONTENT + snapshot encoding),
@@ -91,7 +106,10 @@ evidence notes. Reference only; never import from `legacy/`.
   Must run headless in Node (tests and CI depend on it).
 - `scripts/` — Node-only instruments OUTSIDE the sim ESLint ban (wall clock
   allowed): `probe-rapier-timing.js`, `bench-physics.js`,
-  `characterize-population.js`.
+  `characterize-population.js`, `probe-physics-explosion.js` (the
+  finite-explosion forensic instrument), `explosion-witnesses.js` (the
+  frozen witness identities + the materialized minimal reproducer —
+  investigation fixtures, not a production contract).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -141,6 +159,14 @@ evidence notes. Reference only; never import from `legacy/`.
   population/fitness golden gate — `test:determinism`),
   `population-probe-schema.test.js` (the characterization instrument's only
   CI touchpoint), `bench-schema.test.js` (the bench's only CI touchpoint),
+  `explosion-witnesses.test.js` (witness + reproducer identity locks —
+  digests, initializer cross-check, passive-twin recipe; NEVER a
+  must-explode assertion), `trace-forensics.test.js` (pure codec-fed onset/
+  peak/backward-scan contract), `evaluation-core.test.js` (the shared-loop
+  seam: byte-exact composition equivalence + observational non-interference
+  of a real contact-querying inspect, deterministic flavor),
+  `physics-explosion-probe-schema.test.js` (the explosion probe's only CI
+  touchpoint — structure + hard identity checks, no physics magnitudes),
   and `tests/browser/evaluation-determinism.test.js` +
   `tests/browser/population-determinism.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
@@ -849,26 +875,143 @@ extended operators only if evidence supports (never promised as crossover):**
   (8.17e6 m at 1.43e8 m/s, `valid` true — the non-finite latch never fires),
   which would dominate selection. Median viability is sane (~2–3 m). The
   COMMITTED fixture (terrain 20260722) is unaffected (max 12.48 m).
+  **[MECHANISM SUPERSEDED — the physics-integrity PR: the tail is NOT a
+  terrain-feature interaction (onset is identical on fully flat ground,
+  before any feature contact) but Rapier 0.19.3 constraint-solver
+  divergence on ill-conditioned multi-module joint islands under the
+  current legal realization; the >200 m label undercounts (5/60 affected,
+  2 hidden behind ordinary-looking fitness). The finite-tail EXISTENCE
+  finding and every committed lock stand; see that PR's block below.]**
 - Full suite green both flavors; noise/terrain/boulder-hull/`24cd0dd5`/
   `39bcd6c4` and A–D fingerprints byte-identical; `GENOTYPE_VERSION`,
   `ASSEMBLY_IR_VERSION`, `EVALUATION_TRACE_VERSION` unchanged.
 
-Next — **GA Phase 1B: Mutation-Only Evolution** (the peer milestone that
-delivers the evolutionary process: selection, elitism, deterministic
-mutation, generational replacement, champion history — a generational loop
-over `evaluatePopulation`, sim-time pure). Build it on the Phase-1A trusted
-contracts: `createInitialPopulation`, the snapshot/initialization/spec/
-fitness-vector encodings, `evaluatePopulation` (isolatedWorlds, id-keyed),
-`championFromEvaluation`, and the max-progress result fields. **DECIDE FIRST
-(with a probe, before building selection): the physics-explosion-tail policy**
-— the raw `maxForwardDistance` metric rewards finite solver blow-ups on rough
-terrain (report §9.1); a plausibility validity bound, a finite fitness cap, or
-rank/tournament selection robust to magnitude outliers are candidates.
-Empirical guidance: initial viability is real but modest (median ~2–3 m);
-repair is near-universal (perturb genes freely, rely on repair); no category
-is starved (parametric mutation first, structural second); start parametric
-rates moderately aggressive (repair damps them), structural rates
-conservative (spec §3.1.3). **Deferred (unchanged):** Phase 1C extended
+**Physics Integrity: Finite-Explosion Reproduction and Ablation landed —
+the corrective investigation between Phase 1A and Phase 1B (NOT a roadmap
+stage). Verdict: the Phase-1A explosion tail is Rapier 0.19.3
+constraint-solver DIVERGENCE under BoxCar3D's current legal multi-module
+joint realization — not a terrain interaction; no incorrect spawn, terrain,
+motor, CCD, or initial-joint setup was found. The realization ARCHITECTURE
+itself (one impulse joint per station on long off-center chassis anchors)
+is NOT exonerated as a possibly-mitigable design — an alternative
+better-conditioned representation preserving the phenotype is an open
+direction, not a defect. Full evidence:
+`docs/physics-integrity-finite-explosion-report-2026-07-13.md`:**
+- **The mechanism (measured, both flavors):** onset occurs on the
+  exactly-flat start pad during settle (all four witnesses; onset unchanged
+  across the four terrain-CONTENT variants, and on fully flat ground shifts
+  only for the marginal witness S — alert 43→37 — with B/C/S leading body
+  flipping between the hub and its coaxial wheel of the same station; A/B/C
+  alert steps identical everywhere; all four still diverge on flat, the
+  load-bearing point);
+  contacts at onset are ordinary floor contacts (all partners the floor,
+  zero wedges at onset, no birth penetration; penetrations grow from settle
+  scale ~1e-3 m to ~6e-2 m and impulses to ~570 N·s through the window as
+  the divergence builds — captures 0/1 are
+  contact-free, spawn clearances +0.02 m); the earliest measurable event is
+  JOINT-CONSTRAINT VIOLATION, directly measured for BOTH joint types —
+  revolute anchor separation (witness A's leading S0 station > 2 cm at step
+  6 vs kinematic alert at 20) AND the prismatic decomposition (off-axis
+  error > 2 cm at steps 9/15/19/24 for A/B/C/S, coordinates blowing through
+  the [0, travel] limits by orders of magnitude) — the solver leaves
+  constraints violated under ordinary load and its corrections pump energy.
+  MORE solver iterations ACCELERATE the divergence (A at 16 iters:
+  catastrophic by step 16); dt 1/120 worsens witness B to 1.66e21 m/s; no
+  TESTED exposed engine setting cured it (the committed `gravity9.81`
+  reproducer arm gives the same cat@46 as g=20 — the g=20 magnitude is not
+  the cause; CCD inert). Drive is NOT necessary — every drive-removed arm
+  still reaches catastrophic (>1000 m/s), though the peak MAGNITUDE varies by
+  witness (A ~8.8e9, B ~6.4e3), so drive is not the energy source; motor
+  torque can EXCITE the island. Single modules and sleds are ALL stable (≥ 2
+  modules required). **The trigger is SOME ordinary load, not ground contact
+  per se — the committed `load` pass runs the crossing in GENUINELY free
+  space (NO floor/corridor at all, staticColliders 0 hard-checked, zero
+  gravity). Two conclusions are CLEAN (single-variable): the fully unloaded
+  all-S0 island is quiescent on all four (peak 0); and MOTOR load alone
+  initiates the divergence with no contact — drivenAllS0 vs the quiescent
+  passiveAllS0 differ only in drive, catastrophic on A/B/C and alert-only on
+  S (782 m/s). An undriven S1 realization also diverges without contact, but
+  that arm changes the S1 topology (hub bodies/mass, prismatics, chain) as
+  well as the spring, so it does NOT isolate "springs alone" — a
+  phenotype-preserving spring-off arm is the deferred isolator. No PARTICULAR
+  load is necessary; floor contact is the observed initiating load in
+  evaluation context. Track-width and mass-ratio necessity are established
+  only in the minimal-reproducer closure (narrowTrack/heavyChassis arms), not
+  every witness reduction — not asserted as a universal theorem.**
+- **Witness identities frozen** (`scripts/explosion-witnesses.js` +
+  `tests/explosion-witnesses.test.js`): A 20260725:19 `ec8d42cf`,
+  B 20260728:4 `393f7e0e`, C 20260729:19 `57faad4e`, S 20260725:14
+  `565f8c72` (+ passive-twin digests), reconstruction proven byte-identical
+  to the createInitialPopulation members. Prevalence (the committed
+  `prevalence` pass — every characterization individual forensically
+  classified): **5/60** catastrophic (>1000 m/s internal speeds) — the
+  report's >200 m label caught only 3; two (incl. 20260725 id 1, fitness
+  14.02 m) hide blow-ups behind ordinary-looking forward progress. Id 1 was
+  the probe's own first fitness-selected calibration control — its
+  contamination is a recorded finding, and the committed control procedure
+  now substitutes contaminated candidates deterministically.
+- **Minimum reproducer (MATERIALIZED literal, digest `9fde1f1c`):** two
+  wide-track paired S0 axles (wheel centers z ≈ ±2.3/±1.9 m), four UNDRIVEN
+  9.1–21.3 kg wheels (the re-repaired masses), one 18 kg chassis, no motors,
+  FLAT ground →
+  catastrophic by step ~46 on both flavors; removing ANY ingredient (either
+  axle, trackHalf ≤ ~0.2, frameDensity 1, or the load itself — the genuinely
+  static-free `freeSpace` arm, no floor at all, leaves this undriven island
+  quiescent) stabilizes, and the `gravity9.81` arm confirms the g=20
+  magnitude is not the cause (same cat@46). The FULL closure matrix is
+  instrumented in the probe's `reproducer` pass. RERUN ON RAPIER BUMP:
+  `npm run probe:physics-explosion -- --pass reproducer`.
+- **Telemetry:** `src/sim/trace-forensics.js` (pure, offline over FULL
+  traces): per-body kinematic series + the three-concept onset —
+  firstAlertStep (diagnostic locator), firstCatastrophicStep,
+  firstCausalCandidateStep (backward scan) — thresholds are DIAGNOSTIC
+  options defined at the 1/60 reference capture interval and dt-scaled via
+  the declared `captureDt` (echoed with the applied values), consumed by no
+  lock and no fitness path. `runRealizedEvaluationLoop` extracted from
+  `runEvaluation` (composed verbatim by production; A–D digests
+  byte-identical, zero re-locks) with explicit `requestedDt` — which must
+  match the engine's f32 readback or the loop fails loud — and a read-only
+  `inspect(stepIndex)` hook the production path never passes; equivalence +
+  observational non-interference + the honest-dt negative are committed
+  contracts (`tests/evaluation-core.test.js`).
+- **The instrument:** `npm run probe:physics-explosion` (schema
+  `boxcar3d.physics-explosion/1`; passes baseline/terrain/vehicle/engine/
+  load/local/reproducer/prevalence; witness selector; pass selection
+  normalizes 'all'/comma-lists identically in the CLI and the programmatic
+  API, and any single pass reports the real f32 timestep). HARD checks are
+  identity-class only (genotype digests, deterministic repeat equality over
+  the FULL record streams + checkpoints, f32 dt); every physics magnitude
+  is an observation — no committed test asserts the explosion occurs (a
+  future engine that converges these islands turns the probe's observations
+  quiet, and the ruling gets re-evaluated).
+- **No production physics change; zero re-locks; no new seeds.** All
+  fingerprints and version constants byte-identical, `FITNESS_POLICY_VERSION`
+  stays 1 by mission ruling (no fitness cap/plausibility threshold here).
+
+Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
+deterministic mutation, generational replacement, champion history — a
+generational loop over `evaluatePopulation`, sim-time pure), which follows
+only after the physics-integrity result — now in hand. **Phase 1B BEGINS by
+designing the numerical-integrity policy against the now-understood failure
+class** (solver divergence on ill-conditioned islands): the forensic
+detector exists (`analyzeTrace` alert/catastrophic classification catches
+all 5/60 affected individuals, including the two whose fitness looks
+ordinary), and the raw `maxForwardDistance` metric mis-ranks in BOTH
+directions even on FLAT terrain — so constraining the training terrain is
+NOT an escape hatch, and the detector must run per evaluation (mutation
+moves morphologies across the conditioning boundary both ways). Whether the
+thresholds become a validity bound, a rank guard, or a re-evaluation
+trigger is Phase 1B's decision. Build on the Phase-1A trusted contracts:
+`createInitialPopulation`, the snapshot/initialization/spec/fitness-vector
+encodings, `evaluatePopulation` (isolatedWorlds, id-keyed),
+`championFromEvaluation`, and the max-progress result fields. Empirical
+guidance: initial viability is real but modest (median ~2–3 m); repair is
+near-universal on uniform raw draws (perturb genes freely and rely on
+repair for canonicalization — whether repair damps small jitter around a
+canonical parent is UNMEASURED; the mutation-neighborhood probe is the
+right first Phase-1B experiment, report §9.5); no category is starved
+(parametric mutation first, structural second; structural rates
+conservative, spec §3.1.3). **Deferred (unchanged):** Phase 1C extended
 operators (evidence-driven, NOT promised as crossover); worker sharding with
 the 1-vs-4-workers equality test (the ghost-isolation lock is its
 precondition, in place — note isolated-world population evaluation is

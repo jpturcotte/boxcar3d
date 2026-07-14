@@ -196,6 +196,213 @@ export function foldProgress(state, stepIndex, dx) {
 }
 
 /**
+ * The shared simulate/capture/collect loop over an ALREADY-REALIZED world —
+ * the investigation seam extracted from runEvaluation (physics-integrity
+ * finite-explosion PR). NOT the production entry point: that is
+ * runEvaluation, which composes this function verbatim, so the golden locks
+ * in test:determinism attest to both. A caller-side composition identical to
+ * runEvaluation's MUST reproduce the golden digest
+ * (tests/evaluation-core.test.js).
+ *
+ * Preconditions: `world` already contains the static terrain (with its
+ * statics-only BVH step done) AND the realized vehicles; the CALLER owns
+ * world.free(). `requestedDt` is the caller's DECLARED timestep — the
+ * production path passes FIXED_DT; a diagnostic composition that sets
+ * world.timestep itself must pass what it set, so `result.requestedDt` can
+ * never silently claim 1/60 for a 1/120 run (effectiveDt is always the
+ * engine readback). The dt f32 assertion deliberately stays in runEvaluation.
+ *
+ * `inspect(stepIndex)` is an optional READ-ONLY per-step hook, fired after
+ * each capture (including capture 0). The production path never passes it —
+ * both call sites below are dead under runEvaluation. It receives ONLY the
+ * step index: a diagnostic caller closes over the world/collider handles it
+ * already owns, and non-interference (identical digest/records/results with
+ * a real contact-querying inspect vs null) is locked by
+ * tests/evaluation-core.test.js.
+ */
+export function runRealizedEvaluationLoop(world, realized, {
+  requestedDt,
+  maxSteps,
+  traceMode = 'none',
+  checkpointInterval = 1,
+  staticColliders,
+  profile = false,
+  inspect = null,
+  onPhase = () => {},
+} = {}) {
+  // Minimal fail-loud guards for direct (probe) callers — the production
+  // path's full validation already ran pre-world in validateOptions.
+  if (typeof requestedDt !== 'number' || !Number.isFinite(requestedDt) || requestedDt <= 0) {
+    fail('runRealizedEvaluationLoop.requestedDt', requestedDt);
+  }
+  if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('runRealizedEvaluationLoop.maxSteps', maxSteps);
+  if (!TRACE_MODES.includes(traceMode)) fail('runRealizedEvaluationLoop.traceMode', traceMode);
+  if (!Number.isInteger(staticColliders) || staticColliders < 0) {
+    fail('runRealizedEvaluationLoop.staticColliders', staticColliders);
+  }
+  if (inspect !== null && typeof inspect !== 'function') {
+    fail('runRealizedEvaluationLoop.inspect', inspect);
+  }
+  // Honest-dt contract: the declaration must MATCH the engine readback (the
+  // engine stores dt as f32) — a composition running 1/120 while declaring
+  // 1/60 must fail loud here, never report a misleading requestedDt.
+  if (world.timestep !== Math.fround(requestedDt)) {
+    fail('runRealizedEvaluationLoop.requestedDt',
+      `${requestedDt} does not match the engine readback ${world.timestep}`);
+  }
+  const effectiveDt = world.timestep;
+
+  // Canonical body order falls out of iterating the realizeVehicle return
+  // shape: vehicles in input order → chassis → stations axle-then-wheel,
+  // hub before wheel. No sorting, no handles.
+  const tracked = realized.map((rec) => {
+    const joints = rec.wheels.flatMap((st) => (st.suspensionJoint === null
+      ? [st.driveJoint] : [st.suspensionJoint, st.driveJoint]));
+    const bodies = [{
+      role: 'chassis', axleIndex: null, wheelIndex: null, body: rec.chassis.body,
+      jointState: () => {
+        if (joints.length === 0) return 'notApplicable'; // a zero-joint sled
+        return joints.every((j) => j.isValid()) ? 'valid' : 'invalid';
+      },
+    }];
+    for (const st of rec.wheels) {
+      if (st.hub !== null) {
+        bodies.push({
+          role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+          body: st.hub.body, jointState: () => (st.suspensionJoint.isValid() ? 'valid' : 'invalid'),
+        });
+      }
+      bodies.push({
+        role: 'wheel', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
+        body: st.wheel.body, jointState: () => (st.driveJoint.isValid() ? 'valid' : 'invalid'),
+      });
+    }
+    return {
+      rec, joints, bodies,
+      origin: { ...rec.chassis.body.translation() },
+      latched: null,
+      progress: createProgressState(),
+    };
+  });
+
+  const writer = traceMode === 'none'
+    ? null
+    : new TraceWriter({ mode: traceMode, checkpointInterval });
+
+  // One capture does the readback ONCE per body and feeds both the
+  // finiteness latch and (when tracing) the writer — the scanned values and
+  // the traced values are provably the same read.
+  const captureStep = (stepIndex) => {
+    for (let vi = 0; vi < tracked.length; vi += 1) {
+      const t = tracked[vi];
+      const reads = t.bodies.map((b) => readBodyState(b.body));
+      if (t.latched === null && reads.some((r) => !r.finite)) {
+        t.latched = { step: stepIndex, reason: 'nonFinite' };
+      }
+      // Progress folds from the SAME chassis read the latch and trace
+      // consume (reads[0] — bodies[0] is the chassis by construction).
+      // Gated on the WHOLE-vehicle latch (fires when ANY body goes
+      // non-finite), so the fold freezes at the last fully-finite capture.
+      // That is deliberate: once latched the vehicle is invalid and its
+      // fitness is 0 regardless of progress, so accumulating chassis motion
+      // after a wheel exploded would be meaningless. A trace-based
+      // recompute therefore agrees with these fields only while
+      // latched === null (unreachable divergence otherwise on 0.19.3 — no
+      // legal input goes non-finite). The fold's own finite guard is the
+      // second net.
+      if (t.latched === null) {
+        foldProgress(t.progress, stepIndex, reads[0].translation.x - t.origin.x);
+      }
+      if (writer !== null) {
+        const terminated = t.latched !== null;
+        for (let bi = 0; bi < t.bodies.length; bi += 1) {
+          const b = t.bodies[bi];
+          const r = reads[bi];
+          writer.record({
+            stepIndex,
+            vehicleIndex: vi,
+            bodyRole: b.role,
+            axleIndex: b.axleIndex,
+            wheelIndex: b.wheelIndex,
+            bodyValid: r.valid,
+            bodySleeping: r.sleeping,
+            jointState: b.jointState(),
+            terminated,
+            terminationReason: terminated ? t.latched.reason : 'none',
+            finiteState: r.finite,
+            translation: r.translation,
+            rotation: r.rotation,
+            linvel: r.linvel,
+            angvel: r.angvel,
+          });
+        }
+      }
+    }
+    if (writer !== null) writer.endStep(stepIndex);
+  };
+
+  captureStep(0); // post-realization, pre-first-step
+  if (inspect !== null) inspect(0); // dead under runEvaluation (inspect null)
+
+  onPhase('run');
+  const stepMs = profile ? new Float64Array(maxSteps) : null;
+  for (let i = 1; i <= maxSteps; i += 1) {
+    world.step();
+    if (stepMs !== null) stepMs[i - 1] = world.timingStep();
+    captureStep(i);
+    if (inspect !== null) inspect(i); // dead under runEvaluation (inspect null)
+  }
+
+  onPhase('collect');
+  const vehicles = tracked.map((t) => {
+    const chassis = readBodyState(t.rec.chassis.body);
+    const bodyReads = t.bodies.map((b) => readBodyState(b.body));
+    return {
+      forwardDistance: chassis.translation.x - t.origin.x,
+      // Maximum-progress metrics (derived, per-step, sim-time pure): the
+      // fold above saw every captured state 0..maxSteps, so
+      // maxForwardDistance >= max(0, forwardDistance) whenever the vehicle
+      // stayed finite. These are RESULT fields only — they never enter the
+      // trace bytes, so no golden digest can move.
+      maxForwardDistance: t.progress.maxForwardDistance,
+      stepAtMaxForwardDistance: t.progress.stepAtMaxForwardDistance,
+      maxBackwardDistance: t.progress.maxBackwardDistance,
+      origin: t.origin,
+      finalPose: { translation: chassis.translation, rotation: chassis.rotation },
+      finalVelocity: { linvel: chassis.linvel, angvel: chassis.angvel },
+      finite: t.latched === null,
+      terminated: t.latched === null ? { step: null, reason: null } : { ...t.latched },
+      bodies: {
+        count: t.bodies.length,
+        allValid: bodyReads.every((r) => r.valid),
+        sleepingAtEnd: bodyReads.filter((r) => r.sleeping).length, // a count, NEVER an expectation (solver-pump)
+      },
+      joints: {
+        count: t.joints.length,
+        allValid: t.joints.every((j) => j.isValid()),
+      },
+      mass: t.rec.mass,
+      stationCount: t.rec.wheels.length,
+    };
+  });
+  return {
+    terminationReason: RUN_TERMINATION.COMPLETED,
+    executedSteps: maxSteps, // evaluation steps only; the statics pre-step is setup
+    requestedDt,
+    effectiveDt,
+    vehicles,
+    counts: {
+      bodies: world.bodies.len(),
+      colliders: world.colliders.len(),
+      joints: world.impulseJoints.len(),
+      staticColliders,
+    },
+    trace: writer === null ? null : writer.finish(),
+    timing: stepMs === null ? null : { stepMs },
+  };
+}
+
+/**
  * Run one headless evaluation. See the header for the step-index, termination,
  * and dt contracts. Options:
  *
@@ -225,7 +432,6 @@ export async function runEvaluation(options) {
     if (world.timestep !== Math.fround(FIXED_DT)) {
       throw new Error(`evaluation: world.timestep readback drifted from the measured f32 contract (${world.timestep})`);
     }
-    const effectiveDt = world.timestep;
     // Enable the profiler BEFORE any stepping so the fresh-module first-step
     // warm-up spike (measured ~1.5 ms) lands on the statics pre-step, never
     // on an evaluation sample.
@@ -252,152 +458,17 @@ export async function runEvaluation(options) {
       return realizeVehicle(RAPIER, world, v.ir, opts);
     });
 
-    // Canonical body order falls out of iterating the realizeVehicle return
-    // shape: vehicles in input order → chassis → stations axle-then-wheel,
-    // hub before wheel. No sorting, no handles.
-    const tracked = realized.map((rec) => {
-      const joints = rec.wheels.flatMap((st) => (st.suspensionJoint === null
-        ? [st.driveJoint] : [st.suspensionJoint, st.driveJoint]));
-      const bodies = [{
-        role: 'chassis', axleIndex: null, wheelIndex: null, body: rec.chassis.body,
-        jointState: () => {
-          if (joints.length === 0) return 'notApplicable'; // a zero-joint sled
-          return joints.every((j) => j.isValid()) ? 'valid' : 'invalid';
-        },
-      }];
-      for (const st of rec.wheels) {
-        if (st.hub !== null) {
-          bodies.push({
-            role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
-            body: st.hub.body, jointState: () => (st.suspensionJoint.isValid() ? 'valid' : 'invalid'),
-          });
-        }
-        bodies.push({
-          role: 'wheel', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
-          body: st.wheel.body, jointState: () => (st.driveJoint.isValid() ? 'valid' : 'invalid'),
-        });
-      }
-      return {
-        rec, joints, bodies,
-        origin: { ...rec.chassis.body.translation() },
-        latched: null,
-        progress: createProgressState(),
-      };
-    });
-
-    const writer = cfg.traceMode === 'none'
-      ? null
-      : new TraceWriter({ mode: cfg.traceMode, checkpointInterval: cfg.checkpointInterval });
-
-    // One capture does the readback ONCE per body and feeds both the
-    // finiteness latch and (when tracing) the writer — the scanned values and
-    // the traced values are provably the same read.
-    const captureStep = (stepIndex) => {
-      for (let vi = 0; vi < tracked.length; vi += 1) {
-        const t = tracked[vi];
-        const reads = t.bodies.map((b) => readBodyState(b.body));
-        if (t.latched === null && reads.some((r) => !r.finite)) {
-          t.latched = { step: stepIndex, reason: 'nonFinite' };
-        }
-        // Progress folds from the SAME chassis read the latch and trace
-        // consume (reads[0] — bodies[0] is the chassis by construction).
-        // Gated on the WHOLE-vehicle latch (fires when ANY body goes
-        // non-finite), so the fold freezes at the last fully-finite capture.
-        // That is deliberate: once latched the vehicle is invalid and its
-        // fitness is 0 regardless of progress, so accumulating chassis motion
-        // after a wheel exploded would be meaningless. A trace-based
-        // recompute therefore agrees with these fields only while
-        // latched === null (unreachable divergence otherwise on 0.19.3 — no
-        // legal input goes non-finite). The fold's own finite guard is the
-        // second net.
-        if (t.latched === null) {
-          foldProgress(t.progress, stepIndex, reads[0].translation.x - t.origin.x);
-        }
-        if (writer !== null) {
-          const terminated = t.latched !== null;
-          for (let bi = 0; bi < t.bodies.length; bi += 1) {
-            const b = t.bodies[bi];
-            const r = reads[bi];
-            writer.record({
-              stepIndex,
-              vehicleIndex: vi,
-              bodyRole: b.role,
-              axleIndex: b.axleIndex,
-              wheelIndex: b.wheelIndex,
-              bodyValid: r.valid,
-              bodySleeping: r.sleeping,
-              jointState: b.jointState(),
-              terminated,
-              terminationReason: terminated ? t.latched.reason : 'none',
-              finiteState: r.finite,
-              translation: r.translation,
-              rotation: r.rotation,
-              linvel: r.linvel,
-              angvel: r.angvel,
-            });
-          }
-        }
-      }
-      if (writer !== null) writer.endStep(stepIndex);
-    };
-
-    captureStep(0); // post-realization, pre-first-step
-
-    onPhase('run');
-    const stepMs = cfg.profile ? new Float64Array(cfg.maxSteps) : null;
-    for (let i = 1; i <= cfg.maxSteps; i += 1) {
-      world.step();
-      if (stepMs !== null) stepMs[i - 1] = world.timingStep();
-      captureStep(i);
-    }
-
-    onPhase('collect');
-    const vehicles = tracked.map((t) => {
-      const chassis = readBodyState(t.rec.chassis.body);
-      const bodyReads = t.bodies.map((b) => readBodyState(b.body));
-      return {
-        forwardDistance: chassis.translation.x - t.origin.x,
-        // Maximum-progress metrics (derived, per-step, sim-time pure): the
-        // fold above saw every captured state 0..maxSteps, so
-        // maxForwardDistance >= max(0, forwardDistance) whenever the vehicle
-        // stayed finite. These are RESULT fields only — they never enter the
-        // trace bytes, so no golden digest can move.
-        maxForwardDistance: t.progress.maxForwardDistance,
-        stepAtMaxForwardDistance: t.progress.stepAtMaxForwardDistance,
-        maxBackwardDistance: t.progress.maxBackwardDistance,
-        origin: t.origin,
-        finalPose: { translation: chassis.translation, rotation: chassis.rotation },
-        finalVelocity: { linvel: chassis.linvel, angvel: chassis.angvel },
-        finite: t.latched === null,
-        terminated: t.latched === null ? { step: null, reason: null } : { ...t.latched },
-        bodies: {
-          count: t.bodies.length,
-          allValid: bodyReads.every((r) => r.valid),
-          sleepingAtEnd: bodyReads.filter((r) => r.sleeping).length, // a count, NEVER an expectation (solver-pump)
-        },
-        joints: {
-          count: t.joints.length,
-          allValid: t.joints.every((j) => j.isValid()),
-        },
-        mass: t.rec.mass,
-        stationCount: t.rec.wheels.length,
-      };
-    });
-    result = {
-      terminationReason: RUN_TERMINATION.COMPLETED,
-      executedSteps: cfg.maxSteps, // evaluation steps only; the statics pre-step is setup
+    // The shared loop — composed verbatim; inspect is never passed here
+    // (the production path has no per-step observer).
+    result = runRealizedEvaluationLoop(world, realized, {
       requestedDt: FIXED_DT,
-      effectiveDt,
-      vehicles,
-      counts: {
-        bodies: world.bodies.len(),
-        colliders: world.colliders.len(),
-        joints: world.impulseJoints.len(),
-        staticColliders,
-      },
-      trace: writer === null ? null : writer.finish(),
-      timing: stepMs === null ? null : { stepMs },
-    };
+      maxSteps: cfg.maxSteps,
+      traceMode: cfg.traceMode,
+      checkpointInterval: cfg.checkpointInterval,
+      staticColliders,
+      profile: cfg.profile,
+      onPhase,
+    });
   } finally {
     world.free();
   }

@@ -1,0 +1,458 @@
+// compare-spike-runs.js — the mechanical adjudicator for the core-0.34 spike
+// experiment (.github/workflows/rapier-034-spike-experiment.yml). Node-only,
+// outside the src/sim ESLint ban; pure fs + JSON, no engine, no wall-clock
+// dependence in its logic.
+//
+// TWO MODES:
+//   --mode classify  (the matrix job's candidate-arm GATE)
+//     node scripts/compare-spike-runs.js --mode classify \
+//       --test-json <vitest.json> --expected .github/spike-expected-candidate-reds.json \
+//       --label node|browser
+//     Parses a `vitest run --reporter=json` file, computes the observed failing
+//     (file -> count) set, and asserts it EQUALS the committed expected set
+//     EXACTLY: an additional failing file, a differing count, or an expected-red
+//     file that fully PASSED (an engine flip -> re-triage) all exit 1. A bare
+//     "11 failures" is insufficient — identities are enforced. Prints each
+//     failing test's fullName so the first heavy run yields the exact titles to
+//     tighten the inventory with (titlesPendingFirstHeavyRun).
+//
+//   --mode compare  (the compare job)
+//     node scripts/compare-spike-runs.js --mode compare \
+//       --artifacts <downloaded-artifacts-dir> --out <dir>
+//     Reads results-stable/ + results-candidate/ (+ perf/, provenance/), emits a
+//     stable-vs-candidate side-by-side to `comparison.md` + a machine-readable
+//     `result-manifest.json` + $GITHUB_STEP_SUMMARY. MISSING or failed arms are
+//     reported EXPLICITLY, never silently skipped.
+
+/* eslint no-console: 0 */
+
+import {
+  readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
+import { parseArgs } from 'node:util';
+
+const ARMS = ['stable', 'candidate'];
+
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+function readJsonIf(path) {
+  return existsSync(path) ? readJson(path) : null;
+}
+
+// Normalize a vitest testResults[].name (absolute path, either separator) to a
+// repo-relative `tests/...test.js` key.
+function relTestKey(name) {
+  const unix = String(name).replace(/\\/g, '/');
+  const idx = unix.lastIndexOf('tests/');
+  return idx === -1 ? unix : unix.slice(idx);
+}
+
+// { fileKey -> { failed, failedNames[] } } for files with >=1 failing assertion.
+function failingByFile(vitestJson) {
+  const out = {};
+  for (const suite of vitestJson.testResults ?? []) {
+    const key = relTestKey(suite.name);
+    const failedNames = (suite.assertionResults ?? [])
+      .filter((a) => a.status === 'failed')
+      .map((a) => a.fullName ?? a.title);
+    if (failedNames.length > 0) out[key] = { failed: failedNames.length, failedNames };
+  }
+  return out;
+}
+
+function classify({ testJsonPath, expectedPath, label }) {
+  const vitest = readJson(testJsonPath);
+  const expected = readJson(expectedPath);
+  const section = expected[label];
+  if (section === undefined) {
+    console.error(`classify: expected-reds has no '${label}' section`);
+    process.exit(1);
+  }
+  const observed = failingByFile(vitest);
+  const expectedFiles = section.byFile ?? {};
+  const errors = [];
+
+  console.log(`# candidate-red classification (${label})`);
+  console.log(`observed failing files: ${Object.keys(observed).length}; `
+    + `total failing tests: ${Object.values(observed).reduce((n, f) => n + f.failed, 0)}`);
+  for (const [file, info] of Object.entries(observed)) {
+    console.log(`  ${file}  (${info.failed} failing)`);
+    for (const n of info.failedNames) console.log(`      - ${n}`);
+  }
+
+  // 1. every expected-red file must be present with the expected count (when a
+  //    count is committed; browser counts may be null pending the first run).
+  for (const [file, spec] of Object.entries(expectedFiles)) {
+    const obs = observed[file];
+    if (obs === undefined) {
+      errors.push(`EXPECTED RED PASSED — ${file} produced NO failures (class-(b) engine flip? re-triage)`);
+      continue;
+    }
+    if (typeof spec.expectedFailures === 'number' && obs.failed !== spec.expectedFailures) {
+      errors.push(`COUNT MISMATCH — ${file}: expected ${spec.expectedFailures} failures, observed ${obs.failed}`);
+    }
+  }
+  // 2. no failing file outside the expected set.
+  for (const file of Object.keys(observed)) {
+    if (!(file in expectedFiles)) {
+      errors.push(`UNEXPECTED FAILURE — ${file} is not in the expected candidate-red inventory`);
+    }
+  }
+
+  if (errors.length > 0) {
+    console.error(`\nCLASSIFY FAIL (${label}) — the candidate failed-test set does not match the inventory:`);
+    for (const e of errors) console.error(`  ${e}`);
+    process.exit(1);
+  }
+  console.log(`\nCLASSIFY OK (${label}) — failing set matches the committed inventory exactly.`);
+}
+
+// --- compare mode ---------------------------------------------------------------
+
+const HEX8 = /\b[0-9a-f]{8}\b/;
+
+function armDir(artifacts, arm) {
+  return join(artifacts, `results-${arm}`);
+}
+
+// The reproducer 'original' + 'multibody' rows (deterministic flavor).
+function reproducerSummary(report) {
+  if (report === null || !Array.isArray(report.reproducer)) return null;
+  const pick = (arm) => report.reproducer.find((r) => r.arm === arm && r.flavor === 'deterministic')
+    ?? report.reproducer.find((r) => r.arm === arm);
+  const describe = (row) => {
+    if (row === undefined || row.result === null || row.result === undefined) return null;
+    const cat = row.result.onset?.firstCatastrophicStep ?? null;
+    return {
+      peakBodySpeed: row.result.peakBodySpeed ?? null,
+      firstCatastrophicStep: cat,
+      classification: cat === null ? 'quiescent' : 'catastrophic',
+      maxForwardDistance: row.result.maxForwardDistance ?? null,
+      unsupported: row.unsupported ?? false,
+    };
+  };
+  return { original: describe(pick('original')), multibody: describe(pick('multibody')) };
+}
+
+// prevalence: { seed -> { catastrophic, total, ids } }
+function prevalenceSummary(report) {
+  if (report === null || !Array.isArray(report.prevalence)) return null;
+  const out = {};
+  for (const p of report.prevalence) {
+    out[p.populationSeed] = {
+      catastrophic: p.catastrophicCount,
+      total: (p.individuals ?? []).length,
+      ids: (p.individuals ?? [])
+        .filter((i) => i.firstCatastrophicStep !== null && i.firstCatastrophicStep !== undefined)
+        .map((i) => `${i.individualId}@${i.firstCatastrophicStep}`),
+    };
+  }
+  return out;
+}
+
+function rapierVersionOf(report) {
+  return report?.engine?.rapierVersion ?? null;
+}
+
+// Scan every *.log / *.txt under an arm dir for ACTUAL Rust/wasm-bindgen borrow
+// or panic signatures. Deliberately specific — the words "panic"/"borrow" appear
+// benignly in build logs (Cargo `panic = "abort"`, "no borrow errors"), so we
+// match only real error strings: `already (mutably) borrowed`, `Borrow(Mut)Error`,
+// `panicked at`, wasm-bindgen's `recursive use of an object` / `unsafe aliasing`,
+// and `RuntimeError: unreachable` / `unreachable executed`.
+const BORROW_SIGNATURE =
+  /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
+
+function borrowErrorScan(dir) {
+  if (!existsSync(dir)) return { scanned: 0, matches: [] };
+  const matches = [];
+  let scanned = 0;
+  for (const f of readdirSync(dir)) {
+    if (!/\.(log|txt)$/.test(f)) continue;
+    scanned += 1;
+    const text = readFileSync(join(dir, f), 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      if (BORROW_SIGNATURE.test(line)) matches.push(`${f}: ${line.trim()}`);
+    }
+  }
+  return { scanned, matches };
+}
+
+// Best-effort digest extraction from a determinism vitest json's failure
+// messages (for Node<->Chromium agreement). Returns { fixture -> digest }.
+function measuredDigests(vitestJson) {
+  const out = {};
+  if (vitestJson === null) return out;
+  for (const suite of vitestJson.testResults ?? []) {
+    if (!/determinism/.test(relTestKey(suite.name))) continue;
+    for (const a of suite.assertionResults ?? []) {
+      if (a.status !== 'failed') continue;
+      const msg = (a.failureMessages ?? []).join('\n');
+      // Prefer an explicit "actual"/"received" digest; else the first hex8.
+      const actual = /(?:actual|received|got)[^0-9a-f]{0,20}([0-9a-f]{8})/i.exec(msg);
+      const any = HEX8.exec(msg);
+      const digest = actual ? actual[1] : (any ? any[0] : null);
+      if (digest !== null) out[a.fullName ?? a.title] = digest;
+    }
+  }
+  return out;
+}
+
+function mdTable(headers, rows) {
+  const line = (cells) => `| ${cells.join(' | ')} |`;
+  return [
+    line(headers),
+    line(headers.map(() => '---')),
+    ...rows.map((r) => line(r.map((c) => (c === null || c === undefined ? '—' : String(c))))),
+  ].join('\n');
+}
+
+function compare({ artifacts, out }) {
+  const L = [];
+  const manifest = { schema: 'boxcar3d.spike-comparison/1', arms: {}, findings: {} };
+  const push = (s) => L.push(s);
+
+  push('# Rapier core-0.34 spike — controlled stable-vs-candidate comparison');
+  push('');
+
+  // Arm presence (explicit MISSING, never silent).
+  const armReports = {};
+  for (const arm of ARMS) {
+    const dir = armDir(artifacts, arm);
+    const present = existsSync(dir);
+    const reproducer = present ? readJsonIf(join(dir, 'reproducer.json')) : null;
+    const freshseed = present ? readJsonIf(join(dir, 'freshseed.json')) : null;
+    const prevalence = present ? readJsonIf(join(dir, 'prevalence.json')) : null;
+    const npmTest = present ? readJsonIf(join(dir, 'npm-test.json')) : null;
+    const browser = present ? readJsonIf(join(dir, 'browser.json')) : null;
+    const armManifest = present ? readJsonIf(join(dir, 'arm-manifest.json')) : null;
+    armReports[arm] = { present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest };
+    manifest.arms[arm] = {
+      present,
+      rapierVersion: rapierVersionOf(reproducer) ?? rapierVersionOf(prevalence),
+      resolvedSha: armManifest?.resolvedSha ?? null,
+      npmTestFailures: npmTest?.numFailedTests ?? null,
+    };
+  }
+  const missing = ARMS.filter((a) => !armReports[a].present);
+  if (missing.length > 0) {
+    push(`> **WARNING — missing arm(s): ${missing.join(', ')}.** The comparison below is INCOMPLETE; `
+      + 'a missing arm means its job did not upload results (build failure, cancelled, or skipped). '
+      + 'This is reported, not silently skipped.');
+    push('');
+  }
+
+  push('## Provenance');
+  const prov = readJsonIf(join(artifacts, 'provenance', 'candidate-provenance.json'));
+  push(mdTable(['field', 'value'], [
+    ['resolved BoxCar3D SHA (stable)', armReports.stable.armManifest?.resolvedSha],
+    ['resolved BoxCar3D SHA (candidate)', armReports.candidate.armManifest?.resolvedSha],
+    ['upstream Rapier ref', prov?.upstreamRef],
+    ['candidate wasm-pack', prov?.wasmPack],
+    ['candidate rapierVersion()', rapierVersionOf(armReports.candidate.reproducer)],
+    ['stable rapierVersion()', rapierVersionOf(armReports.stable.reproducer)],
+    ['candidate tarball SHA-256 (ordinary)', prov?.tarballs?.ordinary],
+    ['candidate tarball SHA-256 (deterministic)', prov?.tarballs?.deterministic],
+  ]));
+  push('');
+  manifest.findings.provenance = prov ?? null;
+
+  // Reproducer (peak / onset / class).
+  push('## Minimum reproducer (deterministic flavor)');
+  const repro = {};
+  for (const arm of ARMS) repro[arm] = reproducerSummary(armReports[arm].reproducer);
+  const reproRow = (armSum, key) => {
+    const s = armSum?.[key];
+    if (!s) return ['—', '—', '—'];
+    return [s.classification, s.firstCatastrophicStep ?? '—', s.peakBodySpeed === null ? '—' : s.peakBodySpeed.toExponential(3)];
+  };
+  push(mdTable(
+    ['arm', 'original class', 'original cat@', 'original peak m/s', 'multibody class', 'multibody cat@', 'multibody peak m/s'],
+    ARMS.map((arm) => [arm, ...reproRow(repro[arm], 'original'), ...reproRow(repro[arm], 'multibody')]),
+  ));
+  push('');
+  push('_The verdict is the CLASSIFICATION column (catastrophic vs quiescent), not the exact peak — wasm is not byte-reproducible across environments._');
+  push('');
+  manifest.findings.reproducer = repro;
+
+  // Prevalence incl. the fresh seed on BOTH arms.
+  push('## Prevalence (per population seed: catastrophic / total)');
+  const prev = {};
+  for (const arm of ARMS) {
+    const merged = { ...(prevalenceSummary(armReports[arm].prevalence) ?? {}), ...(prevalenceSummary(armReports[arm].freshseed) ?? {}) };
+    prev[arm] = merged;
+  }
+  const seeds = [...new Set(ARMS.flatMap((a) => Object.keys(prev[a])))].sort();
+  push(mdTable(
+    ['population seed', ...ARMS.map((a) => `${a} cat/total`), ...ARMS.map((a) => `${a} ids`)],
+    seeds.map((seed) => [
+      seed,
+      ...ARMS.map((a) => (prev[a][seed] ? `${prev[a][seed].catastrophic}/${prev[a][seed].total}` : '—')),
+      ...ARMS.map((a) => (prev[a][seed] ? prev[a][seed].ids.join(' ') : '—')),
+    ]),
+  ));
+  push('');
+  manifest.findings.prevalence = prev;
+
+  // Test failed-set diff.
+  push('## Unit-suite failed-test sets');
+  for (const arm of ARMS) {
+    const t = armReports[arm].npmTest;
+    if (t === null) { push(`- **${arm}:** npm-test.json MISSING`); continue; }
+    const fbf = failingByFile(t);
+    const files = Object.keys(fbf);
+    push(`- **${arm}:** ${t.numFailedTests ?? '?'} failing`
+      + (files.length ? ` across ${files.length} files — ${files.map((f) => `${f}(${fbf[f].failed})`).join(', ')}` : ' (all green)'));
+  }
+  push('');
+  manifest.findings.tests = Object.fromEntries(ARMS.map((a) => [a, armReports[a].npmTest
+    ? { numFailedTests: armReports[a].npmTest.numFailedTests, byFile: failingByFile(armReports[a].npmTest) }
+    : null]));
+
+  // Determinism digests + Node<->Chromium agreement (candidate).
+  push('## Determinism digests (candidate: Node vs Chromium)');
+  const nodeD = measuredDigests(armReports.candidate.npmTest);
+  const chromeD = measuredDigests(armReports.candidate.browser);
+  const keys = [...new Set([...Object.keys(nodeD), ...Object.keys(chromeD)])];
+  if (keys.length === 0) {
+    push('_No determinism failure digests could be extracted — either both green (unexpected on candidate) or the failure-message format changed. See raw logs._');
+    manifest.findings.nodeChromiumAgreement = { extracted: false };
+  } else {
+    let agree = true;
+    push(mdTable(['determinism assertion', 'Node digest', 'Chromium digest', 'agree'],
+      keys.map((k) => {
+        const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
+        const ok = n !== null && c !== null && n === c;
+        if (n !== null && c !== null && !ok) agree = false;
+        return [k, n, c, ok ? 'yes' : (n === null || c === null ? 'n/a' : 'NO')];
+      })));
+    push('');
+    push(agree
+      ? '_Node and Chromium agree on every extracted candidate digest (cross-env determinism holds on core 0.34)._'
+      : '> **Node↔Chromium DISAGREEMENT on a candidate digest — investigate before any claim of cross-env determinism.**');
+    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, node: nodeD, chromium: chromeD };
+  }
+  push('');
+
+  // Borrow-error scan.
+  push('## `world.free()` borrow/panic scan');
+  for (const arm of ARMS) {
+    const scan = borrowErrorScan(armReports[arm].dir);
+    push(`- **${arm}:** scanned ${scan.scanned} log(s); ${scan.matches.length} borrow/ownership/unreachable/panic match(es)`
+      + (scan.matches.length ? `:\n  - ${scan.matches.slice(0, 10).join('\n  - ')}` : '.'));
+    manifest.findings[`borrow_${arm}`] = scan;
+  }
+  push('');
+
+  // Paired bench.
+  push('## Paired bench (same-runner, alternating)');
+  const perf = readJsonIf(join(artifacts, 'perf', 'perf.json'));
+  if (perf === null) {
+    push('- perf.json MISSING — the perf job did not upload results.');
+  } else {
+    push('```json');
+    push(JSON.stringify(perf.summary ?? perf, null, 2).slice(0, 4000));
+    push('```');
+  }
+  manifest.findings.perf = perf?.summary ?? perf ?? null;
+  push('');
+
+  // Verdict line (classification-level).
+  const cStable = repro.stable?.original?.classification;
+  const cCand = repro.candidate?.original?.classification;
+  const mStable = repro.stable?.multibody?.classification;
+  const mCand = repro.candidate?.multibody?.classification;
+  push('## Verdict (classification level)');
+  push(`- reproducer (impulse): stable **${cStable ?? '?'}**, candidate **${cCand ?? '?'}** `
+    + `→ ${cStable === cCand ? 'SAME class (Outcome B holds)' : 'DIFFERENT — re-examine'}`);
+  push(`- reproducer (multibody): stable **${mStable ?? '?'}**, candidate **${mCand ?? '?'}**`);
+  manifest.verdict = {
+    reproducerImpulse: { stable: cStable ?? null, candidate: cCand ?? null, sameClass: cStable === cCand },
+    reproducerMultibody: { stable: mStable ?? null, candidate: mCand ?? null },
+    missingArms: missing,
+  };
+
+  const md = L.join('\n');
+  writeFileSync(join(out, 'comparison.md'), `${md}\n`);
+  writeFileSync(join(out, 'result-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
+  console.log(`comparison.md + result-manifest.json written to ${out}`);
+  if (missing.length > 0) console.log(`NOTE: ${missing.length} arm(s) missing — comparison is incomplete.`);
+}
+
+// The candidate arm's must-PASS invariants (amendment 4), a GATE independent of
+// the expected-red set: the dt readback stays f32(1/60), and the candidate's
+// Node and Chromium determinism digests agree (cross-env determinism holds).
+const F32_DT = 0.01666666753590107;
+
+function invariants({ nodeJson, browserJson, reproducerJson }) {
+  const errors = [];
+
+  const repro = readJsonIf(reproducerJson);
+  if (repro === null) {
+    errors.push(`dt-readback: reproducer json missing (${reproducerJson})`);
+  } else if (repro.engine?.effectiveDt !== F32_DT) {
+    errors.push(`dt-readback: engine.effectiveDt ${repro.engine?.effectiveDt} != f32(1/60) ${F32_DT}`);
+  } else {
+    console.log(`  OK   dt readback = ${F32_DT} (f32(1/60))`);
+  }
+
+  const nD = measuredDigests(readJsonIf(nodeJson));
+  const cD = measuredDigests(readJsonIf(browserJson));
+  console.log(`  extracted Node digests: ${JSON.stringify(nD)}`);
+  console.log(`  extracted Chromium digests: ${JSON.stringify(cD)}`);
+  const shared = Object.keys(nD).filter((k) => k in cD);
+  if (shared.length === 0) {
+    errors.push('node<->chromium: NO shared determinism digest could be extracted to compare '
+      + '(regex/format mismatch or a green suite) — cannot verify cross-env agreement; tighten measuredDigests() from the printed messages');
+  }
+  for (const k of shared) {
+    if (nD[k] === cD[k]) console.log(`  OK   Node==Chromium on "${k}" (${nD[k]})`);
+    else errors.push(`node<->chromium disagree on "${k}": Node ${nD[k]} vs Chromium ${cD[k]}`);
+  }
+
+  if (errors.length > 0) {
+    console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
+    process.exit(1);
+  }
+  console.log('\nINVARIANTS OK — dt readback + Node<->Chromium digest agreement hold on the candidate.');
+}
+
+function main() {
+  const { values } = parseArgs({
+    options: {
+      mode: { type: 'string' },
+      'test-json': { type: 'string' },
+      expected: { type: 'string' },
+      label: { type: 'string', default: 'node' },
+      artifacts: { type: 'string', default: 'artifacts' },
+      out: { type: 'string', default: '.' },
+      'node-json': { type: 'string' },
+      'browser-json': { type: 'string' },
+      'reproducer-json': { type: 'string' },
+    },
+  });
+  if (values.mode === 'classify') {
+    if (values['test-json'] === undefined || values.expected === undefined) {
+      console.error('compare-spike-runs: --mode classify needs --test-json and --expected');
+      process.exit(2);
+    }
+    classify({ testJsonPath: values['test-json'], expectedPath: values.expected, label: values.label });
+  } else if (values.mode === 'compare') {
+    compare({ artifacts: values.artifacts, out: values.out });
+  } else if (values.mode === 'invariants') {
+    invariants({
+      nodeJson: values['node-json'],
+      browserJson: values['browser-json'],
+      reproducerJson: values['reproducer-json'],
+    });
+  } else {
+    console.error("compare-spike-runs: --mode must be 'classify', 'compare', or 'invariants'");
+    process.exit(2);
+  }
+}
+
+main();

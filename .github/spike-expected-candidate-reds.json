@@ -1,0 +1,60 @@
+{
+  "schema": "boxcar3d.spike-expected-candidate-reds/1",
+  "rationale": "The core-0.34 candidate is expected to fail EXACTLY the class-(c) golden/version assertions (the taxonomy §4.2 inventory) and NOTHING else. compare-spike-runs.js --mode classify reads the candidate's `npm test` and `test:browser` vitest --reporter=json output and asserts the observed failing (file -> count) set equals `node`/`browser` below EXACTLY: any ADDITIONAL failing file, any file whose failure COUNT differs, or any expected-red file that fully PASSED (an engine flip — re-triage) fails the candidate arm. This is machine-enforced, not narrated: a bare '11 failures' is insufficient. See docs/engine-assertion-taxonomy-2026-07.md §4.2 and docs/rapier-034-spike-2026-07.md §4.",
+  "node": {
+    "reporter": "npm test (vitest run --reporter=json), Node, deterministic + ordinary flavors, tests/browser/** excluded",
+    "totalExpectedFailures": 11,
+    "byFile": {
+      "tests/evaluation-determinism.test.js": {
+        "expectedFailures": 5,
+        "class": "c",
+        "asserts": "rapierVersion staleness pin (0.19.3 -> 0.19.3-c13133ad.0) + eval-A/B/C/D golden trace digests"
+      },
+      "tests/evaluation-golden.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "fixture-A cold-module (fresh-module-graph) trace digest"
+      },
+      "tests/population-determinism.test.js": {
+        "expectedFailures": 3,
+        "class": "c",
+        "asserts": "rapierVersion/dt pin, fitness-vector digest (bded0d30 -> measured), champion solo-trace digest"
+      },
+      "tests/bench-schema.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "report.meta.rapier == package.json dependency pin { compat: '0.19.3', deterministicCompat: '0.19.3' }"
+      },
+      "tests/physics-explosion-probe-schema.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "report.engine.rapierVersion pin ('0.19.3')"
+      }
+    }
+  },
+  "browser": {
+    "reporter": "npm run test:browser (vitest run --config vitest.browser.config.js --reporter=json), pinned Chromium",
+    "note": "The local historical spike SKIPPED test:browser, so per-file browser counts are FIRST MEASURED by the heavy CI dispatch (C5); tighten this section from that run's observed failing set. The two browser determinism files are expected to fail on the same class-(c) golden digests that moved on Node — and the load-bearing invariant is that the candidate's MEASURED browser digest equals its MEASURED Node digest (Node<->Chromium agreement), asserted separately by --mode classify.",
+    "byFile": {
+      "tests/browser/evaluation-determinism.test.js": {
+        "expectedFailures": null,
+        "class": "c",
+        "asserts": "A-D golden trace digests + rapierVersion, in Chromium"
+      },
+      "tests/browser/population-determinism.test.js": {
+        "expectedFailures": null,
+        "class": "c",
+        "asserts": "population fitness-vector + champion-trace digests + rapierVersion, in Chromium"
+      }
+    }
+  },
+  "mustPassInvariants": {
+    "dtReadback": "world.timestep reads back Math.fround(1/60) = 0.01666666753590107 on the candidate (the probe/runner dt tooth stays GREEN — else the whole physics suite cascade-reds for the wrong reason)",
+    "internalDeterminismGateA": "the determinism gate's 'two fresh worlds agree on digest + every checkpoint' (internal repeatability) PASSES on the candidate for A-D; only gate (d) 'matches committed lock' is allowed to move",
+    "nodeChromiumAgreement": "the candidate's MEASURED digests are identical between the Node and Chromium determinism-gate failure printouts (cross-env determinism holds on the new engine)"
+  },
+  "classBFlipWatch": {
+    "probe:timing profiler re-enable DRIFT": "the single class-(b) engine-finding the local run saw (exit 1 on probe:timing, adoption-critical sub-checks green); recorded, not a contract"
+  },
+  "titlesPendingFirstHeavyRun": true
+}

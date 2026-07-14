@@ -1,0 +1,408 @@
+# Rapier core-0.34 spike — controlled stable-vs-candidate experiment.
+#
+# workflow_dispatch ONLY: never a required check, never on push/PR. It builds the
+# candidate Rapier (upstream monorepo core 0.34) FROM SOURCE, then runs the rerun
+# matrix on a controlled same-commit pair {stable npm 0.19.3, candidate tarballs}
+# so the docs/rapier-034-spike-2026-07.md figures become re-dispatchable and
+# artifact-audited. Outcome B is already established locally; this closes the
+# auditability / controlled-pair / skipped-matrix review blockers.
+#
+# The candidate build is the heaviest step and the wasm bytes are NOT
+# byte-reproducible across environments — the verdict reproduces at
+# CLASSIFICATION level (catastrophic vs quiescent, prevalence counts), which is
+# what compare-spike-runs.js adjudicates. If a from-source step proves
+# intractable in CI, the honest fallback is to keep the local build as
+# provenance and downgrade candidate figures to local-only (see the decision
+# record §2 risk note).
+
+name: rapier-034-spike-experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Upstream dimforge/rapier commit/ref to build the candidate from
+        default: c13133ad293ee70c7f9cec9e498eac016c362169
+        type: string
+      heavy:
+        description: >-
+          Full evidence (all-witness matrix + complete 60-member prevalence).
+          true is REQUIRED for a citable run; false is a debug-only quick mode
+          that MUST NOT feed the committed decision record.
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolve the BoxCar3D commit ONCE to an immutable 40-char SHA; every
+  # downstream job checks out that exact SHA (never a moving branch ref), and it
+  # is written into every arm's manifest so each run attests its own runtime SHA.
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        run: |
+          echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "Resolved BoxCar3D experiment SHA: ${{ github.sha }}"
+
+  # Build both 3D compat flavors from source with upstream's packaging scripts
+  # UNMODIFIED (all six flavors, no gen_src/rollup trim), in the required order
+  # (deterministic-3D first), with an asserted system wasm-pack (NOT the upstream
+  # typescript/package.json 0.12.1 devDep — build-rust.sh is invoked directly, so
+  # node_modules/.bin never PATH-shadows the intended toolchain).
+  build-candidate:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout upstream Rapier
+        uses: actions/checkout@v4
+        with:
+          repository: dimforge/rapier
+          ref: ${{ inputs.upstream_ref }}
+          path: rapier-upstream
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Rust 1.90.0 + wasm32 target
+        uses: dtolnay/rust-toolchain@1.90.0
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install + ASSERT wasm-pack 0.13.1 (system, not the upstream devDep)
+        run: |
+          set -euo pipefail
+          cargo install wasm-pack --version 0.13.1 --locked
+          WP="$(command -v wasm-pack)"
+          echo "wasm-pack path: $WP"
+          wasm-pack --version
+          case "$WP" in
+            *node_modules*) echo "REFUSING: wasm-pack resolves inside node_modules (the 0.12.1 shadow)"; exit 1 ;;
+          esac
+          wasm-pack --version | grep -q '0.13.1' || { echo "wasm-pack is not 0.13.1"; exit 1; }
+      - name: Identity patch (crate version) — the ONLY engine/source edit
+        working-directory: rapier-upstream/typescript
+        run: |
+          set -euo pipefail
+          SHORT="$(echo '${{ inputs.upstream_ref }}' | cut -c1-8)"
+          sed -i "s/^version = \"0.19.3\"$/version = \"0.19.3-${SHORT}.0\"/" \
+            builds/prepare_builds/templates/Cargo.toml.tera
+          grep '^version' builds/prepare_builds/templates/Cargo.toml.tera
+      - name: Prepare flavor crates + compat tools
+        working-directory: rapier-upstream/typescript
+        run: |
+          set -euo pipefail
+          npm ci
+          ./builds/prepare_builds/prepare_all_projects.sh
+          cd rapier-compat && npm ci
+      - name: Build all six wasm flavors (deterministic-3D FIRST), unmodified scripts
+        working-directory: rapier-upstream/typescript/rapier-compat
+        run: |
+          set -euo pipefail
+          bash ./build-rust.sh -f deterministic -d 3        # owns the determinism contract → first
+          bash ./build-rust.sh -f non-deterministic -d 3
+          bash ./build-rust.sh -f non-deterministic -d 2
+          bash ./build-rust.sh -f deterministic -d 2
+          bash ./build-rust.sh -f simd -d 2
+          bash ./build-rust.sh -f simd -d 3
+      - name: Package (gen_src + rollup + fix_raw_file, all unmodified)
+        working-directory: rapier-upstream/typescript/rapier-compat
+        run: |
+          set -euo pipefail
+          sh ./gen_src.sh
+          npx rollup --config rollup.config.js --bundleConfigAsCjs
+          sh ./fix_raw_file.sh
+      - name: npm pack the two 3D compat packages + hash + provenance
+        working-directory: rapier-upstream/typescript/rapier-compat
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/tarballs"
+          # The built compat package dirs (best-effort discovery: 3D compat only).
+          mapfile -t PKGS < <(find . -name package.json -path '*rapier3d*compat*' -not -path '*/node_modules/*' | sort -u)
+          echo "Found candidate 3D compat package.json files:"; printf '  %s\n' "${PKGS[@]}"
+          for pj in "${PKGS[@]}"; do
+            dir="$(dirname "$pj")"
+            name="$(node -p "require('./$pj').name")"
+            case "$name" in
+              @dimforge/rapier3d-compat|@dimforge/rapier3d-deterministic-compat)
+                ( cd "$dir" && npm pack --pack-destination "$GITHUB_WORKSPACE/tarballs" ) ;;
+              *) echo "skip $name (not a 3D compat package)" ;;
+            esac
+          done
+          cd "$GITHUB_WORKSPACE"
+          ls -l tarballs
+          ( cd tarballs && sha256sum ./*.tgz > sha256.txt && cat sha256.txt )
+          # Export the discovered paths as env vars the node block reads directly
+          # (these are SHELL vars — never reference them via ${{ env.* }}).
+          export ORD_WASM="$(find rapier-upstream -name 'rapier_wasm3d_bg.wasm' -path '*non-deterministic*' | head -n1 || true)"
+          export DET_WASM="$(find rapier-upstream -name 'rapier_wasm3d_bg.wasm' -path '*deterministic*' | head -n1 || true)"
+          export ORD_TGZ="$(ls tarballs/dimforge-rapier3d-compat-*.tgz 2>/dev/null | head -n1 || true)"
+          export DET_TGZ="$(ls tarballs/dimforge-rapier3d-deterministic-compat-*.tgz 2>/dev/null | head -n1 || true)"
+          node -e '
+            const { execSync } = require("node:child_process");
+            const fs = require("node:fs");
+            const sha = (f) => (f && fs.existsSync(f)) ? execSync(`sha256sum "${f}"`).toString().split(" ")[0] : null;
+            const prov = {
+              schema: "boxcar3d.candidate-provenance/1",
+              resolvedSha: process.env.SHA,
+              upstreamRef: process.env.UPSTREAM_REF,
+              wasmPack: execSync("wasm-pack --version").toString().trim(),
+              rustc: execSync("rustc --version").toString().trim(),
+              node: process.version,
+              tarballs: { ordinary: sha(process.env.ORD_TGZ), deterministic: sha(process.env.DET_TGZ) },
+              wasm: { ordinary: sha(process.env.ORD_WASM), deterministic: sha(process.env.DET_WASM) },
+              gitDiffStat: execSync("git -C rapier-upstream diff --stat").toString(),
+            };
+            fs.mkdirSync("provenance", { recursive: true });
+            fs.writeFileSync("provenance/candidate-provenance.json", JSON.stringify(prov, null, 2));
+            console.log(prov);
+          '
+      - name: Upload candidate tarballs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-tarballs
+          path: tarballs/*.tgz
+          if-no-files-found: warn
+      - name: Upload provenance bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: provenance
+          path: |
+            provenance/candidate-provenance.json
+            tarballs/sha256.txt
+
+  # The rerun matrix: {stable, candidate} on the SAME resolved SHA. Every command
+  # runs, its exit code + JSON captured, and NOTHING fails the run step — the
+  # adjudicate step enforces the pass/fail policy so `if: always()` uploads
+  # complete evidence even when a command fails.
+  matrix:
+    needs: [resolve, build-candidate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [stable, candidate]
+    env:
+      ARM: ${{ matrix.arm }}
+      HEAVY: ${{ inputs.heavy }}
+    steps:
+      - name: Checkout the resolved BoxCar3D SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Record stable pre-rewrite lock hash
+        run: sha256sum package-lock.json | tee stable-lock.sha256
+      - run: npm ci
+      - name: Download candidate tarballs (candidate arm only)
+        if: matrix.arm == 'candidate'
+        uses: actions/download-artifact@v4
+        with:
+          name: candidate-tarballs
+          path: dl
+      - name: Install candidate + archive
+        if: matrix.arm == 'candidate'
+        run: |
+          set -euo pipefail
+          npm install ./dl/dimforge-rapier3d-compat-*.tgz ./dl/dimforge-rapier3d-deterministic-compat-*.tgz
+          echo "Installed candidate tarballs:"; ls -l dl
+      - name: Playwright Chromium (cached, version-keyed)
+        id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+      - run: npx playwright install --with-deps chromium
+      - name: Run the rerun matrix (capture-only; never fails here)
+        run: |
+          set -uo pipefail
+          RES="results-${ARM}"
+          mkdir -p "$RES"
+          # Outer shell omits -e, so a failing command never aborts the capture
+          # loop; PIPESTATUS[0] records the command's own exit (not tee's).
+          run() {
+            name="$1"; shift
+            echo "::group::${name}"
+            "$@" 2>&1 | tee "${RES}/${name}.log"
+            code=${PIPESTATUS[0]}
+            echo "$code" > "${RES}/exit-${name}.txt"
+            echo "::endgroup::"
+            echo "${name} exit ${code}"
+          }
+          run package-smoke npm run probe:package-smoke
+          run lint npm run lint
+          run build npm run build
+          run app-scene node scripts/probe-app-scene-smoke.js
+          run timing npm run probe:timing
+          # npm test subsumes test:determinism (the four determinism files run
+          # inside it), so npm-test.json carries the Node determinism digests —
+          # no separate test:determinism run needed.
+          run npmtest npx vitest run --reporter=default --reporter=json --outputFile="${RES}/npm-test.json"
+          run browser npx vitest run --config vitest.browser.config.js --reporter=default --reporter=json --outputFile="${RES}/browser.json"
+          run reproducer npm run probe:physics-explosion -- --pass reproducer --json "${RES}/reproducer.json"
+          run freshseed npm run probe:physics-explosion -- --pass prevalence --prevalence-seeds 20260730 --json "${RES}/freshseed.json"
+          if [ "${HEAVY}" = "true" ]; then
+            run witnesses npm run probe:physics-explosion -- --witness all --pass all --json "${RES}/witnesses.json"
+            run prevalence npm run probe:physics-explosion -- --pass prevalence --json "${RES}/prevalence.json"
+          fi
+      - name: Write arm manifest
+        run: |
+          set -euo pipefail
+          RES="results-${ARM}"
+          node -e '
+            const fs = require("node:fs");
+            const res = process.env.RES;
+            const readExit = (n) => { try { return Number(fs.readFileSync(`${res}/exit-${n}.txt`,"utf8").trim()); } catch { return null; } };
+            const names = ["package-smoke","lint","build","app-scene","timing","npmtest","browser","reproducer","freshseed","witnesses","prevalence"];
+            const exits = Object.fromEntries(names.map(n => [n, readExit(n)]));
+            const stableLock = fs.readFileSync("stable-lock.sha256","utf8").trim().split(" ")[0];
+            const manifest = {
+              schema: "boxcar3d.arm-manifest/1",
+              arm: process.env.ARM,
+              resolvedSha: process.env.SHA,
+              heavy: process.env.HEAVY === "true",
+              stablePreRewriteLockSha256: stableLock,
+              exits,
+            };
+            fs.writeFileSync(`${res}/arm-manifest.json`, JSON.stringify(manifest, null, 2));
+            console.log(manifest);
+          '
+        env:
+          RES: results-${{ matrix.arm }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+      - name: Adjudicate (machine-enforced classification)
+        run: |
+          set -uo pipefail
+          RES="results-${ARM}"
+          fail=0
+          gate() {
+            code=$(cat "${RES}/exit-$1.txt" 2>/dev/null || echo missing)
+            if [ "$code" != "0" ]; then echo "GATE FAIL: $1 exit ${code}"; fail=1; else echo "gate ok: $1"; fi
+          }
+          # GATE on BOTH arms (structural / engine-independent / consumability):
+          for g in package-smoke lint build app-scene reproducer freshseed; do gate "$g"; done
+          if [ "${HEAVY}" = "true" ]; then for g in witnesses prevalence; do gate "$g"; done; fi
+          if [ "${ARM}" = "stable" ]; then
+            # Stable must be fully green everywhere.
+            for g in timing npmtest browser; do gate "$g"; done
+          else
+            # Candidate: the reds are EXPECTED — enforce the exact inventory +
+            # the must-pass invariants instead of raw green. timing may DRIFT
+            # (class-(b)); OBSERVE, do not gate.
+            node scripts/compare-spike-runs.js --mode classify \
+              --test-json "${RES}/npm-test.json" \
+              --expected .github/spike-expected-candidate-reds.json --label node || fail=1
+            node scripts/compare-spike-runs.js --mode classify \
+              --test-json "${RES}/browser.json" \
+              --expected .github/spike-expected-candidate-reds.json --label browser || fail=1
+            node scripts/compare-spike-runs.js --mode invariants \
+              --node-json "${RES}/npm-test.json" \
+              --browser-json "${RES}/browser.json" \
+              --reproducer-json "${RES}/reproducer.json" || fail=1
+          fi
+          if [ "$fail" != "0" ]; then echo "ARM ${ARM} FAILED adjudication."; exit 1; fi
+          echo "ARM ${ARM} passed adjudication."
+      - name: Upload arm results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.arm }}
+          path: results-${{ matrix.arm }}
+          if-no-files-found: warn
+
+  # Paired perf: two same-commit dirs on ONE runner, alternating stable →
+  # candidate → candidate → stable, --json each. Not decision-relevant to Outcome
+  # B, but the review asked for a genuine same-runner paired cost observation.
+  perf:
+    needs: [resolve, build-candidate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: perf-stable
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: perf-candidate
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install stable + candidate side by side
+        run: |
+          set -euo pipefail
+          ( cd perf-stable && npm ci )
+          ( cd perf-candidate && npm ci )
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate-tarballs
+          path: dl
+      - name: Install candidate tarballs into perf-candidate
+        run: |
+          set -euo pipefail
+          ( cd perf-candidate && npm install ../dl/dimforge-rapier3d-compat-*.tgz ../dl/dimforge-rapier3d-deterministic-compat-*.tgz )
+      - name: Alternating paired bench
+        run: |
+          set -uo pipefail
+          mkdir -p perf
+          bench() { arm="$1"; i="$2"; ( cd "perf-${arm}" && npm run bench:physics -- --smoke --json ) > "perf/bench-${arm}-${i}.json" 2> "perf/bench-${arm}-${i}.log" || echo "bench ${arm}#${i} exit $?"; }
+          bench stable 1
+          bench candidate 1
+          bench candidate 2
+          bench stable 2
+          node -e '
+            const fs = require("node:fs");
+            const load = (f) => { try { return JSON.parse(fs.readFileSync(`perf/${f}`,"utf8")); } catch { return null; } };
+            const runs = [["stable",1],["candidate",1],["candidate",2],["stable",2]]
+              .map(([arm,i]) => ({ arm, i, json: load(`bench-${arm}-${i}.json`) }));
+            const summary = { order: runs.map(r => `${r.arm}#${r.i}`), note: "raw bench JSON collected; ratio computed in C5 once the bench shape is confirmed" };
+            fs.writeFileSync("perf/perf.json", JSON.stringify({ schema: "boxcar3d.spike-perf/1", summary, runs }, null, 2));
+            console.log(summary);
+          '
+      - name: Upload perf
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf
+          path: perf
+
+  # The adjudicated comparison: download all arms, emit the side-by-side +
+  # manifest to $GITHUB_STEP_SUMMARY and as committable artifacts. Reports any
+  # MISSING/failed arm explicitly (never silently skips).
+  compare:
+    needs: [matrix, perf]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Compare + emit comparison.md + result-manifest.json
+        run: |
+          set -euo pipefail
+          mkdir -p spike-out
+          node scripts/compare-spike-runs.js --mode compare --artifacts artifacts --out spike-out
+      - name: Upload comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparison
+          path: spike-out

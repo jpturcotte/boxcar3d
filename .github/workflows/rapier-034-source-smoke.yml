@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - experiment/rapier-034-source-smoke
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -60,7 +63,6 @@ jobs:
           npm run build-rust-3d-non-deterministic
           npm run build-rust-3d-deterministic
 
-          # Generate only the 3D TypeScript trees needed by this experiment.
           mkdir -p gen3d
           cp -r ../src.ts/* gen3d/
           rm -f gen3d/raw.ts gen3d/init.ts
@@ -78,7 +80,6 @@ jobs:
             rm -f "builds/${feature}/pkg/"*.bak
           done
 
-          # Restrict Rollup to the two packages built above.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('rollup.config.js')

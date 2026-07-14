@@ -167,6 +167,10 @@ evidence notes. Reference only; never import from `legacy/`.
   of a real contact-querying inspect, deterministic flavor),
   `physics-explosion-probe-schema.test.js` (the explosion probe's only CI
   touchpoint — structure + hard identity checks, no physics magnitudes),
+  `compare-spike-runs.test.js` (the spike adjudicator's committed contract:
+  classify/invariants/timing/compare over pure JSON fixtures with verbatim
+  determinism-test titles/messages, bound to the committed expected-red
+  inventory — no physics, no Rapier),
   and `tests/browser/evaluation-determinism.test.js` +
   `tests/browser/population-determinism.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
@@ -1061,12 +1065,22 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   experiment (`.github/workflows/rapier-034-spike-experiment.yml`,
   `scripts/compare-spike-runs.js`, `scripts/probe-app-scene-smoke.js`) that
   builds the candidate from source and runs the controlled stable-vs-candidate
-  pair with machine-enforced expected-red classification — a BOOTSTRAP
-  classifier until the first post-merge `heavy=true` dispatch (browser
-  per-file counts + assertion titles are first measured by that run and the
-  inventory tightened from it; the Node counts, the probe:timing DRIFT
-  allowlist, and the dt/internal-determinism/Node↔Chromium invariants are
-  enforced from the start). Full suite green both
+  pair with machine-enforced expected-red classification at the ASSERTION
+  level: per-red failure-message signatures (each staleness red must fail on
+  its committed 'engine changed — re-lock deliberately' message, each golden
+  on the checkpoint-divergence formatter — a failure MOVING to an earlier
+  project contract inside the same red test fails the arm), POSITIVE
+  must-pass presence (the gate-(a)/pure teeth must appear with status
+  'passed' at exact multiplicity), the probe:timing DRIFT allowlist, and the
+  dt + COMPLETE-set Node↔Chromium digest invariants (semantic keys, set
+  equality both directions — a Node-only or Chromium-only extraction fails).
+  The adjudicator itself is under ordinary CI:
+  `tests/compare-spike-runs.test.js` (pure JSON fixtures with verbatim
+  titles/messages, no physics, bound to the committed
+  `.github/spike-expected-candidate-reds.json` schema/2 inventory). Still
+  bootstrap until the first post-merge `heavy=true` dispatch: BROWSER
+  per-file counts + signatures are first measured by that run and tightened
+  from it. Full suite green both
   flavors on stable; every fingerprint byte-identical.
 - **Consequence:** do NOT adopt the source build (no divergence-fix to gain).
   PR-B (numerical-integrity policy) proceeds on stable 0.19.3 as planned; the

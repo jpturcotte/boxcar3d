@@ -40,6 +40,7 @@ import {
   readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 const ARMS = ['stable', 'candidate'];
@@ -60,17 +61,42 @@ function relTestKey(name) {
   return idx === -1 ? unix : unix.slice(idx);
 }
 
-// { fileKey -> { failed, failedNames[] } } for files with >=1 failing assertion.
+// { fileKey -> { failed, failedNames[], failedAssertions[{name, message}] } }
+// for files with >=1 failing assertion. `message` joins failureMessages so
+// signature regexes can classify WHICH assertion inside a test failed.
 function failingByFile(vitestJson) {
   const out = {};
   for (const suite of vitestJson.testResults ?? []) {
     const key = relTestKey(suite.name);
-    const failedNames = (suite.assertionResults ?? [])
+    const failedAssertions = (suite.assertionResults ?? [])
       .filter((a) => a.status === 'failed')
-      .map((a) => a.fullName ?? a.title);
-    if (failedNames.length > 0) out[key] = { failed: failedNames.length, failedNames };
+      .map((a) => ({
+        name: String(a.fullName ?? a.title ?? ''),
+        message: (a.failureMessages ?? []).join('\n'),
+      }));
+    if (failedAssertions.length > 0) {
+      out[key] = {
+        failed: failedAssertions.length,
+        failedNames: failedAssertions.map((f) => f.name),
+        failedAssertions,
+      };
+    }
   }
   return out;
+}
+
+// { fileKey -> { titleSubstring -> passedCount } } support: count PASSED
+// assertions across the WHOLE report whose fullName contains a substring.
+function passedCountsBySubstring(vitestJson, substrings) {
+  const counts = Object.fromEntries(substrings.map((s) => [s, 0]));
+  for (const suite of vitestJson.testResults ?? []) {
+    for (const a of suite.assertionResults ?? []) {
+      if (a.status !== 'passed') continue;
+      const name = String(a.fullName ?? a.title ?? '');
+      for (const s of substrings) if (name.includes(s)) counts[s] += 1;
+    }
+  }
+  return counts;
 }
 
 function classify({ testJsonPath, expectedPath, label }) {
@@ -79,7 +105,7 @@ function classify({ testJsonPath, expectedPath, label }) {
   const section = expected[label];
   if (section === undefined) {
     console.error(`classify: expected-reds has no '${label}' section`);
-    process.exit(1);
+    return { ok: false, errors: [`expected-reds has no '${label}' section`] };
   }
   const observed = failingByFile(vitest);
   const expectedFiles = section.byFile ?? {};
@@ -104,6 +130,36 @@ function classify({ testJsonPath, expectedPath, label }) {
     if (typeof spec.expectedFailures === 'number' && obs.failed !== spec.expectedFailures) {
       errors.push(`COUNT MISMATCH — ${file}: expected ${spec.expectedFailures} failures, observed ${obs.failed}`);
     }
+    // 1b. ASSERTION-LEVEL classification (when signatures are committed): every
+    //     failing assertion in an expected-red file must match exactly one
+    //     allowed signature — BOTH its title substring AND its failure-message
+    //     regex — and each signature must be hit its expected number of times.
+    //     This closes the within-test masking hole: a red test like "lock
+    //     staleness teeth" checks many project contracts BEFORE the engine
+    //     version, so a failure moving to an earlier contract keeps the same
+    //     title and file count but changes the failure MESSAGE — the signature
+    //     ("engine changed — re-lock deliberately") catches the move.
+    const sigs = spec.allowedFailureSignatures;
+    if (Array.isArray(sigs)) {
+      const hits = sigs.map(() => 0);
+      for (const fa of obs.failedAssertions) {
+        const idx = sigs.findIndex((s) => fa.name.includes(s.titleSubstring)
+          && new RegExp(s.messageRegex).test(fa.message));
+        if (idx === -1) {
+          errors.push(`SIGNATURE MISMATCH — ${file}: failing assertion "${fa.name}" matches NO allowed `
+            + 'failure signature (the failure moved to a different assertion inside an expected-red test — '
+            + `a project-contract regression, not the allowed class-(c) move). Message head: ${fa.message.slice(0, 200)}`);
+        } else {
+          hits[idx] += 1;
+        }
+      }
+      sigs.forEach((s, i) => {
+        if (hits[i] !== s.count) {
+          errors.push(`SIGNATURE COUNT — ${file}: signature "${s.titleSubstring}" + /${s.messageRegex}/ `
+            + `expected ${s.count} matching failure(s), observed ${hits[i]}`);
+        }
+      });
+    }
   }
   // 2. no failing file outside the expected set.
   for (const file of Object.keys(observed)) {
@@ -113,10 +169,6 @@ function classify({ testJsonPath, expectedPath, label }) {
   }
   // 3. assertions that MUST stay green on the candidate (internal-determinism
   //    gate-(a) + pure/structural teeth) may NOT appear in the failing set.
-  //    This closes the count-masking hole: a NEW gate-(a) regression cannot
-  //    silently take the slot of an expected golden failure at a constant
-  //    per-file count. The substrings live within one describe/it leaf, so
-  //    they are independent of however the reporter joins the describe chain.
   const mustPass = section.mustPassAssertionSubstrings ?? [];
   for (const info of Object.values(observed)) {
     for (const name of info.failedNames) {
@@ -128,13 +180,29 @@ function classify({ testJsonPath, expectedPath, label }) {
       }
     }
   }
+  // 4. POSITIVE presence: the must-stay-green assertions must appear in the
+  //    report with status 'passed' at their exact multiplicity (e.g. FOUR
+  //    passed "two fresh worlds agree" fixtures). Absence-of-failure alone
+  //    cannot distinguish "passed" from "never ran / renamed / skipped".
+  const present = section.mustPassPresent ?? [];
+  if (present.length > 0) {
+    const counts = passedCountsBySubstring(vitest, present.map((p) => p.titleSubstring));
+    for (const p of present) {
+      if (counts[p.titleSubstring] !== p.passedCount) {
+        errors.push(`MUST-PASS PRESENCE — expected exactly ${p.passedCount} PASSED assertion(s) matching `
+          + `"${p.titleSubstring}", observed ${counts[p.titleSubstring]} (renamed, skipped, or failing?)`);
+      }
+    }
+  }
 
   if (errors.length > 0) {
     console.error(`\nCLASSIFY FAIL (${label}) — the candidate failed-test set does not match the inventory:`);
     for (const e of errors) console.error(`  ${e}`);
-    process.exit(1);
+    return { ok: false, errors };
   }
-  console.log(`\nCLASSIFY OK (${label}) — failing set matches the committed inventory exactly.`);
+  console.log(`\nCLASSIFY OK (${label}) — failing set matches the committed inventory exactly `
+    + '(files, counts, per-assertion failure signatures, and must-pass presence).');
+  return { ok: true, errors: [] };
 }
 
 // --- timing mode ----------------------------------------------------------------
@@ -157,11 +225,11 @@ function timingGate({ logPath, exitCode, expectedPath }) {
   const allowed = expected.timing?.allowedDriftChecks;
   if (!Array.isArray(allowed)) {
     console.error('timing: expected-reds has no timing.allowedDriftChecks array');
-    process.exit(1);
+    return { ok: false, errors: ['expected-reds has no timing.allowedDriftChecks array'] };
   }
   if (!existsSync(logPath)) {
     console.error(`timing: log missing (${logPath}) — cannot verify the drift set`);
-    process.exit(1);
+    return { ok: false, errors: [`log missing (${logPath})`] };
   }
   const drifts = parseDriftLines(readFileSync(logPath, 'utf8'));
   const uniqueDrifts = [...new Set(drifts)];
@@ -189,7 +257,7 @@ function timingGate({ logPath, exitCode, expectedPath }) {
 
   if (errors.length > 0) {
     console.error(`\nTIMING GATE FAIL:\n  ${errors.join('\n  ')}`);
-    process.exit(1);
+    return { ok: false, errors };
   }
   const vanished = allowed.filter((a) => !uniqueDrifts.includes(a));
   if (vanished.length > 0) {
@@ -197,6 +265,7 @@ function timingGate({ logPath, exitCode, expectedPath }) {
     console.log('The recorded engine-finding vanished on this run — re-triage the finding (not fatal; it is recorded, not a contract).');
   }
   console.log('\nTIMING GATE OK — every drifted check is allowlisted and the exit code is consistent.');
+  return { ok: true, errors: [] };
 }
 
 // --- compare mode ---------------------------------------------------------------
@@ -315,11 +384,18 @@ function measuredDigests(vitestJson) {
       const key = semanticDigestKey(a.fullName ?? a.title ?? '');
       if (key === null || out[key] !== undefined) continue;
       const msg = (a.failureMessages ?? []).join('\n');
-      // Prefer an explicit "actual"/"received" digest; else the first hex8
-      // (vitest renders the received value first in a `.toBe` diff).
+      // Extraction rules, most-specific first:
+      //  1. an explicit "actual <hex8>" (both formatDivergence variants pad);
+      //  2. "(state <hex>)" — the Chromium champion-trace message prints the
+      //     divergent state UNPADDED via toString(16) in that exact bracket
+      //     shape, so accept 1-8 hex chars and left-pad to the canonical 8;
+      //  3. the first bare hex8 (vitest's `.toBe` diff renders the RECEIVED —
+      //     i.e. measured — value first: "expected '<measured>' to be '<lock>'").
       const actual = /(?:actual|received|got)[^0-9a-f]{0,20}([0-9a-f]{8})/i.exec(msg);
+      const stateBracket = /\(state ([0-9a-f]{1,8})\)/.exec(msg);
       const any = HEX8.exec(msg);
-      const digest = actual ? actual[1] : (any ? any[0] : null);
+      const digest = actual ? actual[1]
+        : (stateBracket ? stateBracket[1].padStart(8, '0') : (any ? any[0] : null));
       if (digest !== null) out[key] = digest;
     }
   }
@@ -562,15 +638,18 @@ function compare({ artifacts, out }) {
   writeFileSync(join(out, 'result-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
   console.log(`comparison.md + result-manifest.json written to ${out}`);
-  // Exit nonzero when the verdict is not established, so a green compare job
+  // Nonzero when the verdict is not established, so a green compare job
   // genuinely means "controlled pair complete + Outcome B judged" (the review's
   // finding 1: a merely-existing arm dir must never read as SAME class).
+  // comparison.md/manifest are already written above — the if:always upload
+  // preserves the evidence either way.
   if (!canJudge) {
     console.error(`\nCOMPARISON INCONCLUSIVE — verdict NOT established. Arm issues: `
       + `${JSON.stringify(Object.fromEntries(ARMS.map((a) => [a, armReports[a].issues])))}`);
-    process.exit(1);
+    return { ok: false, manifest };
   }
   if (missing.length > 0) console.log(`NOTE: ${missing.length} arm(s) missing — comparison is incomplete.`);
+  return { ok: true, manifest };
 }
 
 // The candidate arm's must-PASS invariants (amendment 4), a GATE independent of
@@ -578,7 +657,7 @@ function compare({ artifacts, out }) {
 // Node and Chromium determinism digests agree (cross-env determinism holds).
 const F32_DT = 0.01666666753590107;
 
-function invariants({ nodeJson, browserJson, reproducerJson }) {
+function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
   const errors = [];
 
   const repro = readJsonIf(reproducerJson);
@@ -590,38 +669,48 @@ function invariants({ nodeJson, browserJson, reproducerJson }) {
     console.log(`  OK   dt readback = ${F32_DT} (f32(1/60))`);
   }
 
+  // The DECLARED required cross-env set: every semantic digest that moves on
+  // the candidate and exists in BOTH environments (evaluation A-D + both
+  // population digests). Set-membership alone is a false-pass hole — Node
+  // extracting A-D while Chromium extracts only A must NOT pass on A's
+  // agreement — so the extracted key set must EQUAL the required set in each
+  // environment, and every key's measured value must agree.
+  const required = readJson(expectedPath).nodeChromiumRequiredKeys;
+  if (!Array.isArray(required) || required.length === 0) {
+    errors.push('expected-reds has no nodeChromiumRequiredKeys array — the required cross-env set must be declared');
+    console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
+    return { ok: false, errors };
+  }
   const nD = measuredDigests(readJsonIf(nodeJson));
   const cD = measuredDigests(readJsonIf(browserJson));
+  console.log(`  required cross-env keys: ${required.join('; ')}`);
   console.log(`  extracted Node digests: ${JSON.stringify(nD)}`);
   console.log(`  extracted Chromium digests: ${JSON.stringify(cD)}`);
-  const shared = Object.keys(nD).filter((k) => k in cD);
-  if (shared.length === 0) {
-    errors.push('node<->chromium: NO shared determinism digest could be extracted to compare '
-      + '(regex/format mismatch or a green suite) — cannot verify cross-env agreement; tighten measuredDigests() from the printed messages');
+  for (const k of required) {
+    const n = nD[k]; const c = cD[k];
+    if (n === undefined) errors.push(`required key "${k}" NOT extracted from the Node report (renamed test, format change, or an unexpected pass)`);
+    if (c === undefined) errors.push(`required key "${k}" NOT extracted from the Chromium report (renamed test, format change, or an unexpected pass)`);
+    if (n !== undefined && c !== undefined) {
+      if (n === c) console.log(`  OK   Node==Chromium on "${k}" (${n})`);
+      else errors.push(`node<->chromium disagree on "${k}": Node ${n} vs Chromium ${c}`);
+    }
   }
-  for (const k of shared) {
-    if (nD[k] === cD[k]) console.log(`  OK   Node==Chromium on "${k}" (${nD[k]})`);
-    else errors.push(`node<->chromium disagree on "${k}": Node ${nD[k]} vs Chromium ${cD[k]}`);
+  // Set EQUALITY in both directions: an extracted key outside the declared set
+  // means the semantic rules matched something unexpected — fail loud, never
+  // informational.
+  for (const k of Object.keys(nD)) {
+    if (!required.includes(k)) errors.push(`Node extracted an UNDECLARED semantic key "${k}" (${nD[k]}) — the semantic rules or the test set changed; update nodeChromiumRequiredKeys deliberately`);
   }
-  // Unmatched keys are never silently ignored. Node-only keys are EXPECTED
-  // (Node runs more determinism files than the two browser gates) — reported.
-  // A Chromium-only key is an UNVERIFIABLE cross-env claim (its Node
-  // counterpart failed extraction or title-matching) — that fails, and the
-  // fix is tightening measuredDigests()/the key mapping from the printed
-  // messages (the declared first-heavy-run bootstrap step).
-  const nodeOnly = Object.keys(nD).filter((k) => !(k in cD));
-  const chromiumOnly = Object.keys(cD).filter((k) => !(k in nD));
-  if (nodeOnly.length > 0) console.log(`  note Node-only digest keys (no Chromium twin — expected for Node-only determinism files): ${nodeOnly.join('; ')}`);
-  for (const k of chromiumOnly) {
-    errors.push(`node<->chromium: Chromium digest "${k}" (${cD[k]}) has NO extracted Node counterpart — `
-      + 'cannot verify agreement for it; tighten measuredDigests()/key matching from the printed messages');
+  for (const k of Object.keys(cD)) {
+    if (!required.includes(k)) errors.push(`Chromium extracted an UNDECLARED semantic key "${k}" (${cD[k]}) — the semantic rules or the test set changed; update nodeChromiumRequiredKeys deliberately`);
   }
 
   if (errors.length > 0) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
-    process.exit(1);
+    return { ok: false, errors };
   }
-  console.log('\nINVARIANTS OK — dt readback + Node<->Chromium digest agreement hold on the candidate.');
+  console.log('\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the COMPLETE required digest set.');
+  return { ok: true, errors: [] };
 }
 
 function main() {
@@ -640,30 +729,49 @@ function main() {
       exit: { type: 'string' },
     },
   });
+  let result;
   if (values.mode === 'classify') {
     if (values['test-json'] === undefined || values.expected === undefined) {
       console.error('compare-spike-runs: --mode classify needs --test-json and --expected');
       process.exit(2);
     }
-    classify({ testJsonPath: values['test-json'], expectedPath: values.expected, label: values.label });
+    result = classify({ testJsonPath: values['test-json'], expectedPath: values.expected, label: values.label });
   } else if (values.mode === 'compare') {
-    compare({ artifacts: values.artifacts, out: values.out });
+    result = compare({ artifacts: values.artifacts, out: values.out });
   } else if (values.mode === 'invariants') {
-    invariants({
+    if (values.expected === undefined) {
+      console.error('compare-spike-runs: --mode invariants needs --expected (the required cross-env key set)');
+      process.exit(2);
+    }
+    result = invariants({
       nodeJson: values['node-json'],
       browserJson: values['browser-json'],
       reproducerJson: values['reproducer-json'],
+      expectedPath: values.expected,
     });
   } else if (values.mode === 'timing') {
     if (values.log === undefined || values.exit === undefined || values.expected === undefined) {
       console.error('compare-spike-runs: --mode timing needs --log, --exit, and --expected');
       process.exit(2);
     }
-    timingGate({ logPath: values.log, exitCode: values.exit, expectedPath: values.expected });
+    result = timingGate({ logPath: values.log, exitCode: values.exit, expectedPath: values.expected });
   } else {
     console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', or 'timing'");
     process.exit(2);
   }
+  if (result.ok !== true) process.exit(1);
 }
 
-main();
+// Adjudication paths are exported for the committed vitest coverage
+// (tests/compare-spike-runs.test.js — pure JSON fixtures, no physics); the CLI
+// runs only when this file is the entrypoint (the bench-physics guard idiom).
+export {
+  classify, invariants, timingGate, compare,
+  failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
+  passedCountsBySubstring, relTestKey, F32_DT,
+};
+
+const entry = process.argv[1];
+if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+  main();
+}

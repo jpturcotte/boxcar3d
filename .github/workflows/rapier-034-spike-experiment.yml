@@ -351,7 +351,8 @@ jobs:
             node scripts/compare-spike-runs.js --mode invariants \
               --node-json "${RES}/npm-test.json" \
               --browser-json "${RES}/browser.json" \
-              --reproducer-json "${RES}/reproducer.json" || fail=1
+              --reproducer-json "${RES}/reproducer.json" \
+              --expected .github/spike-expected-candidate-reds.json || fail=1
           fi
           # Write an explicit machine-readable verdict into the arm artifact
           # BEFORE exiting, so the compare job can require adjudication PASSED

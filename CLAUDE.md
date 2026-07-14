@@ -952,7 +952,8 @@ direction, not a defect. Full evidence:
   now substitutes contaminated candidates deterministically.
 - **Minimum reproducer (MATERIALIZED literal, digest `9fde1f1c`):** two
   wide-track paired S0 axles (wheel centers z ≈ ±2.3/±1.9 m), four UNDRIVEN
-  8.8–22 kg wheels, one 18 kg chassis, no motors, FLAT ground →
+  9.1–21.3 kg wheels (the re-repaired masses), one 18 kg chassis, no motors,
+  FLAT ground →
   catastrophic by step ~46 on both flavors; removing ANY ingredient (either
   axle, trackHalf ≤ ~0.2, frameDensity 1, or the load itself — the genuinely
   static-free `freeSpace` arm, no floor at all, leaves this undriven island

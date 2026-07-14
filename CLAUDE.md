@@ -167,6 +167,10 @@ evidence notes. Reference only; never import from `legacy/`.
   of a real contact-querying inspect, deterministic flavor),
   `physics-explosion-probe-schema.test.js` (the explosion probe's only CI
   touchpoint — structure + hard identity checks, no physics magnitudes),
+  `compare-spike-runs.test.js` (the spike adjudicator's committed contract:
+  classify/invariants/timing/compare over pure JSON fixtures with verbatim
+  determinism-test titles/messages, bound to the committed expected-red
+  inventory — no physics, no Rapier),
   and `tests/browser/evaluation-determinism.test.js` +
   `tests/browser/population-determinism.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
@@ -988,12 +992,124 @@ direction, not a defect. Full evidence:
   fingerprints and version constants byte-identical, `FITNESS_POLICY_VERSION`
   stays 1 by mission ruling (no fitness cap/plausibility threshold here).
 
-Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
-deterministic mutation, generational replacement, champion history — a
-generational loop over `evaluatePopulation`, sim-time pure), which follows
-only after the physics-integrity result — now in hand. **Phase 1B BEGINS by
-designing the numerical-integrity policy against the now-understood failure
-class** (solver divergence on ill-conditioned islands): the forensic
+**The Rapier core-0.34 verification spike in PR #19 reports Outcome B (PR-A) —
+a Layer-2 diagnostic, NOT a roadmap stage and NOT a production dependency change.
+Verdict OUTCOME B: the current upstream Rapier core (0.34) retains substantially
+the same constraint-solver divergence; PR #17's conclusions extend to it. Full
+evidence: `docs/rapier-034-spike-2026-07.md`:**
+- **The version model (corrected):** the npm pins
+  `@dimforge/rapier3d{,-deterministic}-compat@0.19.3` are the LATEST stable JS
+  packages (Nov 2025), built on Rust core ~0.30.1 — current, not stale. The JS
+  package number (0.19.x) and the Rust core number (0.30+) are separate streams.
+  Upstream merged rapier.js into the `dimforge/rapier` monorepo on 2026-07-12
+  (commit `c13133ad`); its in-tree TS bindings still self-id as 0.19.3 but build
+  against in-repo core **0.34**.
+- **The spike (two builds, one verdict):** built both compat flavors from
+  source at `c13133ad` (core 0.34.0) with a packaging-only identity patch (crate
+  version `0.19.3-c13133ad.0`, so `RAPIER.version()` is distinguishable and the
+  staleness teeth fire honestly), consumed them as `npm pack` tarballs, and ran
+  the rerun matrix. Tarball + wasm SHA-256s are in the decision record §3. The
+  ORIGINAL evidence is a HISTORICAL LOCAL build (Windows, 3D flavors only, on an
+  isolated worktree `spike/rapier-034-c13133ad`, never merged; deviations were
+  packaging-only — Git Bash for the `.sh` scripts, `gen_src`/rollup trimmed to
+  the two 3D flavors; artifacts under
+  `C:\Users\jp2k5\GitHub\rapier-034-spike-artifacts\`, build tree disposable).
+  The REPRODUCIBLE, artifact-audited arm is the committed `workflow_dispatch`
+  experiment (`.github/workflows/rapier-034-spike-experiment.yml`, Part C): it
+  builds all six flavors with upstream's packaging scripts UNMODIFIED, on a
+  controlled same-commit stable-vs-candidate pair, and preserves JSON + logs +
+  a provenance bundle — so its numbers, not the local ones, are the citable
+  evidence (wasm is not byte-reproducible across environments; the verdict
+  reproduces at classification level).
+- **The verdict (measured, both flavors):** the committed minimal reproducer
+  (`9fde1f1c`) is STILL catastrophic (~4,785 m/s; onset delayed cat 46→107 but
+  classification unchanged); prevalence is **5/60 — the SAME five individuals**,
+  both fitness-hidden cases (20260725 ids 1, 14) intact; a fresh seed
+  (**20260730**, allocated) adds 2/20, removing the selection confound (7/80).
+  The candidate is otherwise CLEAN over the surfaces exercised: internally
+  deterministic (determinism gate (a) byte-identical on A–D), every project
+  contract (all 13 class-(a) gates) preserved, NO Class-1/3/4 regression on the
+  Node suite/probes, and the PR #18 `world.free()` borrow error did NOT
+  reproduce across hundreds of frees (a recorded reproducibility finding). The
+  11 unit-suite reds are all expected class-(c) golden/version movement.
+  (Candidate Chromium, the Vite build + app-scene smoke, and paired bench were
+  the local run's SKIPS; Part C's controlled CI pair runs them all — that
+  substantiates the clean-across-required-surfaces claim once a heavy dispatch
+  lands.)
+- **The multibody 2×2 (the representation-vs-solver discriminator, via the new
+  `probe:physics-explosion --pass reproducer --arm multibody`):** re-expressing
+  the UNDRIVEN reproducer's revolutes as reduced-coordinate multibody joints is
+  quiescent on BOTH cores (0.30.1: 1.42 m/s; 0.34: 1.40 m/s) while the impulse
+  path is catastrophic on both. The lever is the joint REPRESENTATION /
+  constraint-enforcement regime (reduced-coordinate HARD constraints vs
+  maximal-coordinate SOFT impulses the solver fails to converge), not the engine
+  version — but MEASURED FOR THE UNDRIVEN REPRODUCER ONLY. BUT every multibody
+  motor/limit method — `UnitMultibodyJoint` (revolute/prismatic) AND
+  `SphericalMultibodyJoint` (inside a `/* Unsupported by this alpha release. */`
+  block) — is commented out of the TS bindings on both 0.19.3 and core 0.34
+  (verified in `src.ts`), so the motorized S0/S1 phenotype cannot use that path
+  today without upstream binding work, and the undriven result does not by
+  itself prove a motorized multibody realization would stay quiescent.
+- **New instruments (main-side, green on stable 0.19.3, no dependency/lock
+  change):** `docs/engine-assertion-taxonomy-2026-07.md` (every committed
+  assertion classified (a) project-contract / (b) engine-finding / (c) golden,
+  the triage map for any engine swap — reusable, load-bearing for Outcome C
+  disambiguation; §10.6 covers this PR's own new assertions); the `--arm
+  multibody` reproducer arm (observation-only, hard check is the swap's
+  structural premise, never a physics outcome) plus the `--arm`/
+  `--prevalence-seeds` CLI options via an extracted `configFromArgs` (the P2
+  fix: they were documented but `parseArgs` threw on them — now wired + tested);
+  `scripts/probe-rapier-package-smoke.js` (`npm run probe:package-smoke`, the
+  pre-suite consumability check — `version()`/dt readback as observations,
+  deterministic repeat bit-identical); and the committed `workflow_dispatch`
+  experiment (`.github/workflows/rapier-034-spike-experiment.yml`,
+  `scripts/compare-spike-runs.js`, `scripts/probe-app-scene-smoke.js`) that
+  builds the candidate from source and runs the controlled stable-vs-candidate
+  pair with machine-enforced expected-red classification at the ASSERTION
+  level: per-red failure-message signatures (each staleness red must fail on
+  its committed 'engine changed — re-lock deliberately' message, each golden
+  on the checkpoint-divergence formatter — a failure MOVING to an earlier
+  project contract inside the same red test fails the arm), POSITIVE
+  must-pass presence (the gate-(a)/pure teeth must appear with status
+  'passed' at exact multiplicity), the probe:timing DRIFT allowlist, and the
+  dt + COMPLETE-set Node↔Chromium digest invariants (semantic keys, set
+  equality both directions — a Node-only or Chromium-only extraction fails).
+  The adjudicator itself is under ordinary CI:
+  `tests/compare-spike-runs.test.js` (pure JSON fixtures with verbatim
+  titles/messages, no physics, bound to the committed
+  `.github/spike-expected-candidate-reds.json` schema/2 inventory).
+  **The two-stage citability gate (`bootstrapComplete`, machine-enforced):**
+  the inventory ships `bootstrapComplete: false`, so `compare()` forces
+  `citable=false` on EVERY run — the FIRST `heavy=true` dispatch is the
+  BOOTSTRAP run (it reproduces Outcome B and exits 0, but is structurally
+  non-citable because the browser inventory is not finalized). C5's human
+  step commits the browser counts/signatures from that run AND flips the
+  flag; only a SECOND heavy run can be citable. The verdict also separates
+  "experiment executed" from "Outcome B reproduced" (catastrophic on BOTH
+  impulse arms — a candidate that came back quiescent CONTRADICTS and exits
+  nonzero), rejects malformed/absent/duplicate/unsupported/wrong-flavor
+  reproducer rows as unusable, and enforces the DECLARED heavy coverage
+  (`heavyEvidence`: prevalence seeds 20260725/28/29 + fresh 20260730, 20
+  individuals each, both arms) rather than a non-empty array. Full suite
+  green both flavors on stable; every fingerprint byte-identical.
+- **Consequence:** do NOT adopt the source build (no divergence-fix to gain).
+  PR-B (numerical-integrity policy) proceeds on stable 0.19.3 as planned; the
+  multibody/binding-extension feasibility investigation is the named follow-up
+  (can a small upstreamable TS patch expose the revolute/prismatic multibody
+  motors + limits the driven phenotype needs?). Re-run
+  `probe:physics-explosion -- --pass reproducer` on the next official npm
+  release carrying core ≥0.33 — the reproducer stays the engine-upgrade
+  tripwire.
+
+Next — the **numerical-integrity policy PR (PR-B)**, then **GA Phase 1B:
+Mutation-Only Evolution** (selection, elitism, deterministic mutation,
+generational replacement, champion history — a generational loop over
+`evaluatePopulation`, sim-time pure), which follows only after the
+physics-integrity result AND the core-0.34 spike — both now in hand (the spike
+confirmed the integrity policy must be built on stable 0.19.3, and calibrated
+against it). **PR-B designs the numerical-integrity policy against the
+now-understood failure class** (solver divergence on ill-conditioned islands):
+the forensic
 detector exists (`analyzeTrace` alert/catastrophic classification catches
 all 5/60 affected individuals, including the two whose fitness looks
 ordinary), and the raw `maxForwardDistance` metric mis-ranks in BOTH

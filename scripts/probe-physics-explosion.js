@@ -62,7 +62,9 @@
 //   reproducer — the engine-upgrade rerun surface: the committed minimal
 //              reproducer on both flavors + its full CLOSURE MATRIX (each
 //              documented stabilizer, plus the zero-gravity free-space load
-//              discriminator with measured static-contact counts), so the
+//              discriminator with measured static-contact counts, plus the
+//              `multibody` REPRESENTATION discriminator — the identical
+//              realized vehicle on reduced-coordinate joints), so the
 //              necessary/sufficient claims regenerate from one command.
 //   prevalence — the complete characterization populations (20 individuals
 //              per declared seed), driven, full-trace forensic
@@ -81,10 +83,14 @@
 //   node scripts/probe-physics-explosion.js
 //   node scripts/probe-physics-explosion.js --witness all --pass all
 //   node scripts/probe-physics-explosion.js --witness 20260725:19 --pass baseline,terrain
+//   node scripts/probe-physics-explosion.js --pass reproducer --arm multibody
+//   node scripts/probe-physics-explosion.js --pass prevalence --prevalence-seeds 20260730
 //   node scripts/probe-physics-explosion.js --json physics-explosion.json
 //
 // Witness selector: 'all', labels ('A,B'), or 'seed:id' pairs. Passes:
-// comma list of baseline,terrain,vehicle (or 'all').
+// comma list of baseline,terrain,vehicle (or 'all'). --arm selects ONE
+// reproducer arm (e.g. multibody); --prevalence-seeds is a comma list of
+// canonical uint32 seeds — both validate loud (unknown arm / invalid seed).
 
 /* eslint no-console: 0 */
 
@@ -93,7 +99,7 @@ import { pathToFileURL } from 'node:url';
 import { writeFileSync } from 'node:fs';
 import { runEvaluation, runRealizedEvaluationLoop } from '../src/sim/evaluation.js';
 import {
-  SUSPENSION_AXIS, addCorridor, addCorridorWithFeatures, createPhysics, FIXED_DT,
+  REVOLUTE_AXIS, SUSPENSION_AXIS, addCorridor, addCorridorWithFeatures, createPhysics, FIXED_DT,
   realizeVehicle, suspensionAnchorLocal, vehicleWheelTransforms,
 } from '../src/sim/physics/adapter.js';
 import { generateCorridorTerrain } from '../src/sim/terrain.js';
@@ -146,7 +152,7 @@ export function smokeConfig() {
     componentArms: ['motorOff:all'],
     engineArms: ['baselineComposed', 'solverIters:8'],
     loadArms: ['original', 'passiveAllS0'],
-    reproducerArms: ['original', 'gravity9.81', 'gravityOff', 'freeSpace'],
+    reproducerArms: ['original', 'gravity9.81', 'gravityOff', 'freeSpace', 'multibody'],
     prevalenceSeeds: [20260725],
     argv: [],
   };
@@ -213,6 +219,40 @@ function selectPasses(selector) {
 export function normalizePasses(selector) {
   const entries = Array.isArray(selector) ? selector : [selector];
   return [...new Set(entries.flatMap((p) => selectPasses(p)))];
+}
+
+/**
+ * Validate a single reproducer-arm name against the REPRODUCER_ARMS registry
+ * and return it. Evaluated at CALL time (REPRODUCER_ARMS is declared further
+ * down — a module-level const capture here would hit the TDZ), so the CLI and
+ * the programmatic API share the one fail-loud authority (the selectPasses
+ * pattern; same `probe-physics-explosion:` prefix + allowed-list).
+ */
+export function selectReproducerArm(name) {
+  if (!REPRODUCER_ARMS.includes(name)) {
+    throw new Error(`probe-physics-explosion: unknown reproducer arm '${name}' `
+      + `(${REPRODUCER_ARMS.join('/')})`);
+  }
+  return name;
+}
+
+/**
+ * Parse a comma-separated prevalence-seed list into canonical uint32 seeds.
+ * Rejects empty/blank entries (both `Number('')` and `Number(' ')` coerce to
+ * 0 — a silent seed-0 alias under a different identifier), non-decimal-integer
+ * text, and anything outside `0 <= seed <= 0xffffffff` (the terrain-seed
+ * canonical-uint32 ruling). Throws with the `probe-physics-explosion:` prefix.
+ */
+export function parsePrevalenceSeeds(str) {
+  return String(str).split(',').map((raw) => {
+    const trimmed = raw.trim();
+    const seed = Number(trimmed);
+    if (trimmed === '' || !/^\d+$/.test(trimmed)
+      || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+      throw new Error(`probe-physics-explosion: invalid prevalence seed '${raw}'`);
+    }
+    return seed;
+  });
 }
 
 // --- Stage-2 composition (the earned shared-loop seam) --------------------------
@@ -301,6 +341,11 @@ function staticContactCounter() {
  *   featureFilter(f, i)        — post-generation descriptor filtering (RNG-safe)
  *   bodyTuning(rec, world)     — per-body CCD / solver-iteration setters,
  *                                motor reconfiguration
+ *   jointTransform({rec, world, RAPIER}) -> rec
+ *                              — JOINT-REPRESENTATION swap on the live world
+ *                                (e.g. impulse -> multibody); returns the
+ *                                possibly-rebuilt realized record so the loop
+ *                                tracks the replacement joints' validity
  *   stationFilter(st)          — PHENOTYPE-PRESERVING station removal: bodies
  *                                leave the world AND the realized record, so
  *                                the loop tracks survivors only
@@ -322,6 +367,7 @@ async function composeRun(ir, {
   requestedDt = FIXED_DT,
   maxSteps = WITNESS_SPEC.maxSteps,
   bodyTuning = null,
+  jointTransform = null,
   stationFilter = null,
   buildInspect = null,
   noStatics = false,
@@ -373,6 +419,7 @@ async function composeRun(ir, {
       }
     }
     if (bodyTuning !== null) bodyTuning(rec, world);
+    if (jointTransform !== null) rec = jointTransform({ rec, world, RAPIER });
     if (stationFilter !== null) {
       const keep = [];
       for (const st of rec.wheels) {
@@ -1378,11 +1425,21 @@ export async function runProbe(config) {
 // closure matrix, so the necessary/sufficient claims regenerate from this
 // one command: the unchanged reproducer on both flavors, each documented
 // stabilizer (either axle removed, narrow track, heavy chassis), the
-// gravity-magnitude control (9.81 vs the project's 20), and the genuinely
-// static-free discriminator (no floor at all, quiescent).
+// gravity-magnitude control (9.81 vs the project's 20), the genuinely
+// static-free discriminator (no floor at all, quiescent), and the
+// REPRESENTATION discriminator (`multibody`): the identical realized
+// reproducer with each chassis→wheel revolute re-expressed as a
+// reduced-coordinate multibody joint. Crossed with an engine-version rerun
+// this yields the {impulse, multibody} × {core} matrix that separates
+// "the representation is ill-conditioned for this solver" from "this solver
+// version diverges" — the realization-architecture question PR #17 left
+// open. The arm is possible at all only because the reproducer is UNDRIVEN:
+// the 0.19.3 JS bindings expose NO multibody motors and NO runtime limit
+// mutation (verified at wrapper/raw-binding/wasm-export levels, 2026-07-14),
+// so the motorized production phenotype cannot take this path.
 const REPRODUCER_ARMS = Object.freeze([
   'original', 'removeAxle:0', 'removeAxle:1', 'narrowTrack', 'heavyChassis',
-  'gravity9.81', 'gravityOff', 'freeSpace',
+  'gravity9.81', 'gravityOff', 'freeSpace', 'multibody',
 ]);
 
 async function reproducerPass(cfg, check) {
@@ -1457,6 +1514,83 @@ async function reproducerPass(cfg, check) {
         changedVariable: 'world.gravity = 0, floor KEPT (single-variable vs original; isolates gravity as the excitation)',
         genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
         contacts: { ...counter.state },
+        result: summarize(result, ir),
+      });
+      continue;
+    }
+    if (arm === 'multibody') {
+      // The representation discriminator (see REPRODUCER_ARMS header). The
+      // swap happens AFTER realizeVehicle on the live world: same bodies,
+      // colliders, masses, groups, CCD, spawn, terrain, and step count; the
+      // anchors are read back from each impulse joint before it is removed,
+      // the axis is the same REVOLUTE_AXIS constant, so the joint
+      // REPRESENTATION is the only changed variable. Observation-only — the
+      // hard check below is the instrument's own structural premise (the
+      // swap actually happened), never a physics outcome.
+      const capability = await createPhysics({ deterministic: true });
+      const supported = typeof capability.world.createMultibodyJoint === 'function';
+      capability.world.free();
+      if (!supported) {
+        // Record-and-drop (never a blocker): a build without the multibody
+        // API yields an explicit unsupported row, no hard check.
+        rows.push({
+          arm,
+          flavor: 'deterministic',
+          changedVariable: 'drive revolutes as multibody joints — UNSUPPORTED: this build exposes no world.createMultibodyJoint (arm skipped, recorded)',
+          genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+          contacts: null,
+          unsupported: true,
+          result: null,
+        });
+        continue;
+      }
+      const swapState = { stations: 0, impulseAfter: null, multibodyAfter: null };
+      const counter = staticContactCounter();
+      const { result } = await composeRun(ir, {
+        terrainOverrides: overrides,
+        buildInspect: counter.buildInspect,
+        jointTransform: ({ rec, world, RAPIER }) => {
+          const wheels = rec.wheels.map((st) => {
+            if (st.suspensionType !== 'S0' || st.hub !== null || st.suspensionJoint !== null) {
+              throw new Error('probe-physics-explosion: the multibody arm supports the all-S0 undriven reproducer only');
+            }
+            // Copy the anchors BEFORE removing the joint (never hold a
+            // readback reference across a removal — the removed-body wasm
+            // panic class).
+            const a1 = st.driveJoint.anchor1();
+            const a2 = st.driveJoint.anchor2();
+            const anchor1 = { x: a1.x, y: a1.y, z: a1.z };
+            const anchor2 = { x: a2.x, y: a2.y, z: a2.z };
+            world.removeImpulseJoint(st.driveJoint, true);
+            const mb = world.createMultibodyJoint(
+              RAPIER.JointData.revolute(anchor1, anchor2, REVOLUTE_AXIS),
+              rec.chassis.body,
+              st.wheel.body,
+              true,
+            );
+            // The loop reads st.driveJoint.isValid() for the trace's
+            // jointState tri-state — MultibodyJoint carries isValid() too,
+            // so the rebuilt record keeps that channel honest.
+            return { ...st, driveJoint: mb };
+          });
+          swapState.stations = wheels.length;
+          swapState.impulseAfter = world.impulseJoints.len();
+          swapState.multibodyAfter = world.multibodyJoints.len();
+          return { ...rec, wheels };
+        },
+      });
+      check('multibody:reproducer',
+        swapState.stations > 0 && swapState.impulseAfter === 0
+          && swapState.multibodyAfter === swapState.stations,
+        `stations ${swapState.stations}, impulse joints after swap ${swapState.impulseAfter}, `
+          + `multibody joints ${swapState.multibodyAfter}`);
+      rows.push({
+        arm,
+        flavor: 'deterministic',
+        changedVariable: 'every chassis→wheel revolute re-expressed as a reduced-coordinate multibody joint (same anchors/axis/bodies; representation is the only change; undriven — no motor surface needed)',
+        genotypeDigest: MINIMAL_REPRODUCER.genotypeDigest,
+        contacts: { ...counter.state },
+        unsupported: false,
         result: summarize(result, ir),
       });
       continue;
@@ -1682,14 +1816,16 @@ export function renderMarkdown(report) {
     L.push('');
     table(
       ['arm', 'flavor', 'changed variable', 'digest', 'touching contacts (first @step)', 'maxFwd (m)', 'peak body (m/s)', 'onset (OBSERVATION — rerun on Rapier bump)'],
-      report.reproducer.map((r) => [
-        r.arm, r.flavor, r.changedVariable, r.genotypeDigest,
-        r.contacts === null ? '-'
-          : `${r.contacts.touchingContacts}${r.contacts.firstTouchingStep === null ? '' : ` (@${r.contacts.firstTouchingStep})`}`,
-        exp3(r.result.maxForwardDistance),
-        exp3(r.result.peakBodySpeed),
-        onsetCell(r.result.onset),
-      ]),
+      report.reproducer.map((r) => (r.unsupported === true
+        ? [r.arm, r.flavor, r.changedVariable, r.genotypeDigest, '-', '-', '-', '(arm skipped)']
+        : [
+          r.arm, r.flavor, r.changedVariable, r.genotypeDigest,
+          r.contacts === null ? '-'
+            : `${r.contacts.touchingContacts}${r.contacts.firstTouchingStep === null ? '' : ` (@${r.contacts.firstTouchingStep})`}`,
+          exp3(r.result.maxForwardDistance),
+          exp3(r.result.peakBodySpeed),
+          onsetCell(r.result.onset),
+        ])),
     );
   }
   if (report.prevalence !== null && report.prevalence !== undefined) {
@@ -1715,13 +1851,23 @@ export function renderMarkdown(report) {
 
 // --- CLI -----------------------------------------------------------------------
 
-async function main() {
+/**
+ * Parse an argv slice into a runProbe config. Extracted from main() (mirrors
+ * the normalizePasses extraction) so programmatic tests exercise the EXACT
+ * same parse + validation the CLI runs. `config.argv` records the passed argv
+ * (not `process.argv`), so a test-supplied argv round-trips into report.argv.
+ * `config.jsonOut` carries the --json target for main() (runProbe ignores it).
+ */
+export function configFromArgs(argv) {
   const { values } = parseArgs({
+    args: argv,
     options: {
       smoke: { type: 'boolean', default: false },
       witness: { type: 'string' },
       pass: { type: 'string' },
       json: { type: 'string' },
+      arm: { type: 'string' },
+      'prevalence-seeds': { type: 'string' },
     },
   });
   const config = values.smoke ? smokeConfig() : defaultConfig();
@@ -1729,13 +1875,22 @@ async function main() {
   // runProbe normalizes ('all' / comma lists) — the CLI and the
   // programmatic API flow through the one normalizePasses authority.
   if (values.pass !== undefined) config.passes = values.pass;
-  config.argv = process.argv.slice(2);
+  if (values.arm !== undefined) config.reproducerArms = [selectReproducerArm(values.arm)];
+  if (values['prevalence-seeds'] !== undefined) {
+    config.prevalenceSeeds = parsePrevalenceSeeds(values['prevalence-seeds']);
+  }
+  config.argv = [...argv];
+  config.jsonOut = values.json ?? null;
+  return config;
+}
 
+async function main() {
+  const config = configFromArgs(process.argv.slice(2));
   const report = await runProbe(config);
   console.log(renderMarkdown(report));
-  if (values.json !== undefined) {
-    writeFileSync(values.json, JSON.stringify(report, null, 2));
-    console.log(`\nJSON written to ${values.json}`);
+  if (config.jsonOut !== null) {
+    writeFileSync(config.jsonOut, JSON.stringify(report, null, 2));
+    console.log(`\nJSON written to ${config.jsonOut}`);
   }
   const failed = report.checks.filter((c) => !c.ok);
   if (failed.length > 0) {

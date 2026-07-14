@@ -1,0 +1,171 @@
+{
+  "schema": "boxcar3d.spike-expected-candidate-reds/2",
+  "rationale": "The core-0.34 candidate is expected to fail EXACTLY the class-(c) golden/version assertions (the taxonomy §4.2 inventory) and NOTHING else. compare-spike-runs.js --mode classify reads the candidate's `npm test` and `test:browser` vitest --reporter=json output and enforces FOUR layers: (1) the observed failing (file -> count) set equals `node`/`browser` byFile exactly; (2) ASSERTION-LEVEL failure signatures — every failing assertion in an expected-red file must match an allowed {titleSubstring, messageRegex} signature at its exact count, so a failure MOVING to a different assertion inside the same red test (e.g. the staleness test's trace-version/record-size contracts, which precede its engine-version pin) is caught even at constant per-file count; (3) must-stay-green titles never appear in the failing set; (4) POSITIVE presence — the must-pass titles appear with status 'passed' at exact multiplicity (absence-of-failure cannot distinguish passed from renamed/skipped). Schema /2 adds layers 2 and 4 plus nodeChromiumRequiredKeys (the exact required cross-env digest set for --mode invariants). See docs/engine-assertion-taxonomy-2026-07.md §4.2 and docs/rapier-034-spike-2026-07.md §4.",
+  "node": {
+    "reporter": "npm test (vitest run --reporter=json), Node, deterministic + ordinary flavors, tests/browser/** excluded",
+    "totalExpectedFailures": 11,
+    "byFile": {
+      "tests/evaluation-determinism.test.js": {
+        "expectedFailures": 5,
+        "class": "c",
+        "asserts": "rapierVersion staleness pin (0.19.3 -> 0.19.3-c13133ad.0) + eval-A/B/C/D golden trace digests",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "lock staleness teeth",
+            "messageRegex": "engine changed — re-lock deliberately",
+            "count": 1,
+            "why": "the test checks trace/fixture versions, recordBytes, step counts, dt, and fnv1a consistency BEFORE the engine pin — only the engine-version assertion (its committed custom message) is the allowed failure point"
+          },
+          {
+            "titleSubstring": "run matches the committed lock",
+            "messageRegex": "first divergent checkpoint index",
+            "count": 4,
+            "why": "each golden fixture must fail at the checkpoint-divergence formatter (physics moved), never at the structural recordCount/byteCount assertions that precede it"
+          }
+        ]
+      },
+      "tests/evaluation-golden.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "fixture-A cold-module (fresh-module-graph) trace digest",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "cold module graph",
+            "messageRegex": "first divergent checkpoint|to be '5a219735'",
+            "count": 1,
+            "why": "the allowed failure is the checkpoint divergence (or its digest backstop against the committed 5a219735), never the lock-internal-consistency or recordCount/byteCount contracts before it"
+          }
+        ]
+      },
+      "tests/population-determinism.test.js": {
+        "expectedFailures": 3,
+        "class": "c",
+        "asserts": "rapierVersion pin, fitness-vector digest (bded0d30 -> measured), champion solo-trace digest",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "lock set, versions, engine, dt",
+            "messageRegex": "engine changed — re-lock deliberately",
+            "count": 1,
+            "why": "15+ policy/schema/world-mode/seed/dt contracts precede the engine pin in this test — only the engine-version assertion (its committed custom message) may fail"
+          },
+          {
+            "titleSubstring": "two fresh evaluations agree byte-for-byte",
+            "messageRegex": "to be 'bded0d30'",
+            "count": 1,
+            "why": "this test's FIRST half is internal repeatability (a===b, MUST hold); the allowed failure is only the second half's comparison against the committed fitness-vector digest bded0d30 — a repeatability failure prints 'expected false to be true' and does NOT match"
+          },
+          {
+            "titleSubstring": "champion solo digest-mode rerun",
+            "messageRegex": "champion trace: first divergent checkpoint index|to be 'f5c5f0c7'",
+            "count": 1,
+            "why": "allowed failure is the champion-trace checkpoint divergence (or its digest backstop against the committed f5c5f0c7), never the structural count assertions before it"
+          }
+        ]
+      },
+      "tests/bench-schema.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "report.meta.rapier == package.json dependency pin { compat: '0.19.3', deterministicCompat: '0.19.3' }",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "smoke matrix",
+            "messageRegex": "deterministicCompat",
+            "count": 1,
+            "why": "the meta.rapier toEqual expected side always prints the 'deterministicCompat' key — unique to that assertion in this test regardless of how the diff wraps; the schema/os/cpu/fixture assertions before it never mention it"
+          }
+        ]
+      },
+      "tests/physics-explosion-probe-schema.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "report.engine.rapierVersion pin ('0.19.3')",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "versioned report shape",
+            "messageRegex": "to be '0\\.19\\.3'",
+            "count": 1,
+            "why": "the rapierVersion .toBe('0.19.3') failure message ends the expected side with the quoted bare pin; the schema/dt/hard-check assertions around it never print that literal"
+          }
+        ]
+      }
+    },
+    "mustPassAssertionSubstrings": [
+      "two fresh worlds agree",
+      "same-process repeatability only",
+      "profiler neutrality",
+      "capture-mode invariance",
+      "f32-backedness",
+      "ghost isolation",
+      "relational fitness identities",
+      "snapshot and initialization-manifest",
+      "champion genotype digest",
+      "structural heterogeneity"
+    ],
+    "mustPassPresent": [
+      { "titleSubstring": "two fresh worlds agree", "passedCount": 4 },
+      { "titleSubstring": "same-process repeatability only", "passedCount": 1 },
+      { "titleSubstring": "profiler neutrality", "passedCount": 1 },
+      { "titleSubstring": "capture-mode invariance", "passedCount": 1 },
+      { "titleSubstring": "f32-backedness", "passedCount": 1 },
+      { "titleSubstring": "ghost isolation", "passedCount": 1 },
+      { "titleSubstring": "relational fitness identities", "passedCount": 1 },
+      { "titleSubstring": "snapshot and initialization-manifest", "passedCount": 1 },
+      { "titleSubstring": "champion genotype digest", "passedCount": 1 },
+      { "titleSubstring": "structural heterogeneity", "passedCount": 1 }
+    ],
+    "mustPassRationale": "The failing-set exclusion (mustPassAssertionSubstrings) plus the POSITIVE presence requirement (mustPassPresent: each title observed with status 'passed' at exact multiplicity — e.g. FOUR passed 'two fresh worlds agree' fixtures) together enforce that the internal-determinism gate-(a) checks and the pure/structural teeth actually RAN and PASSED on the candidate. Every substring was verified unique to a single Node test file, so whole-report counting cannot double-count."
+  },
+  "browser": {
+    "reporter": "npm run test:browser (vitest run --config vitest.browser.config.js --reporter=json), pinned Chromium",
+    "note": "The local historical spike SKIPPED test:browser, so per-file browser counts are FIRST MEASURED by the heavy CI dispatch (C5); tighten this section from that run's observed failing set (counts + allowedFailureSignatures). The load-bearing cross-env check does not wait for that: --mode invariants requires the COMPLETE nodeChromiumRequiredKeys set to be extracted from BOTH environments with equal values.",
+    "byFile": {
+      "tests/browser/evaluation-determinism.test.js": {
+        "expectedFailures": null,
+        "class": "c",
+        "asserts": "A-D golden trace digests, in Chromium"
+      },
+      "tests/browser/population-determinism.test.js": {
+        "expectedFailures": null,
+        "class": "c",
+        "asserts": "population fitness-vector + champion-trace digests, in Chromium"
+      }
+    },
+    "mustPassAssertionSubstrings": [
+      "pure initializer locks: snapshot + initialization"
+    ],
+    "mustPassPresent": [
+      { "titleSubstring": "pure initializer locks", "passedCount": 1 }
+    ],
+    "mustPassRationale": "The Chromium population 'pure initializer locks' test hashes PURE genotype/initializer data (no physics), so it MUST run and pass on the candidate — enforced by presence even while browser per-file counts remain bootstrap (null)."
+  },
+  "nodeChromiumRequiredKeys": [
+    "evaluation:eval-a-s0-flat",
+    "evaluation:eval-b-mixed-composite",
+    "evaluation:eval-c-max-s1",
+    "evaluation:eval-d-mixed-radius-flat",
+    "population:fitness-vector",
+    "population:champion-trace"
+  ],
+  "nodeChromiumRequiredKeysRationale": "The EXACT cross-env digest set --mode invariants enforces: every key must be extracted from BOTH the Node and Chromium determinism-failure printouts and carry the same measured value; a missing key in either environment, a value disagreement, or an extracted key OUTSIDE this set all fail (set equality, both directions — Node extracting A-D while Chromium extracts only A must not pass on A's agreement alone). These six are all the semantic digests that move on the candidate and exist in both environments; the Node-only cold-module test (evaluation-golden.test.js) is deliberately not a member and is excluded by the extractor's determinism-file filter.",
+  "mustPassInvariants": {
+    "dtReadback": "world.timestep reads back Math.fround(1/60) = 0.01666666753590107 on the candidate (the probe/runner dt tooth stays GREEN — else the whole physics suite cascade-reds for the wrong reason)",
+    "internalDeterminismGateA": "the determinism gate's 'two fresh worlds agree on digest + every checkpoint' (internal repeatability) PASSES on the candidate for A-D; only gate (d) 'matches committed lock' is allowed to move — enforced by mustPassPresent, not just absence-of-failure",
+    "nodeChromiumAgreement": "the candidate's MEASURED digests are identical between the Node and Chromium determinism-gate failure printouts for the COMPLETE nodeChromiumRequiredKeys set (cross-env determinism holds on the new engine)"
+  },
+  "timing": {
+    "gate": "compare-spike-runs.js --mode timing parses the candidate's probe:timing log: every `DRIFT <check name>` line must name a check in allowedDriftChecks (any OTHER drift fails the arm — ten unrelated API-contract drifts must not hide behind one expected exit 1), and the probe's exit code must be consistent with the parsed DRIFT lines (exit 0 with drifts, or exit 1 with none, is a parse/crash inconsistency and fails). An allowlisted drift that VANISHED (probe fully green) is reported loudly as a class-(b) flip-watch, not fatal — the drift is recorded, not a contract.",
+    "allowedDriftChecks": [
+      "re-enable resumes per-step updates"
+    ],
+    "note": "the single class-(b) engine-finding the local run saw (exit 1 on probe:timing, 36 checks / 1 DRIFT, adoption-critical sub-checks green: dt readback, isValid/isSleeping, timing member surface)"
+  },
+  "heavyEvidence": {
+    "prevalenceSeeds": [20260725, 20260728, 20260729],
+    "freshSeeds": [20260730],
+    "individualsPerSeed": 20,
+    "rationale": "The DECLARED coverage of a heavy=true run, enforced by compare()'s arm-usability check on BOTH arms: `--pass prevalence` (defaultConfig, no --smoke) generates the three Phase-1A characterization masters each with 20 unique individuals, and `--prevalence-seeds 20260730` generates the fresh seed with 20. A one-row / missing-seed / missing-fresh-seed prevalence artifact must NOT participate in a citable heavy verdict — the scientific catastrophic COUNTS stay observations, but the experiment's declared coverage (which seeds, how many individuals) is a contract. Derived from scripts/probe-physics-explosion.js smokeConfig/defaultConfig (populationSize 20)."
+  },
+  "bootstrapComplete": false,
+  "bootstrapCompleteRationale": "The TWO-STAGE citability gate (machine-enforced, not narrated). While false: the browser byFile inventory is NOT finalized (null counts, no allowedFailureSignatures), so an unrelated browser-contract regression in an expected-red browser file cannot be caught — therefore compare() forces `citable=false` on EVERY run, no matter how clean. The first heavy=true dispatch is the BOOTSTRAP run: it produces the browser observed failing set; a human commits those counts + signatures into the browser section AND flips this flag to true; only a SECOND heavy run (against the finalized inventory) can be citable. This makes 'the browser inventory was finalized before we certified no-hidden-regression' a structural precondition, not a promise. `titlesPendingFirstHeavyRun` is the human-readable twin of this flag.",
+  "titlesPendingFirstHeavyRun": true
+}

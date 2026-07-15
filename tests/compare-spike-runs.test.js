@@ -15,14 +15,14 @@
 // vitest's received-first `.toBe` diff.
 
 import { describe, test, expect, beforeAll } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
-  borrowErrorScan,
+  borrowErrorScan, prevalenceCoverageIssues, readJsonSafe,
 } from '../scripts/compare-spike-runs.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
@@ -506,6 +506,60 @@ describe('compare — verdict established only from usable arms', () => {
     expect(r.manifest.verdict.outcomeBReproduced).toBe(true);
     expect(r.manifest.verdict.citable).toBe(true);
   });
+
+  // F3 — a truncated/interrupted artifact must NOT crash compare(): it becomes
+  // an explicit arm issue (arm unusable), and comparison.md + result-manifest.json
+  // are STILL written (the stated "failed/incomplete arms are reported and
+  // preserved" behavior).
+  test('a MALFORMED candidate artifact does not crash compare — arm issue + artifacts still written', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    writeFileSync(join(root, 'results-candidate/adjudication.json'), '{ "passed": tr'); // truncated
+    let r;
+    expect(() => { r = runCompare(root); }).not.toThrow();
+    expect(existsSync(join(root, 'out', 'comparison.md'))).toBe(true);
+    expect(existsSync(join(root, 'out', 'result-manifest.json'))).toBe(true);
+    expect(r.manifest.arms.candidate.issues.some((i) => /MALFORMED JSON/.test(i))).toBe(true);
+    expect(r.manifest.arms.candidate.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  // F6 — the forensic witness matrix is classified honestly by exit + signature;
+  // only a recognized ownership/unreachable signature is "Outcome-B evidence".
+  const setWitness = (root, arm, { exit, log, freeErrors }) => {
+    writeFileSync(join(root, `results-${arm}/arm-manifest.json`), JSON.stringify({ arm, resolvedSha: 'abc', heavy: true, exits: { witnesses: exit } }));
+    if (log !== undefined) writeFileSync(join(root, `results-${arm}/witnesses.log`), log);
+    if (freeErrors !== undefined) writeFileSync(join(root, `results-${arm}/witnesses.json`), JSON.stringify({ freeErrors }));
+  };
+
+  test('witness matrix: recognized unreachable signature = engine CRASH (Outcome-B evidence); clean stable = completed', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'candidate', { exit: 1, log: 'RuntimeError: unreachable\n    at wasm://wasm/0:1\n' });
+    setWitness(root, 'stable', { exit: 0, freeErrors: [] });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/candidate:.*engine CRASH.*RuntimeError: unreachable.*Outcome-B evidence/);
+    expect(text).toMatch(/stable:.*completed the full forensic matrix cleanly/);
+  });
+
+  test('witness matrix: a bare non-zero (no signature) is UNEXPLAINED, a 124 is TIMEOUT — NOT crash evidence', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'candidate', { exit: 7, log: 'some unrelated failure\n' });
+    setWitness(root, 'stable', { exit: 124, log: '' });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/candidate:.*UNEXPLAINED FAILURE.*NOT Outcome-B evidence/);
+    expect(text).not.toMatch(/candidate:.*THIS is the Outcome-B evidence/); // never the crash-evidence label
+    expect(text).toMatch(/stable:.*TIMED OUT.*NOT observed-engine-crash evidence/);
+  });
+
+  test('witness matrix: a COMPLETED reference arm that recorded freeErrors is NOT clean', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, freeErrors: ['attempted to take ownership of Rust value while it was borrowed'] });
+    setWitness(root, 'candidate', { exit: 1, log: 'RuntimeError: unreachable\n' });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/stable:.*recorded 1 world\.free\(\) borrow-guard observation.*FAILURE, not clean/);
+  });
 });
 
 // P1b (round-6): reproducerSummary must treat ABSENCE as missing (=> arm
@@ -709,5 +763,74 @@ describe('borrowErrorScan — reports engine faults, ignores the adjudicator sui
     expect(r.matches.length).toBe(1);
     expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
     expect(r.matches.every((m) => m.length < 2100)).toBe(true);
+  });
+});
+
+// F5 — coverage validator rejects duplicate rows, padded/duplicated individuals,
+// and wrong cardinality (not just unique-count). The old last-write-wins Map +
+// unique-only check let malformed heavy reports through into a citable verdict.
+describe('prevalenceCoverageIssues — exact raw + unique cardinality, one row per seed', () => {
+  const indiv = (id) => ({ individualId: id, maxForwardDistance: 1, peakBodySpeed: 1 });
+  const seedRow = (seed, ids) => ({ populationSeed: seed, individuals: ids.map(indiv) });
+  const range = (n) => Array.from({ length: n }, (_, i) => i);
+  const rep = (rows) => ({ prevalence: rows });
+  const SEEDS = [100, 200];
+  const PER = 20;
+
+  test('a valid report (one row per seed, exactly PER unique individuals) has no issues', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r).toEqual([]);
+  });
+
+  test('DUPLICATE seed rows are detected (the last-write-wins hole)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(100, range(20)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /3 rows, expected exactly 2/.test(i))).toBe(true);
+    expect(r.some((i) => /seed 100 has 2 rows/.test(i))).toBe(true);
+  });
+
+  test('a row PADDED past PER individuals fails raw cardinality (20 unique + 20 padding)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(40)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /seed 100 has 40 individuals, expected 20/.test(i))).toBe(true);
+  });
+
+  test('PER rows but DUPLICATED individualIds fails unique cardinality (20 ids, 19 unique)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, [...range(19), 18]), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /seed 100 has 19 unique of 20 individuals/.test(i))).toBe(true);
+  });
+
+  test('a missing declared seed and an undeclared seed both fail', () => {
+    const miss = prevalenceCoverageIssues(rep([seedRow(100, range(20))]), SEEDS, PER, 'x');
+    expect(miss.some((i) => /declared seed 200 MISSING/.test(i))).toBe(true);
+    const extra = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(200, range(20)), seedRow(999, range(20))]), SEEDS, PER, 'x');
+    expect(extra.some((i) => /UNDECLARED seed 999/.test(i))).toBe(true);
+  });
+});
+
+// F3 — a structured, NON-throwing read so a truncated/interrupted artifact
+// surfaces as an issue instead of crashing compare() before it writes anything.
+describe('readJsonSafe — distinguishes missing / valid / malformed, never throws', () => {
+  const write = (name, text) => { const p = join(TMP, name); writeFileSync(p, text); return p; };
+
+  test('a missing file: present false, valid false, no error', () => {
+    const r = readJsonSafe(join(TMP, 'does-not-exist.json'));
+    expect(r).toEqual({ present: false, valid: false, value: null, error: null });
+  });
+
+  test('a valid file: present true, valid true, parsed value', () => {
+    const r = readJsonSafe(write('valid.json', JSON.stringify({ a: 1 })));
+    expect(r.present).toBe(true);
+    expect(r.valid).toBe(true);
+    expect(r.value).toEqual({ a: 1 });
+  });
+
+  test('a malformed (truncated) file: present true, valid false, error set — no throw', () => {
+    const p = write('truncated.json', '{ "a": 1, "b":');
+    let r;
+    expect(() => { r = readJsonSafe(p); }).not.toThrow();
+    expect(r.present).toBe(true);
+    expect(r.valid).toBe(false);
+    expect(r.value).toBeNull();
+    expect(typeof r.error).toBe('string');
+    expect(r.error.length).toBeGreaterThan(0);
   });
 });

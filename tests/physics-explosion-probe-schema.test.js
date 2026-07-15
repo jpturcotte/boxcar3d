@@ -8,8 +8,8 @@
 
 import { describe, test, expect } from 'vitest';
 import {
-  PROBE_SCHEMA, configFromArgs, normalizePasses, parsePrevalenceSeeds,
-  renderMarkdown, runProbe, safeFreeWorld, selectReproducerArm, smokeConfig,
+  PROBE_SCHEMA, BORROW_GUARD_MESSAGE, configFromArgs, isBorrowGuardPanic, normalizePasses,
+  parsePrevalenceSeeds, renderMarkdown, runProbe, safeFreeWorld, selectReproducerArm, smokeConfig,
 } from '../scripts/probe-physics-explosion.js';
 
 const HEX8 = /^[0-9a-f]{8}$/;
@@ -264,24 +264,31 @@ describe('probe schema smoke', () => {
   });
 });
 
-describe('safeFreeWorld — record, never crash, on a world.free() borrow-guard panic', () => {
+describe('safeFreeWorld — swallow ONLY the borrow-guard class; rethrow every other fault', () => {
   // The core-0.34 finding: the engine-ablation pass drives a witness into an
   // extreme state and world.free() throws the wasm-bindgen borrow guard
-  // ("attempted to take ownership of Rust value while it was borrowed"). This
-  // seam lets the probe RECORD that as instability data and finish the matrix.
-  // Unit-testable with a fake world (no candidate engine needed): a throwing
-  // free() is caught + recorded + returned; a clean free() records nothing.
+  // ("attempted to take ownership of Rust value while it was borrowed") — a
+  // CLEAN JS exception recorded as instability data. But ONLY that exact class
+  // is an observation; every other throw (API drift, an unrelated panic, a
+  // probe bug) is a real fault that must RE-THROW and fail loud, so a swallowed
+  // teardown failure can never masquerade as a clean run. Unit-testable with a
+  // fake world (no candidate engine needed).
 
-  test('a throwing free() is caught, recorded, and its message returned (never re-thrown)', () => {
+  test('isBorrowGuardPanic matches ONLY the ownership-guard wording', () => {
+    expect(isBorrowGuardPanic(BORROW_GUARD_MESSAGE)).toBe(true);
+    expect(isBorrowGuardPanic(`Error: ${BORROW_GUARD_MESSAGE} (in afterAll)`)).toBe(true);
+    expect(isBorrowGuardPanic('world.free is not a function')).toBe(false);
+    expect(isBorrowGuardPanic('RuntimeError: unreachable')).toBe(false);
+    expect(isBorrowGuardPanic('already borrowed')).toBe(false);
+  });
+
+  test('a borrow-guard throw is caught, recorded, and its message returned (never re-thrown)', () => {
     const recorded = [];
-    const world = {
-      freed: false,
-      free() { throw new Error('attempted to take ownership of Rust value while it was borrowed'); },
-    };
+    const world = { free() { throw new Error(BORROW_GUARD_MESSAGE); } };
     let message;
     expect(() => { message = safeFreeWorld(world, (m) => recorded.push(m)); }).not.toThrow();
-    expect(message).toBe('attempted to take ownership of Rust value while it was borrowed');
-    expect(recorded).toEqual(['attempted to take ownership of Rust value while it was borrowed']);
+    expect(message).toBe(BORROW_GUARD_MESSAGE);
+    expect(recorded).toEqual([BORROW_GUARD_MESSAGE]);
   });
 
   test('a clean free() returns null and records nothing', () => {
@@ -294,11 +301,19 @@ describe('safeFreeWorld — record, never crash, on a world.free() borrow-guard 
     expect(recorded).toEqual([]);
   });
 
-  test('a non-Error throw is coerced to a string message', () => {
+  test('a NON-borrow Error (API drift) RE-THROWS the original and records nothing', () => {
+    const recorded = [];
+    const err = new Error('world.free is not a function');
+    const world = { free() { throw err; } };
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow(err);
+    expect(recorded).toEqual([]);
+  });
+
+  test('a raw-string non-borrow throw RE-THROWS and records nothing (the old catch-all is gone)', () => {
     const recorded = [];
     const world = { free() { throw 'raw string panic'; } };
-    expect(safeFreeWorld(world, (m) => recorded.push(m))).toBe('raw string panic');
-    expect(recorded).toEqual(['raw string panic']);
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow('raw string panic');
+    expect(recorded).toEqual([]);
   });
 });
 

@@ -49,8 +49,24 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+// Structured, NON-throwing read: distinguishes missing from present-but-malformed
+// (a timed-out or interrupted command can leave truncated JSON). Callers that
+// must REPORT a malformed artifact (compare's arm loop) use this directly; the
+// rest use readJsonIf below.
+function readJsonSafe(path) {
+  if (!existsSync(path)) return { present: false, valid: false, value: null, error: null };
+  try {
+    return { present: true, valid: true, value: JSON.parse(readFileSync(path, 'utf8')), error: null };
+  } catch (err) {
+    return { present: true, valid: false, value: null, error: String(err?.message ?? err) };
+  }
+}
+
+// null on missing OR malformed — NEVER throws, so a truncated artifact can never
+// crash compare() before it writes comparison.md + result-manifest.json.
 function readJsonIf(path) {
-  return existsSync(path) ? readJson(path) : null;
+  const r = readJsonSafe(path);
+  return r.valid ? r.value : null;
 }
 
 // Normalize a vitest testResults[].name (absolute path, either separator) to a
@@ -336,13 +352,30 @@ function prevalenceCoverageIssues(report, expectedSeeds, perSeed, label) {
   const rows = Array.isArray(report?.prevalence) ? report.prevalence : null;
   if (rows === null) return [`${label}: prevalence array missing or malformed`];
   const issues = [];
-  const bySeed = new Map(rows.map((r) => [r.populationSeed, r]));
+  // Group by seed (NOT a last-write-wins Map): a duplicate seed row must be
+  // DETECTED, not silently collapsed. Exact coverage = one row per declared
+  // seed, no undeclared seeds, and per row BOTH raw AND unique individual
+  // cardinality (a row padded with duplicate individualIds must not pass).
+  const rowsBySeed = new Map();
+  for (const r of rows) {
+    const list = rowsBySeed.get(r.populationSeed) ?? [];
+    list.push(r);
+    rowsBySeed.set(r.populationSeed, list);
+  }
+  if (rows.length !== expectedSeeds.length) {
+    issues.push(`${label}: ${rows.length} rows, expected exactly ${expectedSeeds.length} (one per declared seed)`);
+  }
   for (const seed of expectedSeeds) {
-    const row = bySeed.get(seed);
-    if (row === undefined) { issues.push(`${label}: declared seed ${seed} MISSING`); continue; }
-    const ids = (row.individuals ?? []).map((i) => i.individualId);
+    const seedRows = rowsBySeed.get(seed) ?? [];
+    if (seedRows.length === 0) { issues.push(`${label}: declared seed ${seed} MISSING`); continue; }
+    if (seedRows.length > 1) { issues.push(`${label}: seed ${seed} has ${seedRows.length} rows, expected exactly 1 (duplicate rows)`); continue; }
+    const ids = (seedRows[0].individuals ?? []).map((i) => i.individualId);
     const uniq = new Set(ids);
-    if (uniq.size !== perSeed) issues.push(`${label}: seed ${seed} has ${uniq.size} unique individuals, expected ${perSeed}`);
+    if (ids.length !== perSeed) {
+      issues.push(`${label}: seed ${seed} has ${ids.length} individuals, expected ${perSeed}`);
+    } else if (uniq.size !== perSeed) {
+      issues.push(`${label}: seed ${seed} has ${uniq.size} unique of ${ids.length} individuals (duplicated individualIds), expected ${perSeed} unique`);
+    }
   }
   for (const r of rows) {
     if (!expectedSeeds.includes(r.populationSeed)) issues.push(`${label}: UNDECLARED seed ${r.populationSeed} present (coverage must be exact)`);
@@ -513,16 +546,31 @@ function compare({ artifacts, out, expectedPath }) {
   for (const arm of ARMS) {
     const dir = armDir(artifacts, arm);
     const present = existsSync(dir);
-    const reproducer = present ? readJsonIf(join(dir, 'reproducer.json')) : null;
-    const freshseed = present ? readJsonIf(join(dir, 'freshseed.json')) : null;
-    const prevalence = present ? readJsonIf(join(dir, 'prevalence.json')) : null;
-    const npmTest = present ? readJsonIf(join(dir, 'npm-test.json')) : null;
-    const browser = present ? readJsonIf(join(dir, 'browser.json')) : null;
-    const armManifest = present ? readJsonIf(join(dir, 'arm-manifest.json')) : null;
-    const adjudication = present ? readJsonIf(join(dir, 'adjudication.json')) : null;
+    const read = (name) => (present ? readJsonSafe(join(dir, name)) : { present: false, valid: false, value: null, error: null });
+    const rd = {
+      reproducer: read('reproducer.json'),
+      freshseed: read('freshseed.json'),
+      prevalence: read('prevalence.json'),
+      npmTest: read('npm-test.json'),
+      browser: read('browser.json'),
+      armManifest: read('arm-manifest.json'),
+      adjudication: read('adjudication.json'),
+    };
+    const reproducer = rd.reproducer.value;
+    const freshseed = rd.freshseed.value;
+    const prevalence = rd.prevalence.value;
+    const npmTest = rd.npmTest.value;
+    const browser = rd.browser.value;
+    const armManifest = rd.armManifest.value;
+    const adjudication = rd.adjudication.value;
     const issues = [];
     if (!present) issues.push('artifact dir missing (job did not upload — build failure, cancelled, or skipped)');
     else {
+      // A present-but-unparseable artifact (a timed-out/interrupted command can
+      // leave truncated JSON) is an explicit issue — never a silent "missing".
+      for (const [name, r] of Object.entries(rd)) {
+        if (r.present && !r.valid) issues.push(`${name}.json present but MALFORMED JSON (${r.error})`);
+      }
       if (adjudication === null) issues.push('adjudication.json missing (arm did not reach the adjudicate step)');
       else if (adjudication.passed !== true) issues.push('adjudication FAILED');
       if (reproducerSummary(reproducer)?.original?.classification == null) issues.push('reproducer original classification missing');
@@ -635,24 +683,30 @@ function compare({ artifacts, out, expectedPath }) {
   push('## Determinism digests (candidate: Node vs Chromium)');
   const nodeD = measuredDigests(armReports.candidate.npmTest);
   const chromeD = measuredDigests(armReports.candidate.browser);
-  const keys = [...new Set([...Object.keys(nodeD), ...Object.keys(chromeD)])];
-  if (keys.length === 0) {
-    push('_No determinism failure digests could be extracted — either both green (unexpected on candidate) or the failure-message format changed. See raw logs._');
-    manifest.findings.nodeChromiumAgreement = { extracted: false };
+  // Judge agreement against the DECLARED required set (mirrors --mode
+  // invariants), NOT the union of whatever happened to extract: a required
+  // digest missing on EITHER environment is a failure, not a silent "n/a" pass.
+  const requiredKeys = Array.isArray(expected?.nodeChromiumRequiredKeys) ? expected.nodeChromiumRequiredKeys : [];
+  const extraKeys = [...new Set([...Object.keys(nodeD), ...Object.keys(chromeD)])].filter((k) => !requiredKeys.includes(k));
+  if (requiredKeys.length === 0) {
+    push('_No nodeChromiumRequiredKeys declared in the inventory — cross-env agreement is NOT asserted._');
+    manifest.findings.nodeChromiumAgreement = { extracted: false, requiredKeys: [] };
   } else {
     let agree = true;
-    push(mdTable(['determinism assertion', 'Node digest', 'Chromium digest', 'agree'],
-      keys.map((k) => {
-        const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
-        const ok = n !== null && c !== null && n === c;
-        if (n !== null && c !== null && !ok) agree = false;
-        return [k, n, c, ok ? 'yes' : (n === null || c === null ? 'n/a' : 'NO')];
-      })));
+    const rows = requiredKeys.map((k) => {
+      const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
+      const ok = n !== null && c !== null && n === c;
+      if (!ok) agree = false;
+      const verdict = ok ? 'yes' : (n === null ? '**NO (missing on Node)**' : c === null ? '**NO (missing on Chromium)**' : '**NO**');
+      return [k, n ?? '—', c ?? '—', verdict];
+    });
+    push(mdTable(['required cross-env digest', 'Node digest', 'Chromium digest', 'agree'], rows));
     push('');
     push(agree
-      ? '_Node and Chromium agree on every extracted candidate digest (cross-env determinism holds on core 0.34)._'
-      : '> **Node↔Chromium DISAGREEMENT on a candidate digest — investigate before any claim of cross-env determinism.**');
-    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, node: nodeD, chromium: chromeD };
+      ? '_Node and Chromium agree on the population fitness-vector digest — the ONLY digest mechanically comparable across environments. The eval A–D checkpoint states and the champion trace are NOT cross-env compared (Node truncates their divergence messages; see nodeChromiumRequiredKeysRationale). This one digest is the FULL extent of the cross-env determinism evidence — it is NOT a claim about the A–D or champion traces._'
+      : '> **Node↔Chromium: a REQUIRED digest is missing on one environment or disagrees — cross-env determinism NOT established. Investigate.**');
+    if (extraKeys.length > 0) push(`_(Note: ${extraKeys.length} digest key(s) extracted OUTSIDE the required set: ${extraKeys.join(', ')} — not part of the agreement verdict.)_`);
+    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, requiredKeys, extraKeys, node: nodeD, chromium: chromeD };
   }
   push('');
 
@@ -677,14 +731,34 @@ function compare({ artifacts, out, expectedPath }) {
   push('');
   for (const arm of ARMS) {
     const wexit = armReports[arm].armManifest?.exits?.witnesses ?? null;
-    const completed = wexit === 0;
     const witnessCrash = (armScan[arm].matches.find((m) => m.startsWith('witnesses.log:')) ?? null);
     const sig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
-    push(`- **${arm}:** witnesses exit ${wexit ?? '?'} — `
-      + (completed
-        ? 'completed the full forensic matrix cleanly.'
-        : `**CRASHED**${sig === null ? '' : ` — \`${sig}\``} (recorded Outcome-B evidence; not gated on the candidate).`));
-    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, completed, crashSignature: sig };
+    // A COMPLETED matrix that still recorded world.free() borrow-guard
+    // observations is a failure on the reference engine (stable must free every
+    // world cleanly) — "exit 0" alone is not "clean".
+    const wReport = readJsonSafe(join(armReports[arm].dir, 'witnesses.json')).value;
+    const freeErrs = Array.isArray(wReport?.freeErrors) ? wReport.freeErrors : [];
+    // Classify honestly — ONLY a recognized ownership/unreachable SIGNATURE is
+    // Outcome-B evidence, and it takes precedence over the exit code (a real
+    // panic is evidence even if `timeout` then reaped the process). A bare
+    // nonzero / timeout / missing exit is NOT "crash evidence".
+    let klass; let blurb;
+    if (wexit === 0 && freeErrs.length > 0) {
+      klass = 'completedWithFreeErrors';
+      blurb = `completed BUT recorded ${freeErrs.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrs[0]}\`).`;
+    } else if (wexit === 0) {
+      klass = 'completed'; blurb = 'completed the full forensic matrix cleanly (no free() observations).';
+    } else if (sig !== null) {
+      klass = 'engineCrash'; blurb = `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).`;
+    } else if (wexit === 124 || wexit === 137) {
+      klass = 'timeout'; blurb = `**TIMED OUT** (exit ${wexit} — hit the RUN_TIMEOUT backstop; a hang, NOT observed-engine-crash evidence).`;
+    } else if (wexit === null) {
+      klass = 'missing'; blurb = 'MISSING (no witnesses exit/artifact recorded — a missing observation, not evidence).';
+    } else {
+      klass = 'unexplained'; blurb = `**UNEXPLAINED FAILURE** (exit ${wexit}, no recognized crash signature — investigate; NOT Outcome-B evidence).`;
+    }
+    push(`- **${arm}:** witnesses exit ${wexit ?? 'missing'} — ${blurb}`);
+    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, classification: klass, crashSignature: sig, freeErrors: freeErrs.length };
   }
   push('');
 
@@ -866,7 +940,8 @@ function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
     return { ok: false, errors };
   }
-  console.log('\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the COMPLETE required digest set.');
+  console.log(`\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the declared cross-env digest set (${required.join(', ')}). `
+    + 'That set is intentionally the digest(s) both reporters emit untruncated — NOT the full A-D/champion trace set (Node truncates those); see nodeChromiumRequiredKeysRationale.');
   return { ok: true, errors: [] };
 }
 
@@ -925,7 +1000,8 @@ function main() {
 export {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
-  passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan, F32_DT,
+  passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan,
+  prevalenceCoverageIssues, readJsonSafe, F32_DT,
 };
 
 const entry = process.argv[1];

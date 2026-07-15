@@ -1081,8 +1081,12 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   project contract inside the same red test fails the arm), POSITIVE
   must-pass presence (the gate-(a)/pure teeth must appear with status
   'passed' at exact multiplicity), the probe:timing DRIFT allowlist, and the
-  dt + COMPLETE-set Node↔Chromium digest invariants (semantic keys, set
-  equality both directions — a Node-only or Chromium-only extraction fails).
+  dt + declared-set Node↔Chromium digest invariants (the declared
+  `nodeChromiumRequiredKeys` — currently just `population:fitness-vector`, the
+  ONE digest both reporters emit untruncated — with set equality both
+  directions, so a Node-only or Chromium-only extraction fails; NOT a broad
+  cross-env determinism claim over the A-D/champion traces, which Node
+  truncates).
   The adjudicator itself is under ordinary CI:
   `tests/compare-spike-runs.test.js` (pure JSON fixtures with verbatim
   titles/messages, no physics, bound to the committed

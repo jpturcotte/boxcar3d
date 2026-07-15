@@ -371,9 +371,28 @@ jobs:
             gate prevalence
             if [ "${ARM}" = "stable" ]; then
               gate witnesses
+              # Stable must free EVERY world cleanly: a recorded world.free()
+              # borrow-guard observation on the REFERENCE engine is itself a
+              # failure (the candidate-only instability must not appear here).
+              # exit-0-alone is not "clean".
+              node -e 'const p=process.argv[1];try{const r=JSON.parse(require("fs").readFileSync(p,"utf8"));const fe=r.freeErrors||[];if(fe.length){console.error("STABLE world.free() freeErrors NOT empty ("+fe.length+"): "+fe.join(" | "));process.exit(1)}console.log("stable witnesses freeErrors empty: ok")}catch(e){console.log("stable witnesses.json unreadable ("+e.message+") — the witnesses gate already covers a missing/failed matrix");process.exit(0)}' "${RES}/witnesses.json" || fail=1
             else
+              # Candidate forensic matrix is OBSERVE, not gated — but classify the
+              # exit HONESTLY: ONLY a recognized ownership/unreachable signature
+              # in witnesses.log is Outcome-B crash evidence. A bare nonzero / 124
+              # timeout / missing exit is NOT.
               wcode=$(cat "${RES}/exit-witnesses.txt" 2>/dev/null || echo missing)
-              echo "OBSERVE: candidate witnesses exit ${wcode} — forensic-matrix crash recorded as Outcome-B evidence, NOT gated"
+              if [ "$wcode" = "0" ]; then
+                echo "OBSERVE: candidate witnesses exit 0 — completed (unexpected on core 0.34; not gated)"
+              elif grep -qE 'attempted to take ownership of Rust value while it was borrowed|RuntimeError: unreachable|already (mutably )?borrowed|Borrow(Mut)?Error|panicked at' "${RES}/witnesses.log" 2>/dev/null; then
+                echo "OBSERVE: candidate witnesses exit ${wcode} — recognized engine-crash signature in witnesses.log = Outcome-B evidence (NOT gated)"
+              elif [ "$wcode" = "124" ] || [ "$wcode" = "137" ]; then
+                echo "OBSERVE: candidate witnesses exit ${wcode} — TIMEOUT (RUN_TIMEOUT backstop; a hang, NOT crash evidence; NOT gated)"
+              elif [ "$wcode" = "missing" ]; then
+                echo "OBSERVE: candidate witnesses exit MISSING — no artifact (missing observation, NOT crash evidence; NOT gated)"
+              else
+                echo "OBSERVE: candidate witnesses exit ${wcode} — UNEXPLAINED failure, no recognized crash signature (investigate; NOT crash evidence; NOT gated)"
+              fi
             fi
           fi
           if [ "${ARM}" = "stable" ]; then
@@ -458,7 +477,13 @@ jobs:
           ( cd perf-candidate && npm install ../dl/dimforge-rapier3d-compat-*.tgz ../dl/dimforge-rapier3d-deterministic-compat-*.tgz )
       - name: Alternating paired bench
         run: |
-          set -uo pipefail
+          # errexit OFF (like the matrix capture step): a crashing candidate
+          # bench must RECORD its exit and let the remaining alternating runs +
+          # the node assembler run — the assembler is the sole pass/fail
+          # authority (it exits 1 on an incomplete/errored set). GitHub's default
+          # shell keeps -e, and `set -uo pipefail` alone would abort the step at
+          # the first failing bench, before its exit is captured.
+          set +e -u -o pipefail
           mkdir -p perf
           # bench-physics's `--json` is a string option that REQUIRES a filename
           # (the JSON is written to that path; stdout is always the markdown

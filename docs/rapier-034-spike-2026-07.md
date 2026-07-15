@@ -23,8 +23,10 @@ unreachable` at `world.step()`), while stable 0.19.3 completes the identical
 matrix cleanly (§5.4). Over the surfaces that DO complete on both arms — the
 reproducer, prevalence, the Node suite, candidate Chromium, the Vite build + app
 smoke, the paired bench — the candidate is internally deterministic with every
-project contract preserved, no Class-1/3/4 regression, and Node↔Chromium
-determinism holds (§6). But there is no divergence-fix to adopt. **PR-B (the
+project contract preserved, no Class-1/3/4 regression, and the population
+fitness-vector digest agrees across Node and Chromium (the ONE digest
+mechanically comparable across environments — NOT a broad cross-env determinism
+claim; §6). But there is no divergence-fix to adopt. **PR-B (the
 numerical-integrity policy) proceeds on stable 0.19.3 as planned; the multibody
 binding-extension investigation is the named follow-up.**
 The multibody 2×2 shows the joint REPRESENTATION / constraint-enforcement regime
@@ -505,10 +507,12 @@ part of any future adoption evaluation, not this diagnostic.
 > **CI paired bench (C5, landed).** The citable run's `perf` job ran
 > `bench:physics --smoke` on ONE runner in genuinely alternating order
 > (stable → candidate → candidate → stable); all four runs parsed cleanly
-> (`perfStatus: ok`, `errored: 0`) with no pathology. The raw four-run JSON is in
-> the committed `docs/rapier-034-spike-result-manifest-2026-07-15.json`; a full
-> paired ratio is out of scope for this diagnostic (Outcome B — not adopting), so
-> the manifest records the runs rather than a headline speedup number.
+> (`perfStatus: ok`, `errored: 0`) with no pathology. The committed
+> `docs/rapier-034-spike-result-manifest-2026-07-15.json` records the perf
+> parse-STATUS summary (`findings.perf`: order, parsed/total, errored,
+> allParsed) — NOT the raw per-run bench payloads, which live in the workflow's
+> `perf` job artifact. A full paired ratio is out of scope for this diagnostic
+> (Outcome B — not adopting), so only the parse-status summary is committed.
 
 ## 9. PR #18 comparison (frozen-first)
 
@@ -566,7 +570,11 @@ frozen evidence (§5, §9):
    cannot use multibody joints in either binding (§2, §5.2).
 4. On the surfaces that COMPLETE on both arms the candidate is internally
    deterministic, every project contract preserved, no Class-1/3/4 regression,
-   Node↔Chromium determinism holding (CI-confirmed). The 11 test reds are all
+   and the population fitness-vector digest agrees across Node and Chromium
+   (CI-confirmed — the ONE digest mechanically comparable across environments;
+   the eval A-D checkpoint states and champion trace are NOT cross-env compared,
+   Node truncates them, so this is not a broad cross-env determinism claim).
+   The 11 test reds are all
    expected class-(c) golden/version movement. **The one surface it cannot
    complete is the forensic witness matrix — core 0.34 crashes it unrecoverably
    (borrow-guard panic → `unreachable` trap; §5.4), which REINFORCES Outcome B.**

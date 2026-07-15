@@ -109,8 +109,10 @@ stable-vs-candidate pair) confirmed the verdict at classification level.
 **Verdict: the divergence persists on core 0.34** — the reproducer stays
 catastrophic on both flavors, prevalence is the same 5/60, and a fresh seed adds
 2/20. On the surfaces that complete on both arms the candidate is clean
-(internally deterministic, no contract regression, Node↔Chromium determinism
-holding); **but a new CI finding reinforces Outcome B — core 0.34 cannot complete
+(internally deterministic, no contract regression, and the population
+fitness-vector digest agrees across Node and Chromium — the one digest
+mechanically comparable across environments, not a broad cross-env claim);
+**but a new CI finding reinforces Outcome B — core 0.34 cannot complete
 the forensic witness matrix, crashing it unrecoverably (a `world.free()`
 borrow-guard panic, then a `RuntimeError: unreachable` trap), while stable
 0.19.3 completes it cleanly.** A new `--arm multibody`

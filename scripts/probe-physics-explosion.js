@@ -361,25 +361,29 @@ function staticContactCounter() {
  * digest — the engine pass's first arm hard-checks exactly that.
  */
 
-// world.free() borrow-guard panics are Outcome-B instability DATA, not a crash.
-// Core 0.34's wasm-bindgen guard throws "attempted to take ownership of Rust
-// value while it was borrowed" when the engine-ablation pass drives a witness
-// into an extreme divergence state and world.free() is then called; stable
-// 0.19.3 frees the identical run cleanly. That throw is a CLEAN JS exception
-// fired BEFORE the unsafe drop (module memory intact — the world is merely
-// leaked for this short-lived process), categorically UNLIKE the
-// module-poisoning `RuntimeError: unreachable` abort. So the probe RECORDS the
-// panic and finishes the forensic matrix instead of dying on it. These are
-// OBSERVATIONS only — they never enter report.checks, so a future engine that
-// frees cleanly simply reports none. Reset per runProbe so the programmatic API
-// (tests, --json callers) is stateless across invocations.
-let freeErrorLog = [];
+// The ONLY world.free() throw class that is an OBSERVATION rather than a fault:
+// core 0.34's wasm-bindgen ownership guard, thrown "attempted to take ownership
+// of Rust value while it was borrowed" when the engine-ablation pass drives a
+// witness into an extreme divergence state and world.free() is then called
+// (stable 0.19.3 frees the identical run cleanly). That throw is a CLEAN JS
+// exception fired BEFORE the unsafe drop (module memory intact — the world is
+// merely leaked for this short-lived process), categorically UNLIKE the
+// module-poisoning `RuntimeError: unreachable` abort. Only this exact class is
+// recorded-and-continued; EVERYTHING else (API drift like `world.free is not a
+// function`, an unrelated panic, a probe bug) rethrows and fails loud, so a
+// swallowed teardown failure can never masquerade as a clean run.
+export const BORROW_GUARD_MESSAGE = 'attempted to take ownership of Rust value while it was borrowed';
+export function isBorrowGuardPanic(message) {
+  return String(message).includes(BORROW_GUARD_MESSAGE);
+}
 
 /**
- * Free `world`, treating a free() throw as an OBSERVATION: record its message
- * via `record` and return that message (null on a clean free). NEVER re-throws —
- * a borrow-guard panic must not abort the forensic matrix. `record` is injected
- * so the catch behavior is unit-testable without the candidate engine.
+ * Free `world`, treating ONLY a wasm-bindgen borrow-guard throw as an
+ * OBSERVATION: record its message via `record` and return it (null on a clean
+ * free). Any OTHER thrown value RE-THROWS (preserving the original error) — it
+ * is a real fault, not instability data. `record` is injected so the catch
+ * behavior is unit-testable without the candidate engine. These observations
+ * never enter report.checks, so a future engine that frees cleanly reports none.
  */
 export function safeFreeWorld(world, record) {
   try {
@@ -389,6 +393,7 @@ export function safeFreeWorld(world, record) {
     const message = err !== null && err !== undefined && err.message !== undefined
       ? String(err.message)
       : String(err);
+    if (!isBorrowGuardPanic(message)) throw err; // real fault — do not swallow
     record(message);
     return message;
   }
@@ -407,7 +412,11 @@ async function composeRun(ir, {
   noStatics = false,
   targetWheelSurfaceSpeed = WITNESS_SPEC.targetWheelSurfaceSpeed,
   wheelFriction = WITNESS_SPEC.wheelFriction,
-} = {}) {
+} = {}, freeErrors) {
+  // Per-invocation collector, threaded from runProbe (no module-global state —
+  // concurrent runProbe() calls cannot mix observations). Fail loud if a caller
+  // forgets it, so a borrow-guard panic is never silently dropped.
+  if (!Array.isArray(freeErrors)) throw new Error('composeRun requires a freeErrors collector array');
   const { RAPIER, world } = await createPhysics({ deterministic: true });
   let out;
   try {
@@ -488,13 +497,18 @@ async function composeRun(ir, {
       requestedDt, maxSteps, traceMode: 'full', checkpointInterval: 1, staticColliders, inspect,
     });
     out = { result, spawn, staticColliders, freeError: null };
-  } finally {
-    // Record — never die on — a world.free() borrow-guard panic (see
-    // safeFreeWorld). If the body threw, `out` is undefined and that error
-    // still propagates; only the free() throw is captured here.
-    const freeError = safeFreeWorld(world, (m) => freeErrorLog.push(m));
-    if (freeError !== null && out !== undefined) out.freeError = freeError;
+  } catch (bodyErr) {
+    // The run body itself failed. Free the world best-effort so it does not
+    // leak, but NEVER let a free() throw (now that safeFreeWorld rethrows real
+    // faults) mask the primary body error — swallow any free() throw here and
+    // rethrow the original.
+    try { safeFreeWorld(world, (m) => freeErrors.push(m)); } catch { /* keep bodyErr primary */ }
+    throw bodyErr;
   }
+  // Clean body: free MUST succeed, or record a borrow-guard, or surface a real
+  // free() fault (safeFreeWorld rethrows anything that is not the borrow guard).
+  const freeError = safeFreeWorld(world, (m) => freeErrors.push(m));
+  if (freeError !== null) out.freeError = freeError;
   return out;
 }
 
@@ -852,7 +866,7 @@ async function terrainPass(witnessSet, cfg) {
   return rows;
 }
 
-async function vehiclePass(witnessSet, cfg) {
+async function vehiclePass(witnessSet, cfg, freeErrors) {
   const rows = [];
   for (const w of witnessSet) {
     const genotype = witnessGenotype(w.populationSeed, w.individualId);
@@ -889,7 +903,7 @@ async function vehiclePass(witnessSet, cfg) {
     // (genotype removal re-spaces and re-masses the survivors).
     if (cfg.componentArms === null || cfg.componentArms.length > 0) {
       const ir = compileAssembly(genotype);
-      const base = await composeRun(ir, {});
+      const base = await composeRun(ir, {}, freeErrors);
       const baseOnset = analyzeTrace(base.result.trace, {
         bodies: bodyReachMetadataForIR(ir),
       }).onset;
@@ -941,7 +955,7 @@ async function vehiclePass(witnessSet, cfg) {
           error: null,
         };
         try {
-          const { result } = await composeRun(ir, arm.opts);
+          const { result } = await composeRun(ir, arm.opts, freeErrors);
           row.result = summarize(result, ir);
         } catch (e) {
           row.error = String(e && e.message ? e.message : e);
@@ -1002,7 +1016,7 @@ const ENGINE_ARMS = Object.freeze([
   // free-space row is contact-counted — one place owns free-space claims.
 ]);
 
-async function enginePass(witnessSet, cfg, check) {
+async function enginePass(witnessSet, cfg, check, freeErrors) {
   const rows = [];
   for (const w of witnessSet) {
     const ir = compileAssembly(witnessGenotype(w.populationSeed, w.individualId));
@@ -1010,7 +1024,7 @@ async function enginePass(witnessSet, cfg, check) {
     let arms = ENGINE_ARMS;
     if (cfg.engineArms !== null) arms = arms.filter((a) => cfg.engineArms.includes(a.name));
     for (const arm of arms) {
-      const { result, freeError } = await composeRun(ir, arm.opts);
+      const { result, freeError } = await composeRun(ir, arm.opts, freeErrors);
       if (arm.name === 'baselineComposed') {
         reference = await evaluateIR(ir);
         check(`composed:${w.label}`, result.trace.digest === reference.trace.digest,
@@ -1078,7 +1092,7 @@ function loadArmsFor(genotype) {
   ];
 }
 
-async function loadPass(witnessSet, cfg, check) {
+async function loadPass(witnessSet, cfg, check, freeErrors) {
   const rows = [];
   for (const w of witnessSet) {
     const genotype = witnessGenotype(w.populationSeed, w.individualId);
@@ -1091,7 +1105,7 @@ async function loadPass(witnessSet, cfg, check) {
         noStatics: true,
         worldTuning: (world) => { world.gravity = { x: 0, y: 0, z: 0 }; },
         buildInspect: counter.buildInspect,
-      });
+      }, freeErrors);
       // The free-space premise is a HARD check: no static collider exists,
       // and the counter confirms the vehicle touched nothing.
       check(`freeSpace:${w.label}:${arm.name}`,
@@ -1258,7 +1272,7 @@ function jointStretchSeries(trace, ir) {
     .sort((a, b) => (a.firstOver2cm ?? Infinity) - (b.firstOver2cm ?? Infinity));
 }
 
-async function localPass(witnessSet) {
+async function localPass(witnessSet, freeErrors) {
   const rows = [];
   for (const w of witnessSet) {
     const ir = compileAssembly(witnessGenotype(w.populationSeed, w.individualId));
@@ -1324,7 +1338,7 @@ async function localPass(witnessSet) {
           contactSteps.push({ step: stepIndex, pairs });
         };
       },
-    });
+    }, freeErrors);
     const forensics = analyzeTrace(result.trace, { bodies: bodyReachMetadataForIR(ir) });
     const onset = forensics.onset;
     const causal = onset.firstCausalCandidateStep ?? onset.firstAlertStep;
@@ -1417,9 +1431,10 @@ export async function runProbe(config) {
   // the CLI (the round-2 review finding).
   const passes = normalizePasses(cfg.passes);
 
-  // Stateless across invocations: drop any world.free() panics recorded by a
-  // prior runProbe (the programmatic API calls this repeatedly).
-  freeErrorLog = [];
+  // Per-invocation collector for world.free() borrow-guard panics, threaded into
+  // every composeRun (no module-global state — concurrent runProbe() calls
+  // cannot mix or reset one another's observations).
+  const freeErrors = [];
 
   const report = {
     schema: PROBE_SCHEMA,
@@ -1429,7 +1444,7 @@ export async function runProbe(config) {
     checks: [],
     // world.free() borrow-guard panics observed this run (OBSERVATIONS, never
     // HARD checks — see safeFreeWorld). Empty on stable 0.19.3; non-empty on
-    // core 0.34's engine-ablation pass. Drained from freeErrorLog before return.
+    // core 0.34's engine-ablation pass. Populated via the threaded collector.
     freeErrors: [],
     baseline: null,
     controls: null,
@@ -1460,13 +1475,13 @@ export async function runProbe(config) {
     if (cfg.controls) report.controls = await controlsPass(report, check);
   }
   if (passes.includes('terrain')) report.terrain = await terrainPass(witnessSet, cfg);
-  if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg);
-  if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check);
-  if (passes.includes('load')) report.load = await loadPass(witnessSet, cfg, check);
-  if (passes.includes('local')) report.localization = await localPass(witnessSet);
-  if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check);
+  if (passes.includes('vehicle')) report.vehicle = await vehiclePass(witnessSet, cfg, freeErrors);
+  if (passes.includes('engine')) report.engineAblations = await enginePass(witnessSet, cfg, check, freeErrors);
+  if (passes.includes('load')) report.load = await loadPass(witnessSet, cfg, check, freeErrors);
+  if (passes.includes('local')) report.localization = await localPass(witnessSet, freeErrors);
+  if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check, freeErrors);
   if (passes.includes('prevalence')) report.prevalence = await prevalencePass(cfg);
-  report.freeErrors = [...freeErrorLog];
+  report.freeErrors = [...freeErrors];
   return report;
 }
 
@@ -1494,7 +1509,7 @@ const REPRODUCER_ARMS = Object.freeze([
   'gravity9.81', 'gravityOff', 'freeSpace', 'multibody',
 ]);
 
-async function reproducerPass(cfg, check) {
+async function reproducerPass(cfg, check, freeErrors) {
   const g = reproducerGenotype();
   check('identity:reproducer', witnessDigest(g) === MINIMAL_REPRODUCER.genotypeDigest,
     `expected ${MINIMAL_REPRODUCER.genotypeDigest}`);
@@ -1533,7 +1548,7 @@ async function reproducerPass(cfg, check) {
         terrainOverrides: overrides,
         worldTuning: (w) => { w.gravity = { x: 0, y: -9.81, z: 0 }; },
         buildInspect: counter.buildInspect,
-      });
+      }, freeErrors);
       rows.push({
         arm,
         flavor: 'deterministic',
@@ -1559,7 +1574,7 @@ async function reproducerPass(cfg, check) {
         terrainOverrides: overrides,
         worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
         buildInspect: counter.buildInspect,
-      });
+      }, freeErrors);
       rows.push({
         arm,
         flavor: 'deterministic',
@@ -1630,7 +1645,7 @@ async function reproducerPass(cfg, check) {
           swapState.multibodyAfter = world.multibodyJoints.len();
           return { ...rec, wheels };
         },
-      });
+      }, freeErrors);
       check('multibody:reproducer',
         swapState.stations > 0 && swapState.impulseAfter === 0
           && swapState.multibodyAfter === swapState.stations,
@@ -1657,7 +1672,7 @@ async function reproducerPass(cfg, check) {
         noStatics: true,
         worldTuning: (w) => { w.gravity = { x: 0, y: 0, z: 0 }; },
         buildInspect: counter.buildInspect,
-      });
+      }, freeErrors);
       check('freeSpace:reproducer',
         staticColliders === 0 && counter.state.touchingContacts === 0
           && counter.state.proximityPairs === 0,

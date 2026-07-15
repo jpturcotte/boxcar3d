@@ -3,8 +3,8 @@
 ## Provenance
 | field | value |
 | --- | --- |
-| resolved BoxCar3D SHA (stable) | 6c05d053bd774442f4eca433a88382dd7c9f9579 |
-| resolved BoxCar3D SHA (candidate) | 6c05d053bd774442f4eca433a88382dd7c9f9579 |
+| resolved BoxCar3D SHA (stable) | 33de9ca6fab13134e679206fec4a60419a5cfac1 |
+| resolved BoxCar3D SHA (candidate) | 33de9ca6fab13134e679206fec4a60419a5cfac1 |
 | upstream Rapier ref (requested) | c13133ad293ee70c7f9cec9e498eac016c362169 |
 | upstream Rapier SHA (resolved) | c13133ad293ee70c7f9cec9e498eac016c362169 |
 | candidate identity suffix | 0.19.3-c13133ad.0 |
@@ -35,11 +35,11 @@ _The verdict is the CLASSIFICATION column (catastrophic vs quiescent), not the e
 - **candidate:** 11 failing across 5 files — tests/bench-schema.test.js(1), tests/evaluation-determinism.test.js(5), tests/evaluation-golden.test.js(1), tests/physics-explosion-probe-schema.test.js(1), tests/population-determinism.test.js(3)
 
 ## Determinism digests (candidate: Node vs Chromium)
-| determinism assertion | Node digest | Chromium digest | agree |
+| required cross-env digest | Node digest | Chromium digest | agree |
 | --- | --- | --- | --- |
 | population:fitness-vector | ee605286 | ee605286 | yes |
 
-_Node and Chromium agree on every extracted candidate digest (cross-env determinism holds on core 0.34)._
+_Node and Chromium agree on the population fitness-vector digest — the ONLY digest mechanically comparable across environments. The eval A–D checkpoint states and the champion trace are NOT cross-env compared (Node truncates their divergence messages; see nodeChromiumRequiredKeysRationale). This one digest is the FULL extent of the cross-env determinism evidence — it is NOT a claim about the A–D or champion traces._
 
 ## `world.free()` borrow/panic scan
 - **stable:** scanned 22 log(s); 0 borrow/ownership/unreachable/panic match(es).
@@ -48,8 +48,8 @@ _Node and Chromium agree on every extracted candidate digest (cross-env determin
 
 ## Forensic witness matrix (`--witness all --pass all`) — stable GATE / candidate OBSERVE
 
-- **stable:** witnesses exit 0 — completed the full forensic matrix cleanly.
-- **candidate:** witnesses exit 1 — **CRASHED** — `RuntimeError: unreachable` (recorded Outcome-B evidence; not gated on the candidate).
+- **stable:** witnesses exit 0 — completed the full forensic matrix cleanly (valid witnesses.json, empty freeErrors, no panic signature).
+- **candidate:** witnesses exit 1 — **engine CRASH** — `RuntimeError: unreachable` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).
 
 ## Paired bench (same-runner, alternating)
 ```json

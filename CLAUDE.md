@@ -1032,7 +1032,7 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   Node suite/probes, and the PR #18 `world.free()` borrow error did NOT
   reproduce in the Node suite. The 11 unit-suite reds are all expected class-(c)
   golden/version movement. **The citable `heavy=true` CI dispatch (run
-  29432954655, C5) landed and CONFIRMED this** — candidate Chromium GREEN
+  29447984460, C5) landed and CONFIRMED this** — candidate Chromium GREEN
   (Node↔Chromium `population:fitness-vector` = `ee605286` on both), Vite build +
   app-scene smoke GREEN, paired bench GREEN — **and it surfaced a NEW finding
   that REINFORCES Outcome B: core 0.34 CANNOT complete the full forensic witness

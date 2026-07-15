@@ -7,7 +7,7 @@
       "issues": [],
       "adjudicationPassed": true,
       "rapierVersion": "0.19.3",
-      "resolvedSha": "6c05d053bd774442f4eca433a88382dd7c9f9579",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
       "npmTestFailures": 0
     },
     "candidate": {
@@ -16,14 +16,14 @@
       "issues": [],
       "adjudicationPassed": true,
       "rapierVersion": "0.19.3-c13133ad.0",
-      "resolvedSha": "6c05d053bd774442f4eca433a88382dd7c9f9579",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
       "npmTestFailures": 11
     }
   },
   "findings": {
     "provenance": {
       "schema": "boxcar3d.candidate-provenance/2",
-      "resolvedSha": "6c05d053bd774442f4eca433a88382dd7c9f9579",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
       "requestedUpstreamRef": "c13133ad293ee70c7f9cec9e498eac016c362169",
       "resolvedUpstreamSha": "c13133ad293ee70c7f9cec9e498eac016c362169",
       "identitySuffix": "0.19.3-c13133ad.0",
@@ -247,6 +247,10 @@
     "nodeChromiumAgreement": {
       "extracted": true,
       "agree": true,
+      "requiredKeys": [
+        "population:fitness-vector"
+      ],
+      "extraKeys": [],
       "node": {
         "population:fitness-vector": "ee605286"
       },
@@ -266,12 +270,12 @@
     },
     "witnessMatrix_stable": {
       "exit": 0,
-      "completed": true,
+      "classification": "completed",
       "crashSignature": null
     },
     "witnessMatrix_candidate": {
       "exit": 1,
-      "completed": false,
+      "classification": "engineCrash",
       "crashSignature": "RuntimeError: unreachable"
     },
     "perf": {

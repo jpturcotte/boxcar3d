@@ -8,8 +8,8 @@
 > PR-A's results are frozen BEFORE the draft-PR-#18 comparison (§9).
 
 **Status: controlled CI reproduction COMPLETE.** The citable `heavy=true`
-dispatch ([run 29432954655](https://github.com/jpturcotte/boxcar3d/actions/runs/29432954655),
-BoxCar3D `6c05d05`, upstream `c13133ad`) reproduces the verdict at classification
+dispatch ([run 29447984460](https://github.com/jpturcotte/boxcar3d/actions/runs/29447984460),
+BoxCar3D `33de9ca`, upstream `c13133ad`) reproduces the verdict at classification
 level from a same-commit stable-vs-candidate pair; the generated comparison +
 result manifest are committed (`docs/rapier-034-spike-controlled-comparison-2026-07-15.md`,
 `docs/rapier-034-spike-result-manifest-2026-07-15.json`, folded into §5).
@@ -95,7 +95,7 @@ Tarball / wasm-binary / patched-file SHA-256 hashes: §3.
 > in the required order (deterministic-3D first), and asserts its own toolchain
 > — so on the CI arm the §1 identity patch genuinely is the only tree edit. The
 > exact CI recipe and its measured artifact hashes are folded into §3/§4 (the
-> citable `heavy=true` dispatch, run 29432954655, has landed — C5). **wasm is not
+> citable `heavy=true` dispatch, run 29447984460, has landed — C5). **wasm is not
 > byte-reproducible across environments**, so the CI wasm/tarball hashes differ
 > from §3's local hashes (CI hashes recorded in §3 + the committed comparison);
 > the Outcome-B verdict reproduces at **classification level** (catastrophic vs
@@ -278,7 +278,7 @@ Steps SKIPPED and why (all defensible under Outcome B — see §10):
 > no longer skipped-then-reclassified; their measured results fold into
 > §4/§5/§8.
 >
-> **This landed (C5):** the citable `heavy=true` dispatch (run 29432954655)
+> **This landed (C5):** the citable `heavy=true` dispatch (run 29447984460)
 > executed all of them on the candidate — **candidate Chromium GREEN** with
 > Node↔Chromium `population:fitness-vector` agreement (`ee605286` on both), the
 > **Vite build + app-scene smoke GREEN** (GATE), and the **paired bench GREEN**
@@ -465,7 +465,7 @@ OBSERVE-on-candidate.
 regression" is asserted over the surfaces that COMPLETE on both arms. The
 historical local build exercised the Node unit suite (all 13 class-(a) gates),
 `probe:timing`, and the reproducer/prevalence probes. The citable CI dispatch
-(§2/§4, Part C; run 29432954655) additionally closed the surfaces the local run
+(§2/§4, Part C; run 29447984460) additionally closed the surfaces the local run
 had SKIPPED — candidate **Chromium** (Node↔Chromium determinism agreement:
 `population:fitness-vector` = `ee605286` on both), the **Vite build + app-scene
 smoke**, and the **paired bench** — all green on the candidate. The one surface

@@ -22,6 +22,7 @@ import { URL, fileURLToPath } from 'node:url';
 import {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
+  borrowErrorScan,
 } from '../scripts/compare-spike-runs.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
@@ -583,5 +584,85 @@ describe('helpers and the committed inventory', () => {
     expect(inv.heavyEvidence.prevalenceSeeds).toEqual([20260725, 20260728, 20260729]);
     expect(inv.heavyEvidence.freshSeeds).toEqual([20260730]);
     expect(inv.heavyEvidence.individualsPerSeed).toBe(20);
+  });
+});
+
+// The borrow/panic scan reads the RAW test-suite logs (npmtest.log/browser.log),
+// which interleave vitest's captured console output with its reporter tree. THIS
+// suite is the one pure-JSON unit test whose captured output deliberately quotes
+// engine-panic strings ("RuntimeError: unreachable", "panicked at") as classify()
+// fixtures — verified pure: scripts/compare-spike-runs.js imports only node:*
+// builtins, and this file imports only its adjudicator functions, so no Rapier
+// instance and no subprocess can run under a compare-spike-runs.test.js header.
+// The scan must therefore ATTRIBUTE by the capturing test (skip this suite's
+// blocks) rather than content-match, or the stable arm — which is 0-failing —
+// falsely reads a "project-contract regression". Both directions are locked here.
+describe('borrowErrorScan — reports engine faults, ignores the adjudicator suite own captured fixtures', () => {
+  const scanOf = (name, content) => {
+    const dir = mkdtempSync(join(tmpdir(), 'spike-borrowscan-'));
+    writeFileSync(join(dir, name), content);
+    return borrowErrorScan(dir);
+  };
+
+  test('the self-contract test captured "RuntimeError: unreachable" fixture is NOT reported (the exact stable-arm false positive)', () => {
+    // classify() prints its SIGNATURE MISMATCH diagnostic (which quotes the
+    // fixture "RuntimeError: unreachable in afterAll") under a captured-stderr
+    // header vitest colours with ANSI even when piped — proves the ANSI strip.
+    const ansiHeader = '\x1b[90mstderr\x1b[2m | \x1b[22m\x1b[2mtests/compare-spike-runs.test.js\x1b[2m > \x1b[22mclassify > file-level error is caught';
+    const log = [
+      ansiHeader,
+      '',
+      'CLASSIFY FAIL (node) — the candidate failed-test set does not match the inventory:',
+      '  SIGNATURE MISMATCH — tests/evaluation-determinism.test.js: failing assertion "<file-level error>" matches NO allowed failure signature. Message head: RuntimeError: unreachable in afterAll',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.scanned).toBe(1);
+    expect(r.matches).toEqual([]);
+  });
+
+  test('a genuine engine panic captured under a DIFFERENT test header IS reported', () => {
+    const log = [
+      'stderr | tests/evaluation-determinism.test.js > gate (a): fresh-world byte-identity',
+      'RuntimeError: unreachable',
+      '    at wasm://wasm/0123abcd:1:1234',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+  });
+
+  test('a panic in the vitest failed-tests summary IS reported even after a self-test block (owner reset at the ⎯ banner)', () => {
+    const log = [
+      'stdout | tests/compare-spike-runs.test.js > classify > prints its report',
+      '# candidate-red classification (node)',
+      '⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯',
+      ' FAIL  tests/evaluation-determinism.test.js > teardown',
+      'RuntimeError: unreachable in afterAll',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/unreachable in afterAll/);
+  });
+
+  test('attribution not content: the IDENTICAL sentence is hidden under a self-test header, surfaced under a real one', () => {
+    const sentence = 'SIGNATURE MISMATCH — foo: Message head: RuntimeError: unreachable in afterAll';
+    const hidden = scanOf('npmtest.log', ['stderr | tests/compare-spike-runs.test.js > x', sentence, ''].join('\n'));
+    const shown = scanOf('npmtest.log', ['stderr | tests/evaluation-determinism.test.js > x', sentence, ''].join('\n'));
+    expect(hidden.matches).toEqual([]);
+    expect(shown.matches.length).toBe(1);
+  });
+
+  test('a non-vitest log (no capture headers) still reports a raw Rust panic — owner stays null', () => {
+    const r = scanOf('build.log', "thread 'main' panicked at 'assertion failed', src/lib.rs:42\n");
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/panicked at/);
+  });
+
+  test('benign build-log strings (panic = "abort", "no borrow errors") are not matched', () => {
+    const r = scanOf('build.log', 'panic = "abort"\nno borrow errors detected\n');
+    expect(r.matches).toEqual([]);
   });
 });

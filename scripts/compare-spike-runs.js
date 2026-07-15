@@ -379,6 +379,29 @@ function rapierVersionOf(report) {
 const BORROW_SIGNATURE =
   /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
 
+// CSI SGR (colour) matcher, built from a string so the source carries no literal
+// ESC control char (eslint no-control-regex stays happy). Vitest colours its
+// captured-output headers even when piped in CI, so we strip before matching.
+const ANSI_ESCAPE = new RegExp('\\x1b\\[[0-9;]*m', 'g');
+// Vitest attributes each captured console block to a test via a header line
+// `stdout | <file> > <test>` / `stderr | <file> > <test>`. The owning file lets
+// us drop console output that a pure unit test PRINTED (never an engine fault).
+const CAPTURE_HEADER = /^\s*(?:stdout|stderr)\s*\|\s*(\S+)/;
+// The run of horizontal-line glyphs vitest prints around its failed-tests /
+// unhandled-errors summary — the boundary where captured console output ends.
+// vitest 3.x uses U+23AF (⎯); include U+2500/U+2501 for other builds. Excludes
+// the em-dash U+2014 that appears in prose test names, so a ≥4 run never matches
+// a describe/test title.
+const VITEST_SUMMARY_BOUNDARY = /[⎯─━]{4,}/;
+// The self-referential contract test: scripts/compare-spike-runs.js's OWN unit
+// suite deliberately feeds synthetic borrow/panic/unreachable FIXTURES through
+// classify(), which prints them to stdout/stderr. That captured output lands in
+// npmtest.log and is NOT an engine panic — it appears identically on BOTH arms
+// (same `npm test`) and would falsely read as a "project-contract regression" on
+// the fully-green stable arm. This test never touches Rapier, so attributing and
+// skipping its captured blocks can never hide a real engine fault.
+const SELF_CONTRACT_TEST = 'compare-spike-runs.test.js';
+
 function borrowErrorScan(dir) {
   if (!existsSync(dir)) return { scanned: 0, matches: [] };
   const matches = [];
@@ -387,8 +410,19 @@ function borrowErrorScan(dir) {
     if (!/\.(log|txt)$/.test(f)) continue;
     scanned += 1;
     const text = readFileSync(join(dir, f), 'utf8');
-    for (const line of text.split(/\r?\n/)) {
-      if (BORROW_SIGNATURE.test(line)) matches.push(`${f}: ${line.trim()}`);
+    // Track which test owns the current captured-console block. Owner persists
+    // until the next header; the summary boundary resets it (a real engine panic
+    // in the summary dump carries its own file header, but the reset also
+    // defends against a stale owner leaking across the boundary).
+    let capturedOwner = null;
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.replace(ANSI_ESCAPE, '');
+      const header = CAPTURE_HEADER.exec(line);
+      if (header !== null) { capturedOwner = header[1]; continue; }
+      if (VITEST_SUMMARY_BOUNDARY.test(line)) { capturedOwner = null; continue; }
+      if (!BORROW_SIGNATURE.test(line)) continue;
+      if (capturedOwner !== null && capturedOwner.endsWith(SELF_CONTRACT_TEST)) continue;
+      matches.push(`${f}: ${line.trim()}`);
     }
   }
   return { scanned, matches };
@@ -863,7 +897,7 @@ function main() {
 export {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
-  passedCountsBySubstring, relTestKey, reproducerSummary, F32_DT,
+  passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan, F32_DT,
 };
 
 const entry = process.argv[1];

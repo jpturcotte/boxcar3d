@@ -103,11 +103,17 @@ byte-identical; the score policy stays v1. **The Rapier core-0.34 verification
 spike in PR #19 reports Outcome B** (a Layer-2 diagnostic, not a dependency
 change): the npm pins are the latest stable JS packages (core ~0.30.1), and the
 current upstream monorepo (`dimforge/rapier@c13133ad`, core 0.34) was built from
-source and run against every committed contract. **Verdict: the divergence
-persists on core 0.34** — the reproducer stays catastrophic on both flavors,
-prevalence is the same 5/60, and a fresh seed adds 2/20 — while the candidate is
-otherwise clean over the surfaces exercised (internally deterministic, no
-contract regression, no borrow error reproduced). A new `--arm multibody`
+source and run against every committed contract — reproduced by a committed
+`workflow_dispatch` experiment whose citable `heavy=true` run (a same-commit
+stable-vs-candidate pair) confirmed the verdict at classification level.
+**Verdict: the divergence persists on core 0.34** — the reproducer stays
+catastrophic on both flavors, prevalence is the same 5/60, and a fresh seed adds
+2/20. On the surfaces that complete on both arms the candidate is clean
+(internally deterministic, no contract regression, Node↔Chromium determinism
+holding); **but a new CI finding reinforces Outcome B — core 0.34 cannot complete
+the forensic witness matrix, crashing it unrecoverably (a `world.free()`
+borrow-guard panic, then a `RuntimeError: unreachable` trap), while stable
+0.19.3 completes it cleanly.** A new `--arm multibody`
 reproducer arm shows reduced-coordinate realization is quiescent on both cores —
 so the joint *representation* / constraint-enforcement regime (not the engine
 version) is the lever, measured for the undriven reproducer only — but all

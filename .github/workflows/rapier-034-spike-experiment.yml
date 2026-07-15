@@ -276,11 +276,17 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Run the rerun matrix (capture-only; never fails here)
         run: |
-          set -uo pipefail
+          # GitHub's default shell is `bash -e`; DISABLE errexit here. This
+          # step MUST capture non-zero exits (the candidate's `npm test` exits
+          # 1 by design — 11 expected reds — a failing app-scene gate, a
+          # `timeout` 124) without aborting — the Adjudicate step is the sole
+          # pass/fail authority. (The earlier `set -uo pipefail` alone left
+          # -e on, so the first non-hanging failure killed the whole step.)
+          set +e -u -o pipefail
           RES="results-${ARM}"
           mkdir -p "$RES"
-          # Outer shell omits -e, so a failing command never aborts the capture
-          # loop. Capture with a FILE REDIRECT, never `| tee`: a command's
+          # A failing command never aborts the capture loop (errexit off).
+          # Capture with a FILE REDIRECT, never `| tee`: a command's
           # orphaned grandchild (e.g. a `vite preview` that outlives the
           # app-scene node process) inherits the stdout fd — with a pipe to tee
           # that holds the pipeline open FOREVER (the observed 50-min hang),

@@ -360,6 +360,40 @@ function staticContactCounter() {
  * The zero-extension composition must reproduce the canonical runEvaluation
  * digest — the engine pass's first arm hard-checks exactly that.
  */
+
+// world.free() borrow-guard panics are Outcome-B instability DATA, not a crash.
+// Core 0.34's wasm-bindgen guard throws "attempted to take ownership of Rust
+// value while it was borrowed" when the engine-ablation pass drives a witness
+// into an extreme divergence state and world.free() is then called; stable
+// 0.19.3 frees the identical run cleanly. That throw is a CLEAN JS exception
+// fired BEFORE the unsafe drop (module memory intact — the world is merely
+// leaked for this short-lived process), categorically UNLIKE the
+// module-poisoning `RuntimeError: unreachable` abort. So the probe RECORDS the
+// panic and finishes the forensic matrix instead of dying on it. These are
+// OBSERVATIONS only — they never enter report.checks, so a future engine that
+// frees cleanly simply reports none. Reset per runProbe so the programmatic API
+// (tests, --json callers) is stateless across invocations.
+let freeErrorLog = [];
+
+/**
+ * Free `world`, treating a free() throw as an OBSERVATION: record its message
+ * via `record` and return that message (null on a clean free). NEVER re-throws —
+ * a borrow-guard panic must not abort the forensic matrix. `record` is injected
+ * so the catch behavior is unit-testable without the candidate engine.
+ */
+export function safeFreeWorld(world, record) {
+  try {
+    world.free();
+    return null;
+  } catch (err) {
+    const message = err !== null && err !== undefined && err.message !== undefined
+      ? String(err.message)
+      : String(err);
+    record(message);
+    return message;
+  }
+}
+
 async function composeRun(ir, {
   terrainOverrides = {},
   featureFilter = null,
@@ -375,6 +409,7 @@ async function composeRun(ir, {
   wheelFriction = WITNESS_SPEC.wheelFriction,
 } = {}) {
   const { RAPIER, world } = await createPhysics({ deterministic: true });
+  let out;
   try {
     if (worldTuning !== null) worldTuning(world);
     const handleMap = new Map();
@@ -452,10 +487,15 @@ async function composeRun(ir, {
     const result = runRealizedEvaluationLoop(world, [rec], {
       requestedDt, maxSteps, traceMode: 'full', checkpointInterval: 1, staticColliders, inspect,
     });
-    return { result, spawn, staticColliders };
+    out = { result, spawn, staticColliders, freeError: null };
   } finally {
-    world.free();
+    // Record — never die on — a world.free() borrow-guard panic (see
+    // safeFreeWorld). If the body threw, `out` is undefined and that error
+    // still propagates; only the free() throw is captured here.
+    const freeError = safeFreeWorld(world, (m) => freeErrorLog.push(m));
+    if (freeError !== null && out !== undefined) out.freeError = freeError;
   }
+  return out;
 }
 
 /** One canonical-runner evaluation of a compiled IR under the witness spec. */
@@ -970,7 +1010,7 @@ async function enginePass(witnessSet, cfg, check) {
     let arms = ENGINE_ARMS;
     if (cfg.engineArms !== null) arms = arms.filter((a) => cfg.engineArms.includes(a.name));
     for (const arm of arms) {
-      const { result } = await composeRun(ir, arm.opts);
+      const { result, freeError } = await composeRun(ir, arm.opts);
       if (arm.name === 'baselineComposed') {
         reference = await evaluateIR(ir);
         check(`composed:${w.label}`, result.trace.digest === reference.trace.digest,
@@ -984,6 +1024,9 @@ async function enginePass(witnessSet, cfg, check) {
         effectiveDt: result.effectiveDt,
         executedSteps: result.executedSteps,
         result: summarize(result, ir),
+        // Context for a recorded world.free() borrow-guard panic on this arm
+        // (null on a clean free) — the per-arm twin of report.freeErrors.
+        freeError: freeError ?? null,
       });
     }
   }
@@ -1374,12 +1417,20 @@ export async function runProbe(config) {
   // the CLI (the round-2 review finding).
   const passes = normalizePasses(cfg.passes);
 
+  // Stateless across invocations: drop any world.free() panics recorded by a
+  // prior runProbe (the programmatic API calls this repeatedly).
+  freeErrorLog = [];
+
   const report = {
     schema: PROBE_SCHEMA,
     argv: cfg.argv ?? [],
     passes,
     engine: { rapierVersion: null, deterministic: true, effectiveDt: null },
     checks: [],
+    // world.free() borrow-guard panics observed this run (OBSERVATIONS, never
+    // HARD checks — see safeFreeWorld). Empty on stable 0.19.3; non-empty on
+    // core 0.34's engine-ablation pass. Drained from freeErrorLog before return.
+    freeErrors: [],
     baseline: null,
     controls: null,
     terrain: null,
@@ -1415,6 +1466,7 @@ export async function runProbe(config) {
   if (passes.includes('local')) report.localization = await localPass(witnessSet);
   if (passes.includes('reproducer')) report.reproducer = await reproducerPass(cfg, check);
   if (passes.includes('prevalence')) report.prevalence = await prevalencePass(cfg);
+  report.freeErrors = [...freeErrorLog];
   return report;
 }
 
@@ -1679,6 +1731,22 @@ export function renderMarkdown(report) {
   L.push('');
   table(['check', 'ok', 'detail'],
     report.checks.map((c) => [c.name, c.ok ? 'OK' : '**FAIL**', c.detail ?? '']));
+  // world.free() borrow-guard panics — an OBSERVATION (Outcome-B instability
+  // data), never a HARD check. Empty on a clean engine; on core 0.34 the
+  // engine-ablation pass records "attempted to take ownership of Rust value
+  // while it was borrowed" here instead of crashing the whole matrix.
+  const freeErrors = report.freeErrors ?? [];
+  L.push('## world.free() borrow-guard panics (observations)');
+  L.push('');
+  if (freeErrors.length === 0) {
+    L.push('None — every world freed cleanly.');
+  } else {
+    const counts = new Map();
+    for (const m of freeErrors) counts.set(m, (counts.get(m) ?? 0) + 1);
+    L.push(`${freeErrors.length} recorded (the forensic matrix continued; each is instability data, not a probe crash):`);
+    for (const [m, n] of counts) L.push(`- \`${m}\` x${n}`);
+  }
+  L.push('');
   if (report.baseline !== null) {
     L.push('## Baseline (witness reproduction)');
     L.push('');

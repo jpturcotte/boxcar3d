@@ -42,7 +42,7 @@ const failed = (fullName, message) => ({ fullName, status: 'failed', failureMess
 
 // The candidate's expected Node report: 11 reds with their real failure
 // signatures + every must-pass assertion present and passed.
-function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286', champState = '0000dcba' } = {}) {
+function nodeCandidateReport({ fvMeasured = 'ee605286', champState = '0000dcba' } = {}) {
   return {
     numFailedTests: 11,
     testResults: [
@@ -53,8 +53,13 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
           passed('gate (c): default flavor > same-process repeatability only — the digest is per-process/per-platform and is NEVER locked (F10)'),
           failed('gate (d): golden locks (deterministic flavor) > lock staleness teeth: versions, record size, step counts, engine version',
             "eval-a-s0-flat: engine changed — re-lock deliberately: expected '0.19.3' to be '0.19.3-c13133ad.0' // Object.is equality"),
+          // Node reporter TRUNCATES the .toBeNull() string value — the real
+          // CI shape is `expected '<fx>: first divergent check…' to be null`,
+          // with the state hex dropped. The signature is `to be null` (the
+          // truncation-proof assertion structure), so evalActual is not in the
+          // message (Node digests are not cross-env extractable).
           ...EVAL_FIX.map((fx) => failed(`gate (d): golden locks (deterministic flavor) > ${fx}: run matches the committed lock (digest, counts, every checkpoint state)`,
-            `expected '${fx}: first divergent checkpoint index 1 (state); last agreed step 0, first differing step 1; expected state 5a219735 actual ${evalActual}' to be null`)),
+            `AssertionError: expected '${fx}: first divergent check…' to be null`)),
           passed('determinism-adjacent teeth (deterministic flavor) > profiler neutrality: profilerEnabled does not change the trace digest'),
           passed('determinism-adjacent teeth (deterministic flavor) > capture-mode invariance: full produces the identical digest and counts as digest mode'),
           passed('determinism-adjacent teeth (deterministic flavor) > the f32-backedness one-shot: every traced physical float of fixture A satisfies Math.fround(v) === v'),
@@ -65,7 +70,7 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
         name: '/w/tests/evaluation-golden.test.js',
         assertionResults: [
           failed('gate (b): fresh-module reproduction of the golden lock > fixture A reproduces the committed digest and every checkpoint state from a cold module graph',
-            "expected 'first divergent checkpoint 1 (state) at step 1' to be null"),
+            "AssertionError: expected 'first divergent checkpoint 1 (state) …' to be null"),
         ],
       },
       {
@@ -80,7 +85,7 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
           failed('population evaluation gate (deterministic flavor) > two fresh evaluations agree byte-for-byte, and the second matches the committed lock',
             `expected '${fvMeasured}' to be 'bded0d30' // Object.is equality`),
           failed('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)',
-            `expected 'champion trace: first divergent checkpoint index 1 (state); last agreed step 0, first differing step 1; expected state 000000aa actual ${champState}' to be null`),
+            `AssertionError: expected 'champion trace: first divergent check…' to be null // champState ${champState}`),
         ],
       },
       {
@@ -248,9 +253,16 @@ describe('classify — assertion-level candidate-red enforcement (node)', () => 
   });
 });
 
-// --- invariants: exact required cross-env set ------------------------------------
+// --- invariants: the required cross-env set (fitness-vector only) ----------------
+//
+// Measured on the first heavy dispatch: only the population fitness-vector
+// digest is reliably comparable cross-env. Node's `.toBeNull()` on a formatted
+// divergence string is TRUNCATED by the reporter (state hex dropped) while
+// Chromium keeps the full `expect.fail` message — so the eval A-D + champion
+// checkpoint states are NOT message-extractable in Node. Only fitness-vector
+// (both reporters emit it via a short `.toBe('<digest>')`) is a semantic key.
 
-describe('invariants — complete required Node<->Chromium digest set', () => {
+describe('invariants — required Node<->Chromium digest set (fitness-vector)', () => {
   const args = (node, browser, repro = reproJson()) => ({
     nodeJson: writeJson(`i-n-${Math.abs(JSON.stringify(node).length)}.json`, node),
     browserJson: writeJson(`i-b-${Math.abs(JSON.stringify(browser).length)}.json`, browser),
@@ -258,21 +270,21 @@ describe('invariants — complete required Node<->Chromium digest set', () => {
     expectedPath: EXPECTED,
   });
 
-  test('all six required keys extracted from BOTH envs with equal values (incl. the unpadded Chromium champion state) passes', () => {
+  test('fitness-vector extracted from BOTH envs with equal value passes', () => {
     const r = invariants(args(nodeCandidateReport(), browserCandidateReport()));
     expect(r.ok).toBe(true);
   });
 
-  test('Chromium missing one required key (champion) fails — Node-only agreement on the rest must NOT pass', () => {
+  test('fitness-vector missing from the Chromium report fails (required key not extracted)', () => {
     const browser = browserCandidateReport();
-    browser.testResults[1].assertionResults = browser.testResults[1].assertionResults.filter((a) => !a.fullName.includes('champion solo'));
+    browser.testResults[1].assertionResults = browser.testResults[1].assertionResults.filter((a) => !a.fullName.includes('fitness-vector digest'));
     const r = invariants(args(nodeCandidateReport(), browser));
     expect(r.ok).toBe(false);
-    expect(r.errors.join('\n')).toContain('population:champion-trace');
+    expect(r.errors.join('\n')).toContain('population:fitness-vector');
   });
 
-  test('a genuine cross-env digest disagreement fails', () => {
-    const r = invariants(args(nodeCandidateReport({ evalActual: '6b83729e' }), browserCandidateReport({ evalActual: 'ffff0000' })));
+  test('a genuine cross-env fitness-vector disagreement fails', () => {
+    const r = invariants(args(nodeCandidateReport({ fvMeasured: 'ee605286' }), browserCandidateReport({ fvMeasured: 'ffff0000' })));
     expect(r.ok).toBe(false);
     expect(r.errors.join('\n')).toContain('disagree');
   });
@@ -283,28 +295,20 @@ describe('invariants — complete required Node<->Chromium digest set', () => {
     expect(r.errors.join('\n')).toContain('dt-readback');
   });
 
-  test('semantic keys: differently-titled Node/Chromium assertions map to the same identity, and the champion state pads', () => {
-    expect(semanticDigestKey('gate (d): golden locks (deterministic flavor) > eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)')).toBe('evaluation:eval-b-mixed-composite');
-    expect(semanticDigestKey('Chromium reproduces the committed deterministic-flavor locks > eval-b-mixed-composite: digest, counts, and every checkpoint state match the golden lock')).toBe('evaluation:eval-b-mixed-composite');
-    const cD = measuredDigests(browserCandidateReport({ champStateUnpadded: 'dcba' }));
-    expect(cD['population:champion-trace']).toBe('0000dcba');
-    const nD = measuredDigests(nodeCandidateReport({ champState: '0000dcba' }));
-    expect(nD['population:champion-trace']).toBe('0000dcba');
-  });
-
-  test('a gate-(a) failure carrying the eval token is NOT keyed as the golden digest (guarded rule)', () => {
-    // The gate-(a) title carries "eval-a-s0-flat:" but is NOT a golden-lock
-    // assertion — it must not be extracted as evaluation:eval-a-s0-flat and
-    // first-win over the real golden digest.
-    expect(semanticDigestKey('gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics')).toBeNull();
-    // Even if the gate-(a) assertion FAILS with a divergence hex and precedes
-    // the golden, measuredDigests must record the GOLDEN digest, not the gate-(a) one.
-    const rep = nodeCandidateReport({ evalActual: 'deadbeef' });
-    rep.testResults[0].assertionResults.unshift(failed(
-      'gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics',
-      'expected state 11112222 actual 99998888',
-    ));
-    expect(measuredDigests(rep)['evaluation:eval-a-s0-flat']).toBe('deadbeef');
+  test('only fitness-vector is a semantic key; eval and champion titles are NOT (reporter asymmetry)', () => {
+    // Node "two fresh evaluations agree byte-for-byte" and Chromium
+    // "fitness-vector digest" both map to the one comparable key.
+    expect(semanticDigestKey('population evaluation gate (deterministic flavor) > two fresh evaluations agree byte-for-byte, and the second matches the committed lock')).toBe('population:fitness-vector');
+    expect(semanticDigestKey('population golden locks (Chromium) > evaluation: fitness-vector digest, every fitness literal by individualId, champion')).toBe('population:fitness-vector');
+    // The truncation-affected eval + champion titles are deliberately unkeyed.
+    expect(semanticDigestKey('gate (d): golden locks (deterministic flavor) > eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)')).toBeNull();
+    expect(semanticDigestKey('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace')).toBeNull();
+    // Extraction pulls the RECEIVED (measured) digest, first on the line, and
+    // ignores stack-trace URLs (a `?v=<hex8>` chunk hash must not be a digest).
+    const rep = browserCandidateReport({ fvMeasured: 'ee605286' });
+    rep.testResults[1].assertionResults[1].failureMessages[0]
+      += '\n    at http://localhost:63315/node_modules/@vitest/runner/dist/chunk-hooks.js?v=d9c9c21b:752:20';
+    expect(measuredDigests(rep)['population:fitness-vector']).toBe('ee605286');
   });
 });
 
@@ -571,7 +575,7 @@ describe('helpers and the committed inventory', () => {
       total += spec.expectedFailures;
     }
     expect(total).toBe(inv.node.totalExpectedFailures);
-    expect(inv.nodeChromiumRequiredKeys).toHaveLength(6);
+    expect(inv.nodeChromiumRequiredKeys).toEqual(['population:fitness-vector']);
     expect(inv.timing.allowedDriftChecks).toEqual(['re-enable resumes per-step updates']);
     // The committed inventory ships bootstrapComplete=false (the browser
     // section is not finalized yet), and heavyEvidence declares the coverage.

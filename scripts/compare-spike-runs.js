@@ -394,31 +394,17 @@ function borrowErrorScan(dir) {
   return { scanned, matches };
 }
 
-// The Node and Chromium determinism assertions for the SAME fixture digest
-// carry DELIBERATELY DIFFERENT titles (Node "eval-a-s0-flat: run matches the
-// committed lock ..." vs Chromium "eval-a-s0-flat: digest, counts, and every
-// checkpoint state match the golden lock"; population likewise), so keying a
-// digest by the raw vitest fullName can NEVER match across environments — the
-// agreement check would find zero shared keys and hard-fail on every run for
-// a reason unrelated to determinism. These rules map both environments' titles
-// to ONE stable SEMANTIC key. Each pattern lives entirely within a single
-// describe/it leaf, so it is independent of however the reporter joins the
-// describe chain.
+// ONLY the population fitness-vector digest is reliably comparable across Node
+// and Chromium: BOTH reporters emit it via a short `.toBe('<digest>')` whose
+// message is not truncated. The eval A-D checkpoint states and the champion
+// trace are deliberately NOT semantic keys — Node's `.toBeNull()` on a
+// formatted divergence string is TRUNCATED by the reporter (the state hex is
+// dropped) while Chromium keeps the full `expect.fail` message, so scraping
+// them yields Chromium-only extractions that would fail set-equality for a
+// reason unrelated to determinism. (Measured on the first heavy dispatch; see
+// nodeChromiumRequiredKeysRationale in the inventory.)
 const DIGEST_SEMANTIC_RULES = [
-  // Evaluation fixtures A-D: both env titles carry the `eval-<x>-...:` fixture
-  // token AND render the divergence as `... actual <hex> ...` (the same
-  // first-divergent checkpoint state, identical cross-env under determinism).
-  // GUARD to the GOLDEN-lock assertion titles only ("run matches the committed
-  // lock" / "match the golden lock") — the gate-(a) "two fresh worlds agree"
-  // title ALSO carries the eval token, and a gate-(a) run-to-run divergence
-  // hex must never be mistaken for (and first-wins over) the golden digest.
-  { re: /(eval-[a-z0-9-]+):/, guard: /committed lock|golden lock/, key: (m) => `evaluation:${m[1]}` },
-  // Population fitness-vector digest (Node "two fresh evaluations agree
-  // byte-for-byte, and the second matches the committed lock" fails at the
-  // fitnessVector .toBe; Chromium "evaluation: fitness-vector digest, ...").
   { re: /two fresh evaluations agree byte-for-byte|fitness-vector digest/, key: () => 'population:fitness-vector' },
-  // Population champion solo-trace digest (both env titles share the phrase).
-  { re: /champion solo digest-mode rerun/, key: () => 'population:champion-trace' },
 ];
 
 function semanticDigestKey(fullName) {
@@ -443,20 +429,14 @@ function measuredDigests(vitestJson) {
       if (a.status !== 'failed') continue;
       const key = semanticDigestKey(a.fullName ?? a.title ?? '');
       if (key === null || out[key] !== undefined) continue;
-      const msg = (a.failureMessages ?? []).join('\n');
-      // Extraction rules, most-specific first:
-      //  1. an explicit "actual <hex8>" (both formatDivergence variants pad);
-      //  2. "(state <hex>)" — the Chromium champion-trace message prints the
-      //     divergent state UNPADDED via toString(16) in that exact bracket
-      //     shape, so accept 1-8 hex chars and left-pad to the canonical 8;
-      //  3. the first bare hex8 (vitest's `.toBe` diff renders the RECEIVED —
-      //     i.e. measured — value first: "expected '<measured>' to be '<lock>'").
-      const actual = /(?:actual|received|got)[^0-9a-f]{0,20}([0-9a-f]{8})/i.exec(msg);
-      const stateBracket = /\(state ([0-9a-f]{1,8})\)/.exec(msg);
-      const any = HEX8.exec(msg);
-      const digest = actual ? actual[1]
-        : (stateBracket ? stateBracket[1].padStart(8, '0') : (any ? any[0] : null));
-      if (digest !== null) out[key] = digest;
+      // Scan ONLY the first line (the assertion message). The stack-trace lines
+      // that follow carry vitest bundle URLs like `?v=d9c9c21b` whose 8-hex
+      // query hash would be a false digest match. The fitness-vector digest is
+      // the RECEIVED (measured) value, which vitest renders first in the
+      // `.toBe` diff: "expected '<measured>' to be '<lock>'".
+      const msg = ((a.failureMessages ?? []).join('\n').split('\n')[0]) ?? '';
+      const m = HEX8.exec(msg);
+      if (m !== null) out[key] = m[0];
     }
   }
   return out;

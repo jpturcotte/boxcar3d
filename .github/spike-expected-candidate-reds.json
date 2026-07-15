@@ -147,17 +147,40 @@
   },
   "browser": {
     "reporter": "npm run test:browser (vitest run --config vitest.browser.config.js --reporter=json), pinned Chromium",
-    "note": "The local historical spike SKIPPED test:browser, so per-file browser counts are FIRST MEASURED by the heavy CI dispatch (C5); tighten this section from that run's observed failing set (counts + allowedFailureSignatures). The load-bearing cross-env check does not wait for that: --mode invariants requires the COMPLETE nodeChromiumRequiredKeys set to be extracted from BOTH environments with equal values.",
+    "note": "The local historical spike SKIPPED test:browser; these per-file counts + allowedFailureSignatures were FINALIZED from the heavy CI bootstrap dispatch (C5) observed failing set, and are re-validated by every subsequent heavy run's candidate browser classify. The load-bearing cross-env check is independent: --mode invariants requires the COMPLETE nodeChromiumRequiredKeys set to be extracted from BOTH environments with equal values.",
+    "totalExpectedFailures": 6,
     "byFile": {
       "tests/browser/evaluation-determinism.test.js": {
-        "expectedFailures": null,
+        "expectedFailures": 4,
         "class": "c",
-        "asserts": "A-D golden trace digests, in Chromium"
+        "asserts": "A-D golden trace digests, in Chromium",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "digest, counts, and every checkpoint state match the golden lock",
+            "messageRegex": "first divergent checkpoint",
+            "count": 4,
+            "note": "Chromium analog of the Node 'run matches the committed lock' / 'to be null' x4: each of the four golden A-D fixtures diverges at the FIRST checkpoint under core 0.34 (expect.fail carries the full '<fixture> [<UA>]: first divergent checkpoint N (state)' message, untruncated). A move to an EARLIER project-contract assertion would not carry this message, so this is the allowed class-(c) golden move, not a regression."
+          }
+        ]
       },
       "tests/browser/population-determinism.test.js": {
-        "expectedFailures": null,
+        "expectedFailures": 2,
         "class": "c",
-        "asserts": "population fitness-vector + champion-trace digests, in Chromium"
+        "asserts": "population fitness-vector + champion-trace digests, in Chromium",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "fitness-vector digest, every fitness literal",
+            "messageRegex": "to be 'bded0d30'",
+            "count": 1,
+            "note": "Chromium mirror of the Node 'two fresh evaluations agree byte-for-byte' / 'to be bded0d30' red: the candidate's fitness-vector digest (ee605286) differs from the committed bded0d30. Same committed digest pinned as Node, so a move off this exact contract is caught."
+          },
+          {
+            "titleSubstring": "champion solo digest-mode rerun",
+            "messageRegex": "to be null",
+            "count": 1,
+            "note": "Chromium mirror of the Node 'champion solo digest-mode rerun' / 'to be null' red: the champion trace diverges from the locked trace under core 0.34."
+          }
+        ]
       }
     },
     "mustPassAssertionSubstrings": [
@@ -199,7 +222,7 @@
     "individualsPerSeed": 20,
     "rationale": "The DECLARED coverage of a heavy=true run, enforced by compare()'s arm-usability check on BOTH arms: `--pass prevalence` (defaultConfig, no --smoke) generates the three Phase-1A characterization masters each with 20 unique individuals, and `--prevalence-seeds 20260730` generates the fresh seed with 20. A one-row / missing-seed / missing-fresh-seed prevalence artifact must NOT participate in a citable heavy verdict — the scientific catastrophic COUNTS stay observations, but the experiment's declared coverage (which seeds, how many individuals) is a contract. Derived from scripts/probe-physics-explosion.js smokeConfig/defaultConfig (populationSize 20)."
   },
-  "bootstrapComplete": false,
-  "bootstrapCompleteRationale": "The TWO-STAGE citability gate (machine-enforced, not narrated). While false: the browser byFile inventory is NOT finalized (null counts, no allowedFailureSignatures), so an unrelated browser-contract regression in an expected-red browser file cannot be caught — therefore compare() forces `citable=false` on EVERY run, no matter how clean. The first heavy=true dispatch is the BOOTSTRAP run: it produces the browser observed failing set; a human commits those counts + signatures into the browser section AND flips this flag to true; only a SECOND heavy run (against the finalized inventory) can be citable. This makes 'the browser inventory was finalized before we certified no-hidden-regression' a structural precondition, not a promise. `titlesPendingFirstHeavyRun` is the human-readable twin of this flag.",
-  "titlesPendingFirstHeavyRun": true
+  "bootstrapComplete": true,
+  "bootstrapCompleteRationale": "The TWO-STAGE citability gate (machine-enforced, not narrated). While false, the browser byFile inventory was NOT finalized (null counts, no allowedFailureSignatures), so an unrelated browser-contract regression in an expected-red browser file could not be caught — so compare() forced `citable=false` on EVERY run. STAGE 1 (the heavy=true BOOTSTRAP dispatch, run 29428463562) produced the browser observed failing set; its counts + assertion-level signatures are now committed in the browser section and this flag is flipped true. STAGE 2 (any subsequent heavy=true run against this finalized inventory) is citable: its candidate browser classify re-validates these exact signatures, so a hidden browser-contract regression now fails the arm. `titlesPendingFirstHeavyRun` is the human-readable twin of this flag. Flipping this true REQUIRES every browser byFile entry to carry a non-null integer expectedFailures AND an allowedFailureSignatures array (enforced by the compare-spike-runs self-consistency test).",
+  "titlesPendingFirstHeavyRun": false
 }

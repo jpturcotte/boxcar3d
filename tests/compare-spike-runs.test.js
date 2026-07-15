@@ -565,25 +565,45 @@ describe('helpers and the committed inventory', () => {
       .some((a) => /engine changed — re-lock deliberately/.test(a.message))).toBe(true);
   });
 
+  const sumSignatures = (spec, file) => {
+    expect(Array.isArray(spec.allowedFailureSignatures), `${file}: reds must carry assertion-level signatures`).toBe(true);
+    const sum = spec.allowedFailureSignatures.reduce((n, s) => n + s.count, 0);
+    expect(sum, `${file}: signature counts must sum to expectedFailures`).toBe(spec.expectedFailures);
+    for (const s of spec.allowedFailureSignatures) expect(() => new RegExp(s.messageRegex)).not.toThrow();
+    return spec.expectedFailures;
+  };
+
   test('inventory self-consistency: signature counts sum to expectedFailures per Node file, and totals agree', () => {
     const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
     let total = 0;
-    for (const [file, spec] of Object.entries(inv.node.byFile)) {
-      expect(Array.isArray(spec.allowedFailureSignatures), `${file}: Node reds must carry assertion-level signatures`).toBe(true);
-      const sum = spec.allowedFailureSignatures.reduce((n, s) => n + s.count, 0);
-      expect(sum, `${file}: signature counts must sum to expectedFailures`).toBe(spec.expectedFailures);
-      for (const s of spec.allowedFailureSignatures) expect(() => new RegExp(s.messageRegex)).not.toThrow();
-      total += spec.expectedFailures;
-    }
+    for (const [file, spec] of Object.entries(inv.node.byFile)) total += sumSignatures(spec, file);
     expect(total).toBe(inv.node.totalExpectedFailures);
     expect(inv.nodeChromiumRequiredKeys).toEqual(['population:fitness-vector']);
     expect(inv.timing.allowedDriftChecks).toEqual(['re-enable resumes per-step updates']);
-    // The committed inventory ships bootstrapComplete=false (the browser
-    // section is not finalized yet), and heavyEvidence declares the coverage.
-    expect(inv.bootstrapComplete).toBe(false);
     expect(inv.heavyEvidence.prevalenceSeeds).toEqual([20260725, 20260728, 20260729]);
     expect(inv.heavyEvidence.freshSeeds).toEqual([20260730]);
     expect(inv.heavyEvidence.individualsPerSeed).toBe(20);
+  });
+
+  test('browser inventory self-consistency: signatures sum to expectedFailures per file, totals agree', () => {
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    let total = 0;
+    for (const [file, spec] of Object.entries(inv.browser.byFile)) total += sumSignatures(spec, file);
+    expect(total).toBe(inv.browser.totalExpectedFailures);
+  });
+
+  test('bootstrapComplete is TRUE and its structural precondition holds: every browser file has an integer count + signatures', () => {
+    // Stage 2 of the two-stage citability gate: the flag may be true ONLY when
+    // the browser inventory is finalized. Guard it so a future flip cannot
+    // out-run the browser section (which would let citable=true certify an
+    // unenforced browser arm).
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    expect(inv.bootstrapComplete).toBe(true);
+    expect(inv.titlesPendingFirstHeavyRun).toBe(false);
+    for (const [file, spec] of Object.entries(inv.browser.byFile)) {
+      expect(Number.isInteger(spec.expectedFailures), `${file}: bootstrapComplete requires an integer count`).toBe(true);
+      expect(Array.isArray(spec.allowedFailureSignatures), `${file}: bootstrapComplete requires signatures`).toBe(true);
+    }
   });
 });
 

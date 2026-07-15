@@ -521,7 +521,11 @@ jobs:
             const runs = [["stable",1],["candidate",1],["candidate",2],["stable",2]]
               .map(([arm,i]) => ({ arm, i, exit: readExit(`exit-bench-${arm}-${i}.txt`), json: load(`bench-${arm}-${i}.json`) }));
             const parsed = runs.filter(r => r.json !== null).length;
-            const errored = runs.filter(r => r.json && r.json.status === "error").length;
+            // bench-physics writes status PER COMPARISON (report.comparisons[].status),
+            // NOT top-level: a caught comparison error ({status:"error"}) still exits 0,
+            // so a top-level r.json.status read is dead (always 0). Scan the array; a
+            // parsed run missing its comparisons array is malformed => errored too.
+            const errored = runs.filter(r => r.json && (!Array.isArray(r.json.comparisons) || r.json.comparisons.some(c => c && c.status === "error"))).length;
             const allParsed = parsed === runs.length && runs.every(r => r.exit === 0) && errored === 0;
             const summary = {
               order: runs.map(r => `${r.arm}#${r.i}`),

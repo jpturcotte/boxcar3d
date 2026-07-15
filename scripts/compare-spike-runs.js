@@ -860,7 +860,17 @@ function compare({ artifacts, out, expectedPath }) {
   } else {
     const runs = Array.isArray(perf.runs) ? perf.runs : [];
     const parsed = runs.filter((r) => r && r.json !== null && r.json !== undefined);
-    const errored = parsed.filter((r) => r.json && r.json.status === 'error');
+    // bench-physics writes status PER COMPARISON (report.comparisons[].status —
+    // 'ok'/'error'/'omitted'/'invalid'), NOT as a top-level field: a thrown
+    // comparison (e.g. a catchable core-0.34 borrow-guard/API-drift error) is
+    // caught, pushed as {status:'error'}, and the bench STILL exits 0. So a
+    // top-level `r.json.status` read is dead (always undefined) and would report
+    // an errored bench as clean. Scan the array, and treat a parsed run with NO
+    // comparisons array as errored (a valid report always has one — its absence
+    // is a malformed/truncated capture). Recomputed from raw comparisons so a
+    // wrong summary.status cannot re-launder the result.
+    const errored = parsed.filter((r) => !Array.isArray(r.json.comparisons)
+      || r.json.comparisons.some((c) => c && c.status === 'error'));
     const declaredOk = perf.summary?.status === 'ok' || perf.summary?.allParsed === true;
     perfStatus = (runs.length >= 4 && parsed.length === runs.length && errored.length === 0 && declaredOk)
       ? 'ok'

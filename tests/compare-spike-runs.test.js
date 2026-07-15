@@ -358,6 +358,7 @@ describe('compare — verdict established only from usable arms', () => {
     const {
       candidatePassed = true, candidateReproPresent = true, heavy = false,
       prevalencePresent = true, perfOk = true, prevalenceMalformed = false,
+      perfErrored = false,
       prevalenceSeeds = TEST_HEAVY.prevalenceSeeds, freshseedMissing = false,
       bootstrapComplete = true,
       stableCat = 46, candidateCat = 107, // null => quiescent classification
@@ -399,8 +400,15 @@ describe('compare — verdict established only from usable arms', () => {
       writeFileSync(join(root, 'results-stable/witnesses.json'), typeof stableWitnesses === 'string' ? stableWitnesses : JSON.stringify(stableWitnesses));
     }
     if (heavy) writeFileSync(join(root, 'results-candidate/witnesses.log'), 'RuntimeError: unreachable\n    at wasm://wasm/0:1\n');
-    const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
+    // Realistic bench-physics report shape: status lives PER COMPARISON
+    // (report.comparisons[].status), never top-level.
+    const benchJson = (comparisons) => ({ schema: 'boxcar3d.bench-physics/2', meta: {}, comparisons, derived: {} });
+    const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? benchJson([{ status: 'ok' }]) : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
+    // A caught bench comparison error still exits 0 and writes JSON carrying an
+    // {status:'error'} entry — while the summary may still claim ok (the former
+    // dead top-level-status read). compare must catch it per-comparison.
+    if (perfErrored) runs[1].json = benchJson([{ status: 'ok' }, { status: 'error', error: 'borrow guard' }]);
     const parsed = runs.filter((r) => r.json !== null).length;
     wj('perf/perf.json', { schema: 'boxcar3d.spike-perf/1', summary: { status: parsed === 4 ? 'ok' : 'incomplete', allParsed: parsed === 4, parsed, total: 4 }, runs });
     return root;
@@ -456,6 +464,23 @@ describe('compare — verdict established only from usable arms', () => {
     expect(r.ok).toBe(true); // perf is not decision-relevant to the verdict
     expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
     expect(r.manifest.findings.perf.status).not.toBe('ok');
+  });
+
+  // Round-8 (bash self-review): a bench comparison that ERRORED (bench-physics
+  // catches the throw, pushes {status:'error'}, and STILL exits 0) must be
+  // reported incomplete — even though all four JSON parsed and the workflow's
+  // summary still claims status:'ok'. The former guard read a top-level
+  // r.json.status that bench-physics never writes (status is per-comparison),
+  // so it was dead and laundered an errored bench as clean.
+  test('a perf run with an ERRORED comparison is reported incomplete even when the summary claims ok', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, perfErrored: true });
+    const r = runCompare(root);
+    expect(r.manifest.findings.perf.status).not.toBe('ok');
+    expect(r.manifest.findings.perf.status).toMatch(/errored/);
+    expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
+    // Still not decision-relevant — the Outcome-B verdict is unaffected.
+    expect(r.ok).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(true);
   });
 
   // P2 (round-7): heavy evidence must cover the EXACT declared seed set +

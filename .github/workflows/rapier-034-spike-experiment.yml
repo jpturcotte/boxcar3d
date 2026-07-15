@@ -356,7 +356,26 @@ jobs:
           }
           # GATE on BOTH arms (structural / engine-independent / consumability):
           for g in package-smoke lint build app-scene reproducer freshseed; do gate "$g"; done
-          if [ "${HEAVY}" = "true" ]; then for g in witnesses prevalence; do gate "$g"; done; fi
+          if [ "${HEAVY}" = "true" ]; then
+            # prevalence GATEs on BOTH arms (both complete + exit 0). The full
+            # witness forensic matrix (--witness all --pass all) GATEs on STABLE
+            # only; on the CANDIDATE it is OBSERVE. Core 0.34 crashes that matrix
+            # UNRECOVERABLY: a wasm-bindgen borrow-guard panic at world.free()
+            # and, once that is caught, RuntimeError: unreachable at world.step()
+            # (an unrecoverable wasm trap). Stable completes the IDENTICAL matrix
+            # cleanly, so the crash is Outcome-B evidence, not a defect to gate
+            # on. Citability rests on reproducer (catastrophic-on-both) +
+            # prevalence, both green on the candidate; the crash exit + signature
+            # are recorded (arm-manifest.exits.witnesses + the compare borrow/
+            # panic scan of witnesses.log).
+            gate prevalence
+            if [ "${ARM}" = "stable" ]; then
+              gate witnesses
+            else
+              wcode=$(cat "${RES}/exit-witnesses.txt" 2>/dev/null || echo missing)
+              echo "OBSERVE: candidate witnesses exit ${wcode} — forensic-matrix crash recorded as Outcome-B evidence, NOT gated"
+            fi
+          fi
           if [ "${ARM}" = "stable" ]; then
             # Stable must be fully green everywhere.
             for g in timing npmtest browser; do gate "$g"; done

@@ -685,4 +685,29 @@ describe('borrowErrorScan — reports engine faults, ignores the adjudicator sui
     const r = scanOf('build.log', 'panic = "abort"\nno borrow errors detected\n');
     expect(r.matches).toEqual([]);
   });
+
+  test('the wasm-bindgen borrow-GUARD message is matched (core-0.34 world.free() panic)', () => {
+    // The candidate's first crash class — distinct wording from "already
+    // borrowed"/"BorrowMutError", so the signature must name it explicitly.
+    const r = scanOf('witnesses.log', 'Error: attempted to take ownership of Rust value while it was borrowed\n');
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/attempted to take ownership/);
+  });
+
+  test('the unrecoverable "RuntimeError: unreachable" wasm trap is matched (candidate step() crash)', () => {
+    const r = scanOf('witnesses.log', 'RuntimeError: unreachable\n    at wasm://wasm/0067f38e:1:1\n');
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+  });
+
+  test('a multi-KB minified source-dump line is skipped, not reported (no report bloat on an uncaught crash)', () => {
+    // Node prints the offending rapier.mjs SOURCE on an uncaught wasm crash —
+    // one ~2 MB minified line that contains the trigger literals. The short
+    // real crash message is still reported; the giant source line is not.
+    const sourceDump = `class A{free(){throw "attempted to take ownership of Rust value while it was borrowed"}}${'x'.repeat(3000)}`;
+    const r = scanOf('witnesses.log', `${sourceDump}\nRuntimeError: unreachable\n`);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+    expect(r.matches.every((m) => m.length < 2100)).toBe(true);
+  });
 });

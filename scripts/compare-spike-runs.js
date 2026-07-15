@@ -377,7 +377,12 @@ function rapierVersionOf(report) {
 // `panicked at`, wasm-bindgen's `recursive use of an object` / `unsafe aliasing`,
 // and `RuntimeError: unreachable` / `unreachable executed`.
 const BORROW_SIGNATURE =
-  /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
+  /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|attempted to take ownership of Rust value while it was borrowed|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
+// An uncaught wasm crash makes Node print the offending module SOURCE line —
+// for rapier.mjs that is one minified ~2 MB line that happens to contain the
+// borrow/unreachable trigger literals. Skip lines this long: a real panic
+// MESSAGE is short; a multi-KB line is a source dump, not evidence.
+const MAX_SCAN_LINE = 2000;
 
 // CSI SGR (colour) matcher, built from a string so the source carries no literal
 // ESC control char (eslint no-control-regex stays happy). Vitest colours its
@@ -416,6 +421,7 @@ function borrowErrorScan(dir) {
     // defends against a stale owner leaking across the boundary).
     let capturedOwner = null;
     for (const raw of text.split(/\r?\n/)) {
+      if (raw.length > MAX_SCAN_LINE) continue; // minified source dump, not a message
       const line = raw.replace(ANSI_ESCAPE, '');
       const header = CAPTURE_HEADER.exec(line);
       if (header !== null) { capturedOwner = header[1]; continue; }
@@ -650,13 +656,35 @@ function compare({ artifacts, out, expectedPath }) {
   }
   push('');
 
-  // Borrow-error scan.
+  // Borrow-error scan (computed once per arm; reused by the forensic-matrix
+  // OBSERVE report below).
+  const armScan = Object.fromEntries(ARMS.map((a) => [a, borrowErrorScan(armReports[a].dir)]));
   push('## `world.free()` borrow/panic scan');
   for (const arm of ARMS) {
-    const scan = borrowErrorScan(armReports[arm].dir);
+    const scan = armScan[arm];
     push(`- **${arm}:** scanned ${scan.scanned} log(s); ${scan.matches.length} borrow/ownership/unreachable/panic match(es)`
       + (scan.matches.length ? `:\n  - ${scan.matches.slice(0, 10).join('\n  - ')}` : '.'));
     manifest.findings[`borrow_${arm}`] = scan;
+  }
+  push('');
+
+  // Forensic witness matrix (`--witness all --pass all`): a GATE on stable
+  // (must complete cleanly), OBSERVE on the candidate (its crash IS Outcome-B
+  // evidence — core 0.34 cannot complete the matrix — not a defect to gate on).
+  // Citability rests on the reproducer + prevalence, both green on the
+  // candidate; this section records the asymmetry as first-class evidence.
+  push('## Forensic witness matrix (`--witness all --pass all`) — stable GATE / candidate OBSERVE');
+  push('');
+  for (const arm of ARMS) {
+    const wexit = armReports[arm].armManifest?.exits?.witnesses ?? null;
+    const completed = wexit === 0;
+    const witnessCrash = (armScan[arm].matches.find((m) => m.startsWith('witnesses.log:')) ?? null);
+    const sig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
+    push(`- **${arm}:** witnesses exit ${wexit ?? '?'} — `
+      + (completed
+        ? 'completed the full forensic matrix cleanly.'
+        : `**CRASHED**${sig === null ? '' : ` — \`${sig}\``} (recorded Outcome-B evidence; not gated on the candidate).`));
+    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, completed, crashSignature: sig };
   }
   push('');
 

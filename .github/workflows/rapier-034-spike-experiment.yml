@@ -280,12 +280,20 @@ jobs:
           RES="results-${ARM}"
           mkdir -p "$RES"
           # Outer shell omits -e, so a failing command never aborts the capture
-          # loop; PIPESTATUS[0] records the command's own exit (not tee's).
+          # loop. Capture with a FILE REDIRECT, never `| tee`: a command's
+          # orphaned grandchild (e.g. a `vite preview` that outlives the
+          # app-scene node process) inherits the stdout fd — with a pipe to tee
+          # that holds the pipeline open FOREVER (the observed 50-min hang),
+          # but a file fd never blocks the shell, so `$?` returns the moment the
+          # FOREGROUND command exits. `timeout` is the hard backstop for any
+          # genuinely hanging command (SIGTERM, then SIGKILL 30s later);
+          # RUN_TIMEOUT is generous (heavy probes are long) but finite.
           run() {
             name="$1"; shift
             echo "::group::${name}"
-            "$@" 2>&1 | tee "${RES}/${name}.log"
-            code=${PIPESTATUS[0]}
+            timeout --kill-after=30 "${RUN_TIMEOUT:-3000}" "$@" > "${RES}/${name}.log" 2>&1
+            code=$?
+            cat "${RES}/${name}.log" || true
             echo "$code" > "${RES}/exit-${name}.txt"
             echo "::endgroup::"
             echo "${name} exit ${code}"

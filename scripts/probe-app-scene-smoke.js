@@ -38,6 +38,17 @@ const PAGE_READY_TIMEOUT_MS = 60000;
 const OVERALL_GUARD_MS = 150000;
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
+// Kill the preview's whole process GROUP (negative pid), so the `vite preview`
+// grandchild dies with npm instead of orphaning and holding the captured
+// stdout pipe open. Best-effort; the process may already be gone.
+function killTree(proc) {
+  if (proc === null || proc === undefined || proc.pid === undefined) return;
+  try {
+    if (process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL');
+    else proc.kill();
+  } catch { /* already exited */ }
+}
+
 const repo = process.env.GITHUB_REPOSITORY; // "owner/boxcar3d" in CI, unset locally
 const base = repo ? `/${repo.split('/')[1]}/` : '/';
 
@@ -49,14 +60,18 @@ function startPreview() {
     const proc = spawn(
       npmCmd,
       ['run', 'preview', '--', '--port', String(PORT), '--strictPort'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+      // `detached` puts npm AND its `vite preview` grandchild in a fresh
+      // process GROUP, so teardown can kill the whole tree (killPreview). A
+      // plain proc.kill() reaps only npm and orphans vite, which then holds a
+      // captured stdout pipe open and hangs the CI step indefinitely.
+      { stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' },
     );
     let out = '';
     let settled = false;
     const timer = setTimer(() => {
       if (settled) return;
       settled = true;
-      proc.kill();
+      killTree(proc);
       reject(new Error(`vite preview did not become ready in ${PREVIEW_READY_TIMEOUT_MS} ms.\n${out}`));
     }, PREVIEW_READY_TIMEOUT_MS);
     const onData = (buf) => {
@@ -155,7 +170,7 @@ async function main() {
       try { await browser.close(); } catch { /* teardown best-effort */ }
     }
     if (preview !== null) {
-      try { preview.proc.kill(); } catch { /* teardown best-effort */ }
+      try { killTree(preview.proc); } catch { /* teardown best-effort */ }
     }
   }
 }

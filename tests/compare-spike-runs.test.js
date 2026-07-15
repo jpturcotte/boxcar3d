@@ -650,6 +650,52 @@ describe('compare — verdict established only from usable arms', () => {
     const r = expectStableGated(root);
     expect(r.manifest.arms.stable.issues.some((i) => /recognized panic signature in witnesses\.log/.test(i))).toBe(true);
   });
+
+  // Round-8 (self-review): the reference arm must free cleanly in EVERY pass, not
+  // just the witness matrix. safeFreeWorld swallows a wasm-bindgen ownership guard
+  // into report.freeErrors and the probe STILL exits 0, so a reproducer/freshseed/
+  // prevalence borrow-guard on stable is invisible to the exit-code gate — it must
+  // still make the arm unusable and the run not citable (the same fail-closed
+  // principle as the witnesses gate). The borrow signal is otherwise only RENDERED
+  // in the scan section next to citable:true — the classify-but-don't-gate class.
+  const setReportFreeErrors = (root, arm, name, freeErrors) => {
+    const p = join(root, `results-${arm}/${name}.json`);
+    const obj = JSON.parse(readFileSync(p, 'utf8'));
+    obj.freeErrors = freeErrors;
+    writeFileSync(p, JSON.stringify(obj));
+  };
+  const BORROW = 'attempted to take ownership of Rust value while it was borrowed';
+
+  for (const name of ['reproducer', 'freshseed', 'prevalence']) {
+    test(`stable ${name}.json with a non-empty freeErrors fails the arm, not citable`, () => {
+      const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+      setReportFreeErrors(root, 'stable', name, [BORROW]);
+      const r = expectStableGated(root);
+      expect(r.manifest.arms.stable.issues.some((i) => new RegExp(`stable ${name}\\.json recorded 1 world\\.free\\(\\)`).test(i))).toBe(true);
+    });
+  }
+
+  test('a recognized panic signature in a stable PROBE stdout log (reproducer.log) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    writeFileSync(join(root, 'results-stable/reproducer.log'),
+      `## world.free() borrow-guard panics (observations)\n\n1 recorded:\n- \`${BORROW}\` x1\n`);
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /recognized borrow\/panic signature in a reference-arm probe log/.test(i))).toBe(true);
+  });
+
+  // The asymmetry is deliberate and must hold: the CANDIDATE is OBSERVE — a
+  // freeError or a probe-log panic on the candidate is Outcome-B evidence, NOT a
+  // usability failure. Over-gating the candidate here would suppress the very
+  // signal the experiment is built to record, so this pins candidate exemption.
+  test('a CANDIDATE freeError + probe-log panic is OBSERVE — candidate stays usable, run stays citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setReportFreeErrors(root, 'candidate', 'reproducer', [BORROW]);
+    writeFileSync(join(root, 'results-candidate/reproducer.log'), `- \`${BORROW}\` x1\n`);
+    const r = runCompare(root);
+    expect(r.ok).toBe(true);
+    expect(r.manifest.arms.candidate.usable).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(true);
+  });
 });
 
 // P1b (round-6): reproducerSummary must treat ABSENCE as missing (=> arm

@@ -665,6 +665,36 @@ function compare({ artifacts, out, expectedPath }) {
           if (witnessMatrix.classification !== 'completed') issues.push(`stable heavy: forensic-matrix classification is '${witnessMatrix.classification}' (${witnessMatrix.summary}), require 'completed'`);
         }
       }
+      // The reference (stable) arm must free EVERY pass's worlds cleanly, not
+      // only the witness matrix (the witnesses gate above). safeFreeWorld
+      // swallows a wasm-bindgen ownership guard into report.freeErrors and the
+      // probe STILL EXITS 0, so a reference-engine borrow-guard in the
+      // reproducer/freshseed/prevalence passes is invisible to the exit-code
+      // `gate` — yet classifyWitnessMatrix already rules a reference freeError
+      // "a FAILURE, not clean". Enforce that same principle across every pass:
+      //   (1) STRUCTURED — a non-empty freeErrors array in the pass report (the
+      //       reproducer pass threads freeErrors today; freshseed/prevalence are
+      //       covered defensively so a future probe that threads them is gated
+      //       by construction). No log false-positive risk.
+      //   (2) LOG — a recognized panic signature in the pass's PROBE STDOUT log.
+      //       Scoped to reproducer/freshseed/prevalence.log ONLY: those are
+      //       probe stdout (no vitest capture headers, so no self-contract
+      //       false-positive — the round-1 class). The vitest logs
+      //       (npmtest/browser) are deliberately NOT gated here — a real
+      //       reference panic there already fails the separately-required-green
+      //       timing/npmtest/browser gates, while their captured test FIXTURES
+      //       would false-match. witnesses.log is gated in the heavy block above.
+      // Candidate is OBSERVE — its panics ARE the Outcome-B evidence, never gated.
+      if (arm === 'stable') {
+        for (const [name, rep] of [['reproducer', reproducer], ['freshseed', freshseed], ['prevalence', prevalence]]) {
+          if (Array.isArray(rep?.freeErrors) && rep.freeErrors.length > 0) {
+            issues.push(`stable ${name}.json recorded ${rep.freeErrors.length} world.free() borrow-guard observation(s) — the reference engine must free cleanly in EVERY pass (\`${rep.freeErrors[0]}\`)`);
+          }
+        }
+        for (const m of scan.matches.filter((s) => /^(?:reproducer|freshseed|prevalence)\.log:/.test(s))) {
+          issues.push(`stable: recognized borrow/panic signature in a reference-arm probe log — the control engine must not panic in ANY pass: ${m}`);
+        }
+      }
     }
     const usable = issues.length === 0;
     armReports[arm] = {

@@ -386,16 +386,26 @@ jobs:
               # ownership/unreachable signature in witnesses.log is Outcome-B crash
               # evidence. A bare nonzero / 124 timeout / missing exit is NOT.
               wcode=$(cat "${RES}/exit-witnesses.txt" 2>/dev/null || echo missing)
-              if [ "$wcode" = "0" ]; then
-                echo "OBSERVE: candidate witnesses exit 0 — completed (unexpected on core 0.34; not gated)"
-              elif ! node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" >/dev/null 2>&1; then
-                echo "OBSERVE: candidate witnesses exit ${wcode} — recognized engine-crash signature in witnesses.log = Outcome-B evidence (NOT gated)"
-              elif [ "$wcode" = "124" ] || [ "$wcode" = "137" ]; then
-                echo "OBSERVE: candidate witnesses exit ${wcode} — TIMEOUT (RUN_TIMEOUT backstop; a hang, NOT crash evidence; NOT gated)"
-              elif [ "$wcode" = "missing" ]; then
-                echo "OBSERVE: candidate witnesses exit MISSING — no artifact (missing observation, NOT crash evidence; NOT gated)"
+              # Precedence MATCHES classifyWitnessMatrix (compare-spike-runs.js):
+              # a recognized panic signature is engineCrash REGARDLESS of exit
+              # code, so scan FIRST. Otherwise a (hypothetical) candidate that
+              # exits 0 yet printed a signature would echo "completed" here while
+              # the authoritative comparison correctly labels it engineCrash — a
+              # console/verdict inconsistency. (Still OBSERVE — never gates; the
+              # candidate's crash IS the Outcome-B evidence.)
+              if node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" >/dev/null 2>&1; then
+                # No recognized signature — classify by exit code.
+                if [ "$wcode" = "0" ]; then
+                  echo "OBSERVE: candidate witnesses exit 0 — completed (unexpected on core 0.34; not gated)"
+                elif [ "$wcode" = "124" ] || [ "$wcode" = "137" ]; then
+                  echo "OBSERVE: candidate witnesses exit ${wcode} — TIMEOUT (RUN_TIMEOUT backstop; a hang, NOT crash evidence; NOT gated)"
+                elif [ "$wcode" = "missing" ]; then
+                  echo "OBSERVE: candidate witnesses exit MISSING — no artifact (missing observation, NOT crash evidence; NOT gated)"
+                else
+                  echo "OBSERVE: candidate witnesses exit ${wcode} — UNEXPLAINED failure, no recognized crash signature (investigate; NOT crash evidence; NOT gated)"
+                fi
               else
-                echo "OBSERVE: candidate witnesses exit ${wcode} — UNEXPLAINED failure, no recognized crash signature (investigate; NOT crash evidence; NOT gated)"
+                echo "OBSERVE: candidate witnesses exit ${wcode} — recognized engine-crash signature in witnesses.log = Outcome-B evidence (NOT gated)"
               fi
             fi
           fi

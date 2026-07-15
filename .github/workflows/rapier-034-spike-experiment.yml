@@ -371,11 +371,13 @@ jobs:
             gate prevalence
             if [ "${ARM}" = "stable" ]; then
               gate witnesses
-              # Stable must free EVERY world cleanly: a recorded world.free()
-              # borrow-guard observation on the REFERENCE engine is itself a
-              # failure (the candidate-only instability must not appear here).
-              # exit-0-alone is not "clean".
-              node -e 'const p=process.argv[1];try{const r=JSON.parse(require("fs").readFileSync(p,"utf8"));const fe=r.freeErrors||[];if(fe.length){console.error("STABLE world.free() freeErrors NOT empty ("+fe.length+"): "+fe.join(" | "));process.exit(1)}console.log("stable witnesses freeErrors empty: ok")}catch(e){console.log("stable witnesses.json unreadable ("+e.message+") — the witnesses gate already covers a missing/failed matrix");process.exit(0)}' "${RES}/witnesses.json" || fail=1
+              # Stable must PROVABLY free every world cleanly. FAIL-CLOSED:
+              # exit-0-alone does NOT prove the matrix completed — a --json
+              # regression or a truncated write would exit 0 with no valid
+              # witnesses.json. Require the artifact to be present, parse, carry
+              # a freeErrors ARRAY, and have that array EMPTY. Missing / malformed
+              # / non-array / non-empty all fail the arm (never a silent pass).
+              node -e 'const p=process.argv[1];let r;try{r=JSON.parse(require("fs").readFileSync(p,"utf8"))}catch(e){console.error("STABLE witnesses.json MISSING or MALFORMED ("+e.message+") — a stable heavy run MUST produce a valid witnesses.json (fail-closed)");process.exit(1)}if(!Array.isArray(r.freeErrors)){console.error("STABLE witnesses.json has no freeErrors ARRAY (schema-invalid)");process.exit(1)}if(r.freeErrors.length){console.error("STABLE world.free() freeErrors NOT empty ("+r.freeErrors.length+"): "+r.freeErrors.join(" | "));process.exit(1)}console.log("stable witnesses valid + freeErrors empty: ok")' "${RES}/witnesses.json" || fail=1
             else
               # Candidate forensic matrix is OBSERVE, not gated — but classify the
               # exit HONESTLY: ONLY a recognized ownership/unreachable signature

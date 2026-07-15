@@ -556,6 +556,11 @@ function compare({ artifacts, out, expectedPath }) {
       armManifest: read('arm-manifest.json'),
       adjudication: read('adjudication.json'),
     };
+    // witnesses.json is read SEPARATELY from `rd` (not the generic malformed
+    // loop): on the candidate it is OBSERVE and expected ABSENT when the matrix
+    // crashes, so a candidate malformed/missing witnesses must NOT fail that arm.
+    // The stable-heavy fail-closed check below handles the reference arm.
+    const witnesses = read('witnesses.json');
     const reproducer = rd.reproducer.value;
     const freshseed = rd.freshseed.value;
     const prevalence = rd.prevalence.value;
@@ -585,11 +590,22 @@ function compare({ artifacts, out, expectedPath }) {
         } else if (!(Array.isArray(prevalence?.prevalence) && prevalence.prevalence.length > 0)) {
           issues.push('heavy run but prevalence.json missing or malformed (no declared heavyEvidence to check against)');
         }
+        // Stable heavy run must PROVABLY complete the forensic matrix cleanly —
+        // FAIL-CLOSED. exit-0 alone is not proof: a --json regression or a
+        // truncated write exits 0 with no valid witnesses.json. Require present,
+        // parseable, a freeErrors ARRAY, and that array EMPTY. (Candidate is
+        // OBSERVE — its witnesses.json is expected ABSENT on a matrix crash.)
+        if (arm === 'stable') {
+          if (!witnesses.present) issues.push('stable heavy: witnesses.json MISSING (the forensic matrix must complete on the reference engine — exit 0 alone is not proof)');
+          else if (!witnesses.valid) issues.push(`stable heavy: witnesses.json MALFORMED JSON (${witnesses.error})`);
+          else if (!Array.isArray(witnesses.value?.freeErrors)) issues.push('stable heavy: witnesses.json has no freeErrors ARRAY (schema-invalid)');
+          else if (witnesses.value.freeErrors.length > 0) issues.push(`stable heavy: witnesses.json recorded ${witnesses.value.freeErrors.length} world.free() borrow-guard observation(s) — the reference engine must free cleanly`);
+        }
       }
     }
     const usable = issues.length === 0;
     armReports[arm] = {
-      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication, usable, issues,
+      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication, witnesses, usable, issues,
     };
     manifest.arms[arm] = {
       present,
@@ -733,23 +749,29 @@ function compare({ artifacts, out, expectedPath }) {
     const wexit = armReports[arm].armManifest?.exits?.witnesses ?? null;
     const witnessCrash = (armScan[arm].matches.find((m) => m.startsWith('witnesses.log:')) ?? null);
     const sig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
-    // A COMPLETED matrix that still recorded world.free() borrow-guard
-    // observations is a failure on the reference engine (stable must free every
-    // world cleanly) — "exit 0" alone is not "clean".
-    const wReport = readJsonSafe(join(armReports[arm].dir, 'witnesses.json')).value;
-    const freeErrs = Array.isArray(wReport?.freeErrors) ? wReport.freeErrors : [];
-    // Classify honestly — ONLY a recognized ownership/unreachable SIGNATURE is
-    // Outcome-B evidence, and it takes precedence over the exit code (a real
-    // panic is evidence even if `timeout` then reaped the process). A bare
-    // nonzero / timeout / missing exit is NOT "crash evidence".
+    // Reuse the SAME structured witnesses read the usability check used. "Clean"
+    // is PROVEN, never assumed: present + valid + a freeErrors ARRAY + empty.
+    const w = armReports[arm].witnesses;
+    const freeErrsArr = Array.isArray(w?.value?.freeErrors) ? w.value.freeErrors : null;
+    // Classify honestly + FAIL-CLOSED. A recognized ownership/unreachable
+    // SIGNATURE is checked FIRST (a real panic is a crash even at exit 0 with no
+    // JSON), and exit-0 is "clean" ONLY with a valid empty-freeErrors artifact —
+    // a --json regression or truncation is NOT clean.
     let klass; let blurb;
-    if (wexit === 0 && freeErrs.length > 0) {
+    if (sig !== null) {
+      klass = 'engineCrash';
+      blurb = arm === 'candidate'
+        ? `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).`
+        : `**engine CRASH on the REFERENCE arm** — \`${sig}\` (a recognized panic on stable is a FAILURE, not evidence — it must NOT appear here).`;
+    } else if (wexit === 0 && freeErrsArr !== null && freeErrsArr.length > 0) {
       klass = 'completedWithFreeErrors';
-      blurb = `completed BUT recorded ${freeErrs.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrs[0]}\`).`;
+      blurb = `completed BUT recorded ${freeErrsArr.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrsArr[0]}\`).`;
+    } else if (wexit === 0 && w?.present && w?.valid && freeErrsArr !== null && freeErrsArr.length === 0) {
+      klass = 'completed'; blurb = 'completed the full forensic matrix cleanly (valid witnesses.json, empty freeErrors, no panic signature).';
     } else if (wexit === 0) {
-      klass = 'completed'; blurb = 'completed the full forensic matrix cleanly (no free() observations).';
-    } else if (sig !== null) {
-      klass = 'engineCrash'; blurb = `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).`;
+      klass = 'exit0NoValidJson';
+      const why = !w?.present ? 'ABSENT' : !w?.valid ? 'MALFORMED' : 'missing a freeErrors array';
+      blurb = `**exit 0 but witnesses.json is ${why}** — NOT provably clean (a --json regression or truncation would look like this; fail-closed, never "clean").`;
     } else if (wexit === 124 || wexit === 137) {
       klass = 'timeout'; blurb = `**TIMED OUT** (exit ${wexit} — hit the RUN_TIMEOUT backstop; a hang, NOT observed-engine-crash evidence).`;
     } else if (wexit === null) {
@@ -758,7 +780,7 @@ function compare({ artifacts, out, expectedPath }) {
       klass = 'unexplained'; blurb = `**UNEXPLAINED FAILURE** (exit ${wexit}, no recognized crash signature — investigate; NOT Outcome-B evidence).`;
     }
     push(`- **${arm}:** witnesses exit ${wexit ?? 'missing'} — ${blurb}`);
-    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, classification: klass, crashSignature: sig, freeErrors: freeErrs.length };
+    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, classification: klass, crashSignature: sig, freeErrors: freeErrsArr === null ? null : freeErrsArr.length };
   }
   push('');
 

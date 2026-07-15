@@ -360,6 +360,10 @@ describe('compare — verdict established only from usable arms', () => {
       prevalenceSeeds = TEST_HEAVY.prevalenceSeeds, freshseedMissing = false,
       bootstrapComplete = true,
       stableCat = 46, candidateCat = 107, // null => quiescent classification
+      // Stable heavy run must PROVE a clean forensic matrix: default a valid
+      // witnesses.json with empty freeErrors. null => omit (missing); a string
+      // => raw/malformed; an object => that JSON (e.g. non-array freeErrors).
+      stableWitnesses = { freeErrors: [] },
     } = opts;
     const root = mkdtempSync(join(tmpdir(), 'spike-compare-'));
     const mk = (p) => mkdirSync(join(root, p), { recursive: true });
@@ -384,6 +388,12 @@ describe('compare — verdict established only from usable arms', () => {
         // empty array is instead caught by the seed-coverage check.
         wj(`results-${arm}/prevalence.json`, prevalenceMalformed ? { engine: {} } : mkPrev(prevalenceSeeds));
       }
+    }
+    // Stable heavy run's witnesses.json (fail-closed: present + valid + empty
+    // freeErrors). The candidate's is intentionally absent (OBSERVE — crash).
+    if (heavy && stableWitnesses !== null) {
+      const p = join(root, 'results-stable/witnesses.json');
+      writeFileSync(p, typeof stableWitnesses === 'string' ? stableWitnesses : JSON.stringify(stableWitnesses));
     }
     const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
@@ -559,6 +569,43 @@ describe('compare — verdict established only from usable arms', () => {
     runCompare(root);
     const text = md(root);
     expect(text).toMatch(/stable:.*recorded 1 world\.free\(\) borrow-guard observation.*FAILURE, not clean/);
+  });
+
+  // P1 (re-review) — FAIL-CLOSED: a stable heavy run whose witnesses.json is
+  // absent / truncated / schema-invalid must FAIL the stable arm (unusable =>
+  // NOT citable), never pass as "completed cleanly" on exit-0 alone.
+  test('stable heavy: a MISSING witnesses.json fails the arm (unusable, not citable)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: null });
+    setWitness(root, 'stable', { exit: 0 }); // exit 0 but no JSON (a --json regression)
+    const r = runCompare(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses\.json MISSING/.test(i))).toBe(true);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    expect(md(root)).toMatch(/stable:.*exit 0 but witnesses\.json is ABSENT.*NOT provably clean/);
+  });
+
+  test('stable heavy: a TRUNCATED witnesses.json fails the arm', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: '{ "freeErrors": [' });
+    const r = runCompare(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses\.json MALFORMED/.test(i))).toBe(true);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  test('stable heavy: a MISSING or NON-ARRAY freeErrors fails the arm (schema-invalid)', () => {
+    const noKey = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: { notFreeErrors: 1 } });
+    expect(runCompare(noKey).manifest.arms.stable.issues.some((i) => /no freeErrors ARRAY/.test(i))).toBe(true);
+    const nonArr = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: { freeErrors: 'nope' } });
+    const r = runCompare(nonArr);
+    expect(r.manifest.arms.stable.issues.some((i) => /no freeErrors ARRAY/.test(i))).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  test('a recognized panic signature on the STABLE arm is a FAILURE even at exit 0 (never clean)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, log: 'RuntimeError: unreachable\n', freeErrors: [] });
+    runCompare(root);
+    expect(md(root)).toMatch(/stable:.*engine CRASH on the REFERENCE arm.*FAILURE, not evidence/);
   });
 });
 

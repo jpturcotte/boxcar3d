@@ -440,6 +440,26 @@ const VITEST_SUMMARY_BOUNDARY = /[⎯─━]{4,}/;
 // skipping its captured blocks can never hide a real engine fault.
 const SELF_CONTRACT_TEST = 'compare-spike-runs.test.js';
 
+// The ONE panic scanner (single source of the regex). Returns the trimmed
+// matching lines in `text`; prefixes each with `${label}: ` when a label is
+// given. The vitest capture-owner + summary-boundary + source-dump-line logic
+// keeps it from flagging the adjudicator's own printed fixtures.
+function scanTextForBorrowSignatures(text, label) {
+  const matches = [];
+  let capturedOwner = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > MAX_SCAN_LINE) continue; // minified source dump, not a message
+    const line = raw.replace(ANSI_ESCAPE, '');
+    const header = CAPTURE_HEADER.exec(line);
+    if (header !== null) { capturedOwner = header[1]; continue; }
+    if (VITEST_SUMMARY_BOUNDARY.test(line)) { capturedOwner = null; continue; }
+    if (!BORROW_SIGNATURE.test(line)) continue;
+    if (capturedOwner !== null && capturedOwner.endsWith(SELF_CONTRACT_TEST)) continue;
+    matches.push(label === undefined ? line.trim() : `${label}: ${line.trim()}`);
+  }
+  return matches;
+}
+
 function borrowErrorScan(dir) {
   if (!existsSync(dir)) return { scanned: 0, matches: [] };
   const matches = [];
@@ -447,24 +467,50 @@ function borrowErrorScan(dir) {
   for (const f of readdirSync(dir)) {
     if (!/\.(log|txt)$/.test(f)) continue;
     scanned += 1;
-    const text = readFileSync(join(dir, f), 'utf8');
-    // Track which test owns the current captured-console block. Owner persists
-    // until the next header; the summary boundary resets it (a real engine panic
-    // in the summary dump carries its own file header, but the reset also
-    // defends against a stale owner leaking across the boundary).
-    let capturedOwner = null;
-    for (const raw of text.split(/\r?\n/)) {
-      if (raw.length > MAX_SCAN_LINE) continue; // minified source dump, not a message
-      const line = raw.replace(ANSI_ESCAPE, '');
-      const header = CAPTURE_HEADER.exec(line);
-      if (header !== null) { capturedOwner = header[1]; continue; }
-      if (VITEST_SUMMARY_BOUNDARY.test(line)) { capturedOwner = null; continue; }
-      if (!BORROW_SIGNATURE.test(line)) continue;
-      if (capturedOwner !== null && capturedOwner.endsWith(SELF_CONTRACT_TEST)) continue;
-      matches.push(`${f}: ${line.trim()}`);
-    }
+    matches.push(...scanTextForBorrowSignatures(readFileSync(join(dir, f), 'utf8'), f));
   }
   return { scanned, matches };
+}
+
+// The first recognized panic signature in a SINGLE log file (unprefixed), or
+// null. The stable witness gate — in BOTH the workflow (via the witness-scan
+// CLI mode) and compare() — uses this, so "the reference engine crashed" is
+// decided by the same regex, never a second independently-maintained one.
+function witnessLogPanicSignature(logPath) {
+  if (!existsSync(logPath)) return null;
+  const m = scanTextForBorrowSignatures(readFileSync(logPath, 'utf8'));
+  return m.length > 0 ? m[0] : null;
+}
+
+// Classify a forensic witness-matrix outcome from (exit code, recognized panic
+// signature, witnesses.json read). "completed" is PROVEN, never assumed: exit 0
+// + a valid witnesses.json + an EMPTY freeErrors array + no panic signature.
+// Returns { classification, blurb, summary }. Computed BEFORE arm usability is
+// finalized so the reference arm's cleanliness can gate the verdict.
+function classifyWitnessMatrix(arm, wexit, sig, witnesses) {
+  const freeErrsArr = Array.isArray(witnesses?.value?.freeErrors) ? witnesses.value.freeErrors : null;
+  if (sig !== null) {
+    return arm === 'candidate'
+      ? { classification: 'engineCrash', summary: `recognized signature \`${sig}\``, blurb: `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).` }
+      : { classification: 'engineCrash', summary: `recognized signature \`${sig}\` on the reference arm`, blurb: `**engine CRASH on the REFERENCE arm** — \`${sig}\` (a recognized panic on stable is a FAILURE, not evidence — it must NOT appear here).` };
+  }
+  if (wexit === 0 && freeErrsArr !== null && freeErrsArr.length > 0) {
+    return { classification: 'completedWithFreeErrors', summary: `${freeErrsArr.length} freeErrors`, blurb: `completed BUT recorded ${freeErrsArr.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrsArr[0]}\`).` };
+  }
+  if (wexit === 0 && witnesses?.present && witnesses?.valid && freeErrsArr !== null && freeErrsArr.length === 0) {
+    return { classification: 'completed', summary: 'clean', blurb: 'completed the full forensic matrix cleanly (valid witnesses.json, empty freeErrors, no panic signature).' };
+  }
+  if (wexit === 0) {
+    const why = !witnesses?.present ? 'ABSENT' : !witnesses?.valid ? 'MALFORMED' : 'missing a freeErrors array';
+    return { classification: 'exit0NoValidJson', summary: `exit 0 but witnesses.json ${why}`, blurb: `**exit 0 but witnesses.json is ${why}** — NOT provably clean (a --json regression or truncation would look like this; fail-closed, never "clean").` };
+  }
+  if (wexit === 124 || wexit === 137) {
+    return { classification: 'timeout', summary: `timeout (exit ${wexit})`, blurb: `**TIMED OUT** (exit ${wexit} — hit the RUN_TIMEOUT backstop; a hang, NOT observed-engine-crash evidence).` };
+  }
+  if (wexit === null) {
+    return { classification: 'missing', summary: 'no exit recorded', blurb: 'MISSING (no witnesses exit/artifact recorded — a missing observation, not evidence).' };
+  }
+  return { classification: 'unexplained', summary: `exit ${wexit}, no signature`, blurb: `**UNEXPLAINED FAILURE** (exit ${wexit}, no recognized crash signature — investigate; NOT Outcome-B evidence).` };
 }
 
 // ONLY the population fitness-vector digest is reliably comparable across Node
@@ -568,6 +614,15 @@ function compare({ artifacts, out, expectedPath }) {
     const browser = rd.browser.value;
     const armManifest = rd.armManifest.value;
     const adjudication = rd.adjudication.value;
+    // The forensic witness-matrix outcome is computed HERE — BEFORE usability is
+    // finalized — from the exit code, a recognized panic signature (the shared
+    // scanner), and the witnesses.json read. The stable arm's usability then
+    // requires classification 'completed'; the F6 section reuses these.
+    const scan = present ? borrowErrorScan(dir) : { scanned: 0, matches: [] };
+    const wexit = armManifest?.exits?.witnesses ?? null;
+    const witnessCrash = scan.matches.find((m) => m.startsWith('witnesses.log:')) ?? null;
+    const witnessSig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
+    const witnessMatrix = classifyWitnessMatrix(arm, wexit, witnessSig, witnesses);
     const issues = [];
     if (!present) issues.push('artifact dir missing (job did not upload — build failure, cancelled, or skipped)');
     else {
@@ -591,21 +646,30 @@ function compare({ artifacts, out, expectedPath }) {
           issues.push('heavy run but prevalence.json missing or malformed (no declared heavyEvidence to check against)');
         }
         // Stable heavy run must PROVABLY complete the forensic matrix cleanly —
-        // FAIL-CLOSED. exit-0 alone is not proof: a --json regression or a
-        // truncated write exits 0 with no valid witnesses.json. Require present,
-        // parseable, a freeErrors ARRAY, and that array EMPTY. (Candidate is
-        // OBSERVE — its witnesses.json is expected ABSENT on a matrix crash.)
+        // FAIL-CLOSED, and this is a real USABILITY condition (not just a
+        // rendered classification): exit MUST be 0, the witnesses.log MUST carry
+        // no recognized panic signature, witnesses.json MUST be present + valid +
+        // an EMPTY freeErrors array, and the folded classification MUST be
+        // exactly 'completed'. Any of these fails the arm => not citable.
+        // (Candidate is OBSERVE — its witnesses.json is expected ABSENT on a
+        // matrix crash, so none of this applies to it.)
         if (arm === 'stable') {
-          if (!witnesses.present) issues.push('stable heavy: witnesses.json MISSING (the forensic matrix must complete on the reference engine — exit 0 alone is not proof)');
+          if (wexit !== 0) issues.push(`stable heavy: witnesses exit ${wexit ?? 'missing'} — the forensic matrix must exit 0 on the reference engine`);
+          if (witnessSig !== null) issues.push(`stable heavy: recognized panic signature in witnesses.log (${witnessSig}) — the reference engine must not crash`);
+          if (!witnesses.present) issues.push('stable heavy: witnesses.json MISSING (exit 0 alone is not proof of a completed matrix)');
           else if (!witnesses.valid) issues.push(`stable heavy: witnesses.json MALFORMED JSON (${witnesses.error})`);
           else if (!Array.isArray(witnesses.value?.freeErrors)) issues.push('stable heavy: witnesses.json has no freeErrors ARRAY (schema-invalid)');
           else if (witnesses.value.freeErrors.length > 0) issues.push(`stable heavy: witnesses.json recorded ${witnesses.value.freeErrors.length} world.free() borrow-guard observation(s) — the reference engine must free cleanly`);
+          // Integration backstop: the folded classification must be 'completed'
+          // (defends against any future class the granular checks above miss).
+          if (witnessMatrix.classification !== 'completed') issues.push(`stable heavy: forensic-matrix classification is '${witnessMatrix.classification}' (${witnessMatrix.summary}), require 'completed'`);
         }
       }
     }
     const usable = issues.length === 0;
     armReports[arm] = {
-      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication, witnesses, usable, issues,
+      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication,
+      witnesses, scan, witnessMatrix, usable, issues,
     };
     manifest.arms[arm] = {
       present,
@@ -726,12 +790,10 @@ function compare({ artifacts, out, expectedPath }) {
   }
   push('');
 
-  // Borrow-error scan (computed once per arm; reused by the forensic-matrix
-  // OBSERVE report below).
-  const armScan = Object.fromEntries(ARMS.map((a) => [a, borrowErrorScan(armReports[a].dir)]));
+  // Borrow-error scan (reuses the per-arm scan computed in the arm loop).
   push('## `world.free()` borrow/panic scan');
   for (const arm of ARMS) {
-    const scan = armScan[arm];
+    const scan = armReports[arm].scan;
     push(`- **${arm}:** scanned ${scan.scanned} log(s); ${scan.matches.length} borrow/ownership/unreachable/panic match(es)`
       + (scan.matches.length ? `:\n  - ${scan.matches.slice(0, 10).join('\n  - ')}` : '.'));
     manifest.findings[`borrow_${arm}`] = scan;
@@ -739,48 +801,21 @@ function compare({ artifacts, out, expectedPath }) {
   push('');
 
   // Forensic witness matrix (`--witness all --pass all`): a GATE on stable
-  // (must complete cleanly), OBSERVE on the candidate (its crash IS Outcome-B
-  // evidence — core 0.34 cannot complete the matrix — not a defect to gate on).
-  // Citability rests on the reproducer + prevalence, both green on the
-  // candidate; this section records the asymmetry as first-class evidence.
+  // (its cleanliness is a USABILITY condition — see the arm loop), OBSERVE on
+  // the candidate (its crash IS Outcome-B evidence — core 0.34 cannot complete
+  // the matrix). This section RENDERS the classification the usability check
+  // already computed (single source of truth — no re-derivation).
   push('## Forensic witness matrix (`--witness all --pass all`) — stable GATE / candidate OBSERVE');
   push('');
   for (const arm of ARMS) {
     const wexit = armReports[arm].armManifest?.exits?.witnesses ?? null;
-    const witnessCrash = (armScan[arm].matches.find((m) => m.startsWith('witnesses.log:')) ?? null);
-    const sig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
-    // Reuse the SAME structured witnesses read the usability check used. "Clean"
-    // is PROVEN, never assumed: present + valid + a freeErrors ARRAY + empty.
-    const w = armReports[arm].witnesses;
-    const freeErrsArr = Array.isArray(w?.value?.freeErrors) ? w.value.freeErrors : null;
-    // Classify honestly + FAIL-CLOSED. A recognized ownership/unreachable
-    // SIGNATURE is checked FIRST (a real panic is a crash even at exit 0 with no
-    // JSON), and exit-0 is "clean" ONLY with a valid empty-freeErrors artifact —
-    // a --json regression or truncation is NOT clean.
-    let klass; let blurb;
-    if (sig !== null) {
-      klass = 'engineCrash';
-      blurb = arm === 'candidate'
-        ? `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).`
-        : `**engine CRASH on the REFERENCE arm** — \`${sig}\` (a recognized panic on stable is a FAILURE, not evidence — it must NOT appear here).`;
-    } else if (wexit === 0 && freeErrsArr !== null && freeErrsArr.length > 0) {
-      klass = 'completedWithFreeErrors';
-      blurb = `completed BUT recorded ${freeErrsArr.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrsArr[0]}\`).`;
-    } else if (wexit === 0 && w?.present && w?.valid && freeErrsArr !== null && freeErrsArr.length === 0) {
-      klass = 'completed'; blurb = 'completed the full forensic matrix cleanly (valid witnesses.json, empty freeErrors, no panic signature).';
-    } else if (wexit === 0) {
-      klass = 'exit0NoValidJson';
-      const why = !w?.present ? 'ABSENT' : !w?.valid ? 'MALFORMED' : 'missing a freeErrors array';
-      blurb = `**exit 0 but witnesses.json is ${why}** — NOT provably clean (a --json regression or truncation would look like this; fail-closed, never "clean").`;
-    } else if (wexit === 124 || wexit === 137) {
-      klass = 'timeout'; blurb = `**TIMED OUT** (exit ${wexit} — hit the RUN_TIMEOUT backstop; a hang, NOT observed-engine-crash evidence).`;
-    } else if (wexit === null) {
-      klass = 'missing'; blurb = 'MISSING (no witnesses exit/artifact recorded — a missing observation, not evidence).';
-    } else {
-      klass = 'unexplained'; blurb = `**UNEXPLAINED FAILURE** (exit ${wexit}, no recognized crash signature — investigate; NOT Outcome-B evidence).`;
-    }
-    push(`- **${arm}:** witnesses exit ${wexit ?? 'missing'} — ${blurb}`);
-    manifest.findings[`witnessMatrix_${arm}`] = { exit: wexit, classification: klass, crashSignature: sig, freeErrors: freeErrsArr === null ? null : freeErrsArr.length };
+    const wm = armReports[arm].witnessMatrix;
+    push(`- **${arm}:** witnesses exit ${wexit ?? 'missing'} — ${wm.blurb}`);
+    manifest.findings[`witnessMatrix_${arm}`] = {
+      exit: wexit,
+      classification: wm.classification,
+      crashSignature: armReports[arm].scan.matches.find((m) => m.startsWith('witnesses.log:'))?.replace(/^witnesses\.log:\s*/, '') ?? null,
+    };
   }
   push('');
 
@@ -1009,8 +1044,23 @@ function main() {
       process.exit(2);
     }
     result = timingGate({ logPath: values.log, exitCode: values.exit, expectedPath: values.expected });
+  } else if (values.mode === 'witness-scan') {
+    // The SHARED panic scanner (one regex source). Exits 1 if the witnesses.log
+    // carries a recognized ownership/unreachable signature — the workflow uses
+    // this for the stable arm instead of a second bash regex.
+    if (values.log === undefined) {
+      console.error('compare-spike-runs: --mode witness-scan needs --log');
+      process.exit(2);
+    }
+    const sig = witnessLogPanicSignature(values.log);
+    if (sig !== null) {
+      console.error(`witness-scan: recognized panic signature in ${values.log}: ${sig}`);
+      process.exit(1);
+    }
+    console.log(`witness-scan: no recognized panic signature in ${values.log}`);
+    result = { ok: true };
   } else {
-    console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', or 'timing'");
+    console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', 'timing', or 'witness-scan'");
     process.exit(2);
   }
   if (result.ok !== true) process.exit(1);
@@ -1023,7 +1073,7 @@ export {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
   passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan,
-  prevalenceCoverageIssues, readJsonSafe, F32_DT,
+  prevalenceCoverageIssues, readJsonSafe, witnessLogPanicSignature, classifyWitnessMatrix, F32_DT,
 };
 
 const entry = process.argv[1];

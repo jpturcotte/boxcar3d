@@ -370,23 +370,25 @@ jobs:
             # panic scan of witnesses.log).
             gate prevalence
             if [ "${ARM}" = "stable" ]; then
-              gate witnesses
-              # Stable must PROVABLY free every world cleanly. FAIL-CLOSED:
-              # exit-0-alone does NOT prove the matrix completed — a --json
-              # regression or a truncated write would exit 0 with no valid
-              # witnesses.json. Require the artifact to be present, parse, carry
-              # a freeErrors ARRAY, and have that array EMPTY. Missing / malformed
-              # / non-array / non-empty all fail the arm (never a silent pass).
+              gate witnesses  # requires exit-witnesses.txt === 0 (fail-closed on missing/nonzero)
+              # Stable must PROVABLY complete the forensic matrix cleanly.
+              # FAIL-CLOSED, three independent checks (exit-0-alone is not proof —
+              # a --json regression or truncated write would exit 0 with no valid
+              # witnesses.json): (1) NO recognized panic signature in
+              # witnesses.log, via the SHARED scanner (one regex source, not a
+              # second bash regex); (2) witnesses.json present + parseable + a
+              # freeErrors ARRAY + EMPTY.
+              node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" || fail=1
               node -e 'const p=process.argv[1];let r;try{r=JSON.parse(require("fs").readFileSync(p,"utf8"))}catch(e){console.error("STABLE witnesses.json MISSING or MALFORMED ("+e.message+") — a stable heavy run MUST produce a valid witnesses.json (fail-closed)");process.exit(1)}if(!Array.isArray(r.freeErrors)){console.error("STABLE witnesses.json has no freeErrors ARRAY (schema-invalid)");process.exit(1)}if(r.freeErrors.length){console.error("STABLE world.free() freeErrors NOT empty ("+r.freeErrors.length+"): "+r.freeErrors.join(" | "));process.exit(1)}console.log("stable witnesses valid + freeErrors empty: ok")' "${RES}/witnesses.json" || fail=1
             else
               # Candidate forensic matrix is OBSERVE, not gated — but classify the
-              # exit HONESTLY: ONLY a recognized ownership/unreachable signature
-              # in witnesses.log is Outcome-B crash evidence. A bare nonzero / 124
-              # timeout / missing exit is NOT.
+              # exit HONESTLY via the SAME shared scanner: ONLY a recognized
+              # ownership/unreachable signature in witnesses.log is Outcome-B crash
+              # evidence. A bare nonzero / 124 timeout / missing exit is NOT.
               wcode=$(cat "${RES}/exit-witnesses.txt" 2>/dev/null || echo missing)
               if [ "$wcode" = "0" ]; then
                 echo "OBSERVE: candidate witnesses exit 0 — completed (unexpected on core 0.34; not gated)"
-              elif grep -qE 'attempted to take ownership of Rust value while it was borrowed|RuntimeError: unreachable|already (mutably )?borrowed|Borrow(Mut)?Error|panicked at' "${RES}/witnesses.log" 2>/dev/null; then
+              elif ! node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" >/dev/null 2>&1; then
                 echo "OBSERVE: candidate witnesses exit ${wcode} — recognized engine-crash signature in witnesses.log = Outcome-B evidence (NOT gated)"
               elif [ "$wcode" = "124" ] || [ "$wcode" = "137" ]; then
                 echo "OBSERVE: candidate witnesses exit ${wcode} — TIMEOUT (RUN_TIMEOUT backstop; a hang, NOT crash evidence; NOT gated)"

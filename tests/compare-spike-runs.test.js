@@ -23,6 +23,7 @@ import {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
   borrowErrorScan, prevalenceCoverageIssues, readJsonSafe,
+  witnessLogPanicSignature, classifyWitnessMatrix,
 } from '../scripts/compare-spike-runs.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
@@ -381,7 +382,9 @@ describe('compare — verdict established only from usable arms', () => {
     for (const [arm, ver, cat] of [['stable', '0.19.3', stableCat], ['candidate', '0.19.3-c13133ad.0', candidateCat]]) {
       if (!(arm === 'candidate' && !candidateReproPresent)) wj(`results-${arm}/reproducer.json`, repro(ver, cat));
       if (!freshseedMissing) wj(`results-${arm}/freshseed.json`, mkPrev(TEST_HEAVY.freshSeeds));
-      wj(`results-${arm}/arm-manifest.json`, { arm, resolvedSha: 'abc', heavy });
+      // The realistic heavy default: stable witnesses exit 0 (completes), candidate exit 1 (crashes).
+      const exits = heavy ? { witnesses: arm === 'stable' ? 0 : 1 } : {};
+      wj(`results-${arm}/arm-manifest.json`, { arm, resolvedSha: 'abc', heavy, exits });
       wj(`results-${arm}/adjudication.json`, { schema: 'boxcar3d.adjudication/1', arm, passed: arm === 'candidate' ? candidatePassed : true, heavy });
       if (heavy && (arm === 'stable' || prevalencePresent)) {
         // Malformed = no prevalence array at all (hits the array guard); an
@@ -390,11 +393,12 @@ describe('compare — verdict established only from usable arms', () => {
       }
     }
     // Stable heavy run's witnesses.json (fail-closed: present + valid + empty
-    // freeErrors). The candidate's is intentionally absent (OBSERVE — crash).
+    // freeErrors). The candidate's is intentionally absent (OBSERVE), but it DID
+    // crash — write its witnesses.log with the recognized unreachable signature.
     if (heavy && stableWitnesses !== null) {
-      const p = join(root, 'results-stable/witnesses.json');
-      writeFileSync(p, typeof stableWitnesses === 'string' ? stableWitnesses : JSON.stringify(stableWitnesses));
+      writeFileSync(join(root, 'results-stable/witnesses.json'), typeof stableWitnesses === 'string' ? stableWitnesses : JSON.stringify(stableWitnesses));
     }
+    if (heavy) writeFileSync(join(root, 'results-candidate/witnesses.log'), 'RuntimeError: unreachable\n    at wasm://wasm/0:1\n');
     const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
     const parsed = runs.filter((r) => r.json !== null).length;
@@ -606,6 +610,45 @@ describe('compare — verdict established only from usable arms', () => {
     setWitness(root, 'stable', { exit: 0, log: 'RuntimeError: unreachable\n', freeErrors: [] });
     runCompare(root);
     expect(md(root)).toMatch(/stable:.*engine CRASH on the REFERENCE arm.*FAILURE, not evidence/);
+  });
+
+  // P1 (re-review 2) — witness cleanliness is a real USABILITY condition, not
+  // just a rendered classification. Each of these must make r.ok=false,
+  // stable.usable=false, citable=false — NOT merely print the wording.
+  const expectStableGated = (root) => {
+    const r = runCompare(root);
+    expect(r.ok).toBe(false);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    return r;
+  };
+
+  test('stable witness TIMEOUT (exit 124) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 124, freeErrors: [] });
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses exit 124/.test(i))).toBe(true);
+  });
+
+  test('stable witness UNEXPLAINED nonzero exit (7) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 7, freeErrors: [] });
+    expectStableGated(root);
+  });
+
+  test('a MISSING stable witness exit fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    // arm-manifest with no exits.witnesses => wexit null => classification missing.
+    writeFileSync(join(root, 'results-stable/arm-manifest.json'), JSON.stringify({ arm: 'stable', resolvedSha: 'abc', heavy: true, exits: {} }));
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses exit missing/.test(i))).toBe(true);
+  });
+
+  test('a stable panic signature at exit 0 fails the arm, not citable (the disconnect the classification alone missed)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, log: 'RuntimeError: unreachable\n', freeErrors: [] });
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /recognized panic signature in witnesses\.log/.test(i))).toBe(true);
   });
 });
 
@@ -879,5 +922,35 @@ describe('readJsonSafe — distinguishes missing / valid / malformed, never thro
     expect(r.value).toBeNull();
     expect(typeof r.error).toBe('string');
     expect(r.error.length).toBeGreaterThan(0);
+  });
+});
+
+// The SHARED panic scanner + classifier — one regex source used by both the
+// workflow (via --mode witness-scan) and compare()'s stable usability check.
+describe('witnessLogPanicSignature + classifyWitnessMatrix', () => {
+  const write = (name, text) => { const p = join(TMP, name); writeFileSync(p, text); return p; };
+
+  test('witnessLogPanicSignature returns the panic line, null on a clean or missing log', () => {
+    expect(witnessLogPanicSignature(write('ws-clean.log', 'all good\nno errors\n'))).toBeNull();
+    expect(witnessLogPanicSignature(join(TMP, 'ws-absent.log'))).toBeNull();
+    expect(witnessLogPanicSignature(write('ws-panic.log', 'RuntimeError: unreachable\n    at wasm\n'))).toMatch(/RuntimeError: unreachable/);
+    expect(witnessLogPanicSignature(write('ws-borrow.log', 'Error: attempted to take ownership of Rust value while it was borrowed\n'))).toMatch(/attempted to take ownership/);
+  });
+
+  test('classifyWitnessMatrix folds exit + signature + witnesses.json into one class, fail-closed', () => {
+    const w = (freeErrors) => ({ present: true, valid: true, value: { freeErrors } });
+    // completed ONLY with exit 0 + valid json + empty freeErrors + no signature.
+    expect(classifyWitnessMatrix('stable', 0, null, w([])).classification).toBe('completed');
+    // a signature dominates even at exit 0 — and is a FAILURE on the reference arm.
+    expect(classifyWitnessMatrix('stable', 0, 'RuntimeError: unreachable', w([])).classification).toBe('engineCrash');
+    expect(classifyWitnessMatrix('candidate', 1, 'RuntimeError: unreachable', { present: false }).blurb).toMatch(/Outcome-B evidence/);
+    // exit 0 but no valid json is NOT clean.
+    expect(classifyWitnessMatrix('stable', 0, null, { present: false, valid: false }).classification).toBe('exit0NoValidJson');
+    expect(classifyWitnessMatrix('stable', 0, null, w('nope')).classification).toBe('exit0NoValidJson');
+    // freeErrors non-empty, timeout, missing, unexplained.
+    expect(classifyWitnessMatrix('stable', 0, null, w(['x'])).classification).toBe('completedWithFreeErrors');
+    expect(classifyWitnessMatrix('stable', 124, null, w([])).classification).toBe('timeout');
+    expect(classifyWitnessMatrix('stable', null, null, w([])).classification).toBe('missing');
+    expect(classifyWitnessMatrix('stable', 7, null, w([])).classification).toBe('unexplained');
   });
 });

@@ -3,3 +3,6 @@ dist/
 CLAUDE.local.md
 .DS_Store
 ods_config.json
+# The from-source Rapier build tree consumed by the core-0.34 spike experiment
+# (.github/workflows/rapier-034-spike-experiment.yml); never committed.
+rapier-upstream/

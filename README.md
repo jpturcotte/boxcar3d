@@ -99,21 +99,31 @@ document the ruling. Prevalence — regenerable from the committed
 which hide catastrophic internal speeds behind ordinary-looking fitness —
 so raw `maxForwardDistance` mis-ranks in both directions, on flat terrain
 included. No production physics changed; every lock and version constant is
-byte-identical; the score policy stays v1. **A Rapier core-0.34 verification
-spike then landed** (a Layer-2 diagnostic, not a dependency change): the npm
-pins are the latest stable JS packages (core ~0.30.1), and the current upstream
-monorepo (`dimforge/rapier@c13133ad`, core 0.34) was built from source and run
-against every committed contract. **Verdict: the divergence persists on core
-0.34** — the reproducer stays catastrophic on both flavors, prevalence is the
-same 5/60, and a fresh seed adds 2/20 — while the candidate is otherwise clean
-(internally deterministic, no contract regression, no borrow error reproduced).
-A new `--arm multibody` reproducer arm shows reduced-coordinate realization is
-quiescent on both cores, so the joint *representation* (not the engine version)
-is the lever — but multibody motors/limits stay unavailable in the JS bindings,
-so that path is not yet usable for the driven phenotype. Full evidence and the
-`engine-assertion-taxonomy` triage map are in
-[`docs/rapier-034-spike-2026-07.md`](docs/rapier-034-spike-2026-07.md); no
-production dependency or lock changed. **The numerical-integrity policy then
+byte-identical; the score policy stays v1. **The Rapier core-0.34 verification
+spike in PR #19 reports Outcome B** (a Layer-2 diagnostic, not a dependency
+change): the npm pins are the latest stable JS packages (core ~0.30.1), and the
+current upstream monorepo (`dimforge/rapier@c13133ad`, core 0.34) was built from
+source and run against every committed contract — reproduced by a committed
+`workflow_dispatch` experiment whose citable `heavy=true` run (a same-commit
+stable-vs-candidate pair) confirmed the verdict at classification level.
+**Verdict: the divergence persists on core 0.34** — the reproducer stays
+catastrophic on both flavors, prevalence is the same 5/60, and a fresh seed adds
+2/20. On the surfaces that complete on both arms the candidate is clean
+(internally deterministic, no contract regression, and the population
+fitness-vector digest agrees across Node and Chromium — the one digest
+mechanically comparable across environments, not a broad cross-env claim);
+**but a new CI finding reinforces Outcome B — core 0.34 cannot complete
+the forensic witness matrix, crashing it unrecoverably (a `world.free()`
+borrow-guard panic, then a `RuntimeError: unreachable` trap), while stable
+0.19.3 completes it cleanly.** A new `--arm multibody`
+reproducer arm shows reduced-coordinate realization is quiescent on both cores —
+so the joint *representation* / constraint-enforcement regime (not the engine
+version) is the lever, measured for the undriven reproducer only — but all
+multibody motors/limits stay commented out of the JS bindings, so that path is
+not yet usable for the driven phenotype. Full evidence, the controlled
+`workflow_dispatch` experiment, and the `engine-assertion-taxonomy` triage map
+are in [`docs/rapier-034-spike-2026-07.md`](docs/rapier-034-spike-2026-07.md);
+no production dependency or lock changed. **The numerical-integrity policy then
 landed** — the GA-safety gate that unblocks Phase 1B. A small, always-on,
 engine-neutral online detector (`src/sim/integrity.js`, policy v1) folds three
 kinematic scalars per body — instantaneous speed, one-capture velocity change,

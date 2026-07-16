@@ -1,0 +1,323 @@
+{
+  "schema": "boxcar3d.spike-comparison/1",
+  "arms": {
+    "stable": {
+      "present": true,
+      "usable": true,
+      "issues": [],
+      "adjudicationPassed": true,
+      "rapierVersion": "0.19.3",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
+      "npmTestFailures": 0
+    },
+    "candidate": {
+      "present": true,
+      "usable": true,
+      "issues": [],
+      "adjudicationPassed": true,
+      "rapierVersion": "0.19.3-c13133ad.0",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
+      "npmTestFailures": 11
+    }
+  },
+  "findings": {
+    "provenance": {
+      "schema": "boxcar3d.candidate-provenance/2",
+      "resolvedSha": "33de9ca6fab13134e679206fec4a60419a5cfac1",
+      "requestedUpstreamRef": "c13133ad293ee70c7f9cec9e498eac016c362169",
+      "resolvedUpstreamSha": "c13133ad293ee70c7f9cec9e498eac016c362169",
+      "identitySuffix": "0.19.3-c13133ad.0",
+      "wasmPack": "wasm-pack 0.13.1",
+      "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+      "node": "v22.23.1",
+      "tarballs": {
+        "ordinary": "dc5964404b105878522beb47d40eedcedca05427f4342410d18e29045e51b243",
+        "deterministic": "997a169e9917ca494d93e346ad4bff011bd2fe11eb0b671c11df5a0a07621416"
+      },
+      "wasm": {
+        "ordinary": "b7c95b68da70856020b553182cda062574b14c8046a509c7ebc4ec6c66334656",
+        "deterministic": "7c785770326c18ed200eddd3e69ca1f7ee98362fce9b7dd3bf36d40f73d81bc7"
+      },
+      "upstreamPatchSha256": "6bd462edd446ee9a0d7f10dfdd4deb966ad6240d7f444fbbbc970abbd048768f",
+      "gitDiffStat": " typescript/builds/prepare_builds/templates/Cargo.toml.tera | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    },
+    "reproducer": {
+      "stable": {
+        "original": {
+          "peakBodySpeed": 5452.219600812323,
+          "firstCatastrophicStep": 46,
+          "classification": "catastrophic",
+          "maxForwardDistance": 1.3030357360839844,
+          "unsupported": false
+        },
+        "multibody": {
+          "peakBodySpeed": 1.419591928492702,
+          "firstCatastrophicStep": null,
+          "classification": "quiescent",
+          "maxForwardDistance": 0.011661529541015625,
+          "unsupported": false
+        }
+      },
+      "candidate": {
+        "original": {
+          "peakBodySpeed": 4784.766359213198,
+          "firstCatastrophicStep": 107,
+          "classification": "catastrophic",
+          "maxForwardDistance": 243.1922607421875,
+          "unsupported": false
+        },
+        "multibody": {
+          "peakBodySpeed": 1.3994887381196472,
+          "firstCatastrophicStep": null,
+          "classification": "quiescent",
+          "maxForwardDistance": 0.012012481689453125,
+          "unsupported": false
+        }
+      }
+    },
+    "prevalence": {
+      "stable": {
+        "20260725": {
+          "catastrophic": 3,
+          "total": 20,
+          "ids": [
+            "1@52",
+            "14@88",
+            "19@60"
+          ]
+        },
+        "20260728": {
+          "catastrophic": 1,
+          "total": 20,
+          "ids": [
+            "4@56"
+          ]
+        },
+        "20260729": {
+          "catastrophic": 1,
+          "total": 20,
+          "ids": [
+            "19@62"
+          ]
+        },
+        "20260730": {
+          "catastrophic": 2,
+          "total": 20,
+          "ids": [
+            "0@76",
+            "5@45"
+          ]
+        }
+      },
+      "candidate": {
+        "20260725": {
+          "catastrophic": 3,
+          "total": 20,
+          "ids": [
+            "1@53",
+            "14@227",
+            "19@51"
+          ]
+        },
+        "20260728": {
+          "catastrophic": 1,
+          "total": 20,
+          "ids": [
+            "4@45"
+          ]
+        },
+        "20260729": {
+          "catastrophic": 1,
+          "total": 20,
+          "ids": [
+            "19@62"
+          ]
+        },
+        "20260730": {
+          "catastrophic": 2,
+          "total": 20,
+          "ids": [
+            "0@106",
+            "5@48"
+          ]
+        }
+      }
+    },
+    "tests": {
+      "stable": {
+        "numFailedTests": 0,
+        "byFile": {}
+      },
+      "candidate": {
+        "numFailedTests": 11,
+        "byFile": {
+          "tests/bench-schema.test.js": {
+            "failed": 1,
+            "failedNames": [
+              "bench:physics schema smoke smoke matrix: valid schema, paired comparisons, finite timings, timing never enters trace bytes"
+            ],
+            "failedAssertions": [
+              {
+                "name": "bench:physics schema smoke smoke matrix: valid schema, paired comparisons, finite timings, timing never enters trace bytes",
+                "message": "AssertionError: expected { …(2) } to deeply equal { compat: '0.19.3', …(1) }\n    at /home/runner/work/boxcar3d/boxcar3d/tests/bench-schema.test.js:29:34\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              }
+            ]
+          },
+          "tests/evaluation-determinism.test.js": {
+            "failed": 5,
+            "failedNames": [
+              "gate (d): golden locks (deterministic flavor) lock staleness teeth: versions, record size, step counts, engine version",
+              "gate (d): golden locks (deterministic flavor) eval-a-s0-flat: run matches the committed lock (digest, counts, every checkpoint state)",
+              "gate (d): golden locks (deterministic flavor) eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)",
+              "gate (d): golden locks (deterministic flavor) eval-c-max-s1: run matches the committed lock (digest, counts, every checkpoint state)",
+              "gate (d): golden locks (deterministic flavor) eval-d-mixed-radius-flat: run matches the committed lock (digest, counts, every checkpoint state)"
+            ],
+            "failedAssertions": [
+              {
+                "name": "gate (d): golden locks (deterministic flavor) lock staleness teeth: versions, record size, step counts, engine version",
+                "message": "AssertionError: eval-a-s0-flat: engine changed — re-lock deliberately: expected '0.19.3' to be '0.19.3-c13133ad.0' // Object.is equality\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-determinism.test.js:102:87\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "gate (d): golden locks (deterministic flavor) eval-a-s0-flat: run matches the committed lock (digest, counts, every checkpoint state)",
+                "message": "AssertionError: expected 'eval-a-s0-flat: first divergent check…' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-determinism.test.js:138:68\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "gate (d): golden locks (deterministic flavor) eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)",
+                "message": "AssertionError: expected 'eval-b-mixed-composite: first diverge…' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-determinism.test.js:138:68\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "gate (d): golden locks (deterministic flavor) eval-c-max-s1: run matches the committed lock (digest, counts, every checkpoint state)",
+                "message": "AssertionError: expected 'eval-c-max-s1: first divergent checkp…' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-determinism.test.js:138:68\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "gate (d): golden locks (deterministic flavor) eval-d-mixed-radius-flat: run matches the committed lock (digest, counts, every checkpoint state)",
+                "message": "AssertionError: expected 'eval-d-mixed-radius-flat: first diver…' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-determinism.test.js:138:68\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              }
+            ]
+          },
+          "tests/evaluation-golden.test.js": {
+            "failed": 1,
+            "failedNames": [
+              "gate (b): fresh-module reproduction of the golden lock fixture A reproduces the committed digest and every checkpoint state from a cold module graph"
+            ],
+            "failedAssertions": [
+              {
+                "name": "gate (b): fresh-module reproduction of the golden lock fixture A reproduces the committed digest and every checkpoint state from a cold module graph",
+                "message": "AssertionError: expected 'first divergent checkpoint 1 (state) …' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/evaluation-golden.test.js:40:142\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              }
+            ]
+          },
+          "tests/physics-explosion-probe-schema.test.js": {
+            "failed": 1,
+            "failedNames": [
+              "probe schema smoke smoke config produces the versioned report shape with all hard checks green"
+            ],
+            "failedAssertions": [
+              {
+                "name": "probe schema smoke smoke config produces the versioned report shape with all hard checks green",
+                "message": "AssertionError: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality\n    at /home/runner/work/boxcar3d/boxcar3d/tests/physics-explosion-probe-schema.test.js:34:41\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              }
+            ]
+          },
+          "tests/population-determinism.test.js": {
+            "failed": 3,
+            "failedNames": [
+              "population lock staleness teeth lock set, versions, engine, dt, and internal consistency",
+              "population evaluation gate (deterministic flavor) two fresh evaluations agree byte-for-byte, and the second matches the committed lock",
+              "population evaluation gate (deterministic flavor) champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)"
+            ],
+            "failedAssertions": [
+              {
+                "name": "population lock staleness teeth lock set, versions, engine, dt, and internal consistency",
+                "message": "AssertionError: engine changed — re-lock deliberately: expected '0.19.3' to be '0.19.3-c13133ad.0' // Object.is equality\n    at /home/runner/work/boxcar3d/boxcar3d/tests/population-determinism.test.js:68:75\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "population evaluation gate (deterministic flavor) two fresh evaluations agree byte-for-byte, and the second matches the committed lock",
+                "message": "AssertionError: expected 'ee605286' to be 'bded0d30' // Object.is equality\n    at /home/runner/work/boxcar3d/boxcar3d/tests/population-determinism.test.js:181:36\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              },
+              {
+                "name": "population evaluation gate (deterministic flavor) champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)",
+                "message": "AssertionError: expected 'champion trace: first divergent check…' to be null\n    at /home/runner/work/boxcar3d/boxcar3d/tests/population-determinism.test.js:219:57\n    at processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at file:///home/runner/work/boxcar3d/boxcar3d/node_modules/@vitest/runner/dist/chunk-hooks.js:752:20"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "nodeChromiumAgreement": {
+      "extracted": true,
+      "agree": true,
+      "requiredKeys": [
+        "population:fitness-vector"
+      ],
+      "extraKeys": [],
+      "node": {
+        "population:fitness-vector": "ee605286"
+      },
+      "chromium": {
+        "population:fitness-vector": "ee605286"
+      }
+    },
+    "borrow_stable": {
+      "scanned": 22,
+      "matches": []
+    },
+    "borrow_candidate": {
+      "scanned": 22,
+      "matches": [
+        "witnesses.log: RuntimeError: unreachable"
+      ]
+    },
+    "witnessMatrix_stable": {
+      "exit": 0,
+      "classification": "completed",
+      "crashSignature": null
+    },
+    "witnessMatrix_candidate": {
+      "exit": 1,
+      "classification": "engineCrash",
+      "crashSignature": "RuntimeError: unreachable"
+    },
+    "perf": {
+      "status": "ok",
+      "summary": {
+        "order": [
+          "stable#1",
+          "candidate#1",
+          "candidate#2",
+          "stable#2"
+        ],
+        "status": "ok",
+        "allParsed": true,
+        "parsed": 4,
+        "total": 4,
+        "errored": 0,
+        "note": "four bench runs parsed; paired ratio computed in C5"
+      }
+    }
+  },
+  "verdict": {
+    "established": true,
+    "multibodyIsGating": false,
+    "outcomeBReproduced": true,
+    "citable": true,
+    "bootstrapComplete": true,
+    "heavy": true,
+    "reproducerImpulse": {
+      "stable": "catastrophic",
+      "candidate": "catastrophic",
+      "sameClass": true
+    },
+    "reproducerMultibody": {
+      "stable": "quiescent",
+      "candidate": "quiescent"
+    },
+    "bothArmsUsable": true,
+    "armIssues": {
+      "stable": [],
+      "candidate": []
+    },
+    "missingArms": [],
+    "perfStatus": "ok"
+  }
+}

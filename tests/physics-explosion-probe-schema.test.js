@@ -8,7 +8,8 @@
 
 import { describe, test, expect } from 'vitest';
 import {
-  PROBE_SCHEMA, normalizePasses, renderMarkdown, runProbe, smokeConfig,
+  PROBE_SCHEMA, BORROW_GUARD_MESSAGE, configFromArgs, isBorrowGuardPanic, normalizePasses,
+  parsePrevalenceSeeds, renderMarkdown, runProbe, safeFreeWorld, selectReproducerArm, smokeConfig,
 } from '../scripts/probe-physics-explosion.js';
 
 const HEX8 = /^[0-9a-f]{8}$/;
@@ -42,6 +43,17 @@ describe('probe schema smoke', () => {
     }
     expect(report.checks.some((c) => c.name.startsWith('identity:'))).toBe(true);
     expect(report.checks.some((c) => c.name.startsWith('repeat:'))).toBe(true);
+
+    // world.free() borrow-guard panics are OBSERVATIONS in their own array,
+    // never HARD checks: always an array (empty on a clean engine like stable
+    // 0.19.3 — the smoke arms never drive the extreme state; core 0.34 records
+    // "attempted to take ownership..." here instead of crashing the matrix).
+    // That they never enter report.checks is locked by the safeFreeWorld unit
+    // tests (the collector is injected, distinct from `check`). Asserted as an
+    // array only (not emptiness): this file is also a candidate red, and a
+    // stricter emptiness claim could perturb that arm's signature if a smoke arm
+    // ever reached the extreme state on the new engine.
+    expect(Array.isArray(report.freeErrors)).toBe(true);
 
     // Baseline: witness A driven + passive, structurally complete.
     expect(report.baseline).toHaveLength(2);
@@ -192,6 +204,7 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Localization');
     expect(md).toContain('## Minimum reproducer');
     expect(md).toContain('## Prevalence');
+    expect(md).toContain('## world.free() borrow-guard panics');
   });
 
   test('pass selection normalizes identically for the programmatic API and the CLI', () => {
@@ -248,5 +261,130 @@ describe('probe schema smoke', () => {
       .rejects.toThrow(/unknown witness/);
     await expect(runProbe({ ...smokeConfig(), witnesses: ['1:2'] }))
       .rejects.toThrow(/unknown witness/);
+  });
+});
+
+describe('safeFreeWorld — swallow ONLY the borrow-guard class; rethrow every other fault', () => {
+  // The core-0.34 finding: the engine-ablation pass drives a witness into an
+  // extreme state and world.free() throws the wasm-bindgen borrow guard
+  // ("attempted to take ownership of Rust value while it was borrowed") — a
+  // CLEAN JS exception recorded as instability data. But ONLY that exact class
+  // is an observation; every other throw (API drift, an unrelated panic, a
+  // probe bug) is a real fault that must RE-THROW and fail loud, so a swallowed
+  // teardown failure can never masquerade as a clean run. Unit-testable with a
+  // fake world (no candidate engine needed).
+
+  test('isBorrowGuardPanic matches ONLY the ownership-guard wording', () => {
+    expect(isBorrowGuardPanic(BORROW_GUARD_MESSAGE)).toBe(true);
+    expect(isBorrowGuardPanic(`Error: ${BORROW_GUARD_MESSAGE} (in afterAll)`)).toBe(true);
+    expect(isBorrowGuardPanic('world.free is not a function')).toBe(false);
+    expect(isBorrowGuardPanic('RuntimeError: unreachable')).toBe(false);
+    expect(isBorrowGuardPanic('already borrowed')).toBe(false);
+  });
+
+  test('a borrow-guard throw is caught, recorded, and its message returned (never re-thrown)', () => {
+    const recorded = [];
+    const world = { free() { throw new Error(BORROW_GUARD_MESSAGE); } };
+    let message;
+    expect(() => { message = safeFreeWorld(world, (m) => recorded.push(m)); }).not.toThrow();
+    expect(message).toBe(BORROW_GUARD_MESSAGE);
+    expect(recorded).toEqual([BORROW_GUARD_MESSAGE]);
+  });
+
+  test('a clean free() returns null and records nothing', () => {
+    const recorded = [];
+    let freed = false;
+    const world = { free() { freed = true; } };
+    const message = safeFreeWorld(world, (m) => recorded.push(m));
+    expect(freed).toBe(true);
+    expect(message).toBeNull();
+    expect(recorded).toEqual([]);
+  });
+
+  test('a NON-borrow Error (API drift) RE-THROWS the original and records nothing', () => {
+    const recorded = [];
+    const err = new Error('world.free is not a function');
+    const world = { free() { throw err; } };
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow(err);
+    expect(recorded).toEqual([]);
+  });
+
+  test('a raw-string non-borrow throw RE-THROWS and records nothing (the old catch-all is gone)', () => {
+    const recorded = [];
+    const world = { free() { throw 'raw string panic'; } };
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow('raw string panic');
+    expect(recorded).toEqual([]);
+  });
+});
+
+describe('CLI parser (configFromArgs + validators)', () => {
+  // These exercise the SAME parse + validation the CLI runs (main() is a thin
+  // configFromArgs(process.argv.slice(2)) caller), so `--arm multibody` and
+  // `--prevalence-seeds` — documented in the USAGE header, the PR body, and the
+  // decision record — are proven wired, not just declared (round-2 P2: the old
+  // parseArgs declared only smoke/witness/pass/json, so `--arm` threw in strict
+  // mode). No child_process: configFromArgs is a pure argv -> config function.
+
+  test('--arm selects exactly one reproducer arm', () => {
+    const cfg = configFromArgs(['--pass', 'reproducer', '--arm', 'multibody']);
+    expect(cfg.reproducerArms).toEqual(['multibody']);
+    expect(cfg.passes).toBe('reproducer');
+  });
+
+  test('--prevalence-seeds parses a canonical uint32 list; argv round-trips', () => {
+    const argv = ['--pass', 'prevalence', '--prevalence-seeds', '20260730'];
+    const cfg = configFromArgs(argv);
+    expect(cfg.prevalenceSeeds).toEqual([20260730]);
+    // config.argv records the PASSED argv (not process.argv) so it flows into
+    // report.argv for a programmatic run.
+    expect(cfg.argv).toEqual(argv);
+  });
+
+  test('--prevalence-seeds accepts a comma list in order and the domain boundaries', () => {
+    expect(configFromArgs(['--prevalence-seeds', '20260725,20260730']).prevalenceSeeds)
+      .toEqual([20260725, 20260730]);
+    expect(configFromArgs(['--prevalence-seeds', '0,4294967295']).prevalenceSeeds)
+      .toEqual([0, 4294967295]);
+  });
+
+  test('absent options leave the defaults untouched', () => {
+    const cfg = configFromArgs([]);
+    expect(cfg.reproducerArms).toBeNull();
+    expect(cfg.prevalenceSeeds).toEqual([20260725, 20260728, 20260729]);
+    expect(cfg.jsonOut).toBeNull();
+    expect(cfg.argv).toEqual([]);
+  });
+
+  test('--smoke selects the smoke config and --json sets jsonOut', () => {
+    const cfg = configFromArgs(['--smoke', '--json', 'out.json']);
+    expect(cfg.prevalenceSeeds).toEqual([20260725]);
+    expect(cfg.jsonOut).toBe('out.json');
+  });
+
+  test('an unknown --arm fails loud', () => {
+    expect(() => configFromArgs(['--arm', 'bogus'])).toThrow(/unknown reproducer arm/);
+    expect(() => selectReproducerArm('bogus')).toThrow(/unknown reproducer arm/);
+    expect(selectReproducerArm('multibody')).toBe('multibody');
+  });
+
+  test('invalid --prevalence-seeds fails loud (non-integer, blank, out-of-domain)', () => {
+    for (const bad of ['abc', '', ' ', '20260730,', '1.5', '4294967296']) {
+      expect(() => configFromArgs(['--prevalence-seeds', bad]), bad)
+        .toThrow(/invalid prevalence seed/);
+    }
+    // A negative reaches the validator only via the `=` form — a BARE
+    // "--prevalence-seeds -1" is rejected earlier by parseArgs itself
+    // (dash-prefixed value is ambiguous). Both are rejections.
+    expect(() => configFromArgs(['--prevalence-seeds=-1'])).toThrow(/invalid prevalence seed/);
+    expect(() => configFromArgs(['--prevalence-seeds', '-1'])).toThrow();
+  });
+
+  test('parsePrevalenceSeeds is the shared fail-loud authority', () => {
+    expect(parsePrevalenceSeeds('20260730')).toEqual([20260730]);
+    expect(() => parsePrevalenceSeeds('nope')).toThrow(/invalid prevalence seed/);
+  });
+
+  test('an unknown option is rejected by strict parseArgs', () => {
+    expect(() => configFromArgs(['--bogus'])).toThrow();
   });
 });

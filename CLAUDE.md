@@ -1114,31 +1114,127 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   release carrying core ≥0.33 — the reproducer stays the engine-upgrade
   tripwire.
 
-Next — the **numerical-integrity policy PR (PR-B)**, then **GA Phase 1B:
-Mutation-Only Evolution** (selection, elitism, deterministic mutation,
-generational replacement, champion history — a generational loop over
-`evaluatePopulation`, sim-time pure), which follows only after the
-physics-integrity result AND the core-0.34 spike — both now in hand (the spike
-confirmed the integrity policy must be built on stable 0.19.3, and calibrated
-against it). **PR-B designs the numerical-integrity policy against the
-now-understood failure class** (solver divergence on ill-conditioned islands):
-the forensic
-detector exists (`analyzeTrace` alert/catastrophic classification catches
-all 5/60 affected individuals, including the two whose fitness looks
-ordinary), and the raw `maxForwardDistance` metric mis-ranks in BOTH
-directions even on FLAT terrain — so constraining the training terrain is
-NOT an escape hatch, and the detector must run per evaluation (mutation
-moves morphologies across the conditioning boundary both ways). Whether the
-thresholds become a validity bound, a rank guard, or a re-evaluation
-trigger is Phase 1B's decision. Build on the Phase-1A trusted contracts:
-`createInitialPopulation`, the snapshot/initialization/spec/fitness-vector
-encodings, `evaluatePopulation` (isolatedWorlds, id-keyed),
-`championFromEvaluation`, and the max-progress result fields. Empirical
+**The numerical-integrity policy PR (PR-B) landed — the GA-safety gate that
+unblocks Phase 1B: a small, always-on, engine-neutral online detector that
+makes Rapier's constraint-solver divergence non-selectable, calibrated on
+stable 0.19.3. Full evidence: `docs/numerical-integrity-policy-2026-07.md`:**
+- **`src/sim/integrity.js`** (new, pure, under the sim ban — `Math.sqrt` only):
+  `INTEGRITY_POLICY_VERSION 1`; frozen production thresholds (copies of the
+  forensic alert/catastrophic values, versioned SEPARATELY from the tweakable
+  diagnostic defaults — a drift tooth asserts they still agree);
+  `createIntegrityState`/`foldIntegrity`/`finalizeIntegrity` — a per-vehicle
+  fold over the SAME per-body reads `captureStep` already takes (previous
+  linvel/translation in preallocated `Float64Array` scratch, NO per-step
+  allocation, no engine query). `norm3`/`dist3` moved here and imported back by
+  `trace-forensics.js` so the ONLINE and OFFLINE detectors share one
+  arithmetic. Status `'ok'|'nonFinite'|'numericalDivergence'`; **failure bound =
+  nonFinite ∨ catastrophic crossing** (|v| > 1000 m/s, or one-capture |Δx| >
+  (1000/60)·dtScale, ANY body); the alert band is an OBSERVATION, never a
+  failure (escalation is a documented policy-v2 trigger gated by the
+  false-negative acceptance test). `captureDt = effectiveDt` (the f32 engine
+  readback, the pinned convention — the online fold and `analyzeTrace` apply
+  identical dt-scaling, so online≡offline classification is bit-exact,
+  witnessed in `tests/integrity.test.js` on the reproducer + a healthy
+  fixture, OUTCOME-AGNOSTICALLY).
+- **Result-only field** on every production evaluation
+  (`src/sim/evaluation.js`): the per-vehicle `integrity` block, observations
+  populated on EVERY status. Policy v1 CLASSIFIES but never shortens (still
+  exactly maxSteps after a failure — trace shape/executed-steps/timing
+  preserved). Always-on: the only off switch is a direct-caller
+  `integrity: false` at the `runRealizedEvaluationLoop` seam (the `inspect`
+  precedent, for cost/non-interference measurement); `runEvaluation` rejects the
+  key. **Zero trace-byte change — the A–D golden digests are byte-identical, no
+  re-lock** (the `maxForwardDistance` precedent; determinism gate (a) confirms).
+- **Fitness policy v2** (`src/sim/population-evaluation.js`,
+  `FITNESS_POLICY_VERSION 1→2`): `selectable = isVehicleResultValid(v) &&
+  v.integrity.status === 'ok'`; `fitness = selectable ? maxForwardDistance : 0`.
+  `isVehicleResultValid` is UNCHANGED (validity ≠ selectability, deliberately).
+  `FITNESS_VECTOR_VERSION 1→2`: header +`integrityPolicyVersion`, per-member
+  +`integrityStatus` byte (an integrity-failed non-zero fitness can never
+  serialize). New `selectableChampionFromEvaluation` returns the best
+  valid∧integrity-clean individual or **null** when none exists — an
+  integrity-failed vehicle never becomes champion merely because every fitness
+  is 0; `championFromEvaluation` stays as the DIAGNOSTIC best-observed selector
+  (reports only). Raw metrics + the full integrity block stay in diagnostics —
+  failures observable, never silently zeroed.
+- **One deliberate re-lock** (`src/sim/population-locks.js`, cause: intended
+  policy/encoding change): `fitnessVectorDigest bded0d30 → a6d04f75`,
+  `fitnessPolicyVersion`/`fitnessVectorVersion` 1→2, +`integrityPolicyVersion 1`.
+  MEASURED first: the committed fixture is **20/20 integrity-clean**, so every
+  per-member fitness literal, the champion (id 10), and the champion trace are
+  byte-identical — only the vector bytes moved (new header field + status
+  byte). Node 3-OS (`test:determinism`) AND pinned Chromium
+  (`test:browser`) reproduce `a6d04f75` — the browser gate agreed first run.
+- **`scripts/probe-integrity.js`** (`npm run probe:integrity`, schema
+  `boxcar3d.probe-integrity/1`, defaults SMALL) — the characterization
+  instrument: **signals** (the known-subject panel — 4 witnesses + reproducer +
+  3 clean controls + fixtures A–D, each with online≡offline agreement
+  HARD-checked), **population** (the committed 60, production path, with the
+  false-negative "alert-but-ok" watch list), **neighborhood** (deterministic
+  gene-jitter around 3 declared parents, seed **20260731** — the Phase-1B
+  mutation-neighborhood probe's first data), **cost** (paired interleaved
+  on-vs-off at the core-loop seam). One schema-smoke CI touchpoint
+  (`tests/integrity-probe-schema.test.js`; structure/identity/agreement only,
+  no magnitudes — the regression-asymmetry rule). MEASURED: all 5 known-affected
+  subjects (incl. witness S, 3.63 m of ordinary-looking distance hiding a
+  1070 m/s blow-up) → unselectable, fitness 0; all controls/fixtures ok at
+  180–600× margin below failure; 5/60 prevalence; **no false-positive halo**
+  (0/32 clean-parent children fail) and the alert-but-ok watch list EMPTY across
+  all 60 individuals + 48 neighborhood children; cost within noise.
+- Full suite green both flavors (41 files, 652 tests); every terrain/assembly
+  fingerprint and the A–D evaluation golden digests byte-identical;
+  `GENOTYPE_VERSION`/`ASSEMBLY_IR_VERSION`/`EVALUATION_TRACE_VERSION`/snapshot/
+  initializer/spec versions unchanged.
+- **Review follow-up (2026-07-16, on-branch; no lock movement, `a6d04f75`
+  stands):** (1) `requireIntegrity` now runs BEFORE the validity
+  short-circuit — an INVALID result with missing/null/malformed integrity is
+  refused LOUD at both policy entry points, never a silent 0 (regression
+  suite committed; `isVehicleResultValid` unchanged). (2) The online≡offline
+  agreement contract is the FULL derivable classification: `analyzeTrace`
+  records per-body per-reason first steps and the shared
+  `offlineIntegrityView` derives status/firstFailureStep/ordered-reasons per
+  the online scan-order contract; a pure codec-fed suite pins every ordering
+  rule (incl. same-step ties) as an arithmetic identity between the two
+  detectors. (3) The neighborhood jitter walker preserves the declared
+  `DISCRETE_GENE_KEYS` (assembly.js: family/suspType/symmetric/paired/
+  driven/nodeCount) — a suspType crossing into the legal-but-unrealizable S2
+  band can no longer abort the experiment (S1→S2 boundary regression
+  committed; S2 never clamped, just unreachable by parametric jitter).
+  (4) **The cross-PR defect closed:** the spike inventory's copied
+  `"to be 'bded0d30'"` regex (staled by this PR's re-lock) is replaced by the
+  structured marker protocol — `src/sim/lock-markers.js`
+  (`FITNESS_VECTOR_LOCK_MISMATCH expected=<lock> actual=<measured>`, the
+  custom message on the still-real `.toBe` golden assertion in BOTH
+  population determinism gates), adjudicated by `compare-spike-runs.js`
+  against `AUTHORITATIVE_FITNESS_VECTOR_DIGESTS` imported LIVE from
+  population-locks at adjudication time (inventory schema/3; no mutable
+  digest literal in any signature — sync-tooth-enforced;
+  `tests/integrity-probe-schema.test.js` joins the expected candidate reds,
+  Node totals 11→12; the July 2026 C5 evidence stays historical/untouched).
+
+Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
+deterministic mutation, generational replacement, champion history — a
+generational loop over `evaluatePopulation`, sim-time pure), now UNBLOCKED (the
+integrity gate makes divergence non-selectable, and the mutation-neighborhood
+probe gives its first empirical footing). **Phase 1B consumes the Phase-1A +
+policy-v2 contracts**: `createInitialPopulation`, the snapshot/initialization/
+spec/fitness-vector(v2) encodings, `evaluatePopulation` (isolatedWorlds,
+id-keyed, integrity-gated), **`selectableChampionFromEvaluation`** for elitism
+(handle the explicit null — a generation with no selectable member is a real
+condition), and the max-progress result fields. The integrity disposition is
+DECIDED (PR-B): the threshold is a fitness-eligibility bound (integrity failure
+⇒ non-selectable, fitness 0), run per evaluation — constraining the training
+terrain is not an escape hatch, since mutation moves morphologies across the
+conditioning boundary both ways (measured: witness A's whole neighborhood stays
+divergent; clean parents' neighborhoods stay clean). Alert-as-failure escalation
+remains a policy-v2 trigger, unmet on the tested corpus. Empirical
 guidance: initial viability is real but modest (median ~2–3 m); repair is
 near-universal on uniform raw draws (perturb genes freely and rely on
-repair for canonicalization — whether repair damps small jitter around a
-canonical parent is UNMEASURED; the mutation-neighborhood probe is the
-right first Phase-1B experiment, report §9.5); no category is starved
+repair for canonicalization; the mutation-neighborhood probe
+(`probe:integrity --pass neighborhood`, discrete-preserving walker) has data —
+repair touches ~1.4–6.4 gene leaves per jittered child and does not, on that
+sample, push clean children across the boundary or rescue affected ones); no
+category is starved
 (parametric mutation first, structural second; structural rates
 conservative, spec §3.1.3). **Deferred (unchanged):** Phase 1C extended
 operators (evidence-driven, NOT promised as crossover); worker sharding with

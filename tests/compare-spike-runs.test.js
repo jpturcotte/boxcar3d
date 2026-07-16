@@ -20,13 +20,27 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import {
+  AUTHORITATIVE_FITNESS_VECTOR_DIGESTS,
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
   borrowErrorScan, prevalenceCoverageIssues, readJsonSafe,
   witnessLogPanicSignature, classifyWitnessMatrix,
 } from '../scripts/compare-spike-runs.js';
+import { formatFitnessVectorLockMismatch } from '../src/sim/lock-markers.js';
+import { POPULATION_GOLDEN_LOCKS } from '../src/sim/population-locks.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
+
+// The CURRENT authoritative fitness-vector lock — resolved live so these
+// fixtures can never stale on a deliberate re-lock (the schema/3 point).
+const FV_LOCK = AUTHORITATIVE_FITNESS_VECTOR_DIGESTS[0];
+
+// The REAL failure-message shape (captured verbatim from a flipped-lock run,
+// Node and Chromium both, 2026-07-16): the structured marker as the custom
+// message, then vitest's received-first .toBe diff.
+const fvMarkerMessage = (lock, measured) => `AssertionError: ${formatFitnessVectorLockMismatch(lock, measured)}`
+  + ' — engine or encoding changed; re-lock deliberately via the null-digest workflow:'
+  + ` expected '${measured}' to be '${lock}' // Object.is equality`;
 
 let TMP;
 beforeAll(() => { TMP = mkdtempSync(join(tmpdir(), 'spike-adjudicator-')); });
@@ -42,11 +56,11 @@ const EVAL_FIX = ['eval-a-s0-flat', 'eval-b-mixed-composite', 'eval-c-max-s1', '
 const passed = (fullName) => ({ fullName, status: 'passed', failureMessages: [] });
 const failed = (fullName, message) => ({ fullName, status: 'failed', failureMessages: [message] });
 
-// The candidate's expected Node report: 11 reds with their real failure
+// The candidate's expected Node report: 12 reds with their real failure
 // signatures + every must-pass assertion present and passed.
-function nodeCandidateReport({ fvMeasured = 'ee605286', champState = '0000dcba' } = {}) {
+function nodeCandidateReport({ fvMeasured = 'ee605286', fvLock = FV_LOCK, champState = '0000dcba' } = {}) {
   return {
-    numFailedTests: 11,
+    numFailedTests: 12,
     testResults: [
       {
         name: '/w/tests/evaluation-determinism.test.js',
@@ -85,7 +99,7 @@ function nodeCandidateReport({ fvMeasured = 'ee605286', champState = '0000dcba' 
           passed('population initializer locks (pure — no physics) > the champion genotype digest reproduces from the fresh population'),
           passed('population initializer locks (pure — no physics) > structural heterogeneity the fixture seed was scanned for (exact sets at this seed)'),
           failed('population evaluation gate (deterministic flavor) > two fresh evaluations agree byte-for-byte, and the second matches the committed lock',
-            `expected '${fvMeasured}' to be 'bded0d30' // Object.is equality`),
+            fvMarkerMessage(fvLock, fvMeasured)),
           failed('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)',
             `AssertionError: expected 'champion trace: first divergent check…' to be null // champState ${champState}`),
         ],
@@ -104,11 +118,24 @@ function nodeCandidateReport({ fvMeasured = 'ee605286', champState = '0000dcba' 
             "expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
         ],
       },
+      {
+        name: '/w/tests/integrity-probe-schema.test.js',
+        assertionResults: [
+          failed('integrity probe schema smoke > smoke config produces the versioned report shape with all hard checks green',
+            "expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+          passed('integrity probe schema smoke > a single-pass run dispatches exactly that pass'),
+          passed('integrity probe schema smoke > an unknown pass fails loud'),
+          passed('parametric jitter preserves discrete-decode genes > the S1→S2 boundary case: a suspType the OLD walker would have pushed into S2 is preserved exactly'),
+          passed('parametric jitter preserves discrete-decode genes > every declared discrete gene is preserved bit-exactly; continuous leaves actually move'),
+        ],
+      },
     ],
   };
 }
 
-function browserCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286', champStateUnpadded = 'dcba' } = {}) {
+function browserCandidateReport({
+  evalActual = '6b83729e', fvMeasured = 'ee605286', fvLock = FV_LOCK, champStateUnpadded = 'dcba',
+} = {}) {
   return {
     numFailedTests: 6,
     testResults: [
@@ -124,7 +151,7 @@ function browserCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee60528
         assertionResults: [
           passed('population golden locks (Chromium) > pure initializer locks: snapshot + initialization digests'),
           failed('population golden locks (Chromium) > evaluation: fitness-vector digest, every fitness literal by individualId, champion',
-            `expected '${fvMeasured}' to be 'bded0d30' // Object.is equality`),
+            fvMarkerMessage(fvLock, fvMeasured)),
           failed('population golden locks (Chromium) > champion solo digest-mode rerun matches the locked trace',
             `expected 'first divergent step 1 (state ${champStateUnpadded}) — capture the full record in Node for forensics' to be null`),
         ],
@@ -138,7 +165,7 @@ const reproJson = (dt = 0.01666666753590107) => ({ engine: { rapierVersion: '0.1
 // --- classify: assertion-level enforcement ---------------------------------------
 
 describe('classify — assertion-level candidate-red enforcement (node)', () => {
-  test('the expected 11-red report passes all four layers', () => {
+  test('the expected 12-red report passes all four layers', () => {
     const r = classify({ testJsonPath: writeJson('c-ok.json', nodeCandidateReport()), expectedPath: EXPECTED, label: 'node' });
     expect(r.ok).toBe(true);
   });
@@ -255,6 +282,98 @@ describe('classify — assertion-level candidate-red enforcement (node)', () => 
   });
 });
 
+// --- classify: the schema/3 marker validation (the one-source-of-truth rule) ------
+//
+// The pre-/3 inventory duplicated the mutable fitness-vector lock digest
+// inside a messageRegex ("to be 'bded0d30'") and silently staled on PR #20's
+// deliberate re-lock. Schema/3 signatures carry lockMarker instead: classify
+// parses the structured marker and validates expected= against the
+// authoritative population-locks digest AT ADJUDICATION TIME. These tests pin
+// both directions: a stale/fabricated expected= fails, and the validation
+// really reads the injected authority (so the default wiring is live, not
+// decorative).
+
+describe('classify — fitness-vector lock-marker validation', () => {
+  const popFitnessAssertion = (rep) => {
+    const popFile = rep.testResults.find((s) => s.name.includes('population-determinism'));
+    return popFile.assertionResults.find((a) => a.fullName.includes('two fresh evaluations agree'));
+  };
+
+  test('a marker whose expected= is NOT the authoritative committed lock fails (stale or fabricated)', () => {
+    // 'deadbeef' is a well-formed 8-hex digest that is not the committed lock.
+    const rep = nodeCandidateReport({ fvLock: 'deadbeef' });
+    const r = classify({ testJsonPath: writeJson('m-stale.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('EXPECTED-DIGEST MISMATCH');
+  });
+
+  test('the injected authority is really consulted: the SAME correct report fails against a different authority', () => {
+    const rep = nodeCandidateReport(); // expected= is the real committed lock
+    const r = classify({
+      testJsonPath: writeJson('m-auth.json', rep), expectedPath: EXPECTED, label: 'node', authoritativeDigests: ['deadbeef'],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('EXPECTED-DIGEST MISMATCH');
+  });
+
+  test('contradictory duplicate markers in one message are MALFORMED', () => {
+    const rep = nodeCandidateReport();
+    popFitnessAssertion(rep).failureMessages = [
+      `${formatFitnessVectorLockMismatch(FV_LOCK, 'ee605286')}\n${formatFitnessVectorLockMismatch(FV_LOCK, 'ffff0000')}`,
+    ];
+    const r = classify({ testJsonPath: writeJson('m-dup.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('LOCK MARKER MALFORMED');
+  });
+
+  test('a well-formed marker followed by a FIELDLESS token is MALFORMED (never first-match-wins)', () => {
+    const rep = nodeCandidateReport();
+    popFitnessAssertion(rep).failureMessages = [
+      `${formatFitnessVectorLockMismatch(FV_LOCK, 'ee605286')} and later FITNESS_VECTOR_LOCK_MISMATCH appears bare`,
+    ];
+    const r = classify({ testJsonPath: writeJson('m-bare.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('LOCK MARKER MALFORMED');
+  });
+
+  test('the OLD pre-marker failure format (bare .toBe diff) no longer classifies as the allowed red', () => {
+    const rep = nodeCandidateReport();
+    popFitnessAssertion(rep).failureMessages = [
+      `expected 'ee605286' to be '${FV_LOCK}' // Object.is equality`,
+    ];
+    const r = classify({ testJsonPath: writeJson('m-old.json', rep), expectedPath: EXPECTED, label: 'node' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('SIGNATURE MISMATCH');
+  });
+
+  test('fail-closed preconditions: an empty authoritative set, and an unknown lockMarker type, both refuse to adjudicate', () => {
+    const empty = classify({
+      testJsonPath: writeJson('m-noauth.json', nodeCandidateReport()), expectedPath: EXPECTED, label: 'node', authoritativeDigests: [],
+    });
+    expect(empty.ok).toBe(false);
+    expect(empty.errors.join('\n')).toContain('INVENTORY INVALID');
+
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    const sig = inv.node.byFile['tests/population-determinism.test.js'].allowedFailureSignatures
+      .find((s) => s.lockMarker !== undefined);
+    sig.lockMarker = 'bogusMarkerType';
+    const bogus = classify({
+      testJsonPath: writeJson('m-bogus-rep.json', nodeCandidateReport()),
+      expectedPath: writeJson('m-bogus-inv.json', inv),
+      label: 'node',
+    });
+    expect(bogus.ok).toBe(false);
+    expect(bogus.errors.join('\n')).toContain("unknown lockMarker 'bogusMarkerType'");
+  });
+
+  test('the browser marker red validates identically', () => {
+    const rep = browserCandidateReport({ fvLock: 'deadbeef' });
+    const r = classify({ testJsonPath: writeJson('m-b-stale.json', rep), expectedPath: EXPECTED, label: 'browser' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('EXPECTED-DIGEST MISMATCH');
+  });
+});
+
 // --- invariants: the required cross-env set (fitness-vector only) ----------------
 //
 // Measured on the first heavy dispatch: only the population fitness-vector
@@ -305,12 +424,50 @@ describe('invariants — required Node<->Chromium digest set (fitness-vector)', 
     // The truncation-affected eval + champion titles are deliberately unkeyed.
     expect(semanticDigestKey('gate (d): golden locks (deterministic flavor) > eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)')).toBeNull();
     expect(semanticDigestKey('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace')).toBeNull();
-    // Extraction pulls the RECEIVED (measured) digest, first on the line, and
-    // ignores stack-trace URLs (a `?v=<hex8>` chunk hash must not be a digest).
+    // Marker extraction pulls actual= AND expected=, and is immune to
+    // stack-trace URLs (a `?v=<hex8>` chunk hash cannot fake the token —
+    // the exact hazard the old first-line HEX8 scan had to dodge).
     const rep = browserCandidateReport({ fvMeasured: 'ee605286' });
     rep.testResults[1].assertionResults[1].failureMessages[0]
       += '\n    at http://localhost:63315/node_modules/@vitest/runner/dist/chunk-hooks.js?v=d9c9c21b:752:20';
-    expect(measuredDigests(rep)['population:fitness-vector']).toBe('ee605286');
+    const x = measuredDigests(rep);
+    expect(x.digests['population:fitness-vector']).toBe('ee605286');
+    expect(x.expecteds['population:fitness-vector']).toBe(FV_LOCK);
+    expect(x.problems).toEqual([]);
+  });
+
+  test('a keyed failure WITHOUT the marker is a PROBLEM (protocol drift), never a silent skip', () => {
+    const node = nodeCandidateReport();
+    const popFile = node.testResults.find((s) => s.name.includes('population-determinism'));
+    const a = popFile.assertionResults.find((x) => x.fullName.includes('two fresh evaluations agree'));
+    a.failureMessages = [`expected 'ee605286' to be '${FV_LOCK}' // Object.is equality`]; // the OLD format
+    const x = measuredDigests(node);
+    expect(x.digests['population:fitness-vector']).toBeUndefined();
+    expect(x.problems.some((p) => /WITHOUT the structured marker/.test(p))).toBe(true);
+    // And invariants fails on it — both as a problem and as a missing required key.
+    const r = invariants(args(node, browserCandidateReport()));
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toMatch(/marker problem|NOT extracted/);
+  });
+
+  test('a marker expected= outside the authoritative lock set fails invariants (both envs validated)', () => {
+    const r = invariants(args(
+      nodeCandidateReport({ fvLock: 'deadbeef' }),
+      browserCandidateReport({ fvLock: 'deadbeef' }),
+    ));
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('authoritative committed lock set');
+  });
+
+  test('the two environments disagreeing on the EXPECTED lock fails invariants', () => {
+    // Both digests are members of an injected two-digest authority, so only
+    // the cross-env expected-consistency check can catch the disagreement.
+    const r = invariants({
+      ...args(nodeCandidateReport(), browserCandidateReport({ fvLock: 'deadbeef' })),
+      authoritativeDigests: [FV_LOCK, 'deadbeef'],
+    });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join('\n')).toContain('disagree on "population:fitness-vector" EXPECTED lock');
   });
 });
 
@@ -805,6 +962,44 @@ describe('helpers and the committed inventory', () => {
     let total = 0;
     for (const [file, spec] of Object.entries(inv.browser.byFile)) total += sumSignatures(spec, file);
     expect(total).toBe(inv.browser.totalExpectedFailures);
+  });
+
+  test('one-source-of-truth: no signature regex embeds a mutable production digest; marker signatures declare lockMarker', () => {
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    expect(inv.schema).toBe('boxcar3d.spike-expected-candidate-reds/3');
+    const allSigs = [...Object.values(inv.node.byFile), ...Object.values(inv.browser.byFile)]
+      .flatMap((spec) => spec.allowedFailureSignatures);
+    for (const s of allSigs) {
+      // No 8-hex digest LITERAL may appear in a signature regex — the
+      // `[0-9a-f]{8}` character-class in the marker pattern is a class, not
+      // a literal, so it is stripped before the scan. (This is the exact
+      // staleness class that broke the pre-/3 inventory on the first
+      // deliberate re-lock: a copied "to be 'bded0d30'".)
+      const stripped = s.messageRegex.replace(/\[0-9a-f\]\{8\}/g, '');
+      expect(/[0-9a-f]{8}/.test(stripped), `${s.titleSubstring}: ${s.messageRegex}`).toBe(false);
+      // Belt and braces: neither the CURRENT authoritative digest(s) nor the
+      // historical v1 digest may be copied into any signature field.
+      for (const d of [...AUTHORITATIVE_FITNESS_VECTOR_DIGESTS, 'bded0d30']) {
+        expect(s.messageRegex.includes(d), `${s.titleSubstring} embeds ${d}`).toBe(false);
+        expect(s.titleSubstring.includes(d), `${s.titleSubstring} embeds ${d}`).toBe(false);
+      }
+    }
+    // Exactly the two fitness-vector signatures use the marker protocol, and
+    // both declare the lockMarker flag that turns on adjudication-time
+    // validation against population-locks.
+    const fvSigs = allSigs.filter((s) => /FITNESS_VECTOR_LOCK_MISMATCH/.test(s.messageRegex));
+    expect(fvSigs.length).toBe(2);
+    for (const s of fvSigs) expect(s.lockMarker).toBe('fitnessVector');
+    expect(allSigs.filter((s) => s.lockMarker !== undefined)).toEqual(fvSigs);
+  });
+
+  test('the default authoritative digest set derives LIVE from population-locks (the one source)', () => {
+    expect(AUTHORITATIVE_FITNESS_VECTOR_DIGESTS).toEqual(
+      Object.values(POPULATION_GOLDEN_LOCKS).map((l) => l.fitnessVectorDigest),
+    );
+    expect(AUTHORITATIVE_FITNESS_VECTOR_DIGESTS.length).toBeGreaterThan(0);
+    for (const d of AUTHORITATIVE_FITNESS_VECTOR_DIGESTS) expect(d).toMatch(/^[0-9a-f]{8}$/);
+    expect(Object.isFrozen(AUTHORITATIVE_FITNESS_VECTOR_DIGESTS)).toBe(true);
   });
 
   test('bootstrapComplete is TRUE and its structural precondition holds: every browser file has an integer count + signatures', () => {

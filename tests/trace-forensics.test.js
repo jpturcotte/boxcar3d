@@ -7,7 +7,7 @@ import { describe, test, expect } from 'vitest';
 import { EVALUATION_TRACE_VERSION, RECORD_BYTES, encodeTraceRecord } from '../src/sim/trace.js';
 import {
   FORENSIC_THRESHOLD_DEFAULTS, TRACE_FORENSICS_SCHEMA,
-  analyzeTrace, bodyReachMetadataForIR, scaledThresholds,
+  analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView, scaledThresholds,
 } from '../src/sim/trace-forensics.js';
 
 const rec = (stepIndex, overrides = {}) => ({
@@ -267,5 +267,99 @@ describe('trace-forensics', () => {
     }
     expect(() => scaledThresholds(0)).toThrow(/factor/);
     expect(() => scaledThresholds(-1)).toThrow(/factor/);
+  });
+
+  // The shared offline→online projection (consumed by probe-integrity AND
+  // tests/integrity.test.js so neither the field set nor the classification
+  // logic can drift between the two sites).
+  test('offlineIntegrityView aggregates per-body peaks to maxima + onset + earliest non-finite step', () => {
+    // Two bodies: the chassis stream goes catastrophic at step 8; a wheel goes
+    // non-finite at step 3 while carrying a larger speed delta earlier.
+    const records = [
+      ...escalatingStream, // chassis stream (peaks speed 2000, but see below)
+      wheelRec(0, { linvel: { x: 0, y: 0, z: 0 } }),
+      wheelRec(1, { linvel: { x: 100, y: 0, z: 0 } }), // Δv 100 at step 1
+      wheelRec(2, { linvel: { x: 100, y: 0, z: 0 } }),
+      wheelRec(3, { finiteState: false, linvel: { x: NaN, y: 0, z: 0 } }), // non-finite at step 3
+    ];
+    const a = analyzeTrace(traceOf(records));
+    const view = offlineIntegrityView(a);
+    // peakBodySpeed is the MAX over both bodies (chassis reaches 2000).
+    expect(view.observations.peakBodySpeed).toBe(2000);
+    // peakSpeedDelta is the max one-capture Δv over both bodies: the chassis
+    // jumps 60 -> 2000 (Δ1940) at step 8, exceeding the wheel's Δ100 at step 1.
+    expect(view.observations.peakSpeedDelta).toBe(1940);
+    expect(view.observations.firstAlertStep).toBe(a.onset.firstAlertStep);
+    expect(view.observations.firstCatastrophicStep).toBe(a.onset.firstCatastrophicStep);
+    expect(view.firstNonFiniteStep).toBe(3); // the wheel's non-finite capture
+    // The derived classification: the wheel's non-finite at step 3 precedes
+    // the chassis's catastrophic-speed crossing at step 8 in scan order.
+    expect(view.status).toBe('nonFinite');
+    expect(view.firstFailureStep).toBe(3);
+    expect(view.reasons).toEqual(['nonFinite', 'catastrophicSpeed']);
+    expect(Object.keys(view).sort()).toEqual([
+      'firstFailureStep', 'firstNonFiniteStep', 'observations', 'reasons', 'status',
+    ]);
+    expect(Object.keys(view.observations).sort()).toEqual([
+      'firstAlertStep', 'firstCatastrophicStep',
+      'peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement',
+    ]);
+  });
+
+  test('offlineIntegrityView derives the classification per the online scan-order contract', () => {
+    // Clean stream: ok / null / empty.
+    const clean = offlineIntegrityView(analyzeTrace(traceOf(
+      [0, 1, 2].map((k) => rec(k, { translation: { x: k * 0.05, y: 0.5, z: 0 }, linvel: { x: 3, y: 0, z: 0 } })),
+    )));
+    expect(clean.status).toBe('ok');
+    expect(clean.firstFailureStep).toBeNull();
+    expect(clean.reasons).toEqual([]);
+    // The escalating chassis stream: catastrophic SPEED at step 8, no
+    // displacement crossing (translation held still), nothing non-finite.
+    const diverged = offlineIntegrityView(analyzeTrace(traceOf(escalatingStream)));
+    expect(diverged.status).toBe('numericalDivergence');
+    expect(diverged.firstFailureStep).toBe(8);
+    expect(diverged.reasons).toEqual(['catastrophicSpeed']);
+    expect(diverged.firstNonFiniteStep).toBeNull();
+    // Cross-body same-step tie: the CHASSIS goes non-finite at the same step
+    // the wheel crosses the speed bound — body order puts nonFinite first
+    // (chassis precedes stations in the canonical order).
+    const tie = offlineIntegrityView(analyzeTrace(traceOf([
+      rec(0), wheelRec(0),
+      rec(1, { finiteState: false, translation: { x: NaN, y: NaN, z: NaN }, linvel: { x: NaN, y: 0, z: 0 } }),
+      wheelRec(1, { linvel: { x: 1500, y: 0, z: 0 } }),
+    ])));
+    expect(tie.status).toBe('nonFinite');
+    expect(tie.firstFailureStep).toBe(1);
+    expect(tie.reasons).toEqual(['nonFinite', 'catastrophicSpeed']);
+  });
+
+  test('per-body per-reason first steps are recorded (the derivation inputs)', () => {
+    // Speed crossing at step 8 only (escalating stream holds translation).
+    const a = analyzeTrace(traceOf(escalatingStream));
+    expect(a.perBody[0].firstCatastrophicSpeedStep).toBe(8);
+    expect(a.perBody[0].firstCatastrophicStepDisplacementStep).toBeNull();
+    // Displacement crossing without a speed crossing (the teleport).
+    const t = analyzeTrace(traceOf([0, 1].map((k) => rec(k, {
+      translation: { x: k * 20, y: 0.5, z: 0 }, linvel: { x: 5, y: 0, z: 0 },
+    }))));
+    expect(t.perBody[0].firstCatastrophicSpeedStep).toBeNull();
+    expect(t.perBody[0].firstCatastrophicStepDisplacementStep).toBe(1);
+    expect(t.perBody[0].firstCatastrophicStep).toBe(1);
+  });
+
+  test('offlineIntegrityView fails loud on a non-analysis argument or a pre-contract perBody entry', () => {
+    expect(() => offlineIntegrityView(null)).toThrow(/analysis/);
+    expect(() => offlineIntegrityView({ onset: {} })).toThrow(/analysis/);
+    // A perBody entry missing the per-reason first steps (an analysis produced
+    // by an older analyzer) must be refused, never silently derived as 'ok'.
+    const a = analyzeTrace(traceOf([rec(0)]));
+    const stripped = {
+      ...a,
+      perBody: a.perBody.map((b) => Object.fromEntries(
+        Object.entries(b).filter(([k]) => k !== 'firstCatastrophicSpeedStep'),
+      )),
+    };
+    expect(() => offlineIntegrityView(stripped)).toThrow(/firstCatastrophicSpeedStep/);
   });
 });

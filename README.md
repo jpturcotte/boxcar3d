@@ -123,13 +123,47 @@ multibody motors/limits stay commented out of the JS bindings, so that path is
 not yet usable for the driven phenotype. Full evidence, the controlled
 `workflow_dispatch` experiment, and the `engine-assertion-taxonomy` triage map
 are in [`docs/rapier-034-spike-2026-07.md`](docs/rapier-034-spike-2026-07.md);
-no production dependency or lock changed. Next: the **numerical-integrity policy
-PR**, then **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
-deterministic mutation, generational replacement) — the integrity policy is
-built on stable 0.19.3 using the committed forensic detector; the multibody
-binding-extension feasibility investigation, zone material response, S2
-trailing arms, and worker sharding are deferred behind it, each in its own PR.
-The design docs in `docs/` define
+no production dependency or lock changed. **The numerical-integrity policy then
+landed** — the GA-safety gate that unblocks Phase 1B. A small, always-on,
+engine-neutral online detector (`src/sim/integrity.js`, policy v1) folds three
+kinematic scalars per body — instantaneous speed, one-capture velocity change,
+one-capture displacement — from the per-body reads the runner already takes each
+step (no trace, no engine query, no per-step allocation), and classifies each
+vehicle `ok` / `nonFinite` / `numericalDivergence`. A catastrophic crossing
+(body speed > 1000 m/s, any body) makes a vehicle **non-selectable** under
+fitness policy v2 (`fitness = valid ∧ integrity-ok ? maxForwardDistance : 0`),
+and `selectableChampionFromEvaluation` filters the unselectable out of selection
+entirely (returning null when none survive) — so solver divergence can never
+become selectable fitness, including the two known cases that hide a >1000 m/s
+blow-up behind ordinary-looking forward distance. The online detector agrees
+BITWISE with the offline `analyzeTrace` over the same run (shared arithmetic,
+the pinned `effectiveDt` convention), the fold costs nothing measurable (it
+reads values already in hand), and it required only one deliberate fitness-vector
+re-lock — the committed fixture measured 20/20 integrity-clean, so every
+per-member fitness, the champion, and the champion trace stayed bit-identical,
+reproduced across Node (3-OS) and pinned Chromium. `npm run probe:integrity`
+characterizes it (signals panel, prevalence, the mutation-neighborhood probe,
+cost): the five known-affected subjects all become fitness 0, every control and
+fixture stays selectable at 180–600× margin below failure, clean parents show no
+false-positive halo, and the false-negative watch list is empty across all 60
+characterization individuals and 48 neighborhood children. A review follow-up
+hardened the seams without moving any lock: integrity is validated before the
+validity short-circuit (malformed detector output is refused loud, never a
+silent zero), the online/offline agreement check covers the full derivable
+classification, the mutation-neighborhood jitter preserves categorical genes
+(an accidental S2 crossing can no longer abort the experiment), and the
+engine-upgrade tripwire now reads the fitness-vector lock from one source — a
+structured mismatch marker validated against `population-locks.js` at
+adjudication time — instead of a copied digest literal that staled on
+re-lock. Full contract in
+[`docs/numerical-integrity-policy-2026-07.md`](docs/numerical-integrity-policy-2026-07.md);
+no physics changed and the A–D evaluation golden digests are byte-identical.
+Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
+deterministic mutation, generational replacement), now unblocked — elitism
+consumes `selectableChampionFromEvaluation`; the multibody binding-extension
+feasibility investigation, zone material response, S2 trailing arms, and worker
+sharding are deferred behind it, each in its own PR. The design docs in `docs/`
+define
 everything that comes after.
 
 ## Quickstart

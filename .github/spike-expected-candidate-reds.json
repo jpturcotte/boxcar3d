@@ -1,9 +1,9 @@
 {
-  "schema": "boxcar3d.spike-expected-candidate-reds/2",
-  "rationale": "The core-0.34 candidate is expected to fail EXACTLY the class-(c) golden/version assertions (the taxonomy §4.2 inventory) and NOTHING else. compare-spike-runs.js --mode classify reads the candidate's `npm test` and `test:browser` vitest --reporter=json output and enforces FOUR layers: (1) the observed failing (file -> count) set equals `node`/`browser` byFile exactly; (2) ASSERTION-LEVEL failure signatures — every failing assertion in an expected-red file must match an allowed {titleSubstring, messageRegex} signature at its exact count, so a failure MOVING to a different assertion inside the same red test (e.g. the staleness test's trace-version/record-size contracts, which precede its engine-version pin) is caught even at constant per-file count; (3) must-stay-green titles never appear in the failing set; (4) POSITIVE presence — the must-pass titles appear with status 'passed' at exact multiplicity (absence-of-failure cannot distinguish passed from renamed/skipped). Schema /2 adds layers 2 and 4 plus nodeChromiumRequiredKeys (the exact required cross-env digest set for --mode invariants). See docs/engine-assertion-taxonomy-2026-07.md §4.2 and docs/rapier-034-spike-2026-07.md §4.",
+  "schema": "boxcar3d.spike-expected-candidate-reds/3",
+  "rationale": "The core-0.34 candidate is expected to fail EXACTLY the class-(c) golden/version assertions (the taxonomy §4.2 inventory) and NOTHING else. compare-spike-runs.js --mode classify reads the candidate's `npm test` and `test:browser` vitest --reporter=json output and enforces FOUR layers: (1) the observed failing (file -> count) set equals `node`/`browser` byFile exactly; (2) ASSERTION-LEVEL failure signatures — every failing assertion in an expected-red file must match an allowed {titleSubstring, messageRegex} signature at its exact count, so a failure MOVING to a different assertion inside the same red test (e.g. the staleness test's trace-version/record-size contracts, which precede its engine-version pin) is caught even at constant per-file count; (3) must-stay-green titles never appear in the failing set; (4) POSITIVE presence — the must-pass titles appear with status 'passed' at exact multiplicity (absence-of-failure cannot distinguish passed from renamed/skipped). Schema /2 added layers 2 and 4 plus nodeChromiumRequiredKeys (the exact required cross-env digest set for --mode invariants). Schema /3 (PR #20, fitness policy v2) adds MARKER-VALIDATED signatures: a signature carrying lockMarker (currently 'fitnessVector') requires the failure message to hold exactly one well-formed structured marker (src/sim/lock-markers.js, 'FITNESS_VECTOR_LOCK_MISMATCH expected=<8hex> actual=<8hex>') whose expected= field classify() validates against the authoritative digest in src/sim/population-locks.js AT ADJUDICATION TIME — the mutable production lock digest is deliberately NEVER copied into this file (the pre-/3 inventory hardcoded the then-current v1 digest inside a messageRegex and went stale on the first deliberate re-lock). --mode invariants extracts the cross-env digests from the same marker. See docs/engine-assertion-taxonomy-2026-07.md §4.2 and docs/rapier-034-spike-2026-07.md §4.",
   "node": {
     "reporter": "npm test (vitest run --reporter=json), Node, deterministic + ordinary flavors, tests/browser/** excluded",
-    "totalExpectedFailures": 11,
+    "totalExpectedFailures": 12,
     "byFile": {
       "tests/evaluation-determinism.test.js": {
         "expectedFailures": 5,
@@ -40,7 +40,7 @@
       "tests/population-determinism.test.js": {
         "expectedFailures": 3,
         "class": "c",
-        "asserts": "rapierVersion pin, fitness-vector digest (bded0d30 -> measured), champion solo-trace digest",
+        "asserts": "rapierVersion pin, fitness-vector digest (committed lock -> measured, via the structured marker), champion solo-trace digest",
         "allowedFailureSignatures": [
           {
             "titleSubstring": "lock set, versions, engine, dt",
@@ -50,9 +50,10 @@
           },
           {
             "titleSubstring": "two fresh evaluations agree byte-for-byte",
-            "messageRegex": "to be 'bded0d30'",
+            "messageRegex": "FITNESS_VECTOR_LOCK_MISMATCH expected=[0-9a-f]{8} actual=[0-9a-f]{8}",
+            "lockMarker": "fitnessVector",
             "count": 1,
-            "why": "this test's FIRST half is internal repeatability (a===b, MUST hold); the allowed failure is only the second half's comparison against the committed fitness-vector digest bded0d30 — a repeatability failure prints 'expected false to be true' and does NOT match"
+            "why": "this test's FIRST half is internal repeatability (a===b, MUST hold); the allowed failure is only the second half's fitness-vector golden comparison, which fails with the structured marker (src/sim/lock-markers.js) — classify() additionally parses the marker and requires expected= to equal the authoritative digest in src/sim/population-locks.js at adjudication time, so the mutable lock digest is never copied here. A repeatability failure prints 'expected false to be true' and matches neither the regex nor the marker."
           },
           {
             "titleSubstring": "champion solo digest-mode rerun",
@@ -85,6 +86,19 @@
             "messageRegex": "to be '0\\.19\\.3'",
             "count": 1,
             "why": "the rapierVersion .toBe('0.19.3') failure message ends the expected side with the quoted bare pin; the schema/dt/hard-check assertions around it never print that literal"
+          }
+        ]
+      },
+      "tests/integrity-probe-schema.test.js": {
+        "expectedFailures": 1,
+        "class": "c",
+        "asserts": "report.engine.rapierVersion pin ('0.19.3') — the integrity probe's engine attestation (added by PR #20's numerical-integrity policy; mirrors the physics-explosion probe pin)",
+        "allowedFailureSignatures": [
+          {
+            "titleSubstring": "versioned report shape",
+            "messageRegex": "to be '0\\.19\\.3'",
+            "count": 1,
+            "why": "the smoke test's rapierVersion .toBe('0.19.3') is its only engine pin and precedes nothing engine-sensitive that could red first (schema/passes/policy asserts are pure; the identity/agreement/dt hard checks are engine-neutral and stay green); the file's other tests (single-pass dispatch, unknown-pass, the parametric-jitter discrete-gene regressions) carry no pin and stay green"
           }
         ]
       }
@@ -147,7 +161,7 @@
   },
   "browser": {
     "reporter": "npm run test:browser (vitest run --config vitest.browser.config.js --reporter=json), pinned Chromium",
-    "note": "The local historical spike SKIPPED test:browser; these per-file counts + allowedFailureSignatures were FINALIZED from the heavy CI bootstrap dispatch (C5) observed failing set, and are re-validated by every subsequent heavy run's candidate browser classify. The load-bearing cross-env check is independent: --mode invariants requires the COMPLETE nodeChromiumRequiredKeys set to be extracted from BOTH environments with equal values.",
+    "note": "The local historical spike SKIPPED test:browser; these per-file counts + allowedFailureSignatures were FINALIZED from the heavy CI bootstrap dispatch (C5, July 2026, under fitness policy v1) observed failing set, and are re-validated by every subsequent heavy run's candidate browser classify. PR #20 (fitness policy v2) updated the fitness-vector signature to the structured-marker protocol — the message shape was re-verified with a real flipped-lock Chromium capture (2026-07-16) and is re-validated by the next heavy dispatch. The load-bearing cross-env check is independent: --mode invariants requires the COMPLETE nodeChromiumRequiredKeys set to be extracted from BOTH environments with equal values.",
     "totalExpectedFailures": 6,
     "byFile": {
       "tests/browser/evaluation-determinism.test.js": {
@@ -170,9 +184,10 @@
         "allowedFailureSignatures": [
           {
             "titleSubstring": "fitness-vector digest, every fitness literal",
-            "messageRegex": "to be 'bded0d30'",
+            "messageRegex": "FITNESS_VECTOR_LOCK_MISMATCH expected=[0-9a-f]{8} actual=[0-9a-f]{8}",
+            "lockMarker": "fitnessVector",
             "count": 1,
-            "note": "Chromium mirror of the Node 'two fresh evaluations agree byte-for-byte' / 'to be bded0d30' red: the candidate's fitness-vector digest (ee605286) differs from the committed bded0d30. Same committed digest pinned as Node, so a move off this exact contract is caught."
+            "note": "Chromium mirror of the Node marker red: the candidate's measured fitness-vector digest differs from the committed lock, reported via the same structured marker and validated against src/sim/population-locks.js at adjudication time (no digest literal lives here). Historical: the July 2026 C5 run predated fitness policy v2 and failed on the then-current v1 digest 'bded0d30' via Vitest's .toBe formatting — its committed evidence under docs/ is unchanged."
           },
           {
             "titleSubstring": "champion solo digest-mode rerun",
@@ -197,7 +212,7 @@
   "nodeChromiumRequiredKeys": [
     "population:fitness-vector"
   ],
-  "nodeChromiumRequiredKeysRationale": "The digest(s) whose cross-env agreement is MECHANICALLY verifiable from vitest failure messages: only population:fitness-vector, which BOTH the Node and Chromium reporters emit via a short `.toBe('<digest>')` (untruncated). The eval A-D checkpoint states and the champion trace are NOT message-extractable cross-env: Node's `.toBeNull()` on a formatted string is TRUNCATED by the reporter (the state hex is dropped), while Chromium's `expect.fail(fullMessage)` keeps it — an irreconcilable reporter asymmetry surfaced by the first heavy dispatch. Verifying more would require the production determinism tests to log their measured digest explicitly (out of scope for this spike). dt readback + this one agreeing digest + the full file/count/signature/mustPass classification remain the cross-env determinism evidence.",
+  "nodeChromiumRequiredKeysRationale": "The digest(s) whose cross-env agreement is MECHANICALLY verifiable from vitest failure messages: only population:fitness-vector, which BOTH gates emit via the structured FITNESS_VECTOR_LOCK_MISMATCH marker (src/sim/lock-markers.js — a short custom message on the golden .toBe, untruncated in both reporters; --mode invariants parses `actual=` from it and additionally validates `expected=` against src/sim/population-locks.js). The eval A-D checkpoint states and the champion trace are NOT message-extractable cross-env: Node's `.toBeNull()` on a formatted string is TRUNCATED by the reporter (the state hex is dropped), while Chromium's `expect.fail(fullMessage)` keeps it — an irreconcilable reporter asymmetry surfaced by the first heavy dispatch. Extending the marker protocol to those locks is possible future work; until then dt readback + this one agreeing digest + the full file/count/signature/mustPass classification remain the cross-env determinism evidence.",
   "mustPassInvariants": {
     "dtReadback": "world.timestep reads back Math.fround(1/60) = 0.01666666753590107 on the candidate (the probe/runner dt tooth stays GREEN — else the whole physics suite cascade-reds for the wrong reason)",
     "internalDeterminismGateA": "the determinism gate's 'two fresh worlds agree on digest + every checkpoint' (internal repeatability) PASSES on the candidate for A-D; only gate (d) 'matches committed lock' is allowed to move — enforced by mustPassPresent, not just absence-of-failure",

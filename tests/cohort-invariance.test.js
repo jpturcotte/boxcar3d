@@ -213,8 +213,12 @@ describe('cohort/order independence under the isolation contract (deterministic 
         joints: v.joints,
         mass: v.mass,
         stationCount: v.stationCount,
+        integrity: v.integrity,
       }, entry.diagnostics, `member ${m.individualId}`);
-      expect(Object.is(entry.fitness, entry.valid ? v.maxForwardDistance : 0)).toBe(true);
+      // The fitness identity under policy v2: SELECTABLE (valid AND
+      // integrity-clean) ⇒ maxForwardDistance verbatim, else exactly 0.
+      const selectable = entry.valid && entry.integrityStatus === 'ok';
+      expect(Object.is(entry.fitness, selectable ? v.maxForwardDistance : 0)).toBe(true);
     }
   });
 

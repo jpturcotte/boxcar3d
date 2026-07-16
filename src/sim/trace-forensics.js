@@ -50,6 +50,7 @@
 // reclassified rather than force-fit.
 
 import { EVALUATION_TRACE_VERSION, RECORD_BYTES, decodeTraceRecord } from './trace.js';
+import { norm3, dist3 } from './integrity.js';
 
 export const TRACE_FORENSICS_SCHEMA = 'boxcar3d.trace-forensics/1';
 
@@ -106,13 +107,10 @@ export function scaledThresholds(factor, thresholds = FORENSIC_THRESHOLD_DEFAULT
   return Object.freeze(out);
 }
 
-const norm3 = (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-const dist3 = (a, b) => {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  const dz = a.z - b.z;
-  return Math.sqrt(dx * dx + dy * dy + dz * dz);
-};
+// norm3/dist3 moved to src/sim/integrity.js (the ONLINE detector) and imported
+// back here so the two detectors provably share one vector arithmetic — the
+// online/offline exact-equivalence contract depends on it. Pure refactor:
+// identical implementations, identical results.
 
 const bodyKey = (r) => `${r.vehicleIndex}|${r.bodyRole}|${r.axleIndex === null ? '-' : r.axleIndex}|${r.wheelIndex === null ? '-' : r.wheelIndex}`;
 
@@ -266,6 +264,12 @@ export function analyzeTrace(traceResult, {
       firstAlertStep: null,
       alertSpeedDeltaAtAlert: null,
       firstCatastrophicStep: null,
+      // Per-REASON first crossings (additive diagnostics): which catastrophic
+      // sub-threshold fired, and when it first did, per body. These exist so
+      // offlineIntegrityView below can derive the online detector's FULL
+      // reason ordering, not just the combined onset.
+      firstCatastrophicSpeedStep: null,
+      firstCatastrophicStepDisplacementStep: null,
     };
     const reach = reachMap !== null ? reachMap.get(bodyKey(head)) : undefined;
     let prev = null;
@@ -303,8 +307,18 @@ export function analyzeTrace(traceResult, {
         body.firstAlertStep = k;
         body.alertSpeedDeltaAtAlert = speedDelta ?? speed;
       }
-      const catastrophic = speed > t.catastrophicSpeed
-        || (stepDisplacement !== null && stepDisplacement > t.catastrophicStepDisplacement);
+      // Identical arithmetic to the former combined expression — split only so
+      // the per-reason first steps can be recorded (NaN comparisons stay false).
+      const catastrophicSpeed = speed > t.catastrophicSpeed;
+      const catastrophicDisplacement = stepDisplacement !== null
+        && stepDisplacement > t.catastrophicStepDisplacement;
+      if (catastrophicSpeed && body.firstCatastrophicSpeedStep === null) {
+        body.firstCatastrophicSpeedStep = k;
+      }
+      if (catastrophicDisplacement && body.firstCatastrophicStepDisplacementStep === null) {
+        body.firstCatastrophicStepDisplacementStep = k;
+      }
+      const catastrophic = catastrophicSpeed || catastrophicDisplacement;
       if (catastrophic && body.firstCatastrophicStep === null) body.firstCatastrophicStep = k;
       prev = rec;
     }
@@ -383,5 +397,98 @@ export function analyzeTrace(traceResult, {
       },
       chassisLagSteps,
     },
+  };
+}
+
+/**
+ * Project an `analyzeTrace` result onto the ONLINE integrity contract
+ * (src/sim/integrity.js): the derived CLASSIFICATION — status /
+ * firstFailureStep / reasons — plus the shared observations, and the earliest
+ * non-finite step (an offline-only extra datum, not part of the online block).
+ * This is the ONE offline→online mapping — the online/offline equivalence
+ * witnesses (the probe's `agreement` hard check and tests/integrity.test.js)
+ * both consume it, so neither the field set nor the classification logic can
+ * drift between the two sites. Pure.
+ *
+ * THE DERIVATION CONTRACT (mirrors foldIntegrity's documented scan order —
+ * capture ascending → bodies in canonical order → per body catastrophicSpeed
+ * → catastrophicStepDisplacement → nonFinite):
+ *   - `analysis.perBody` is REQUIRED to be in the runner's canonical body
+ *     order for the traced vehicle (chassis, then stations by axle-then-wheel
+ *     with hub before wheel) — which is exactly analyzeTrace's report sort
+ *     for a single-vehicle trace. Multi-vehicle traces aggregate ALL bodies;
+ *     the equivalence claim is per SOLO run (the witnesses' shape).
+ *   - status/firstFailureStep: each body contributes failure candidates
+ *     (firstCatastrophicStep, bodyIndex, 0 → 'numericalDivergence') and
+ *     (firstNonFiniteStep, bodyIndex, 1 → 'nonFinite'); the lexicographic
+ *     minimum tuple wins — catastrophic is checked before finite WITHIN a
+ *     body-step, and body order breaks same-step cross-body ties, exactly
+ *     like the online scan.
+ *   - reasons: each code's first occurrence is its minimum (step, bodyIndex,
+ *     intra-body rank) tuple, ranks catastrophicSpeed 0 →
+ *     catastrophicStepDisplacement 1 → nonFinite 2; codes sort by tuple —
+ *     reproducing the online first-occurrence-order array exactly.
+ */
+export function offlineIntegrityView(analysis) {
+  if (typeof analysis !== 'object' || analysis === null || !Array.isArray(analysis.perBody)) {
+    fail('analysis', analysis);
+  }
+  const maxOf = (sel) => analysis.perBody.reduce((m, b) => (sel(b).value > m ? sel(b).value : m), 0);
+  const minOf = (sel) => analysis.perBody.reduce((m, b) => {
+    const v = sel(b);
+    return v !== null && (m === null || v < m) ? v : m;
+  }, null);
+
+  // First occurrence of each failure CLASS and each reason CODE, as
+  // (step, bodyIndex, intraRank) tuples over the canonical body order.
+  const lt = (a, b) => {
+    if (a[0] !== b[0]) return a[0] < b[0];
+    if (a[1] !== b[1]) return a[1] < b[1];
+    return a[2] < b[2];
+  };
+  let firstFailure = null; // { tuple, status }
+  const reasonFirsts = []; // { code, tuple }
+  const noteReason = (code, step, bodyIndex, rank) => {
+    if (step === null) return;
+    const tuple = [step, bodyIndex, rank];
+    const existing = reasonFirsts.find((r) => r.code === code);
+    if (existing === undefined) reasonFirsts.push({ code, tuple });
+    else if (lt(tuple, existing.tuple)) existing.tuple = tuple;
+  };
+  analysis.perBody.forEach((b, bodyIndex) => {
+    // Per-body first-step fields are REQUIRED (null = never fired); an
+    // analysis missing them predates the classification contract — fail loud
+    // rather than silently derive 'ok' from absent evidence.
+    for (const k of ['firstCatastrophicStep', 'firstNonFiniteStep',
+      'firstCatastrophicSpeedStep', 'firstCatastrophicStepDisplacementStep']) {
+      if (!(k in b)) fail(`analysis.perBody[${bodyIndex}].${k}`, 'missing');
+      if (b[k] !== null && !Number.isInteger(b[k])) fail(`analysis.perBody[${bodyIndex}].${k}`, b[k]);
+    }
+    for (const [step, status, rank] of [
+      [b.firstCatastrophicStep, 'numericalDivergence', 0],
+      [b.firstNonFiniteStep, 'nonFinite', 1],
+    ]) {
+      if (step === null) continue;
+      const tuple = [step, bodyIndex, rank];
+      if (firstFailure === null || lt(tuple, firstFailure.tuple)) firstFailure = { tuple, status };
+    }
+    noteReason('catastrophicSpeed', b.firstCatastrophicSpeedStep, bodyIndex, 0);
+    noteReason('catastrophicStepDisplacement', b.firstCatastrophicStepDisplacementStep, bodyIndex, 1);
+    noteReason('nonFinite', b.firstNonFiniteStep, bodyIndex, 2);
+  });
+  reasonFirsts.sort((a, b) => (lt(a.tuple, b.tuple) ? -1 : 1));
+
+  return {
+    status: firstFailure === null ? 'ok' : firstFailure.status,
+    firstFailureStep: firstFailure === null ? null : firstFailure.tuple[0],
+    reasons: reasonFirsts.map((r) => r.code),
+    observations: {
+      peakBodySpeed: maxOf((b) => b.peakSpeed),
+      peakSpeedDelta: maxOf((b) => b.peakSpeedDelta),
+      peakStepDisplacement: maxOf((b) => b.peakStepDisplacement),
+      firstAlertStep: analysis.onset.firstAlertStep,
+      firstCatastrophicStep: analysis.onset.firstCatastrophicStep,
+    },
+    firstNonFiniteStep: minOf((b) => b.firstNonFiniteStep),
   };
 }

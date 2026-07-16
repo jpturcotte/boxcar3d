@@ -15,9 +15,11 @@ import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   POPULATION_WORLD_MODE, SPAWN_CLEARANCE,
   championFromEvaluation, evaluatePopulation, fitnessFromVehicleResult,
-  isVehicleResultValid, serializeEvaluationSpec, serializeFitnessVector,
-  spawnPoseOnFlatStart,
+  isVehicleResultSelectable, isVehicleResultValid,
+  selectableChampionFromEvaluation, serializeEvaluationSpec,
+  serializeFitnessVector, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
+import { INTEGRITY_POLICY_VERSION } from '../src/sim/integrity.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual } from '../src/sim/population.js';
 import { compileAssembly } from '../src/sim/assembly.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
@@ -99,18 +101,34 @@ const baseSpec = () => ({
 
 // --- Fitness policy (pure) ---------------------------------------------------
 
-describe('fitness policy', () => {
+describe('fitness policy (v2 — the numerical-integrity gate)', () => {
+  const integrityBlock = (status = 'ok', over = {}) => ({
+    policyVersion: INTEGRITY_POLICY_VERSION,
+    status,
+    firstFailureStep: status === 'ok' ? null : 42,
+    reasons: status === 'ok' ? [] : [status === 'nonFinite' ? 'nonFinite' : 'catastrophicSpeed'],
+    observations: {
+      peakBodySpeed: status === 'ok' ? 3.2 : 4785,
+      peakSpeedDelta: 0.5,
+      peakStepDisplacement: 0.05,
+      firstAlertStep: status === 'ok' ? null : 22,
+      firstCatastrophicStep: status === 'ok' ? null : 42,
+    },
+    ...over,
+  });
   const vr = (over = {}) => ({
     finite: true,
     bodies: { count: 5, allValid: true, sleepingAtEnd: 0 },
     joints: { count: 4, allValid: true },
     maxForwardDistance: 12.345678901234567,
+    integrity: integrityBlock(),
     ...over,
   });
 
-  test('valid result: fitness IS maxForwardDistance, verbatim f64', () => {
+  test('selectable result: fitness IS maxForwardDistance, verbatim f64', () => {
     expect(Object.is(fitnessFromVehicleResult(vr()), 12.345678901234567)).toBe(true);
     expect(isVehicleResultValid(vr())).toBe(true);
+    expect(isVehicleResultSelectable(vr())).toBe(true);
   });
 
   test.each([
@@ -120,6 +138,62 @@ describe('fitness policy', () => {
   ])('%s: fitness is exactly 0 and validity is false', (_name, over) => {
     expect(Object.is(fitnessFromVehicleResult(vr(over)), 0)).toBe(true);
     expect(isVehicleResultValid(vr(over))).toBe(false);
+    expect(isVehicleResultSelectable(vr(over))).toBe(false);
+  });
+
+  test.each([
+    ['numericalDivergence', 'numericalDivergence'],
+    ['nonFinite (integrity-classified)', 'nonFinite'],
+  ])('integrity %s: fitness is exactly 0 while VALIDITY stays true — the two predicates are distinct', (_name, status) => {
+    // The load-bearing case: solver divergence reaches enormous-but-FINITE
+    // speeds validity never sees (two of the five known gen-0 cases hide a
+    // >1000 m/s blow-up behind ordinary-looking distance). Validity keeps its
+    // narrow meaning; SELECTABILITY gates the fitness.
+    const r = vr({ integrity: integrityBlock(status) });
+    expect(isVehicleResultValid(r)).toBe(true);
+    expect(isVehicleResultSelectable(r)).toBe(false);
+    expect(Object.is(fitnessFromVehicleResult(r), 0)).toBe(true);
+  });
+
+  test('a result WITHOUT the integrity block is refused loud (fitness under a disabled detector is a different policy)', () => {
+    const bare = Object.fromEntries(Object.entries(vr()).filter(([k]) => k !== 'integrity'));
+    expect(() => fitnessFromVehicleResult(bare)).toThrow(/requires the integrity block/);
+    expect(() => isVehicleResultSelectable(bare)).toThrow(/requires the integrity block/);
+    expect(() => fitnessFromVehicleResult(vr({ integrity: null }))).toThrow(/requires the integrity block/);
+    // A wrong policy version or unknown status is equally refused.
+    expect(() => fitnessFromVehicleResult(vr({ integrity: integrityBlock('ok', { policyVersion: 99 }) })))
+      .toThrow(/vehicleResult.integrity/);
+    expect(() => fitnessFromVehicleResult(vr({ integrity: integrityBlock('exploded') })))
+      .toThrow(/vehicleResult.integrity/);
+    // isVehicleResultValid deliberately does NOT consult integrity: unchanged.
+    expect(isVehicleResultValid(bare)).toBe(true);
+  });
+
+  // The short-circuit regression class: integrity is validated BEFORE the
+  // validity check, so an INVALID result with missing/null/malformed
+  // integrity is refused LOUD — never silently `false`/`0`. (The old
+  // `isVehicleResultValid(v) && requireIntegrity(v)...` order skipped the
+  // integrity validation whenever validity already failed.)
+  const stripIntegrity = (over) => {
+    const r = vr(over);
+    delete r.integrity;
+    return r;
+  };
+  test.each([
+    ['missing integrity on a NON-FINITE result', () => stripIntegrity({ finite: false })],
+    ['null integrity on a NON-FINITE result', () => vr({ finite: false, integrity: null })],
+    ['missing integrity on an INVALID-BODY result', () => stripIntegrity({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 } })],
+    ['null integrity on an INVALID-BODY result', () => vr({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, integrity: null })],
+    ['missing integrity on an INVALID-JOINT result', () => stripIntegrity({ joints: { count: 4, allValid: false } })],
+    ['null integrity on an INVALID-JOINT result', () => vr({ joints: { count: 4, allValid: false }, integrity: null })],
+    ['missing integrity on a MULTIPLY-invalid result', () => stripIntegrity({ finite: false, bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, joints: { count: 4, allValid: false } })],
+    ['wrong policy version on a NON-FINITE result', () => vr({ finite: false, integrity: integrityBlock('nonFinite', { policyVersion: 99 }) })],
+    ['unknown status on an INVALID-BODY result', () => vr({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, integrity: integrityBlock('exploded') })],
+  ])('%s is refused loud by BOTH policy entry points (never a silent unselectable 0)', (_name, build) => {
+    expect(() => isVehicleResultSelectable(build())).toThrow(/vehicleResult.integrity/);
+    expect(() => fitnessFromVehicleResult(build())).toThrow(/vehicleResult.integrity/);
+    // Validity itself keeps its narrow, integrity-free meaning on the same input.
+    expect(isVehicleResultValid(build())).toBe(false);
   });
 });
 
@@ -161,6 +235,63 @@ describe('championFromEvaluation', () => {
     const lo = 5;
     const hi = 5 + Number.EPSILON * 4; // > 5 by ulps
     expect(championFromEvaluation(ev([[1, lo], [2, hi]])).individualId).toBe(2);
+  });
+});
+
+describe('selectableChampionFromEvaluation (the SELECTION eligibility contract)', () => {
+  // Entry tuple: [individualId, fitness, valid=true, integrityStatus='ok'].
+  const ev = (entries) => ({
+    individuals: entries.map(([individualId, fitness, valid = true, integrityStatus = 'ok']) => (
+      { individualId, fitness, valid, integrityStatus })),
+  });
+
+  test('the best SELECTABLE individual wins: greater fitness, then lowest id', () => {
+    expect(selectableChampionFromEvaluation(ev([[0, 1], [1, 3], [2, 2]])).individualId).toBe(1);
+    expect(selectableChampionFromEvaluation(ev([[7, 5], [3, 5], [9, 5]])).individualId).toBe(3);
+  });
+
+  test('integrity-failed and invalid members are FILTERED, never ranked', () => {
+    // A clean low scorer beats every unselectable member regardless of id.
+    const e = ev([
+      [0, 0, true, 'numericalDivergence'],
+      [1, 0, false],
+      [2, 0.001, true, 'ok'],
+      [3, 0, true, 'nonFinite'],
+    ]);
+    expect(selectableChampionFromEvaluation(e).individualId).toBe(2);
+  });
+
+  test('an integrity-failed individual never becomes champion merely because every fitness is zero', () => {
+    // All-zero fitness: the selectable zero wins; the failed one is not even
+    // a candidate (the delta-10 contract).
+    const e = ev([[0, 0, true, 'numericalDivergence'], [5, 0, true, 'ok']]);
+    expect(selectableChampionFromEvaluation(e).individualId).toBe(5);
+  });
+
+  test('defensive: a contradictory unselectable-with-big-fitness row is filtered before comparison', () => {
+    // The encoder refuses such rows; the selector independently never ranks
+    // them (defense in depth — no single seam is load-bearing).
+    const e = ev([[0, 99, true, 'numericalDivergence'], [1, 1, true, 'ok']]);
+    expect(selectableChampionFromEvaluation(e).individualId).toBe(1);
+  });
+
+  test('NO selectable individual ⇒ an explicit null, never a least-bad member', () => {
+    expect(selectableChampionFromEvaluation(ev([
+      [0, 0, false],
+      [1, 0, true, 'numericalDivergence'],
+      [2, 0, true, 'nonFinite'],
+    ]))).toBeNull();
+  });
+
+  test('unknown integrity status fails loud (never silently unselectable)', () => {
+    expect(() => selectableChampionFromEvaluation(ev([[0, 1, true, 'exploded']])))
+      .toThrow(/integrityStatus/);
+  });
+
+  test('agrees with the diagnostic best-observed selector whenever that one is selectable', () => {
+    const e = ev([[0, 1], [1, 3], [2, 2]]);
+    expect(selectableChampionFromEvaluation(e).individualId)
+      .toBe(championFromEvaluation(e).individualId);
   });
 });
 
@@ -297,7 +428,8 @@ describe('evaluation-spec encoding v1', () => {
   });
 });
 
-describe('fitness-vector encoding v1', () => {
+describe('fitness-vector encoding v2', () => {
+  // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
   const synth = (entries) => ({
     spec: {
       deterministic: true,
@@ -309,35 +441,46 @@ describe('fitness-vector encoding v1', () => {
       terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
     },
     populationSnapshotDigestState: 0xdeadbeef,
-    individuals: entries.map(([individualId, fitness, valid]) => ({ individualId, fitness, valid })),
+    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
+      { individualId, fitness, valid, integrityStatus })),
   });
 
-  test('hand-decoded header + per-individual walk; an invalid 0 is byte-distinct from a valid 0', () => {
-    const validZero = serializeFitnessVector(synth([[7, 0, true]]));
+  test('hand-decoded header + per-individual walk; an invalid 0 and an integrity-failed 0 are each byte-distinct from a selectable 0', () => {
+    const selectableZero = serializeFitnessVector(synth([[7, 0, true]]));
     const invalidZero = serializeFitnessVector(synth([[7, 0, false]]));
-    expect(validZero.length).toBe(20 + 13);
-    const view = new DataView(validZero.buffer, validZero.byteOffset, validZero.byteLength);
+    const divergedZero = serializeFitnessVector(synth([[7, 0, true, 'numericalDivergence']]));
+    expect(selectableZero.length).toBe(22 + 14);
+    const view = new DataView(selectableZero.buffer, selectableZero.byteOffset, selectableZero.byteLength);
     expect(view.getUint16(0, true)).toBe(FITNESS_VECTOR_VERSION);
     expect(view.getUint16(2, true)).toBe(FITNESS_POLICY_VERSION);
-    expect(view.getUint16(4, true)).toBe(POPULATION_SNAPSHOT_VERSION);
-    expect(view.getUint32(6, true)).toBe(0xdeadbeef);
-    expect(view.getUint16(10, true)).toBe(EVALUATION_SPEC_VERSION);
-    // offset 12..15: spec digest state (checked nonzero), 16..19: count
-    expect(view.getUint32(16, true)).toBe(1);
-    expect(view.getUint32(20, true)).toBe(7); // individualId
-    expect(view.getUint8(24)).toBe(1); // validity
-    expect(view.getFloat64(25, true)).toBe(0);
-    // The two vectors differ at EXACTLY the validity byte.
-    const diffs = [];
-    validZero.forEach((b, i) => { if (b !== invalidZero[i]) diffs.push(i); });
-    expect(diffs).toEqual([24]);
+    expect(view.getUint16(4, true)).toBe(INTEGRITY_POLICY_VERSION);
+    expect(view.getUint16(6, true)).toBe(POPULATION_SNAPSHOT_VERSION);
+    expect(view.getUint32(8, true)).toBe(0xdeadbeef);
+    expect(view.getUint16(12, true)).toBe(EVALUATION_SPEC_VERSION);
+    // offset 14..17: spec digest state (checked nonzero), 18..21: count
+    expect(view.getUint32(18, true)).toBe(1);
+    expect(view.getUint32(22, true)).toBe(7); // individualId
+    expect(view.getUint8(26)).toBe(1); // validity
+    expect(view.getUint8(27)).toBe(0); // integrityStatus index ('ok' = 0)
+    expect(view.getFloat64(28, true)).toBe(0);
+    // Each unselectable-zero differs from the selectable zero at EXACTLY its
+    // own byte: validity at 26, integrity status at 27 ('numericalDivergence'
+    // = index 2).
+    const diffsAgainst = (other) => {
+      const d = [];
+      selectableZero.forEach((b, i) => { if (b !== other[i]) d.push(i); });
+      return d;
+    };
+    expect(diffsAgainst(invalidZero)).toEqual([26]);
+    expect(diffsAgainst(divergedZero)).toEqual([27]);
+    expect(new DataView(divergedZero.buffer).getUint8(27)).toBe(2);
   });
 
   test('exact f64 fitness round-trips bit-for-bit', () => {
     const f = 8.419723510742188;
     const bytes = serializeFitnessVector(synth([[0, f, true]]));
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    expect(Object.is(view.getFloat64(25, true), f)).toBe(true);
+    expect(Object.is(view.getFloat64(28, true), f)).toBe(true);
   });
 
   test('rejects non-ascending individualIds loud (canonical order is the contract)', () => {
@@ -352,11 +495,24 @@ describe('fitness-vector encoding v1', () => {
     }
   });
 
-  test('rejects an internally contradictory vector: invalid with nonzero fitness', () => {
-    // valid === false must imply fitness === 0 (the max-progress policy gates
-    // an invalid result to 0); the encoder refuses to attest otherwise.
+  test('rejects an internally contradictory vector: any UNSELECTABLE member with nonzero fitness', () => {
+    // valid === false OR integrityStatus !== 'ok' must imply fitness === 0
+    // (policy v2 gates an unselectable result to 0); the encoder refuses to
+    // attest otherwise — an integrity-failed distance can never be smuggled
+    // into an attested vector.
     expect(() => serializeFitnessVector(synth([[0, 3.5, false]])))
-      .toThrow(/invalid individual must have fitness 0/);
+      .toThrow(/unselectable individual .* must have fitness 0/);
+    expect(() => serializeFitnessVector(synth([[0, 3.5, true, 'numericalDivergence']])))
+      .toThrow(/unselectable individual .* must have fitness 0/);
+    expect(() => serializeFitnessVector(synth([[0, 3.5, true, 'nonFinite']])))
+      .toThrow(/unselectable individual .* must have fitness 0/);
+  });
+
+  test('rejects an unknown integrity status (the codec never guesses an index)', () => {
+    expect(() => serializeFitnessVector(synth([[0, 0, true, 'exploded']])))
+      .toThrow(/integrityStatus/);
+    expect(() => serializeFitnessVector(synth([[0, 0, true, null]])))
+      .toThrow(/integrityStatus/);
   });
 });
 
@@ -446,6 +602,7 @@ describe('evaluatePopulation (deterministic flavor)', () => {
       joints: v.joints,
       mass: v.mass,
       stationCount: v.stationCount,
+      integrity: v.integrity,
     }, ev.individuals[0].diagnostics, 'individual 5');
 
     // Input order is invisible: reversed input, identical ID-keyed output

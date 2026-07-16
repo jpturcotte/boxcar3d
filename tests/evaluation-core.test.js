@@ -177,6 +177,8 @@ describe('runRealizedEvaluationLoop (the shared loop seam)', () => {
         .toThrow(/staticColliders/);
       expect(() => runRealizedEvaluationLoop(world, realized, { ...base, inspect: 42 }))
         .toThrow(/inspect/);
+      expect(() => runRealizedEvaluationLoop(world, realized, { ...base, integrity: 'on' }))
+        .toThrow(/integrity/);
       // The guards threw BEFORE any stepping — the world is still steppable
       // and a real run still works afterwards.
       const r = runRealizedEvaluationLoop(world, realized, base);
@@ -184,5 +186,38 @@ describe('runRealizedEvaluationLoop (the shared loop seam)', () => {
     } finally {
       world.free();
     }
+  });
+
+  test('the integrity fold is observationally inert: the off-arm reproduces identical trace bytes and identical non-integrity results', { timeout: 240000 }, async () => {
+    // The detector-disabled arm exists ONLY at this direct-caller seam (the
+    // inspect precedent) — this is the committed non-interference witness:
+    // integrity on vs off changes NOTHING except the presence of the result
+    // block itself (its fold reads the same already-taken body reads and
+    // never touches the engine).
+    const on = await composed();
+    const off = await composed({ withWorld: () => ({ integrity: false }) });
+    const div = compareTraces(on.trace, off.trace);
+    expect(div === null ? null : JSON.stringify(div)).toBeNull();
+    expect(off.trace.digest).toBe(on.trace.digest);
+    expect(off.counts).toEqual(on.counts);
+    // Every vehicle field except `integrity` is deep-equal; the off arm's
+    // integrity is exactly null (an honest "did not run", never a fake ok).
+    expect(on.vehicles[0].integrity).not.toBeNull();
+    expect(off.vehicles[0].integrity).toBeNull();
+    const strip = (v) => Object.fromEntries(Object.entries(v).filter(([k]) => k !== 'integrity'));
+    expect(off.vehicles.map(strip)).toEqual(on.vehicles.map(strip));
+  });
+
+  test('the production seam REJECTS the integrity toggle: runEvaluation has no off switch', { timeout: 240000 }, async () => {
+    // Always-on is a policy, not an option: the GA path can never evaluate
+    // with the detector disabled (the witnesses-never-disable-the-system
+    // rule). Unknown-key rejection is the existing options discipline.
+    await expect(runEvaluation({
+      deterministic: true,
+      terrain: { ...WITNESS_TERRAIN },
+      vehicles: [{ ir, spawn, targetWheelSurfaceSpeed: 5, wheelFriction: 1 }],
+      maxSteps: 1,
+      integrity: false,
+    })).rejects.toThrow(/unknown option|integrity/);
   });
 });

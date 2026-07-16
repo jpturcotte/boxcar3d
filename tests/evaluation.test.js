@@ -195,6 +195,19 @@ describe.each(FLAVORS)('runEvaluation fixtures (deterministic=%s, %s)', (determi
     expect(v.joints).toEqual({ count: 4, allValid: true });
     expect(v.stationCount).toBe(4);
     expect(v.bodies.sleepingAtEnd).toBeGreaterThanOrEqual(0); // a count, never an expectation
+    // The numerical-integrity block is present on every production result and
+    // well-formed. Fixture A is a curated HEALTHY vehicle on a flat pad — its
+    // status being 'ok' is a behavioral gate on a known-good subject (not a
+    // must-explode assertion anywhere). The observations shape is fixed.
+    expect(v.integrity.policyVersion).toBe(1);
+    expect(v.integrity.status).toBe('ok');
+    expect(v.integrity.firstFailureStep).toBeNull();
+    expect(v.integrity.reasons).toEqual([]);
+    expect(Object.keys(v.integrity.observations).sort()).toEqual([
+      'firstAlertStep', 'firstCatastrophicStep', 'peakBodySpeed',
+      'peakSpeedDelta', 'peakStepDisplacement',
+    ]);
+    expect(v.integrity.observations.firstCatastrophicStep).toBeNull();
     expect(r.counts).toEqual({
       bodies: 5, colliders: 3 + FIXTURE_A.expected.vehicleColliders, joints: 4, staticColliders: 3,
     });

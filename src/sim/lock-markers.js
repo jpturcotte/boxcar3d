@@ -33,7 +33,10 @@ export const FITNESS_VECTOR_LOCK_MISMATCH = 'FITNESS_VECTOR_LOCK_MISMATCH';
 const HEX8 = /^[0-9a-f]{8}$/;
 // Every occurrence of the marker token; fields optional in the match so a
 // token WITHOUT well-formed fields is detected as malformed, not invisible.
-const MARKER_OCCURRENCE = /FITNESS_VECTOR_LOCK_MISMATCH(?: expected=([0-9a-f]{8}) actual=([0-9a-f]{8}))?/g;
+// The (?![A-Z_]) boundary keeps a longer identifier that merely CONTAINS the
+// token as a prefix (e.g. FITNESS_VECTOR_LOCK_MISMATCHED in prose) from
+// counting as an occurrence and flipping a well-formed message to malformed.
+const MARKER_OCCURRENCE = /FITNESS_VECTOR_LOCK_MISMATCH(?![A-Z_])(?: expected=([0-9a-f]{8}) actual=([0-9a-f]{8}))?/g;
 
 function fail(path, value) {
   throw new Error(`lock-markers: invalid input at ${path} (${String(value)})`);

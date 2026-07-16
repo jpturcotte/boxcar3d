@@ -146,7 +146,16 @@ characterizes it (signals panel, prevalence, the mutation-neighborhood probe,
 cost): the five known-affected subjects all become fitness 0, every control and
 fixture stays selectable at 180–600× margin below failure, clean parents show no
 false-positive halo, and the false-negative watch list is empty across all 60
-characterization individuals and 48 neighborhood children. Full contract in
+characterization individuals and 48 neighborhood children. A review follow-up
+hardened the seams without moving any lock: integrity is validated before the
+validity short-circuit (malformed detector output is refused loud, never a
+silent zero), the online/offline agreement check covers the full derivable
+classification, the mutation-neighborhood jitter preserves categorical genes
+(an accidental S2 crossing can no longer abort the experiment), and the
+engine-upgrade tripwire now reads the fitness-vector lock from one source — a
+structured mismatch marker validated against `population-locks.js` at
+adjudication time — instead of a copied digest literal that staled on
+re-lock. Full contract in
 [`docs/numerical-integrity-policy-2026-07.md`](docs/numerical-integrity-policy-2026-07.md);
 no physics changed and the A–D evaluation golden digests are byte-identical.
 Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,

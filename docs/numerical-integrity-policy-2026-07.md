@@ -172,12 +172,114 @@ the catastrophic-only bound meets the evolutionary-safety requirement on the
 tested set, and alert-as-failure escalation is not currently warranted (the
 trigger stands, unmet).
 
+## Review follow-up (2026-07-16): four corrections, no lock movement
+
+Landed on the PR #20 branch after PR #19/#21 merged; every committed
+lock/fingerprint byte-identical, `fitnessVectorDigest` stays `a6d04f75`.
+
+**1. Integrity is validated BEFORE the validity short-circuit.**
+`isVehicleResultSelectable` used to evaluate `isVehicleResultValid(v) &&
+requireIntegrity(v)...`, so an INVALID result (non-finite / bad bodies / bad
+joints) with `integrity: null` or a malformed block returned a silent `false`
+— an unversioned policy for exactly the results most likely to need
+diagnosis. `requireIntegrity` now runs unconditionally first; both policy
+entry points (`isVehicleResultSelectable`, `fitnessFromVehicleResult`) refuse
+missing/null/wrong-version/unknown-status integrity LOUD on every validity
+combination (regression suite committed). `isVehicleResultValid` keeps its
+narrow, integrity-free meaning.
+
+**2. The online≡offline agreement claim is now the FULL derivable contract.**
+The probe's `agreement` hard check and the equivalence witnesses used to
+compare only the five shared observations while claiming block-level
+agreement. `analyzeTrace` now records per-body per-reason first steps
+(additive diagnostics), and the ONE shared projection
+(`offlineIntegrityView`) derives the complete production classification —
+`status`, `firstFailureStep`, the ORDERED `reasons` array — per the online
+fold's documented scan order (capture → canonical body order →
+catastrophicSpeed → catastrophicStepDisplacement → nonFinite). A pure
+codec-fed suite feeds the SAME synthetic series through both detectors and
+pins every ordering rule (class precedence, same-body and cross-body
+same-step ties, reason order, the captureDt convention) as an arithmetic
+identity; the engine-fed witnesses stay outcome-agnostic. (The
+"Measured characterization" section below predates this widening; its
+agreement checks compared observations + onsets, which the fuller contract
+subsumes — re-running the probe re-attests everything under the full check.)
+
+**3. Parametric neighborhood jitter preserves discrete-decode genes.**
+The jitter walker perturbed EVERY numeric leaf, including the categorical
+`suspType` — a draw near the S1/S2 decode boundary produced a legal compiled
+S2 IR the realizer rejects pre-world, aborting the whole neighborhood
+experiment. `assembly.js` now declares `DISCRETE_GENE_KEYS`
+(family/suspType/symmetric/paired/driven/nodeCount — enum band / boolean
+threshold / slot count), and the walker preserves them verbatim: a
+parametric instrument measures the local CONTINUOUS neighborhood; decode-
+boundary crossings are structural mutations (spec §3.1.3), a different
+operator. S2 is never clamped or masked — it is simply unreachable by
+jitter. A deterministic S1→S2 boundary regression is committed. NOTE: the
+neighborhood table below was measured under the PREVIOUS walker (which could
+also flip family/paired/driven/symmetric/nodeCount at band edges); future
+probe runs use the discrete-preserving walker, so per-child identities and
+repair-touched counts will differ from that historical sample.
+
+**4. The engine-upgrade tripwire no longer duplicates the mutable lock.**
+PR #21's candidate-red inventory embedded the then-current fitness-vector
+digest in a failure-message regex (`"to be 'bded0d30'"`); this PR's
+deliberate re-lock silently staled it — a real core-0.34 run would have
+failed adjudication on the permitted class-(c) movement. Both population
+determinism gates now fail with a structured marker
+(`src/sim/lock-markers.js`: `FITNESS_VECTOR_LOCK_MISMATCH expected=<lock>
+actual=<measured>`, the custom message on the still-real `.toBe` golden
+assertion), and the adjudicator (inventory schema/3) parses it and validates
+`expected=` against the authoritative digest imported LIVE from
+`src/sim/population-locks.js` at adjudication time. Cross-env digest
+extraction reads `actual=` from the marker (never Vitest diff scraping).
+Committed sync teeth: no signature field may embed a mutable digest literal,
+the authoritative set must equal the lock module's values, and
+mismatch/malformed/contradictory-marker paths are unit-tested. The July 2026
+C5 evidence (recorded under fitness policy v1 against `bded0d30`) is
+historical and untouched; `tests/integrity-probe-schema.test.js` joins the
+expected candidate reds (its `rapierVersion` pin; Node totals 11 → 12).
+
+**Core-0.34 revalidation under policy v2 (run 29527892757, 2026-07-16,
+heavy=true, dispatched from this branch): every job GREEN on the first
+dispatch — the updated inventory matches the REAL candidate contract.**
+Measured, both arms usable, verdict `citable: true`:
+
+- **Candidate Node reds: exactly the declared 12**, at assertion level —
+  evaluation-determinism(5), evaluation-golden(1), population-determinism(3,
+  incl. the fitness-vector red via the STRUCTURED MARKER), bench-schema(1),
+  physics-explosion-probe-schema(1), and the NEW integrity-probe-schema(1)
+  (its `rapierVersion` pin, exactly as classified). Stable arm: 0 failing —
+  every PR #20 test (integrity, lock-markers, adjudicator, probe schemas)
+  green on stable in CI.
+- **The marker protocol proved itself end-to-end on a real candidate**: Node
+  and Chromium both extracted the candidate's policy-v2 fitness-vector
+  digest `087b5149` from the marker (agree, zero marker problems), and
+  `expected=a6d04f75` validated against the live population-locks import.
+  Note `087b5149` ≠ the July v1-era candidate digest `ee605286` (the vector
+  encoding changed at v2) — under the stale pre-/3 inventory this run would
+  have FAILED adjudication on exactly the permitted class-(c) movement,
+  which is the defect this protocol closes.
+- **Outcome B reproduced at classification level** (the July verdict
+  extends to PR #20's tree): impulse reproducer catastrophic on BOTH arms
+  (stable cat@46, peak 5.45e3 m/s; candidate cat@107, peak 4.78e3 m/s);
+  multibody arm quiescent on BOTH (1.42 / 1.40 m/s); prevalence identical
+  on both arms and to the July result — 20260725: ids 1, 14, 19;
+  20260728: id 4; 20260729: id 19; fresh 20260730: ids 0, 5 (7/80 total);
+  the candidate still CRASHES the full forensic witness matrix
+  (`RuntimeError: unreachable`) while stable completes it cleanly
+  (`freeErrors` empty); paired perf ok. The integrity policy's target
+  failure class is unchanged on the current upstream core, and the detector
+  gates it identically there.
+
 ## Reproduce
 
 - `npm run probe:integrity` — the characterization (signals/population/
   neighborhood/cost; defaults SMALL, the full sweep is Phase 1B's experiment).
 - `npx vitest run tests/integrity.test.js` — the pure contract + the
   online≡offline equivalence witnesses (outcome-agnostic).
+- `npx vitest run tests/lock-markers.test.js tests/compare-spike-runs.test.js`
+  — the marker protocol + the one-source adjudication teeth.
 - `npm run test:determinism` + `npm run test:browser` — the v2 re-lock
   reproduces across Node (3-OS) and pinned Chromium.
 

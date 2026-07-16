@@ -1185,6 +1185,32 @@ stable 0.19.3. Full evidence: `docs/numerical-integrity-policy-2026-07.md`:**
   fingerprint and the A–D evaluation golden digests byte-identical;
   `GENOTYPE_VERSION`/`ASSEMBLY_IR_VERSION`/`EVALUATION_TRACE_VERSION`/snapshot/
   initializer/spec versions unchanged.
+- **Review follow-up (2026-07-16, on-branch; no lock movement, `a6d04f75`
+  stands):** (1) `requireIntegrity` now runs BEFORE the validity
+  short-circuit — an INVALID result with missing/null/malformed integrity is
+  refused LOUD at both policy entry points, never a silent 0 (regression
+  suite committed; `isVehicleResultValid` unchanged). (2) The online≡offline
+  agreement contract is the FULL derivable classification: `analyzeTrace`
+  records per-body per-reason first steps and the shared
+  `offlineIntegrityView` derives status/firstFailureStep/ordered-reasons per
+  the online scan-order contract; a pure codec-fed suite pins every ordering
+  rule (incl. same-step ties) as an arithmetic identity between the two
+  detectors. (3) The neighborhood jitter walker preserves the declared
+  `DISCRETE_GENE_KEYS` (assembly.js: family/suspType/symmetric/paired/
+  driven/nodeCount) — a suspType crossing into the legal-but-unrealizable S2
+  band can no longer abort the experiment (S1→S2 boundary regression
+  committed; S2 never clamped, just unreachable by parametric jitter).
+  (4) **The cross-PR defect closed:** the spike inventory's copied
+  `"to be 'bded0d30'"` regex (staled by this PR's re-lock) is replaced by the
+  structured marker protocol — `src/sim/lock-markers.js`
+  (`FITNESS_VECTOR_LOCK_MISMATCH expected=<lock> actual=<measured>`, the
+  custom message on the still-real `.toBe` golden assertion in BOTH
+  population determinism gates), adjudicated by `compare-spike-runs.js`
+  against `AUTHORITATIVE_FITNESS_VECTOR_DIGESTS` imported LIVE from
+  population-locks at adjudication time (inventory schema/3; no mutable
+  digest literal in any signature — sync-tooth-enforced;
+  `tests/integrity-probe-schema.test.js` joins the expected candidate reds,
+  Node totals 11→12; the July 2026 C5 evidence stays historical/untouched).
 
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a

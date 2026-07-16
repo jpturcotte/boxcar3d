@@ -41,10 +41,16 @@ describe('population golden locks (Chromium)', () => {
     // Same structured-marker convention as the Node gate (see
     // tests/population-determinism.test.js): the golden .toBe still fails on
     // a mismatched engine; the marker makes the failure machine-parseable so
-    // the spike adjudicator never needs a copied digest literal.
+    // the spike adjudicator never needs a copied digest literal. During the
+    // documented null-digest RE-LOCK workflow the lock is null — the marker
+    // cannot be formatted (its inputs are 8-hex by contract), so the message
+    // points at the Node gate, which owns the paste-ready re-lock record;
+    // the .toBe still fails honestly against the null.
     expect(
       ev.fitnessVector.digest,
-      `${formatFitnessVectorLockMismatch(LOCK.fitnessVectorDigest, ev.fitnessVector.digest)} — engine or encoding changed; re-lock deliberately via the null-digest workflow`,
+      LOCK.fitnessVectorDigest === null
+        ? `RE-LOCK in progress (fitnessVectorDigest is null): run the Node gate for the paste-ready record; Chromium measured ${ev.fitnessVector.digest}`
+        : `${formatFitnessVectorLockMismatch(LOCK.fitnessVectorDigest, ev.fitnessVector.digest)} — engine or encoding changed; re-lock deliberately via the null-digest workflow`,
     ).toBe(LOCK.fitnessVectorDigest);
     expect(ev.individuals.length).toBe(LOCK.individuals.length);
     ev.individuals.forEach((ind, i) => {

@@ -80,6 +80,15 @@ describe('parseFitnessVectorLockMismatch', () => {
     }
   });
 
+  test('a LONGER identifier containing the token as a prefix is NOT an occurrence (the boundary rule)', () => {
+    // Prose like "FITNESS_VECTOR_LOCK_MISMATCHED" must neither read as a
+    // marker nor flip a well-formed message to malformed.
+    expect(parseFitnessVectorLockMismatch('the FITNESS_VECTOR_LOCK_MISMATCHED case').present).toBe(false);
+    const marker = formatFitnessVectorLockMismatch('a6d04f75', 'ee605286');
+    expect(parseFitnessVectorLockMismatch(`${marker} — see FITNESS_VECTOR_LOCK_MISMATCH_DOCS for the workflow`))
+      .toEqual({ present: true, malformed: false, expected: 'a6d04f75', actual: 'ee605286' });
+  });
+
   test('identical duplicates tolerated; contradictory duplicates malformed', () => {
     const one = formatFitnessVectorLockMismatch('a6d04f75', 'ee605286');
     expect(parseFitnessVectorLockMismatch(`${one}\n${one}`))

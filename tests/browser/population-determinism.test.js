@@ -23,6 +23,7 @@ import { compileAssembly } from '../../src/sim/assembly.js';
 import { runEvaluation } from '../../src/sim/evaluation.js';
 import { compareCheckpoints } from '../../src/sim/trace.js';
 import { fnv1aHex } from '../../src/sim/fnv1a.js';
+import { formatFitnessVectorLockMismatch } from '../../src/sim/lock-markers.js';
 
 const LOCK = POPULATION_GOLDEN_LOCKS[POPULATION_FIXTURE_A.name];
 
@@ -37,7 +38,14 @@ describe('population golden locks (Chromium)', () => {
   test('evaluation: fitness-vector digest, every fitness literal by individualId, champion', { timeout: 240000 }, async () => {
     const { population, spec } = populationEvaluationInputsFor(POPULATION_FIXTURE_A);
     const ev = await evaluatePopulation(population, spec);
-    expect(ev.fitnessVector.digest).toBe(LOCK.fitnessVectorDigest);
+    // Same structured-marker convention as the Node gate (see
+    // tests/population-determinism.test.js): the golden .toBe still fails on
+    // a mismatched engine; the marker makes the failure machine-parseable so
+    // the spike adjudicator never needs a copied digest literal.
+    expect(
+      ev.fitnessVector.digest,
+      `${formatFitnessVectorLockMismatch(LOCK.fitnessVectorDigest, ev.fitnessVector.digest)} — engine or encoding changed; re-lock deliberately via the null-digest workflow`,
+    ).toBe(LOCK.fitnessVectorDigest);
     expect(ev.individuals.length).toBe(LOCK.individuals.length);
     ev.individuals.forEach((ind, i) => {
       const locked = LOCK.individuals[i];

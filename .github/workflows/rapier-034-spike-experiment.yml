@@ -278,10 +278,11 @@ jobs:
         run: |
           # GitHub's default shell is `bash -e`; DISABLE errexit here. This
           # step MUST capture non-zero exits (the candidate's `npm test` exits
-          # 1 by design — 11 expected reds — a failing app-scene gate, a
-          # `timeout` 124) without aborting — the Adjudicate step is the sole
-          # pass/fail authority. (The earlier `set -uo pipefail` alone left
-          # -e on, so the first non-hanging failure killed the whole step.)
+          # 1 by design — the expected-red inventory, currently 12 — a failing
+          # app-scene gate, a `timeout` 124) without aborting — the Adjudicate
+          # step is the sole pass/fail authority. (The earlier `set -uo
+          # pipefail` alone left -e on, so the first non-hanging failure
+          # killed the whole step.)
           set +e -u -o pipefail
           RES="results-${ARM}"
           mkdir -p "$RES"

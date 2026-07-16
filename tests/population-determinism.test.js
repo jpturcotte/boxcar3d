@@ -31,6 +31,7 @@ import { INTEGRITY_POLICY_VERSION } from '../src/sim/integrity.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from '../src/sim/population.js';
 import { POPULATION_INITIALIZER_VERSION, serializePopulationInitialization } from '../src/sim/population-initializer.js';
 import { GENOTYPE_VERSION, compileAssembly, serializeGenotype } from '../src/sim/assembly.js';
+import { formatFitnessVectorLockMismatch } from '../src/sim/lock-markers.js';
 import { EVALUATION_TRACE_VERSION, RECORD_BYTES, compareCheckpoints } from '../src/sim/trace.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
 import { createPhysics } from '../src/sim/physics/adapter.js';
@@ -180,7 +181,17 @@ describe('population evaluation gate (deterministic flavor)', () => {
     }
 
     expect(fnv1aHexOf(fnv1aFold(FNV_OFFSET_BASIS, serializeEvaluationSpec(b.spec)))).toBe(LOCK.evaluationSpecDigest);
-    expect(b.fitnessVector.digest).toBe(LOCK.fitnessVectorDigest);
+    // The golden fitness-vector comparison, with the STRUCTURED mismatch
+    // marker as its custom message (src/sim/lock-markers.js): on an engine/
+    // encoding change this test still FAILS on the real .toBe against the
+    // committed lock, and the failure message carries machine-parseable
+    // `expected=<lock> actual=<measured>` fields the engine-upgrade
+    // adjudicator validates against src/sim/population-locks.js — the lock
+    // digest is never copied into the candidate-red inventory.
+    expect(
+      b.fitnessVector.digest,
+      `${formatFitnessVectorLockMismatch(LOCK.fitnessVectorDigest, b.fitnessVector.digest)} — engine or encoding changed; re-lock deliberately via the null-digest workflow`,
+    ).toBe(LOCK.fitnessVectorDigest);
     b.individuals.forEach((ind, i) => {
       const locked = LOCK.individuals[i];
       expect(ind.individualId).toBe(locked.individualId);

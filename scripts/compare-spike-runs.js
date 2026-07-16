@@ -42,8 +42,31 @@ import {
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { POPULATION_GOLDEN_LOCKS } from '../src/sim/population-locks.js';
+import { parseFitnessVectorLockMismatch } from '../src/sim/lock-markers.js';
 
 const ARMS = ['stable', 'candidate'];
+
+// The authoritative CURRENT fitness-vector lock digest set, derived LIVE from
+// the committed lock module in THIS checkout — never copied into the
+// expected-reds inventory. The determinism tests fail with a structured
+// marker (src/sim/lock-markers.js) carrying `expected=<lock>`; classify() and
+// invariants() validate that field against THIS set, so a deliberate re-lock
+// updates all three legs (test, lock, adjudicator) from the single
+// population-locks.js source and the inventory can never silently stale.
+// (The pre-/3 inventory hardcoded "to be 'bded0d30'" and staled on the first
+// re-lock — the PR #20 cross-PR defect.) Injectable in the mode functions so
+// the pure unit suite can exercise mismatch paths.
+export const AUTHORITATIVE_FITNESS_VECTOR_DIGESTS = Object.freeze(
+  Object.values(POPULATION_GOLDEN_LOCKS).map((lock) => lock.fitnessVectorDigest),
+);
+
+const HEX8_EXACT = /^[0-9a-f]{8}$/;
+
+function validAuthoritativeSet(digests) {
+  return Array.isArray(digests) && digests.length > 0
+    && digests.every((d) => typeof d === 'string' && HEX8_EXACT.test(d));
+}
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -132,7 +155,10 @@ function passedCountsBySubstring(vitestJson, substrings) {
   return counts;
 }
 
-function classify({ testJsonPath, expectedPath, label }) {
+function classify({
+  testJsonPath, expectedPath, label,
+  authoritativeDigests = AUTHORITATIVE_FITNESS_VECTOR_DIGESTS,
+}) {
   const vitest = readJson(testJsonPath);
   const expected = readJson(expectedPath);
   const section = expected[label];
@@ -143,6 +169,26 @@ function classify({ testJsonPath, expectedPath, label }) {
   const observed = failingByFile(vitest);
   const expectedFiles = section.byFile ?? {};
   const errors = [];
+
+  // FAIL-CLOSED preconditions for marker-validated signatures: every declared
+  // lockMarker must be a KNOWN marker type, and a usable authoritative digest
+  // set must exist — a marker signature without validation would be a
+  // regex-only check, silently weaker than the schema/3 contract.
+  const markerSigs = Object.values(expectedFiles)
+    .flatMap((spec) => spec.allowedFailureSignatures ?? [])
+    .filter((s) => s.lockMarker !== undefined);
+  for (const s of markerSigs) {
+    if (s.lockMarker !== 'fitnessVector') {
+      errors.push(`INVENTORY INVALID — unknown lockMarker '${s.lockMarker}' on signature "${s.titleSubstring}" (known: fitnessVector)`);
+    }
+  }
+  if (markerSigs.length > 0 && !validAuthoritativeSet(authoritativeDigests)) {
+    errors.push('INVENTORY INVALID — marker-validated signatures declared but no valid authoritative fitness-vector digest set is available (population-locks import failed?)');
+  }
+  if (errors.length > 0) {
+    console.error(`\nCLASSIFY FAIL (${label}):\n  ${errors.join('\n  ')}`);
+    return { ok: false, errors };
+  }
 
   console.log(`# candidate-red classification (${label})`);
   console.log(`observed failing files: ${Object.keys(observed).length}; `
@@ -184,6 +230,25 @@ function classify({ testJsonPath, expectedPath, label }) {
             + `a project-contract regression, not the allowed class-(c) move). Message head: ${fa.message.slice(0, 200)}`);
         } else {
           hits[idx] += 1;
+          // Marker-validated signature: the failure message must carry exactly
+          // one well-formed structured marker, and its `expected=` field must
+          // equal an authoritative committed lock digest from THIS checkout —
+          // the one-source-of-truth validation that replaces the old copied
+          // digest literal.
+          if (sigs[idx].lockMarker === 'fitnessVector') {
+            const marker = parseFitnessVectorLockMismatch(fa.message);
+            if (!marker.present || marker.malformed) {
+              errors.push(`LOCK MARKER MALFORMED — ${file}: "${fa.name}" matched the fitness-vector marker `
+                + `signature but does not carry ONE well-formed marker${marker.malformed ? ` (${marker.reason})` : ''}. `
+                + `Message head: ${fa.message.slice(0, 200)}`);
+            } else if (!authoritativeDigests.includes(marker.expected)) {
+              errors.push(`LOCK MARKER EXPECTED-DIGEST MISMATCH — ${file}: the failing test reports `
+                + `expected=${marker.expected}, but the authoritative committed lock set in this checkout is `
+                + `[${authoritativeDigests.join(', ')}] — the emitting test and src/sim/population-locks.js `
+                + 'disagree (an inconsistent checkout or a fabricated marker), so this red is NOT the allowed '
+                + 'class-(c) golden move');
+            }
+          }
         }
       }
       sigs.forEach((s, i) => {
@@ -302,8 +367,6 @@ function timingGate({ logPath, exitCode, expectedPath }) {
 }
 
 // --- compare mode ---------------------------------------------------------------
-
-const HEX8 = /\b[0-9a-f]{8}\b/;
 
 function armDir(artifacts, arm) {
   return join(artifacts, `results-${arm}`);
@@ -514,14 +577,16 @@ function classifyWitnessMatrix(arm, wexit, sig, witnesses) {
 }
 
 // ONLY the population fitness-vector digest is reliably comparable across Node
-// and Chromium: BOTH reporters emit it via a short `.toBe('<digest>')` whose
-// message is not truncated. The eval A-D checkpoint states and the champion
-// trace are deliberately NOT semantic keys — Node's `.toBeNull()` on a
-// formatted divergence string is TRUNCATED by the reporter (the state hex is
-// dropped) while Chromium keeps the full `expect.fail` message, so scraping
-// them yields Chromium-only extractions that would fail set-equality for a
-// reason unrelated to determinism. (Measured on the first heavy dispatch; see
-// nodeChromiumRequiredKeysRationale in the inventory.)
+// and Chromium: both determinism gates fail with the STRUCTURED marker
+// (src/sim/lock-markers.js — a short custom message on the golden `.toBe`,
+// untruncated in both reporters; re-verified with real flipped-lock captures
+// in Node AND Chromium, 2026-07-16). The eval A-D checkpoint states and the
+// champion trace are deliberately NOT semantic keys — Node's `.toBeNull()` on
+// a formatted divergence string is TRUNCATED by the reporter (the state hex
+// is dropped) while Chromium keeps the full `expect.fail` message, so
+// scraping them yields Chromium-only extractions that would fail set-equality
+// for a reason unrelated to determinism. (Measured on the first heavy
+// dispatch; see nodeChromiumRequiredKeysRationale in the inventory.)
 const DIGEST_SEMANTIC_RULES = [
   { re: /two fresh evaluations agree byte-for-byte|fitness-vector digest/, key: () => 'population:fitness-vector' },
 ];
@@ -535,30 +600,46 @@ function semanticDigestKey(fullName) {
   return null;
 }
 
-// Digest extraction from a determinism vitest json's failure messages, keyed by
-// SEMANTIC fixture identity (see DIGEST_SEMANTIC_RULES) so Node and Chromium
-// digests for the same fixture compare. Assertions with no semantic key
-// (version pins, non-digest teeth) are skipped. Returns { semanticKey -> digest }.
+// Digest extraction from a determinism vitest json's failure messages, keyed
+// by SEMANTIC fixture identity (see DIGEST_SEMANTIC_RULES) so Node and
+// Chromium digests for the same fixture compare. The extraction protocol is
+// the STRUCTURED marker — never Vitest diff scraping (the old first-line
+// HEX8 scan was one reporter-format change away from extracting a bundle-URL
+// hash). Returns { digests: {key -> measured actual}, expecteds: {key ->
+// the emitting test's expected= field}, problems: [strings] } — a keyed
+// assertion that failed WITHOUT a well-formed marker, or duplicate keyed
+// assertions with CONTRADICTORY values, are surfaced as problems, never
+// silently skipped (first-match-wins previously hid contradictions).
 function measuredDigests(vitestJson) {
-  const out = {};
-  if (vitestJson === null) return out;
+  const digests = {};
+  const expecteds = {};
+  const problems = [];
+  if (vitestJson === null) return { digests, expecteds, problems };
   for (const suite of vitestJson.testResults ?? []) {
     if (!/determinism/.test(relTestKey(suite.name))) continue;
     for (const a of suite.assertionResults ?? []) {
       if (a.status !== 'failed') continue;
-      const key = semanticDigestKey(a.fullName ?? a.title ?? '');
-      if (key === null || out[key] !== undefined) continue;
-      // Scan ONLY the first line (the assertion message). The stack-trace lines
-      // that follow carry vitest bundle URLs like `?v=d9c9c21b` whose 8-hex
-      // query hash would be a false digest match. The fitness-vector digest is
-      // the RECEIVED (measured) value, which vitest renders first in the
-      // `.toBe` diff: "expected '<measured>' to be '<lock>'".
-      const msg = ((a.failureMessages ?? []).join('\n').split('\n')[0]) ?? '';
-      const m = HEX8.exec(msg);
-      if (m !== null) out[key] = m[0];
+      const name = a.fullName ?? a.title ?? '';
+      const key = semanticDigestKey(name);
+      if (key === null) continue;
+      const marker = parseFitnessVectorLockMismatch((a.failureMessages ?? []).join('\n'));
+      if (!marker.present) {
+        problems.push(`"${key}": keyed assertion "${name}" failed WITHOUT the structured marker (protocol drift — the emitting test and the adjudicator disagree on the failure format)`);
+        continue;
+      }
+      if (marker.malformed) {
+        problems.push(`"${key}": keyed assertion "${name}" carries a MALFORMED marker (${marker.reason})`);
+        continue;
+      }
+      if (digests[key] !== undefined && (digests[key] !== marker.actual || expecteds[key] !== marker.expected)) {
+        problems.push(`"${key}": extracted twice with CONTRADICTORY values (actual ${digests[key]} vs ${marker.actual}; expected ${expecteds[key]} vs ${marker.expected})`);
+        continue;
+      }
+      digests[key] = marker.actual;
+      expecteds[key] = marker.expected;
     }
   }
-  return out;
+  return { digests, expecteds, problems };
 }
 
 function mdTable(headers, rows) {
@@ -791,8 +872,14 @@ function compare({ artifacts, out, expectedPath }) {
 
   // Determinism digests + Node<->Chromium agreement (candidate).
   push('## Determinism digests (candidate: Node vs Chromium)');
-  const nodeD = measuredDigests(armReports.candidate.npmTest);
-  const chromeD = measuredDigests(armReports.candidate.browser);
+  const nodeX = measuredDigests(armReports.candidate.npmTest);
+  const chromeX = measuredDigests(armReports.candidate.browser);
+  const nodeD = nodeX.digests;
+  const chromeD = chromeX.digests;
+  const markerProblems = [
+    ...nodeX.problems.map((p) => `Node: ${p}`),
+    ...chromeX.problems.map((p) => `Chromium: ${p}`),
+  ];
   // Judge agreement against the DECLARED required set (mirrors --mode
   // invariants), NOT the union of whatever happened to extract: a required
   // digest missing on EITHER environment is a failure, not a silent "n/a" pass.
@@ -802,7 +889,7 @@ function compare({ artifacts, out, expectedPath }) {
     push('_No nodeChromiumRequiredKeys declared in the inventory — cross-env agreement is NOT asserted._');
     manifest.findings.nodeChromiumAgreement = { extracted: false, requiredKeys: [] };
   } else {
-    let agree = true;
+    let agree = markerProblems.length === 0;
     const rows = requiredKeys.map((k) => {
       const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
       const ok = n !== null && c !== null && n === c;
@@ -812,11 +899,17 @@ function compare({ artifacts, out, expectedPath }) {
     });
     push(mdTable(['required cross-env digest', 'Node digest', 'Chromium digest', 'agree'], rows));
     push('');
+    if (markerProblems.length > 0) {
+      push(`> **Marker extraction problem(s) — the structured-marker protocol broke; agreement NOT established:**\n> - ${markerProblems.join('\n> - ')}`);
+      push('');
+    }
     push(agree
-      ? '_Node and Chromium agree on the population fitness-vector digest — the ONLY digest mechanically comparable across environments. The eval A–D checkpoint states and the champion trace are NOT cross-env compared (Node truncates their divergence messages; see nodeChromiumRequiredKeysRationale). This one digest is the FULL extent of the cross-env determinism evidence — it is NOT a claim about the A–D or champion traces._'
-      : '> **Node↔Chromium: a REQUIRED digest is missing on one environment or disagrees — cross-env determinism NOT established. Investigate.**');
+      ? '_Node and Chromium agree on the population fitness-vector digest (extracted from the structured FITNESS_VECTOR_LOCK_MISMATCH marker) — the ONLY digest mechanically comparable across environments. The eval A–D checkpoint states and the champion trace are NOT cross-env compared (Node truncates their divergence messages; see nodeChromiumRequiredKeysRationale). This one digest is the FULL extent of the cross-env determinism evidence — it is NOT a claim about the A–D or champion traces._'
+      : '> **Node↔Chromium: a REQUIRED digest is missing on one environment, disagrees, or its marker is malformed — cross-env determinism NOT established. Investigate.**');
     if (extraKeys.length > 0) push(`_(Note: ${extraKeys.length} digest key(s) extracted OUTSIDE the required set: ${extraKeys.join(', ')} — not part of the agreement verdict.)_`);
-    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, requiredKeys, extraKeys, node: nodeD, chromium: chromeD };
+    manifest.findings.nodeChromiumAgreement = {
+      extracted: true, agree, requiredKeys, extraKeys, node: nodeD, chromium: chromeD, markerProblems,
+    };
   }
   push('');
 
@@ -985,7 +1078,10 @@ function compare({ artifacts, out, expectedPath }) {
 // Node and Chromium determinism digests agree (cross-env determinism holds).
 const F32_DT = 0.01666666753590107;
 
-function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
+function invariants({
+  nodeJson, browserJson, reproducerJson, expectedPath,
+  authoritativeDigests = AUTHORITATIVE_FITNESS_VECTOR_DIGESTS,
+}) {
   const errors = [];
 
   const repro = readJsonIf(reproducerJson);
@@ -1009,11 +1105,23 @@ function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
     return { ok: false, errors };
   }
-  const nD = measuredDigests(readJsonIf(nodeJson));
-  const cD = measuredDigests(readJsonIf(browserJson));
+  if (!validAuthoritativeSet(authoritativeDigests)) {
+    errors.push('no valid authoritative fitness-vector digest set is available (population-locks import failed?)');
+    console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
+    return { ok: false, errors };
+  }
+  const nX = measuredDigests(readJsonIf(nodeJson));
+  const cX = measuredDigests(readJsonIf(browserJson));
+  const nD = nX.digests;
+  const cD = cX.digests;
   console.log(`  required cross-env keys: ${required.join('; ')}`);
   console.log(`  extracted Node digests: ${JSON.stringify(nD)}`);
   console.log(`  extracted Chromium digests: ${JSON.stringify(cD)}`);
+  // Extraction problems are FAILURES, never informational: a missing/
+  // malformed/contradictory marker means the extraction protocol broke, and
+  // any agreement computed around it would be a false pass.
+  for (const p of nX.problems) errors.push(`Node marker problem: ${p}`);
+  for (const p of cX.problems) errors.push(`Chromium marker problem: ${p}`);
   for (const k of required) {
     const n = nD[k]; const c = cD[k];
     if (n === undefined) errors.push(`required key "${k}" NOT extracted from the Node report (renamed test, format change, or an unexpected pass)`);
@@ -1021,6 +1129,20 @@ function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
     if (n !== undefined && c !== undefined) {
       if (n === c) console.log(`  OK   Node==Chromium on "${k}" (${n})`);
       else errors.push(`node<->chromium disagree on "${k}": Node ${n} vs Chromium ${c}`);
+    }
+    // The emitting tests' expected= fields must agree with each other AND
+    // with the authoritative committed lock set — the same one-source rule
+    // classify() enforces, re-checked here because invariants is the mode
+    // that certifies cross-env agreement.
+    const nE = nX.expecteds[k]; const cE = cX.expecteds[k];
+    if (nE !== undefined && !authoritativeDigests.includes(nE)) {
+      errors.push(`Node "${k}" reports expected=${nE}, not in the authoritative committed lock set [${authoritativeDigests.join(', ')}]`);
+    }
+    if (cE !== undefined && !authoritativeDigests.includes(cE)) {
+      errors.push(`Chromium "${k}" reports expected=${cE}, not in the authoritative committed lock set [${authoritativeDigests.join(', ')}]`);
+    }
+    if (nE !== undefined && cE !== undefined && nE !== cE) {
+      errors.push(`node<->chromium disagree on "${k}" EXPECTED lock (${nE} vs ${cE}) — the two environments ran different lock modules?`);
     }
   }
   // Set EQUALITY in both directions: an extracted key outside the declared set
@@ -1037,8 +1159,9 @@ function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
     return { ok: false, errors };
   }
-  console.log(`\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the declared cross-env digest set (${required.join(', ')}). `
-    + 'That set is intentionally the digest(s) both reporters emit untruncated — NOT the full A-D/champion trace set (Node truncates those); see nodeChromiumRequiredKeysRationale.');
+  console.log(`\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the declared cross-env digest set (${required.join(', ')}), `
+    + 'with every marker expected= field matching the authoritative committed lock. That set is intentionally the digest(s) both reporters emit '
+    + 'untruncated — NOT the full A-D/champion trace set (Node truncates those); see nodeChromiumRequiredKeysRationale.');
   return { ok: true, errors: [] };
 }
 
@@ -1115,6 +1238,7 @@ export {
   passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan,
   prevalenceCoverageIssues, readJsonSafe, witnessLogPanicSignature, classifyWitnessMatrix, F32_DT,
 };
+// AUTHORITATIVE_FITNESS_VECTOR_DIGESTS is exported at its definition above.
 
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {

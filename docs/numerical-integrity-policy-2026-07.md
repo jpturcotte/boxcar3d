@@ -215,11 +215,13 @@ threshold / slot count), and the walker preserves them verbatim: a
 parametric instrument measures the local CONTINUOUS neighborhood; decode-
 boundary crossings are structural mutations (spec §3.1.3), a different
 operator. S2 is never clamped or masked — it is simply unreachable by
-jitter. A deterministic S1→S2 boundary regression is committed. NOTE: the
-neighborhood table below was measured under the PREVIOUS walker (which could
-also flip family/paired/driven/symmetric/nodeCount at band edges); future
-probe runs use the discrete-preserving walker, so per-child identities and
-repair-touched counts will differ from that historical sample.
+jitter. A deterministic S1→S2 boundary regression is committed. The
+neighborhood table below was **re-measured under this discrete-preserving
+walker** (2026-07-16), so it regenerates from the shipped code; the three
+qualitative findings are unchanged from the original PR-B measurement (0/32
+clean-parent failures, 16/16 witness failures, empty alert-but-ok watch list),
+and only the mean repair-touched-leaves column shifted (fewer leaves
+perturbed, RNG stream consumed differently).
 
 **4. The engine-upgrade tripwire no longer duplicates the mutable lock.**
 PR #21's candidate-red inventory embedded the then-current fitness-vector
@@ -329,24 +331,33 @@ steps):
 **5/60 catastrophic — exactly the known individuals** (the four witnesses + the
 id-1 control). Median viability ~2–3 m, unchanged. No false negatives.
 
-**Mutation neighborhood** (seed 20260731; every gene ±magnitude, re-repaired):
+**Mutation neighborhood** (seed 20260731; every CONTINUOUS gene ±magnitude,
+discrete-decode genes preserved, re-repaired) — **re-measured 2026-07-16 under
+the current discrete-preserving walker** (`npm run probe:integrity --pass
+neighborhood`, default config), so this table regenerates from the shipped
+code:
 
 | parent | parent status | mag | children | failed | alert-but-ok | mean repair-touched leaves |
 | --- | --- | --- | --- | --- | --- | --- |
-| control 20260725:13 | ok | 0.01 | 8 | 0 | 0 | 1.5 |
-| control 20260725:13 | ok | 0.05 | 8 | 0 | 0 | 1.8 |
+| control 20260725:13 | ok | 0.01 | 8 | 0 | 0 | 1.4 |
+| control 20260725:13 | ok | 0.05 | 8 | 0 | 0 | 2.0 |
 | witness A 20260725:19 | numericalDivergence | 0.01 | 8 | 8 | 0 | 5.5 |
-| witness A 20260725:19 | numericalDivergence | 0.05 | 8 | 8 | 0 | 4.3 |
-| champion 20260721:10 | ok | 0.01 | 8 | 0 | 0 | 2.5 |
-| champion 20260721:10 | ok | 0.05 | 8 | 0 | 0 | 3.6 |
+| witness A 20260725:19 | numericalDivergence | 0.05 | 8 | 8 | 0 | 6.4 |
+| champion 20260721:10 | ok | 0.01 | 8 | 0 | 0 | 2.9 |
+| champion 20260721:10 | ok | 0.05 | 8 | 0 | 0 | 3.5 |
 
 Clean parents have **no false-positive halo** (0/32 clean-parent children
-failed); the affected parent's children all stay affected (16/16). Repair
-touched a handful of gene leaves per child (it is NOT a no-op on jitter, but it
-does not, on this sample, push clean children across the conditioning boundary
-or rescue affected ones). This is the Phase-1B mutation-neighborhood probe's
-first data; the full sweep (larger parent set, finer magnitudes, structural
-mutation) is Phase 1B's experiment.
+failed); the affected parent's children all stay affected (16/16); the
+alert-but-ok watch list is **empty across all 48 children**. Repair touched a
+handful of gene leaves per child (it is NOT a no-op on jitter, but it does not,
+on this sample, push clean children across the conditioning boundary or rescue
+affected ones). The three qualitative findings are IDENTICAL to the original
+PR-B (pre-walker-fix) measurement — 0/32, 16/16, empty watch list — only the
+mean repair-touched-leaves column shifted (the discrete-preserving walker
+perturbs fewer leaves and consumes the RNG stream differently, so child
+identities differ). This is the Phase-1B mutation-neighborhood probe's first
+data; the full sweep (larger parent set, finer magnitudes, structural mutation)
+is Phase 1B's experiment.
 
 **Cost**: 5 pairs × 600 steps, median on 57.79 ms / off 59.33 ms, ratio 0.9151 —
 within noise (the fold is below the measurement floor).

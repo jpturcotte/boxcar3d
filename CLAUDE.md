@@ -1231,9 +1231,10 @@ remains a policy-v2 trigger, unmet on the tested corpus. Empirical
 guidance: initial viability is real but modest (median ~2–3 m); repair is
 near-universal on uniform raw draws (perturb genes freely and rely on
 repair for canonicalization; the mutation-neighborhood probe
-(`probe:integrity --pass neighborhood`) now has its first data — repair touches
-~1.5–5.5 gene leaves per jittered child and does not, on that sample, push clean
-children across the boundary or rescue affected ones); no category is starved
+(`probe:integrity --pass neighborhood`, discrete-preserving walker) has data —
+repair touches ~1.4–6.4 gene leaves per jittered child and does not, on that
+sample, push clean children across the boundary or rescue affected ones); no
+category is starved
 (parametric mutation first, structural second; structural rates
 conservative, spec §3.1.3). **Deferred (unchanged):** Phase 1C extended
 operators (evidence-driven, NOT promised as crossover); worker sharding with

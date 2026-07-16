@@ -22,6 +22,7 @@ import {
   analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView,
 } from '../src/sim/trace-forensics.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
+import { EVALUATION_TRACE_VERSION, RECORD_BYTES, encodeTraceRecord } from '../src/sim/trace.js';
 import { compileAssembly } from '../src/sim/assembly.js';
 import { FIXTURE_A, evaluationOptionsFor } from '../src/sim/evaluation-fixtures.js';
 import { MINIMAL_REPRODUCER, WITNESS_SPEC, WITNESS_TERRAIN, reproducerGenotype } from '../scripts/explosion-witnesses.js';
@@ -246,12 +247,161 @@ describe('classification semantics (pure fold)', () => {
   });
 });
 
+// --- Online ≡ offline classification equivalence (pure, codec-fed) ----------------
+//
+// The SAME synthetic series is fed through BOTH detectors — the online fold
+// directly, and the offline pipeline via encodeTraceRecord → analyzeTrace →
+// offlineIntegrityView — with no engine anywhere, so every ordering rule
+// (class precedence, body-order tie-breaks, reason order) is pinned as an
+// arithmetic identity between the two implementations, including the tie
+// cases a real run cannot be steered into deterministically.
+
+// Canonical body identities per read index (the runner's order: chassis
+// first, then stations — analyzeTrace's report sort reproduces this order).
+const TRACE_BODY_IDENTITIES = [
+  { bodyRole: 'chassis', axleIndex: null, wheelIndex: null, jointState: 'notApplicable' },
+  { bodyRole: 'wheel', axleIndex: 0, wheelIndex: 0, jointState: 'valid' },
+];
+
+function traceOfSeries(series) {
+  const records = [];
+  series.forEach((reads, stepIndex) => {
+    reads.forEach((r, bodyIndex) => {
+      records.push(encodeTraceRecord({
+        stepIndex,
+        vehicleIndex: 0,
+        ...TRACE_BODY_IDENTITIES[bodyIndex],
+        bodyValid: true,
+        bodySleeping: false,
+        terminated: false,
+        terminationReason: 'none',
+        finiteState: r.finite,
+        translation: r.translation,
+        rotation: { x: 0, y: 0, z: 0, w: 1 },
+        linvel: r.linvel,
+        angvel: { x: 0, y: 0, z: 0 },
+      }));
+    });
+  });
+  return {
+    version: EVALUATION_TRACE_VERSION, mode: 'full', recordBytes: RECORD_BYTES, records,
+  };
+}
+
+const bothDetectors = (series, { bodyCount = 1, captureDt = 1 / 60 } = {}) => ({
+  online: foldSeries(series, { bodyCount, captureDt }),
+  offline: offlineIntegrityView(analyzeTrace(traceOfSeries(series), { captureDt })),
+});
+
+describe('online ≡ offline classification equivalence (pure, codec-fed)', () => {
+  const agree = ({ online, offline }) => {
+    expect(online.status).toBe(offline.status);
+    expect(online.firstFailureStep).toBe(offline.firstFailureStep);
+    expect([...online.reasons]).toEqual([...offline.reasons]);
+    expect(Object.is(online.observations.peakBodySpeed, offline.observations.peakBodySpeed)).toBe(true);
+    expect(Object.is(online.observations.peakSpeedDelta, offline.observations.peakSpeedDelta)).toBe(true);
+    expect(Object.is(online.observations.peakStepDisplacement, offline.observations.peakStepDisplacement)).toBe(true);
+    expect(online.observations.firstAlertStep).toBe(offline.observations.firstAlertStep);
+    expect(online.observations.firstCatastrophicStep).toBe(offline.observations.firstCatastrophicStep);
+    return { online, offline };
+  };
+
+  test('clean series: both derive ok / null / empty', () => {
+    const { online } = agree(bothDetectors([
+      [read()],
+      [read({ x: 0.05, vx: 3 })],
+      [read({ x: 0.1, vx: 3.2 })],
+    ]));
+    expect(online.status).toBe('ok');
+    expect(online.reasons).toEqual([]);
+  });
+
+  test('catastrophic BEFORE a later nonFinite: divergence status, both reasons in order', () => {
+    const { online } = agree(bothDetectors([
+      [read()],
+      [read({ vx: 2000 })],
+      [read({ finite: false, x: NaN, vx: NaN })],
+    ]));
+    expect(online.status).toBe('numericalDivergence');
+    expect(online.firstFailureStep).toBe(1);
+    expect(online.reasons).toEqual(['catastrophicSpeed', 'nonFinite']);
+  });
+
+  test('nonFinite BEFORE a later catastrophic: nonFinite status, both reasons in order', () => {
+    const { online } = agree(bothDetectors([
+      [read()],
+      [read({ finite: false, x: NaN, vx: NaN })],
+      [read({ vx: 2000 })],
+    ]));
+    expect(online.status).toBe('nonFinite');
+    expect(online.firstFailureStep).toBe(1);
+    expect(online.reasons).toEqual(['nonFinite', 'catastrophicSpeed']);
+  });
+
+  test('same-capture SAME-BODY tie: catastrophic outranks nonFinite (the intra-body check order)', () => {
+    // One capture carries BOTH a catastrophic displacement (finite numbers)
+    // and the non-finite flag — the online fold checks catastrophic first.
+    const { online } = agree(bothDetectors([
+      [read()],
+      [read({ finite: false, x: 20, vx: 1 })],
+    ]));
+    expect(online.status).toBe('numericalDivergence');
+    expect(online.firstFailureStep).toBe(1);
+    expect(online.reasons).toEqual(['catastrophicStepDisplacement', 'nonFinite']);
+  });
+
+  test('same-capture CROSS-BODY tie: body order decides (earlier body nonFinite beats later body catastrophic)', () => {
+    const { online } = agree(bothDetectors([
+      [read(), read()],
+      [read({ finite: false, x: NaN, vx: NaN }), read({ vx: 1500 })],
+    ], { bodyCount: 2 }));
+    expect(online.status).toBe('nonFinite');
+    expect(online.firstFailureStep).toBe(1);
+    expect(online.reasons).toEqual(['nonFinite', 'catastrophicSpeed']);
+  });
+
+  test('multiple reasons at one capture: speed before displacement (intra-body rank); cross-body reason order follows body order', () => {
+    const sameBody = agree(bothDetectors([
+      [read()],
+      [read({ x: 100, vx: 5000 })],
+    ]));
+    expect(sameBody.online.reasons).toEqual(['catastrophicSpeed', 'catastrophicStepDisplacement']);
+    const crossBody = agree(bothDetectors([
+      [read(), read()],
+      [read({ x: 20, vx: 1 }), read({ vx: 1500 })],
+    ], { bodyCount: 2 }));
+    expect(crossBody.online.status).toBe('numericalDivergence');
+    expect(crossBody.online.reasons).toEqual(['catastrophicStepDisplacement', 'catastrophicSpeed']);
+  });
+
+  test('the captureDt convention holds through the derivation (1/120 halves the displacement bound on BOTH arms)', () => {
+    const series = [[read()], [read({ x: 10, vx: 1 })]];
+    const at120 = agree(bothDetectors(series, { captureDt: 1 / 120 }));
+    expect(at120.online.status).toBe('numericalDivergence');
+    const at60 = agree(bothDetectors(series, { captureDt: 1 / 60 }));
+    expect(at60.online.status).toBe('ok');
+  });
+});
+
 // --- Online ≡ offline equivalence (deterministic flavor, outcome-agnostic) -------
 
-// The vehicle-level view analyzeTrace implies is the SHARED
-// trace-forensics.offlineIntegrityView (the same projection probe-integrity
-// consumes) — used ONLY to compare against the online block from the same run,
-// never to assert what the engine did.
+// The FULL agreement contract, via the ONE shared derivation
+// (trace-forensics.offlineIntegrityView — the same function probe-integrity
+// consumes, so neither the field set nor the classification logic can drift
+// between the two sites): status, firstFailureStep, the ordered reasons
+// array, and every shared observation, bitwise. Used ONLY to compare the two
+// detectors over the same run — never to assert what the engine did.
+function expectFullAgreement(online, offline) {
+  expect(online.status).toBe(offline.status);
+  expect(online.firstFailureStep).toBe(offline.firstFailureStep);
+  expect([...online.reasons]).toEqual([...offline.reasons]);
+  expect(Object.is(online.observations.peakBodySpeed, offline.observations.peakBodySpeed)).toBe(true);
+  expect(Object.is(online.observations.peakSpeedDelta, offline.observations.peakSpeedDelta)).toBe(true);
+  expect(Object.is(online.observations.peakStepDisplacement, offline.observations.peakStepDisplacement)).toBe(true);
+  expect(online.observations.firstAlertStep).toBe(offline.observations.firstAlertStep);
+  expect(online.observations.firstCatastrophicStep).toBe(offline.observations.firstCatastrophicStep);
+}
+
 async function equivalenceSubject(runOptions, ir) {
   const r = await runEvaluation({ ...runOptions, trace: { mode: 'full', checkpointInterval: 1 } });
   const online = r.vehicles[0].integrity;
@@ -260,31 +410,7 @@ async function equivalenceSubject(runOptions, ir) {
     captureDt: r.effectiveDt, // the pinned convention: BOTH arms use the engine readback
   });
   const offline = offlineIntegrityView(analysis);
-  // Bitwise agreement on every shared observation.
-  expect(Object.is(online.observations.peakBodySpeed, offline.peakBodySpeed)).toBe(true);
-  expect(Object.is(online.observations.peakSpeedDelta, offline.peakSpeedDelta)).toBe(true);
-  expect(Object.is(online.observations.peakStepDisplacement, offline.peakStepDisplacement)).toBe(true);
-  expect(online.observations.firstAlertStep).toBe(offline.firstAlertStep);
-  expect(online.observations.firstCatastrophicStep).toBe(offline.firstCatastrophicStep);
-  // Classification agreement, outcome-agnostic: whatever the engine produced,
-  // the online status must be derivable from the offline onsets.
-  const cat = offline.firstCatastrophicStep;
-  const nonFinite = offline.firstNonFiniteStep;
-  if (cat === null && nonFinite === null) {
-    expect(online.status).toBe('ok');
-    expect(online.firstFailureStep).toBeNull();
-    expect(online.reasons).toEqual([]);
-  } else {
-    const first = [cat, nonFinite].filter((s) => s !== null)
-      .reduce((m, s) => (s < m ? s : m));
-    expect(online.firstFailureStep).toBe(first);
-    if (cat !== null && (nonFinite === null || cat < nonFinite)) {
-      expect(online.status).toBe('numericalDivergence');
-    } else if (nonFinite !== null && (cat === null || nonFinite < cat)) {
-      expect(online.status).toBe('nonFinite');
-    } // an exact tie is order-defined by the synthetic suite above
-    expect(online.status === 'ok').toBe(false);
-  }
+  expectFullAgreement(online, offline);
   return { online, offline };
 }
 

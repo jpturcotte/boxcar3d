@@ -137,10 +137,18 @@ function requireIntegrity(vehicleResult) {
  * contract) AND integrity-clean. Distinct from isVehicleResultValid by
  * design — validity means "the physical result is well-formed evidence";
  * selectable means "that evidence may compete for selection".
+ *
+ * Integrity is validated FIRST, unconditionally: EVERY result the fitness
+ * policy consumes must carry a valid versioned integrity block, including
+ * invalid results. A `validity && requireIntegrity(...)` order would
+ * short-circuit on an invalid result and let a detector-disabled
+ * (integrity: null) or malformed block return a silent `false` instead of
+ * the mandated loud refusal — an unversioned "policy" for exactly the
+ * results most likely to need diagnosis.
  */
 export function isVehicleResultSelectable(vehicleResult) {
-  return isVehicleResultValid(vehicleResult)
-    && requireIntegrity(vehicleResult).status === 'ok';
+  const integrity = requireIntegrity(vehicleResult);
+  return isVehicleResultValid(vehicleResult) && integrity.status === 'ok';
 }
 
 export function fitnessFromVehicleResult(vehicleResult) {

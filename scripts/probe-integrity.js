@@ -15,8 +15,11 @@
 //                  runs ONCE, full-trace, deterministic flavor; the row
 //                  reports the ONLINE classification, and the HARD check is
 //                  online ≡ offline agreement with analyzeTrace over the same
-//                  run (bitwise peaks, identical onset steps) — a contract of
-//                  the shared arithmetic, agnostic to what the engine did.
+//                  run — the FULL derivable contract: classification (status,
+//                  firstFailureStep, ordered reasons) via the shared
+//                  offlineIntegrityView derivation PLUS bitwise peaks and
+//                  identical onset steps — a contract of the shared
+//                  arithmetic, agnostic to what the engine did.
 //                  Reason-code attribution across the panel answers "which
 //                  predicates actually contribute".
 //   population   — the committed characterization populations (20 individuals
@@ -29,11 +32,17 @@
 //                  acceptance gate inspects exactly these for
 //                  runaway-gaining-selection-relevant-progress below the
 //                  catastrophic bound.
-//   neighborhood — deterministic gene-jitter around three declared parents
-//                  (a stable ordinary member, an affected witness, the
-//                  Phase-1A champion), seed 20260731: every [0,1] gene leaf
-//                  perturbed by ±magnitude, clamped, re-repaired (canonical
-//                  by construction), compiled, evaluated, classified. Answers
+//   neighborhood — deterministic PARAMETRIC gene-jitter around three declared
+//                  parents (a stable ordinary member, an affected witness,
+//                  the Phase-1A champion), seed 20260731: every CONTINUOUS
+//                  [0,1] gene leaf perturbed by ±magnitude, clamped,
+//                  re-repaired (canonical by construction), compiled,
+//                  evaluated, classified. Discrete-decode genes
+//                  (assembly.DISCRETE_GENE_KEYS: family/suspType/symmetric/
+//                  paired/driven/nodeCount) are PRESERVED verbatim — decode-
+//                  boundary crossings are structural mutations, not jitter,
+//                  and an accidental suspType→S2 crossing would abort the
+//                  experiment on the realizability gate. Answers
 //                  how abruptly integrity status changes across the
 //                  conditioning boundary, whether repair moves children
 //                  across it, whether a false-positive halo surrounds viable
@@ -78,7 +87,9 @@ import {
   isVehicleResultValid, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
 import { createInitialPopulation, sampleInitialGenotype } from '../src/sim/population-initializer.js';
-import { compileAssembly, repairGenotype, serializeGenotype } from '../src/sim/assembly.js';
+import {
+  DISCRETE_GENE_KEYS, compileAssembly, repairGenotype, serializeGenotype,
+} from '../src/sim/assembly.js';
 import { Rng } from '../src/sim/prng.js';
 import { fnv1aHex } from '../src/sim/fnv1a.js';
 import {
@@ -184,12 +195,19 @@ function offlineView(traceResult, ir, captureDt) {
   return offlineIntegrityView(analyzeTrace(traceResult, { bodies: bodyReachMetadataForIR(ir), captureDt }));
 }
 
+// FULL agreement: the derived offline CLASSIFICATION (status / firstFailureStep
+// / reasons, in order) AND every shared observation, bitwise. The offline-only
+// firstNonFiniteStep has no online counterpart and is not compared.
 function onlineOfflineAgree(online, offline) {
-  return Object.is(online.observations.peakBodySpeed, offline.peakBodySpeed)
-    && Object.is(online.observations.peakSpeedDelta, offline.peakSpeedDelta)
-    && Object.is(online.observations.peakStepDisplacement, offline.peakStepDisplacement)
-    && online.observations.firstAlertStep === offline.firstAlertStep
-    && online.observations.firstCatastrophicStep === offline.firstCatastrophicStep;
+  return online.status === offline.status
+    && online.firstFailureStep === offline.firstFailureStep
+    && online.reasons.length === offline.reasons.length
+    && online.reasons.every((code, i) => code === offline.reasons[i])
+    && Object.is(online.observations.peakBodySpeed, offline.observations.peakBodySpeed)
+    && Object.is(online.observations.peakSpeedDelta, offline.observations.peakSpeedDelta)
+    && Object.is(online.observations.peakStepDisplacement, offline.observations.peakStepDisplacement)
+    && online.observations.firstAlertStep === offline.observations.firstAlertStep
+    && online.observations.firstCatastrophicStep === offline.observations.firstCatastrophicStep;
 }
 
 // --- signals pass ---------------------------------------------------------------
@@ -250,7 +268,7 @@ async function signalsPass(cfg, check) {
     const online = v.integrity;
     const offline = offlineView(r.trace, ir, r.effectiveDt);
     check(`agreement:${s.key}`, onlineOfflineAgree(online, offline),
-      'online integrity block must agree bitwise with analyzeTrace over the same run');
+      'online classification (status/firstFailureStep/reasons) and every shared observation must agree bitwise with the offline derivation over the same run');
     rows.push({
       subject: s.key,
       kind: s.kind,
@@ -323,15 +341,27 @@ async function populationPass(cfg) {
 
 // --- neighborhood pass -------------------------------------------------------------
 
-// Deterministic jitter of every [0,1] gene leaf (sorted-key walk; the
-// `version` integer is skipped). Draw order is the walk order, one uniform
-// per leaf, so a (seed, streamId) pair fully determines a child.
-function jitterGenotype(genotype, magnitude, rng) {
+// Deterministic PARAMETRIC jitter of the CONTINUOUS [0,1] gene leaves
+// (sorted-key walk). Preserved VERBATIM: the `version` integer and every
+// declared discrete-decode gene (assembly.DISCRETE_GENE_KEYS — enum band /
+// boolean threshold / slot count). The policy: this instrument measures the
+// local CONTINUOUS neighborhood of a parent, so a decode-boundary crossing —
+// a STRUCTURAL mutation (spec §3.1.3), a different operator with its own
+// rates — must never ride in on jitter noise; concretely, a `suspType`
+// crossing into the S2 band compiles to a legal IR the realizer rejects
+// pre-world, which would abort the whole neighborhood experiment. (S2 is
+// never clamped or masked — it simply cannot be REACHED by a parametric
+// walk.) Draw order is the walk order over PERTURBED leaves only, one
+// uniform per perturbed leaf, so a (seed, streamId) pair fully determines a
+// child. Exported for the boundary regression test.
+export function jitterGenotype(genotype, magnitude, rng) {
   const walk = (node) => {
     if (Array.isArray(node)) return node.map(walk);
     if (typeof node === 'object' && node !== null) {
       const out = {};
-      for (const k of Object.keys(node).sort()) out[k] = k === 'version' ? node[k] : walk(node[k]);
+      for (const k of Object.keys(node).sort()) {
+        out[k] = k === 'version' || DISCRETE_GENE_KEYS.includes(k) ? node[k] : walk(node[k]);
+      }
       return out;
     }
     if (typeof node === 'number') {

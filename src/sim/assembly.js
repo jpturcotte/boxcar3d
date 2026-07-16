@@ -205,6 +205,25 @@ const AXLE_GENES = Object.freeze([
 const ASYM_GENES = Object.freeze(['driveBias', 'sizeBias', 'centerOffset']);
 const NODE_GENES = Object.freeze(['gap', 'height', 'halfWidth', 'thickness']);
 
+// The gene leaves whose DECODE is DISCRETE rather than a continuous
+// magnitude — enum band (`family`: 3 frame families; `suspType`: 3 suspension
+// types via enumIdx), boolean threshold (`symmetric`, `paired`, `driven` via
+// boolGene ≥ 0.5), or slot count (`nodeCount` via countGene). Declared HERE —
+// the genome contract's single source — for perturbation/mutation code to
+// consume: a PARAMETRIC operator (continuous jitter around a parent) must
+// preserve these verbatim, because crossing a decode boundary is a
+// STRUCTURAL mutation (spec §3.1.3's separate operator class, with its own
+// rates), not continuous drift — and a `suspType` crossing into the S2 band
+// additionally produces a legal-but-unrealizable IR on the current backend
+// (realizers reject S2 pre-world), which would abort a neighborhood
+// experiment mid-flight. Key names are unique gene ROLES across the genotype
+// schema (no continuous gene shares a name with a discrete one), so
+// key-based matching identifies them at any depth. NOT a schema change: the
+// gene layout, decoders, and both locked fingerprints are untouched.
+export const DISCRETE_GENE_KEYS = Object.freeze([
+  'family', 'suspType', 'symmetric', 'paired', 'driven', 'nodeCount',
+]);
+
 export function validateGenotype(genotype) {
   if (typeof genotype !== 'object' || genotype === null) fail('genotype', genotype);
   if (genotype.version !== GENOTYPE_VERSION) fail('version', genotype.version);

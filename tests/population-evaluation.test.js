@@ -168,6 +168,33 @@ describe('fitness policy (v2 — the numerical-integrity gate)', () => {
     // isVehicleResultValid deliberately does NOT consult integrity: unchanged.
     expect(isVehicleResultValid(bare)).toBe(true);
   });
+
+  // The short-circuit regression class: integrity is validated BEFORE the
+  // validity check, so an INVALID result with missing/null/malformed
+  // integrity is refused LOUD — never silently `false`/`0`. (The old
+  // `isVehicleResultValid(v) && requireIntegrity(v)...` order skipped the
+  // integrity validation whenever validity already failed.)
+  const stripIntegrity = (over) => {
+    const r = vr(over);
+    delete r.integrity;
+    return r;
+  };
+  test.each([
+    ['missing integrity on a NON-FINITE result', () => stripIntegrity({ finite: false })],
+    ['null integrity on a NON-FINITE result', () => vr({ finite: false, integrity: null })],
+    ['missing integrity on an INVALID-BODY result', () => stripIntegrity({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 } })],
+    ['null integrity on an INVALID-BODY result', () => vr({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, integrity: null })],
+    ['missing integrity on an INVALID-JOINT result', () => stripIntegrity({ joints: { count: 4, allValid: false } })],
+    ['null integrity on an INVALID-JOINT result', () => vr({ joints: { count: 4, allValid: false }, integrity: null })],
+    ['missing integrity on a MULTIPLY-invalid result', () => stripIntegrity({ finite: false, bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, joints: { count: 4, allValid: false } })],
+    ['wrong policy version on a NON-FINITE result', () => vr({ finite: false, integrity: integrityBlock('nonFinite', { policyVersion: 99 }) })],
+    ['unknown status on an INVALID-BODY result', () => vr({ bodies: { count: 5, allValid: false, sleepingAtEnd: 0 }, integrity: integrityBlock('exploded') })],
+  ])('%s is refused loud by BOTH policy entry points (never a silent unselectable 0)', (_name, build) => {
+    expect(() => isVehicleResultSelectable(build())).toThrow(/vehicleResult.integrity/);
+    expect(() => fitnessFromVehicleResult(build())).toThrow(/vehicleResult.integrity/);
+    // Validity itself keeps its narrow, integrity-free meaning on the same input.
+    expect(isVehicleResultValid(build())).toBe(false);
+  });
 });
 
 // --- Champion selection (pure) -----------------------------------------------

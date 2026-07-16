@@ -37,6 +37,20 @@ const PREVIEW_READY_TIMEOUT_MS = 60000;
 const PAGE_READY_TIMEOUT_MS = 60000;
 const OVERALL_GUARD_MS = 150000;
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+// CSI SGR (colour) escape matcher, built from a string so the source has no
+// literal ESC control char (eslint no-control-regex stays happy).
+const ANSI_ESCAPE = new RegExp('\\x1b\\[[0-9;]*m', 'g');
+
+// Kill the preview's whole process GROUP (negative pid), so the `vite preview`
+// grandchild dies with npm instead of orphaning and holding the captured
+// stdout pipe open. Best-effort; the process may already be gone.
+function killTree(proc) {
+  if (proc === null || proc === undefined || proc.pid === undefined) return;
+  try {
+    if (process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL');
+    else proc.kill();
+  } catch { /* already exited */ }
+}
 
 const repo = process.env.GITHUB_REPOSITORY; // "owner/boxcar3d" in CI, unset locally
 const base = repo ? `/${repo.split('/')[1]}/` : '/';
@@ -49,23 +63,37 @@ function startPreview() {
     const proc = spawn(
       npmCmd,
       ['run', 'preview', '--', '--port', String(PORT), '--strictPort'],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+      // `detached` puts npm AND its `vite preview` grandchild in a fresh
+      // process GROUP, so teardown can kill the whole tree (killPreview). A
+      // plain proc.kill() reaps only npm and orphans vite, which then holds a
+      // captured stdout pipe open and hangs the CI step indefinitely.
+      // NO_COLOR/FORCE_COLOR=0: vite colours its "Local:" banner even when
+      // piped in CI (measured), and the ANSI escapes broke the URL regex.
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+        env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      },
     );
     let out = '';
     let settled = false;
     const timer = setTimer(() => {
       if (settled) return;
       settled = true;
-      proc.kill();
+      killTree(proc);
       reject(new Error(`vite preview did not become ready in ${PREVIEW_READY_TIMEOUT_MS} ms.\n${out}`));
     }, PREVIEW_READY_TIMEOUT_MS);
     const onData = (buf) => {
       out += buf.toString();
-      const m = /Local:\s*(http:\/\/\S+)/i.exec(out);
+      // Strip ANSI colour escapes before matching (belt-and-suspenders with
+      // NO_COLOR above): the escapes appear BETWEEN "Local" and ":" and inside
+      // the URL, so a raw match fails. Built from a string so the regex source
+      // carries no literal control char (no-control-regex clean).
+      const clean = out.replace(ANSI_ESCAPE, '');
+      const m = /Local:\s*(http:\/\/\S+)/i.exec(clean);
       if (m !== null && !settled) {
         settled = true;
         clearTimer(timer);
-        // vite disables ANSI colour when stdout is piped (non-TTY), so the URL is clean.
         resolve({ proc, url: m[1] });
       }
     };
@@ -106,7 +134,14 @@ async function main() {
     const navUrl = `http://localhost:${PORT}${base}`;
     console.log(`preview ready at ${preview.url}; navigating to ${navUrl}`);
 
-    browser = await chromium.launch({ headless: true });
+    // Software WebGL: the corridor scene is Three.js, and headless Chromium
+    // gates GPU/WebGL behind SwiftShader flags — without them the canvas never
+    // initialises and the ready HUD never appears. (The determinism browser
+    // tests pass without this because they run Rapier wasm, not WebGL.)
+    browser = await chromium.launch({
+      headless: true,
+      args: ['--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--ignore-gpu-blocklist'],
+    });
     const page = await browser.newPage();
     page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`));
     page.on('console', (msg) => {
@@ -155,7 +190,7 @@ async function main() {
       try { await browser.close(); } catch { /* teardown best-effort */ }
     }
     if (preview !== null) {
-      try { preview.proc.kill(); } catch { /* teardown best-effort */ }
+      try { killTree(preview.proc); } catch { /* teardown best-effort */ }
     }
   }
 }

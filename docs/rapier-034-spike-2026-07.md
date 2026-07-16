@@ -7,16 +7,26 @@
 > production dependency, and no golden lock is re-locked during the spike.
 > PR-A's results are frozen BEFORE the draft-PR-#18 comparison (§9).
 
-**Status: local investigation COMPLETE; controlled CI reproduction PENDING the
-first `heavy=true` dispatch (§2/§4, Part C). Verdict: OUTCOME B** — core 0.34
-retains substantially the same divergence (reproducer still catastrophic on
-both flavors; prevalence 5/60, same individuals; +2/20 on a fresh seed). The
-candidate is otherwise clean **over the surfaces the local run exercised**
-(internally deterministic, every project contract preserved, no Class-1/3/4
-regression on the Node suite + probes, no borrow error reproduced — see §6 for
-the exact surfaces, and note candidate Chromium / Vite build + app smoke /
-paired bench are the local run's SKIPS, run only by the controlled CI
-experiment) — but there is no divergence-fix to adopt. **PR-B (the
+**Status: controlled CI reproduction COMPLETE.** The citable `heavy=true`
+dispatch ([run 29447984460](https://github.com/jpturcotte/boxcar3d/actions/runs/29447984460),
+BoxCar3D `33de9ca`, upstream `c13133ad`) reproduces the verdict at classification
+level from a same-commit stable-vs-candidate pair; the generated comparison +
+result manifest are committed (`docs/rapier-034-spike-controlled-comparison-2026-07-15.md`,
+`docs/rapier-034-spike-result-manifest-2026-07-15.json`, folded into §5).
+**Verdict: OUTCOME B** — core 0.34 retains substantially the same divergence
+(reproducer still catastrophic on both flavors; prevalence 5/60, same
+individuals; +2/20 on a fresh seed — all CI-confirmed on BOTH same-commit arms).
+**New CI finding, reinforcing Outcome B: the candidate CANNOT complete the full
+forensic witness matrix — it crashes it UNRECOVERABLY** (a wasm-bindgen
+borrow-guard panic at `world.free()` and, once that is caught, `RuntimeError:
+unreachable` at `world.step()`), while stable 0.19.3 completes the identical
+matrix cleanly (§5.4). Over the surfaces that DO complete on both arms — the
+reproducer, prevalence, the Node suite, candidate Chromium, the Vite build + app
+smoke, the paired bench — the candidate is internally deterministic with every
+project contract preserved, no Class-1/3/4 regression, and the population
+fitness-vector digest agrees across Node and Chromium (the ONE digest
+mechanically comparable across environments — NOT a broad cross-env determinism
+claim; §6). But there is no divergence-fix to adopt. **PR-B (the
 numerical-integrity policy) proceeds on stable 0.19.3 as planned; the multibody
 binding-extension investigation is the named follow-up.**
 The multibody 2×2 shows the joint REPRESENTATION / constraint-enforcement regime
@@ -84,11 +94,12 @@ Tarball / wasm-binary / patched-file SHA-256 hashes: §3.
 > **unmodified** (no `gen_src`/`rollup` trim), invokes `build-rust.sh` directly
 > in the required order (deterministic-3D first), and asserts its own toolchain
 > — so on the CI arm the §1 identity patch genuinely is the only tree edit. The
-> exact CI recipe and its measured artifact hashes fold into §2/§3/§4 once a
-> `heavy=true` dispatch lands (C5). **wasm is not byte-reproducible across
-> environments**, so the CI wasm/tarball hashes will differ from §3's local
-> hashes; the Outcome-B verdict reproduces at **classification level**
-> (catastrophic vs quiescent, prevalence counts), not to the last m/s (§10).
+> exact CI recipe and its measured artifact hashes are folded into §3/§4 (the
+> citable `heavy=true` dispatch, run 29447984460, has landed — C5). **wasm is not
+> byte-reproducible across environments**, so the CI wasm/tarball hashes differ
+> from §3's local hashes (CI hashes recorded in §3 + the committed comparison);
+> the Outcome-B verdict reproduces at **classification level** (catastrophic vs
+> quiescent, prevalence counts), not to the last m/s (§10).
 > The historical local recipe follows.
 
 Day-0 discovery findings (read before building):
@@ -182,6 +193,17 @@ Build progress / deviations:
 | deterministic `rapier_wasm3d_bg.wasm` | `5c0a3f6273dd8ffbba1a221d96224da7e10d9938e983c2d5f08cc5e385ae3473` |
 | patched `templates/Cargo.toml.tera` (the identity patch) | `1d51a7df68c4712da9869fb0910bda3efcfb5c1989cfaeff7bea1f9bf8dd394e` |
 
+> **CI hashes (C5, landed).** The citable CI build produced its OWN tarball +
+> wasm hashes — DIFFERENT from the local build's above, because wasm is not
+> byte-reproducible across environments (build machine, toolchain minor). The CI
+> arm records candidate tarball SHA-256
+> `dc5964404b105878522beb47d40eedcedca05427f4342410d18e29045e51b243` (ordinary) /
+> `997a169e9917ca494d93e346ad4bff011bd2fe11eb0b671c11df5a0a07621416` (deterministic),
+> both pinned in `docs/rapier-034-spike-controlled-comparison-2026-07-15.md`. The
+> Outcome-B verdict reproduces at CLASSIFICATION level (catastrophic-vs-quiescent,
+> prevalence counts), NOT to the last hash byte — which is exactly why the
+> workflow records its own hashes rather than asserting the local ones.
+
 Consumability smoke (matrix step 0), both flavors installed from the tarballs:
 
 - import + `init()` OK; world constructed + 10 steps OK; final state finite; ball
@@ -211,7 +233,7 @@ tarballs. One command at a time; no lock ever re-locked.
 | 0 | package smoke | **PASS** | both flavors; `version()` = `0.19.3-c13133ad.0`; dt readback = `Math.fround(1/60)`; det repeat bit-identical (§3) |
 | 2 | `npm run probe:timing` | **DRIFT (exit 1), adoption-critical sub-checks GREEN** | The **dt-readback gate is GREEN** (default + set-1/60 both read back `0.01666666753590107`, idempotent) and `RigidBody.isValid()/isSleeping()`, `ImpulseJoint.isValid()` all present, cross-flavor identical. The single DRIFT is "re-enable resumes per-step updates" — a **profiler re-enable semantic**, which the taxonomy classes (b) engine-finding (not adoption-critical). 36 checks, 1 drift. The dt tooth passing means the physics suite will NOT cascade-red on timestep. |
 
-| 3 | `npm test` | **599 pass / 11 fail — ALL class (c)** | Every failure is a golden digest or version literal (the expected-red inventory). **All 13 class-(a) contract gates PASS** (chassis-drop containment, s0/s1-kernel API-drift + transactional rollback, physics-smoke repeatability, [V1] heightfield-layout, assembly/feature-physics, s0-motor discriminator, s1-prismatic, cohort-invariance/determinism, evaluation-core, surface-speed). Determinism **gate (a) PASSES on A–D** ("two fresh worlds agree on digest, every checkpoint" — the candidate is internally byte-identical run-to-run); only gate (d) "matches committed lock" moved. Candidate fitnessVectorDigest `bded0d30`→`ee605286` (deterministic, self-consistent). **NO borrow/ownership/panic error anywhere** — the PR #18 `world.free()` error did NOT reproduce in the full suite. |
+| 3 | `npm test` | **599 pass / 11 fail — ALL class (c)** | Every failure is a golden digest or version literal (the expected-red inventory). **All 13 class-(a) contract gates PASS** (chassis-drop containment, s0/s1-kernel API-drift + transactional rollback, physics-smoke repeatability, [V1] heightfield-layout, assembly/feature-physics, s0-motor discriminator, s1-prismatic, cohort-invariance/determinism, evaluation-core, surface-speed). Determinism **gate (a) PASSES on A–D** ("two fresh worlds agree on digest, every checkpoint" — the candidate is internally byte-identical run-to-run); only gate (d) "matches committed lock" moved. Candidate fitnessVectorDigest `bded0d30`→`ee605286` (deterministic, self-consistent). **NO borrow/ownership/panic error in the Node test suite** — the PR #18 `world.free()` error did NOT reproduce here (it DOES on the forensic witness matrix — a different surface; see §5.4). |
 
 Class map of the 11 reds (all class (c), zero class 1/3/4):
 - `evaluation-determinism.test.js` ×5: staleness `rapierVersion` (`0.19.3`→`0.19.3-c13133ad.0`) + eval-A/B/C/D golden digests.
@@ -254,8 +276,19 @@ Steps SKIPPED and why (all defensible under Outcome B — see §10):
 > (step 5, Node↔Chromium digest agreement), the Vite build + app-scene smoke
 > (step 6, a **GATE**), and paired `bench:physics --smoke` (step 11). They are
 > no longer skipped-then-reclassified; their measured results fold into
-> §4/§5/§8 once a `heavy=true` dispatch lands (C5). The local run's skips remain
-> recorded above as the honest historical state.
+> §4/§5/§8.
+>
+> **This landed (C5):** the citable `heavy=true` dispatch (run 29447984460)
+> executed all of them on the candidate — **candidate Chromium GREEN** with
+> Node↔Chromium `population:fitness-vector` agreement (`ee605286` on both), the
+> **Vite build + app-scene smoke GREEN** (GATE), and the **paired bench GREEN**
+> (4 runs parsed, same-runner alternating). The one heavy surface that does NOT
+> complete on the candidate is the full forensic witness matrix (`--witness all
+> --pass all`), which crashes and is therefore OBSERVE-on-candidate (§5.4). The
+> generated comparison + manifest are committed
+> (`docs/rapier-034-spike-controlled-comparison-2026-07-15.md`,
+> `…-result-manifest-2026-07-15.json`). The local run's skips remain recorded
+> above as the honest historical state.
 
 ## 5. Headline comparison (0.19.3 frozen vs core-0.34 measured)
 
@@ -328,8 +361,10 @@ stay quiescent — without upstream binding work.
 > 20260730 on **both** arms — from one immutable `github.sha`, and the
 > generated `comparison.md` reports both columns side by side. Regenerable via
 > `npm run probe:physics-explosion -- --pass prevalence --prevalence-seeds 20260730`.
-> The frozen columns here are replaced by the CI pair's measured stable rerun
-> once a `heavy=true` dispatch lands (C5).
+> **This has now landed (C5):** the citable CI pair's measured stable rerun is
+> committed (`docs/rapier-034-spike-controlled-comparison-2026-07-15.md`), so the
+> frozen columns above are superseded by the same-commit CI figures — see the
+> Controlled-pair update note below §5.3's bullets.
 
 - The **witnesses are confirmed by the prevalence classification itself**:
   A (20260725:19) cat@51, B (20260728:4) cat@45, C (20260729:19) cat@62,
@@ -355,6 +390,56 @@ stay quiescent — without upstream binding work.
   rule-of-three does not apply here because the count is nonzero; the point
   estimate is ~9%, consistent with the frozen ~8%.)
 
+> **Controlled-pair update (C5, landed).** The citable CI run measured all four
+> prevalence seeds on BOTH same-commit arms — the frozen-stable-column gap
+> (Blocker 3) is closed. The catastrophic COUNTS match arm-for-arm (20260725
+> 3/20, 20260728 1/20, 20260729 1/20, 20260730 2/20; the same individuals);
+> onset STEPS differ slightly (wasm is not byte-reproducible across
+> environments — e.g. 20260725 id 14 stable @88 vs candidate @227), which is why
+> the verdict is the classification, not the step. Exact CI figures:
+> `docs/rapier-034-spike-controlled-comparison-2026-07-15.md`.
+
+### 5.4 Forensic witness matrix — core 0.34 crashes it UNRECOVERABLY (new CI finding)
+
+The controlled CI run added a surface the historical local run never exercised
+on the candidate: the full forensic witness matrix,
+`probe:physics-explosion -- --witness all --pass all`, on the from-source core
+0.34 build. **The candidate cannot complete it — it crashes, in two distinct
+ways, where stable 0.19.3 completes the identical matrix cleanly:**
+
+| arm | `--witness all --pass all` | crash site | signature |
+| --- | --- | --- | --- |
+| stable 0.19.3 | **completes** (405 KB witnesses.json) | — | — |
+| core 0.34 | **crashes** (no witnesses.json) | `world.free()`, then `world.step()` | borrow-guard panic → `RuntimeError: unreachable` |
+
+- **First crash — a wasm-bindgen borrow guard at `world.free()`:** the
+  engine-ablation pass (`enginePass`: `softCcd`/solver-iteration/dt variants)
+  drives a witness into an extreme divergence state, and the subsequent
+  `world.free()` throws `attempted to take ownership of Rust value while it was
+  borrowed`. This is a CLEAN JS exception fired before the unsafe drop (module
+  intact), so the probe now RECORDS it (`report.freeErrors`, an OBSERVATION)
+  and continues rather than dying — which exposed the second crash.
+- **Second crash — an unrecoverable `RuntimeError: unreachable` at
+  `world.step()`:** once the free-panic is caught and the matrix continues, a
+  later step traps with a genuine wasm abort that poisons the module. This one
+  cannot be caught-and-continued, so the candidate cannot finish the matrix in a
+  single process. Guarding the first crash simply MOVED the failure from cleanup
+  to simulation — evidence the instability is pervasive, not a single bad call.
+- **Ruling — stable GATE / candidate OBSERVE.** Because the candidate's
+  inability to complete the forensic matrix IS Outcome-B evidence (the engine is
+  so unstable the forensic instrument dies on it), the matrix GATEs on the
+  stable arm only; on the candidate it is OBSERVE — the crash exit + signature
+  are recorded (arm-manifest + the compare borrow/panic scan of `witnesses.log`)
+  and reported in the generated comparison's "Forensic witness matrix" section,
+  but they do not fail the arm. Citability rests on the reproducer
+  (catastrophic-on-both) + prevalence, both green on the candidate. This
+  reclassification is the only change the citable run required beyond the
+  finalized inventory.
+- **This CORRECTS the earlier "no borrow error reproduced" wording** (which was
+  true only of the Node-suite surfaces the local run exercised): on the full
+  forensic matrix, core 0.34 reproduces BOTH a `world.free()` borrow panic and
+  an `unreachable` trap. It strengthens Outcome B — WAIT, do not adopt.
+
 ## 6. Blocker inventory (Class 1/3/4 findings)
 
 **None found.** No Class-1 (API/semantic regression): the S0/S1 kernel
@@ -367,19 +452,28 @@ evaluations. No Class-4 (unacceptable physics): every containment gate
 discriminator held, and prevalence did not worsen (5/60, same individuals).
 The only Class-1-shaped observation is the single **profiler re-enable DRIFT**
 in `probe:timing` — a class-(b) engine-finding (profiler semantics), not a
-contract. The PR #18 `world.free()` borrow error did **not** reproduce (§9).
+contract. On the **production surfaces** (the Node suite, reproducer, and
+prevalence) the PR #18 `world.free()` borrow error did **not** reproduce (§9).
+**But it DOES reproduce on the forensic witness matrix (§5.4):** the CI run's
+candidate arm hits both a `world.free()` borrow-guard panic and a subsequent
+`RuntimeError: unreachable` trap on `--witness all --pass all`. That is a
+finding on the forensic instrument, not a regression on a production surface —
+and it strengthens Outcome B (see §5.4); it is the reason the forensic matrix is
+OBSERVE-on-candidate.
 
-**Scope of this claim (honest).** "No Class-1/3/4 regression" is asserted over
-the surfaces the historical local build exercised: the full Node unit suite
-(all 13 class-(a) gates), `probe:timing`, and the reproducer/prevalence probes.
-Candidate **Chromium** (Node↔Chromium determinism agreement on the new digests),
-the **Vite build + app-scene smoke**, and the **paired bench** were NOT exercised
-locally — §4 "Steps SKIPPED" recorded them as Outcome-A adoption preconditions.
-The committed CI experiment (§2/§4, Part C) closes exactly those surfaces on a
-controlled same-commit pair; its candidate arm additionally asserts Node↔Chromium
-digest agreement. So once a `heavy=true` dispatch lands (C5), this claim is
-**substantiated across the required surfaces** rather than scoped to the
-Node-only local run — and until then it is honestly the narrower claim.
+**Scope of this claim (substantiated by the citable CI run).** "No Class-1/3/4
+regression" is asserted over the surfaces that COMPLETE on both arms. The
+historical local build exercised the Node unit suite (all 13 class-(a) gates),
+`probe:timing`, and the reproducer/prevalence probes. The citable CI dispatch
+(§2/§4, Part C; run 29447984460) additionally closed the surfaces the local run
+had SKIPPED — candidate **Chromium** (Node↔Chromium determinism agreement:
+`population:fitness-vector` = `ee605286` on both), the **Vite build + app-scene
+smoke**, and the **paired bench** — all green on the candidate. The one surface
+that does NOT complete on the candidate is the forensic witness matrix, which
+crashes (§5.4) and is therefore recorded as Outcome-B evidence rather than
+gated. So the claim is now **substantiated across the required completing
+surfaces**, with the forensic-matrix crash called out explicitly rather than
+hidden inside "otherwise clean."
 
 ## 7. Lock-migration inventory (would re-lock ONLY on a future adoption)
 
@@ -409,6 +503,16 @@ adoption input. Qualitatively, both Rust builds compiled in ~1m24s and the
 candidate ran the full unit suite in a comparable wall time to stable; no
 performance pathology was observed. A proper same-runner paired comparison is
 part of any future adoption evaluation, not this diagnostic.
+
+> **CI paired bench (C5, landed).** The citable run's `perf` job ran
+> `bench:physics --smoke` on ONE runner in genuinely alternating order
+> (stable → candidate → candidate → stable); all four runs parsed cleanly
+> (`perfStatus: ok`, `errored: 0`) with no pathology. The committed
+> `docs/rapier-034-spike-result-manifest-2026-07-15.json` records the perf
+> parse-STATUS summary (`findings.perf`: order, parsed/total, errored,
+> allParsed) — NOT the raw per-run bench payloads, which live in the workflow's
+> `perf` job artifact. A full paired ratio is out of scope for this diagnostic
+> (Outcome B — not adopting), so only the parse-status summary is committed.
 
 ## 9. PR #18 comparison (frozen-first)
 
@@ -464,10 +568,18 @@ frozen evidence (§5, §9):
    maximal-coordinate soft impulses), not the engine version — but this is
    measured for the UNDRIVEN reproducer only, and the motorized S0/S1 phenotype
    cannot use multibody joints in either binding (§2, §5.2).
-4. The candidate is otherwise **excellent**: internally deterministic, every
-   project contract preserved, no Class-1/3/4 regression, no borrow error
-   reproduced. The 11 test reds are all expected class-(c) golden/version
-   movement.
+4. On the surfaces that COMPLETE on both arms the candidate is internally
+   deterministic, every project contract preserved, no Class-1/3/4 regression,
+   and the population fitness-vector digest agrees across Node and Chromium
+   (CI-confirmed — the ONE digest mechanically comparable across environments;
+   the eval A-D checkpoint states and champion trace are NOT cross-env compared,
+   Node truncates them, so this is not a broad cross-env determinism claim).
+   The 11 test reds are all
+   expected class-(c) golden/version movement. **The one surface it cannot
+   complete is the forensic witness matrix — core 0.34 crashes it unrecoverably
+   (borrow-guard panic → `unreachable` trap; §5.4), which REINFORCES Outcome B.**
+   So "otherwise clean" is scoped, not absolute: the candidate is stable enough
+   to run the production suites but not the extreme-ablation forensic matrix.
 
 **Consequences (per the plan's Outcome B):**
 - **PR #17's scientific conclusions extend to the current core.** Update their

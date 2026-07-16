@@ -8,8 +8,8 @@
 
 import { describe, test, expect } from 'vitest';
 import {
-  PROBE_SCHEMA, configFromArgs, normalizePasses, parsePrevalenceSeeds,
-  renderMarkdown, runProbe, selectReproducerArm, smokeConfig,
+  PROBE_SCHEMA, BORROW_GUARD_MESSAGE, configFromArgs, isBorrowGuardPanic, normalizePasses,
+  parsePrevalenceSeeds, renderMarkdown, runProbe, safeFreeWorld, selectReproducerArm, smokeConfig,
 } from '../scripts/probe-physics-explosion.js';
 
 const HEX8 = /^[0-9a-f]{8}$/;
@@ -43,6 +43,17 @@ describe('probe schema smoke', () => {
     }
     expect(report.checks.some((c) => c.name.startsWith('identity:'))).toBe(true);
     expect(report.checks.some((c) => c.name.startsWith('repeat:'))).toBe(true);
+
+    // world.free() borrow-guard panics are OBSERVATIONS in their own array,
+    // never HARD checks: always an array (empty on a clean engine like stable
+    // 0.19.3 — the smoke arms never drive the extreme state; core 0.34 records
+    // "attempted to take ownership..." here instead of crashing the matrix).
+    // That they never enter report.checks is locked by the safeFreeWorld unit
+    // tests (the collector is injected, distinct from `check`). Asserted as an
+    // array only (not emptiness): this file is also a candidate red, and a
+    // stricter emptiness claim could perturb that arm's signature if a smoke arm
+    // ever reached the extreme state on the new engine.
+    expect(Array.isArray(report.freeErrors)).toBe(true);
 
     // Baseline: witness A driven + passive, structurally complete.
     expect(report.baseline).toHaveLength(2);
@@ -193,6 +204,7 @@ describe('probe schema smoke', () => {
     expect(md).toContain('## Localization');
     expect(md).toContain('## Minimum reproducer');
     expect(md).toContain('## Prevalence');
+    expect(md).toContain('## world.free() borrow-guard panics');
   });
 
   test('pass selection normalizes identically for the programmatic API and the CLI', () => {
@@ -249,6 +261,59 @@ describe('probe schema smoke', () => {
       .rejects.toThrow(/unknown witness/);
     await expect(runProbe({ ...smokeConfig(), witnesses: ['1:2'] }))
       .rejects.toThrow(/unknown witness/);
+  });
+});
+
+describe('safeFreeWorld — swallow ONLY the borrow-guard class; rethrow every other fault', () => {
+  // The core-0.34 finding: the engine-ablation pass drives a witness into an
+  // extreme state and world.free() throws the wasm-bindgen borrow guard
+  // ("attempted to take ownership of Rust value while it was borrowed") — a
+  // CLEAN JS exception recorded as instability data. But ONLY that exact class
+  // is an observation; every other throw (API drift, an unrelated panic, a
+  // probe bug) is a real fault that must RE-THROW and fail loud, so a swallowed
+  // teardown failure can never masquerade as a clean run. Unit-testable with a
+  // fake world (no candidate engine needed).
+
+  test('isBorrowGuardPanic matches ONLY the ownership-guard wording', () => {
+    expect(isBorrowGuardPanic(BORROW_GUARD_MESSAGE)).toBe(true);
+    expect(isBorrowGuardPanic(`Error: ${BORROW_GUARD_MESSAGE} (in afterAll)`)).toBe(true);
+    expect(isBorrowGuardPanic('world.free is not a function')).toBe(false);
+    expect(isBorrowGuardPanic('RuntimeError: unreachable')).toBe(false);
+    expect(isBorrowGuardPanic('already borrowed')).toBe(false);
+  });
+
+  test('a borrow-guard throw is caught, recorded, and its message returned (never re-thrown)', () => {
+    const recorded = [];
+    const world = { free() { throw new Error(BORROW_GUARD_MESSAGE); } };
+    let message;
+    expect(() => { message = safeFreeWorld(world, (m) => recorded.push(m)); }).not.toThrow();
+    expect(message).toBe(BORROW_GUARD_MESSAGE);
+    expect(recorded).toEqual([BORROW_GUARD_MESSAGE]);
+  });
+
+  test('a clean free() returns null and records nothing', () => {
+    const recorded = [];
+    let freed = false;
+    const world = { free() { freed = true; } };
+    const message = safeFreeWorld(world, (m) => recorded.push(m));
+    expect(freed).toBe(true);
+    expect(message).toBeNull();
+    expect(recorded).toEqual([]);
+  });
+
+  test('a NON-borrow Error (API drift) RE-THROWS the original and records nothing', () => {
+    const recorded = [];
+    const err = new Error('world.free is not a function');
+    const world = { free() { throw err; } };
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow(err);
+    expect(recorded).toEqual([]);
+  });
+
+  test('a raw-string non-borrow throw RE-THROWS and records nothing (the old catch-all is gone)', () => {
+    const recorded = [];
+    const world = { free() { throw 'raw string panic'; } };
+    expect(() => safeFreeWorld(world, (m) => recorded.push(m))).toThrow('raw string panic');
+    expect(recorded).toEqual([]);
   });
 });
 

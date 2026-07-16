@@ -276,16 +276,30 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Run the rerun matrix (capture-only; never fails here)
         run: |
-          set -uo pipefail
+          # GitHub's default shell is `bash -e`; DISABLE errexit here. This
+          # step MUST capture non-zero exits (the candidate's `npm test` exits
+          # 1 by design — 11 expected reds — a failing app-scene gate, a
+          # `timeout` 124) without aborting — the Adjudicate step is the sole
+          # pass/fail authority. (The earlier `set -uo pipefail` alone left
+          # -e on, so the first non-hanging failure killed the whole step.)
+          set +e -u -o pipefail
           RES="results-${ARM}"
           mkdir -p "$RES"
-          # Outer shell omits -e, so a failing command never aborts the capture
-          # loop; PIPESTATUS[0] records the command's own exit (not tee's).
+          # A failing command never aborts the capture loop (errexit off).
+          # Capture with a FILE REDIRECT, never `| tee`: a command's
+          # orphaned grandchild (e.g. a `vite preview` that outlives the
+          # app-scene node process) inherits the stdout fd — with a pipe to tee
+          # that holds the pipeline open FOREVER (the observed 50-min hang),
+          # but a file fd never blocks the shell, so `$?` returns the moment the
+          # FOREGROUND command exits. `timeout` is the hard backstop for any
+          # genuinely hanging command (SIGTERM, then SIGKILL 30s later);
+          # RUN_TIMEOUT is generous (heavy probes are long) but finite.
           run() {
             name="$1"; shift
             echo "::group::${name}"
-            "$@" 2>&1 | tee "${RES}/${name}.log"
-            code=${PIPESTATUS[0]}
+            timeout --kill-after=30 "${RUN_TIMEOUT:-3000}" "$@" > "${RES}/${name}.log" 2>&1
+            code=$?
+            cat "${RES}/${name}.log" || true
             echo "$code" > "${RES}/exit-${name}.txt"
             echo "::endgroup::"
             echo "${name} exit ${code}"
@@ -342,7 +356,59 @@ jobs:
           }
           # GATE on BOTH arms (structural / engine-independent / consumability):
           for g in package-smoke lint build app-scene reproducer freshseed; do gate "$g"; done
-          if [ "${HEAVY}" = "true" ]; then for g in witnesses prevalence; do gate "$g"; done; fi
+          if [ "${HEAVY}" = "true" ]; then
+            # prevalence GATEs on BOTH arms (both complete + exit 0). The full
+            # witness forensic matrix (--witness all --pass all) GATEs on STABLE
+            # only; on the CANDIDATE it is OBSERVE. Core 0.34 crashes that matrix
+            # UNRECOVERABLY: a wasm-bindgen borrow-guard panic at world.free()
+            # and, once that is caught, RuntimeError: unreachable at world.step()
+            # (an unrecoverable wasm trap). Stable completes the IDENTICAL matrix
+            # cleanly, so the crash is Outcome-B evidence, not a defect to gate
+            # on. Citability rests on reproducer (catastrophic-on-both) +
+            # prevalence, both green on the candidate; the crash exit + signature
+            # are recorded (arm-manifest.exits.witnesses + the compare borrow/
+            # panic scan of witnesses.log).
+            gate prevalence
+            if [ "${ARM}" = "stable" ]; then
+              gate witnesses  # requires exit-witnesses.txt === 0 (fail-closed on missing/nonzero)
+              # Stable must PROVABLY complete the forensic matrix cleanly.
+              # FAIL-CLOSED, three independent checks (exit-0-alone is not proof —
+              # a --json regression or truncated write would exit 0 with no valid
+              # witnesses.json): (1) NO recognized panic signature in
+              # witnesses.log, via the SHARED scanner (one regex source, not a
+              # second bash regex); (2) witnesses.json present + parseable + a
+              # freeErrors ARRAY + EMPTY.
+              node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" || fail=1
+              node -e 'const p=process.argv[1];let r;try{r=JSON.parse(require("fs").readFileSync(p,"utf8"))}catch(e){console.error("STABLE witnesses.json MISSING or MALFORMED ("+e.message+") — a stable heavy run MUST produce a valid witnesses.json (fail-closed)");process.exit(1)}if(!Array.isArray(r.freeErrors)){console.error("STABLE witnesses.json has no freeErrors ARRAY (schema-invalid)");process.exit(1)}if(r.freeErrors.length){console.error("STABLE world.free() freeErrors NOT empty ("+r.freeErrors.length+"): "+r.freeErrors.join(" | "));process.exit(1)}console.log("stable witnesses valid + freeErrors empty: ok")' "${RES}/witnesses.json" || fail=1
+            else
+              # Candidate forensic matrix is OBSERVE, not gated — but classify the
+              # exit HONESTLY via the SAME shared scanner: ONLY a recognized
+              # ownership/unreachable signature in witnesses.log is Outcome-B crash
+              # evidence. A bare nonzero / 124 timeout / missing exit is NOT.
+              wcode=$(cat "${RES}/exit-witnesses.txt" 2>/dev/null || echo missing)
+              # Precedence MATCHES classifyWitnessMatrix (compare-spike-runs.js):
+              # a recognized panic signature is engineCrash REGARDLESS of exit
+              # code, so scan FIRST. Otherwise a (hypothetical) candidate that
+              # exits 0 yet printed a signature would echo "completed" here while
+              # the authoritative comparison correctly labels it engineCrash — a
+              # console/verdict inconsistency. (Still OBSERVE — never gates; the
+              # candidate's crash IS the Outcome-B evidence.)
+              if node scripts/compare-spike-runs.js --mode witness-scan --log "${RES}/witnesses.log" >/dev/null 2>&1; then
+                # No recognized signature — classify by exit code.
+                if [ "$wcode" = "0" ]; then
+                  echo "OBSERVE: candidate witnesses exit 0 — completed (unexpected on core 0.34; not gated)"
+                elif [ "$wcode" = "124" ] || [ "$wcode" = "137" ]; then
+                  echo "OBSERVE: candidate witnesses exit ${wcode} — TIMEOUT (RUN_TIMEOUT backstop; a hang, NOT crash evidence; NOT gated)"
+                elif [ "$wcode" = "missing" ]; then
+                  echo "OBSERVE: candidate witnesses exit MISSING — no artifact (missing observation, NOT crash evidence; NOT gated)"
+                else
+                  echo "OBSERVE: candidate witnesses exit ${wcode} — UNEXPLAINED failure, no recognized crash signature (investigate; NOT crash evidence; NOT gated)"
+                fi
+              else
+                echo "OBSERVE: candidate witnesses exit ${wcode} — recognized engine-crash signature in witnesses.log = Outcome-B evidence (NOT gated)"
+              fi
+            fi
+          fi
           if [ "${ARM}" = "stable" ]; then
             # Stable must be fully green everywhere.
             for g in timing npmtest browser; do gate "$g"; done
@@ -425,7 +491,13 @@ jobs:
           ( cd perf-candidate && npm install ../dl/dimforge-rapier3d-compat-*.tgz ../dl/dimforge-rapier3d-deterministic-compat-*.tgz )
       - name: Alternating paired bench
         run: |
-          set -uo pipefail
+          # errexit OFF (like the matrix capture step): a crashing candidate
+          # bench must RECORD its exit and let the remaining alternating runs +
+          # the node assembler run — the assembler is the sole pass/fail
+          # authority (it exits 1 on an incomplete/errored set). GitHub's default
+          # shell keeps -e, and `set -uo pipefail` alone would abort the step at
+          # the first failing bench, before its exit is captured.
+          set +e -u -o pipefail
           mkdir -p perf
           # bench-physics's `--json` is a string option that REQUIRES a filename
           # (the JSON is written to that path; stdout is always the markdown
@@ -449,7 +521,11 @@ jobs:
             const runs = [["stable",1],["candidate",1],["candidate",2],["stable",2]]
               .map(([arm,i]) => ({ arm, i, exit: readExit(`exit-bench-${arm}-${i}.txt`), json: load(`bench-${arm}-${i}.json`) }));
             const parsed = runs.filter(r => r.json !== null).length;
-            const errored = runs.filter(r => r.json && r.json.status === "error").length;
+            // bench-physics writes status PER COMPARISON (report.comparisons[].status),
+            // NOT top-level: a caught comparison error ({status:"error"}) still exits 0,
+            // so a top-level r.json.status read is dead (always 0). Scan the array; a
+            // parsed run missing its comparisons array is malformed => errored too.
+            const errored = runs.filter(r => r.json && (!Array.isArray(r.json.comparisons) || r.json.comparisons.some(c => c && c.status === "error"))).length;
             const allParsed = parsed === runs.length && runs.every(r => r.exit === 0) && errored === 0;
             const summary = {
               order: runs.map(r => `${r.arm}#${r.i}`),

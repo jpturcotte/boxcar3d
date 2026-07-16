@@ -15,13 +15,15 @@
 // vitest's received-first `.toBe` diff.
 
 import { describe, test, expect, beforeAll } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
 import {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines, reproducerSummary,
+  borrowErrorScan, prevalenceCoverageIssues, readJsonSafe,
+  witnessLogPanicSignature, classifyWitnessMatrix,
 } from '../scripts/compare-spike-runs.js';
 
 const EXPECTED = fileURLToPath(new URL('../.github/spike-expected-candidate-reds.json', import.meta.url));
@@ -42,7 +44,7 @@ const failed = (fullName, message) => ({ fullName, status: 'failed', failureMess
 
 // The candidate's expected Node report: 11 reds with their real failure
 // signatures + every must-pass assertion present and passed.
-function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286', champState = '0000dcba' } = {}) {
+function nodeCandidateReport({ fvMeasured = 'ee605286', champState = '0000dcba' } = {}) {
   return {
     numFailedTests: 11,
     testResults: [
@@ -53,8 +55,13 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
           passed('gate (c): default flavor > same-process repeatability only — the digest is per-process/per-platform and is NEVER locked (F10)'),
           failed('gate (d): golden locks (deterministic flavor) > lock staleness teeth: versions, record size, step counts, engine version',
             "eval-a-s0-flat: engine changed — re-lock deliberately: expected '0.19.3' to be '0.19.3-c13133ad.0' // Object.is equality"),
+          // Node reporter TRUNCATES the .toBeNull() string value — the real
+          // CI shape is `expected '<fx>: first divergent check…' to be null`,
+          // with the state hex dropped. The signature is `to be null` (the
+          // truncation-proof assertion structure), so evalActual is not in the
+          // message (Node digests are not cross-env extractable).
           ...EVAL_FIX.map((fx) => failed(`gate (d): golden locks (deterministic flavor) > ${fx}: run matches the committed lock (digest, counts, every checkpoint state)`,
-            `expected '${fx}: first divergent checkpoint index 1 (state); last agreed step 0, first differing step 1; expected state 5a219735 actual ${evalActual}' to be null`)),
+            `AssertionError: expected '${fx}: first divergent check…' to be null`)),
           passed('determinism-adjacent teeth (deterministic flavor) > profiler neutrality: profilerEnabled does not change the trace digest'),
           passed('determinism-adjacent teeth (deterministic flavor) > capture-mode invariance: full produces the identical digest and counts as digest mode'),
           passed('determinism-adjacent teeth (deterministic flavor) > the f32-backedness one-shot: every traced physical float of fixture A satisfies Math.fround(v) === v'),
@@ -65,7 +72,7 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
         name: '/w/tests/evaluation-golden.test.js',
         assertionResults: [
           failed('gate (b): fresh-module reproduction of the golden lock > fixture A reproduces the committed digest and every checkpoint state from a cold module graph',
-            "expected 'first divergent checkpoint 1 (state) at step 1' to be null"),
+            "AssertionError: expected 'first divergent checkpoint 1 (state) …' to be null"),
         ],
       },
       {
@@ -80,7 +87,7 @@ function nodeCandidateReport({ evalActual = '6b83729e', fvMeasured = 'ee605286',
           failed('population evaluation gate (deterministic flavor) > two fresh evaluations agree byte-for-byte, and the second matches the committed lock',
             `expected '${fvMeasured}' to be 'bded0d30' // Object.is equality`),
           failed('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace AND the locked fitness exactly (the isolation sentinel)',
-            `expected 'champion trace: first divergent checkpoint index 1 (state); last agreed step 0, first differing step 1; expected state 000000aa actual ${champState}' to be null`),
+            `AssertionError: expected 'champion trace: first divergent check…' to be null // champState ${champState}`),
         ],
       },
       {
@@ -248,9 +255,16 @@ describe('classify — assertion-level candidate-red enforcement (node)', () => 
   });
 });
 
-// --- invariants: exact required cross-env set ------------------------------------
+// --- invariants: the required cross-env set (fitness-vector only) ----------------
+//
+// Measured on the first heavy dispatch: only the population fitness-vector
+// digest is reliably comparable cross-env. Node's `.toBeNull()` on a formatted
+// divergence string is TRUNCATED by the reporter (state hex dropped) while
+// Chromium keeps the full `expect.fail` message — so the eval A-D + champion
+// checkpoint states are NOT message-extractable in Node. Only fitness-vector
+// (both reporters emit it via a short `.toBe('<digest>')`) is a semantic key.
 
-describe('invariants — complete required Node<->Chromium digest set', () => {
+describe('invariants — required Node<->Chromium digest set (fitness-vector)', () => {
   const args = (node, browser, repro = reproJson()) => ({
     nodeJson: writeJson(`i-n-${Math.abs(JSON.stringify(node).length)}.json`, node),
     browserJson: writeJson(`i-b-${Math.abs(JSON.stringify(browser).length)}.json`, browser),
@@ -258,21 +272,21 @@ describe('invariants — complete required Node<->Chromium digest set', () => {
     expectedPath: EXPECTED,
   });
 
-  test('all six required keys extracted from BOTH envs with equal values (incl. the unpadded Chromium champion state) passes', () => {
+  test('fitness-vector extracted from BOTH envs with equal value passes', () => {
     const r = invariants(args(nodeCandidateReport(), browserCandidateReport()));
     expect(r.ok).toBe(true);
   });
 
-  test('Chromium missing one required key (champion) fails — Node-only agreement on the rest must NOT pass', () => {
+  test('fitness-vector missing from the Chromium report fails (required key not extracted)', () => {
     const browser = browserCandidateReport();
-    browser.testResults[1].assertionResults = browser.testResults[1].assertionResults.filter((a) => !a.fullName.includes('champion solo'));
+    browser.testResults[1].assertionResults = browser.testResults[1].assertionResults.filter((a) => !a.fullName.includes('fitness-vector digest'));
     const r = invariants(args(nodeCandidateReport(), browser));
     expect(r.ok).toBe(false);
-    expect(r.errors.join('\n')).toContain('population:champion-trace');
+    expect(r.errors.join('\n')).toContain('population:fitness-vector');
   });
 
-  test('a genuine cross-env digest disagreement fails', () => {
-    const r = invariants(args(nodeCandidateReport({ evalActual: '6b83729e' }), browserCandidateReport({ evalActual: 'ffff0000' })));
+  test('a genuine cross-env fitness-vector disagreement fails', () => {
+    const r = invariants(args(nodeCandidateReport({ fvMeasured: 'ee605286' }), browserCandidateReport({ fvMeasured: 'ffff0000' })));
     expect(r.ok).toBe(false);
     expect(r.errors.join('\n')).toContain('disagree');
   });
@@ -283,28 +297,20 @@ describe('invariants — complete required Node<->Chromium digest set', () => {
     expect(r.errors.join('\n')).toContain('dt-readback');
   });
 
-  test('semantic keys: differently-titled Node/Chromium assertions map to the same identity, and the champion state pads', () => {
-    expect(semanticDigestKey('gate (d): golden locks (deterministic flavor) > eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)')).toBe('evaluation:eval-b-mixed-composite');
-    expect(semanticDigestKey('Chromium reproduces the committed deterministic-flavor locks > eval-b-mixed-composite: digest, counts, and every checkpoint state match the golden lock')).toBe('evaluation:eval-b-mixed-composite');
-    const cD = measuredDigests(browserCandidateReport({ champStateUnpadded: 'dcba' }));
-    expect(cD['population:champion-trace']).toBe('0000dcba');
-    const nD = measuredDigests(nodeCandidateReport({ champState: '0000dcba' }));
-    expect(nD['population:champion-trace']).toBe('0000dcba');
-  });
-
-  test('a gate-(a) failure carrying the eval token is NOT keyed as the golden digest (guarded rule)', () => {
-    // The gate-(a) title carries "eval-a-s0-flat:" but is NOT a golden-lock
-    // assertion — it must not be extracted as evaluation:eval-a-s0-flat and
-    // first-win over the real golden digest.
-    expect(semanticDigestKey('gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics')).toBeNull();
-    // Even if the gate-(a) assertion FAILS with a divergence hex and precedes
-    // the golden, measuredDigests must record the GOLDEN digest, not the gate-(a) one.
-    const rep = nodeCandidateReport({ evalActual: 'deadbeef' });
-    rep.testResults[0].assertionResults.unshift(failed(
-      'gate (a): same-process fresh-world byte-identity (deterministic flavor) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics',
-      'expected state 11112222 actual 99998888',
-    ));
-    expect(measuredDigests(rep)['evaluation:eval-a-s0-flat']).toBe('deadbeef');
+  test('only fitness-vector is a semantic key; eval and champion titles are NOT (reporter asymmetry)', () => {
+    // Node "two fresh evaluations agree byte-for-byte" and Chromium
+    // "fitness-vector digest" both map to the one comparable key.
+    expect(semanticDigestKey('population evaluation gate (deterministic flavor) > two fresh evaluations agree byte-for-byte, and the second matches the committed lock')).toBe('population:fitness-vector');
+    expect(semanticDigestKey('population golden locks (Chromium) > evaluation: fitness-vector digest, every fitness literal by individualId, champion')).toBe('population:fitness-vector');
+    // The truncation-affected eval + champion titles are deliberately unkeyed.
+    expect(semanticDigestKey('gate (d): golden locks (deterministic flavor) > eval-b-mixed-composite: run matches the committed lock (digest, counts, every checkpoint state)')).toBeNull();
+    expect(semanticDigestKey('population evaluation gate (deterministic flavor) > champion solo digest-mode rerun reproduces the locked trace')).toBeNull();
+    // Extraction pulls the RECEIVED (measured) digest, first on the line, and
+    // ignores stack-trace URLs (a `?v=<hex8>` chunk hash must not be a digest).
+    const rep = browserCandidateReport({ fvMeasured: 'ee605286' });
+    rep.testResults[1].assertionResults[1].failureMessages[0]
+      += '\n    at http://localhost:63315/node_modules/@vitest/runner/dist/chunk-hooks.js?v=d9c9c21b:752:20';
+    expect(measuredDigests(rep)['population:fitness-vector']).toBe('ee605286');
   });
 });
 
@@ -352,9 +358,14 @@ describe('compare — verdict established only from usable arms', () => {
     const {
       candidatePassed = true, candidateReproPresent = true, heavy = false,
       prevalencePresent = true, perfOk = true, prevalenceMalformed = false,
+      perfErrored = false,
       prevalenceSeeds = TEST_HEAVY.prevalenceSeeds, freshseedMissing = false,
       bootstrapComplete = true,
       stableCat = 46, candidateCat = 107, // null => quiescent classification
+      // Stable heavy run must PROVE a clean forensic matrix: default a valid
+      // witnesses.json with empty freeErrors. null => omit (missing); a string
+      // => raw/malformed; an object => that JSON (e.g. non-array freeErrors).
+      stableWitnesses = { freeErrors: [] },
     } = opts;
     const root = mkdtempSync(join(tmpdir(), 'spike-compare-'));
     const mk = (p) => mkdirSync(join(root, p), { recursive: true });
@@ -372,7 +383,9 @@ describe('compare — verdict established only from usable arms', () => {
     for (const [arm, ver, cat] of [['stable', '0.19.3', stableCat], ['candidate', '0.19.3-c13133ad.0', candidateCat]]) {
       if (!(arm === 'candidate' && !candidateReproPresent)) wj(`results-${arm}/reproducer.json`, repro(ver, cat));
       if (!freshseedMissing) wj(`results-${arm}/freshseed.json`, mkPrev(TEST_HEAVY.freshSeeds));
-      wj(`results-${arm}/arm-manifest.json`, { arm, resolvedSha: 'abc', heavy });
+      // The realistic heavy default: stable witnesses exit 0 (completes), candidate exit 1 (crashes).
+      const exits = heavy ? { witnesses: arm === 'stable' ? 0 : 1 } : {};
+      wj(`results-${arm}/arm-manifest.json`, { arm, resolvedSha: 'abc', heavy, exits });
       wj(`results-${arm}/adjudication.json`, { schema: 'boxcar3d.adjudication/1', arm, passed: arm === 'candidate' ? candidatePassed : true, heavy });
       if (heavy && (arm === 'stable' || prevalencePresent)) {
         // Malformed = no prevalence array at all (hits the array guard); an
@@ -380,8 +393,22 @@ describe('compare — verdict established only from usable arms', () => {
         wj(`results-${arm}/prevalence.json`, prevalenceMalformed ? { engine: {} } : mkPrev(prevalenceSeeds));
       }
     }
-    const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? { meta: {} } : null });
+    // Stable heavy run's witnesses.json (fail-closed: present + valid + empty
+    // freeErrors). The candidate's is intentionally absent (OBSERVE), but it DID
+    // crash — write its witnesses.log with the recognized unreachable signature.
+    if (heavy && stableWitnesses !== null) {
+      writeFileSync(join(root, 'results-stable/witnesses.json'), typeof stableWitnesses === 'string' ? stableWitnesses : JSON.stringify(stableWitnesses));
+    }
+    if (heavy) writeFileSync(join(root, 'results-candidate/witnesses.log'), 'RuntimeError: unreachable\n    at wasm://wasm/0:1\n');
+    // Realistic bench-physics report shape: status lives PER COMPARISON
+    // (report.comparisons[].status), never top-level.
+    const benchJson = (comparisons) => ({ schema: 'boxcar3d.bench-physics/2', meta: {}, comparisons, derived: {} });
+    const run = (arm, i, ok) => ({ arm, i, exit: ok ? 0 : 1, json: ok ? benchJson([{ status: 'ok' }]) : null });
     const runs = [run('stable', 1, perfOk), run('candidate', 1, perfOk), run('candidate', 2, true), run('stable', 2, true)];
+    // A caught bench comparison error still exits 0 and writes JSON carrying an
+    // {status:'error'} entry — while the summary may still claim ok (the former
+    // dead top-level-status read). compare must catch it per-comparison.
+    if (perfErrored) runs[1].json = benchJson([{ status: 'ok' }, { status: 'error', error: 'borrow guard' }]);
     const parsed = runs.filter((r) => r.json !== null).length;
     wj('perf/perf.json', { schema: 'boxcar3d.spike-perf/1', summary: { status: parsed === 4 ? 'ok' : 'incomplete', allParsed: parsed === 4, parsed, total: 4 }, runs });
     return root;
@@ -437,6 +464,23 @@ describe('compare — verdict established only from usable arms', () => {
     expect(r.ok).toBe(true); // perf is not decision-relevant to the verdict
     expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
     expect(r.manifest.findings.perf.status).not.toBe('ok');
+  });
+
+  // Round-8 (bash self-review): a bench comparison that ERRORED (bench-physics
+  // catches the throw, pushes {status:'error'}, and STILL exits 0) must be
+  // reported incomplete — even though all four JSON parsed and the workflow's
+  // summary still claims status:'ok'. The former guard read a top-level
+  // r.json.status that bench-physics never writes (status is per-comparison),
+  // so it was dead and laundered an errored bench as clean.
+  test('a perf run with an ERRORED comparison is reported incomplete even when the summary claims ok', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, perfErrored: true });
+    const r = runCompare(root);
+    expect(r.manifest.findings.perf.status).not.toBe('ok');
+    expect(r.manifest.findings.perf.status).toMatch(/errored/);
+    expect(md(root)).toContain('perf INCOMPLETE/ERRORED');
+    // Still not decision-relevant — the Outcome-B verdict is unaffected.
+    expect(r.ok).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(true);
   });
 
   // P2 (round-7): heavy evidence must cover the EXACT declared seed set +
@@ -501,6 +545,182 @@ describe('compare — verdict established only from usable arms', () => {
     expect(r.manifest.verdict.outcomeBReproduced).toBe(true);
     expect(r.manifest.verdict.citable).toBe(true);
   });
+
+  // F3 — a truncated/interrupted artifact must NOT crash compare(): it becomes
+  // an explicit arm issue (arm unusable), and comparison.md + result-manifest.json
+  // are STILL written (the stated "failed/incomplete arms are reported and
+  // preserved" behavior).
+  test('a MALFORMED candidate artifact does not crash compare — arm issue + artifacts still written', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    writeFileSync(join(root, 'results-candidate/adjudication.json'), '{ "passed": tr'); // truncated
+    let r;
+    expect(() => { r = runCompare(root); }).not.toThrow();
+    expect(existsSync(join(root, 'out', 'comparison.md'))).toBe(true);
+    expect(existsSync(join(root, 'out', 'result-manifest.json'))).toBe(true);
+    expect(r.manifest.arms.candidate.issues.some((i) => /MALFORMED JSON/.test(i))).toBe(true);
+    expect(r.manifest.arms.candidate.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  // F6 — the forensic witness matrix is classified honestly by exit + signature;
+  // only a recognized ownership/unreachable signature is "Outcome-B evidence".
+  const setWitness = (root, arm, { exit, log, freeErrors }) => {
+    writeFileSync(join(root, `results-${arm}/arm-manifest.json`), JSON.stringify({ arm, resolvedSha: 'abc', heavy: true, exits: { witnesses: exit } }));
+    if (log !== undefined) writeFileSync(join(root, `results-${arm}/witnesses.log`), log);
+    if (freeErrors !== undefined) writeFileSync(join(root, `results-${arm}/witnesses.json`), JSON.stringify({ freeErrors }));
+  };
+
+  test('witness matrix: recognized unreachable signature = engine CRASH (Outcome-B evidence); clean stable = completed', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'candidate', { exit: 1, log: 'RuntimeError: unreachable\n    at wasm://wasm/0:1\n' });
+    setWitness(root, 'stable', { exit: 0, freeErrors: [] });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/candidate:.*engine CRASH.*RuntimeError: unreachable.*Outcome-B evidence/);
+    expect(text).toMatch(/stable:.*completed the full forensic matrix cleanly/);
+  });
+
+  test('witness matrix: a bare non-zero (no signature) is UNEXPLAINED, a 124 is TIMEOUT — NOT crash evidence', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'candidate', { exit: 7, log: 'some unrelated failure\n' });
+    setWitness(root, 'stable', { exit: 124, log: '' });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/candidate:.*UNEXPLAINED FAILURE.*NOT Outcome-B evidence/);
+    expect(text).not.toMatch(/candidate:.*THIS is the Outcome-B evidence/); // never the crash-evidence label
+    expect(text).toMatch(/stable:.*TIMED OUT.*NOT observed-engine-crash evidence/);
+  });
+
+  test('witness matrix: a COMPLETED reference arm that recorded freeErrors is NOT clean', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, freeErrors: ['attempted to take ownership of Rust value while it was borrowed'] });
+    setWitness(root, 'candidate', { exit: 1, log: 'RuntimeError: unreachable\n' });
+    runCompare(root);
+    const text = md(root);
+    expect(text).toMatch(/stable:.*recorded 1 world\.free\(\) borrow-guard observation.*FAILURE, not clean/);
+  });
+
+  // P1 (re-review) — FAIL-CLOSED: a stable heavy run whose witnesses.json is
+  // absent / truncated / schema-invalid must FAIL the stable arm (unusable =>
+  // NOT citable), never pass as "completed cleanly" on exit-0 alone.
+  test('stable heavy: a MISSING witnesses.json fails the arm (unusable, not citable)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: null });
+    setWitness(root, 'stable', { exit: 0 }); // exit 0 but no JSON (a --json regression)
+    const r = runCompare(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses\.json MISSING/.test(i))).toBe(true);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    expect(md(root)).toMatch(/stable:.*exit 0 but witnesses\.json is ABSENT.*NOT provably clean/);
+  });
+
+  test('stable heavy: a TRUNCATED witnesses.json fails the arm', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: '{ "freeErrors": [' });
+    const r = runCompare(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses\.json MALFORMED/.test(i))).toBe(true);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  test('stable heavy: a MISSING or NON-ARRAY freeErrors fails the arm (schema-invalid)', () => {
+    const noKey = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: { notFreeErrors: 1 } });
+    expect(runCompare(noKey).manifest.arms.stable.issues.some((i) => /no freeErrors ARRAY/.test(i))).toBe(true);
+    const nonArr = buildArtifacts({ heavy: true, bootstrapComplete: true, stableWitnesses: { freeErrors: 'nope' } });
+    const r = runCompare(nonArr);
+    expect(r.manifest.arms.stable.issues.some((i) => /no freeErrors ARRAY/.test(i))).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(false);
+  });
+
+  test('a recognized panic signature on the STABLE arm is a FAILURE even at exit 0 (never clean)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, log: 'RuntimeError: unreachable\n', freeErrors: [] });
+    runCompare(root);
+    expect(md(root)).toMatch(/stable:.*engine CRASH on the REFERENCE arm.*FAILURE, not evidence/);
+  });
+
+  // P1 (re-review 2) — witness cleanliness is a real USABILITY condition, not
+  // just a rendered classification. Each of these must make r.ok=false,
+  // stable.usable=false, citable=false — NOT merely print the wording.
+  const expectStableGated = (root) => {
+    const r = runCompare(root);
+    expect(r.ok).toBe(false);
+    expect(r.manifest.arms.stable.usable).toBe(false);
+    expect(r.manifest.verdict.citable).toBe(false);
+    return r;
+  };
+
+  test('stable witness TIMEOUT (exit 124) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 124, freeErrors: [] });
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses exit 124/.test(i))).toBe(true);
+  });
+
+  test('stable witness UNEXPLAINED nonzero exit (7) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 7, freeErrors: [] });
+    expectStableGated(root);
+  });
+
+  test('a MISSING stable witness exit fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    // arm-manifest with no exits.witnesses => wexit null => classification missing.
+    writeFileSync(join(root, 'results-stable/arm-manifest.json'), JSON.stringify({ arm: 'stable', resolvedSha: 'abc', heavy: true, exits: {} }));
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /witnesses exit missing/.test(i))).toBe(true);
+  });
+
+  test('a stable panic signature at exit 0 fails the arm, not citable (the disconnect the classification alone missed)', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setWitness(root, 'stable', { exit: 0, log: 'RuntimeError: unreachable\n', freeErrors: [] });
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /recognized panic signature in witnesses\.log/.test(i))).toBe(true);
+  });
+
+  // Round-8 (self-review): the reference arm must free cleanly in EVERY pass, not
+  // just the witness matrix. safeFreeWorld swallows a wasm-bindgen ownership guard
+  // into report.freeErrors and the probe STILL exits 0, so a reproducer/freshseed/
+  // prevalence borrow-guard on stable is invisible to the exit-code gate — it must
+  // still make the arm unusable and the run not citable (the same fail-closed
+  // principle as the witnesses gate). The borrow signal is otherwise only RENDERED
+  // in the scan section next to citable:true — the classify-but-don't-gate class.
+  const setReportFreeErrors = (root, arm, name, freeErrors) => {
+    const p = join(root, `results-${arm}/${name}.json`);
+    const obj = JSON.parse(readFileSync(p, 'utf8'));
+    obj.freeErrors = freeErrors;
+    writeFileSync(p, JSON.stringify(obj));
+  };
+  const BORROW = 'attempted to take ownership of Rust value while it was borrowed';
+
+  for (const name of ['reproducer', 'freshseed', 'prevalence']) {
+    test(`stable ${name}.json with a non-empty freeErrors fails the arm, not citable`, () => {
+      const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+      setReportFreeErrors(root, 'stable', name, [BORROW]);
+      const r = expectStableGated(root);
+      expect(r.manifest.arms.stable.issues.some((i) => new RegExp(`stable ${name}\\.json recorded 1 world\\.free\\(\\)`).test(i))).toBe(true);
+    });
+  }
+
+  test('a recognized panic signature in a stable PROBE stdout log (reproducer.log) fails the arm, not citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    writeFileSync(join(root, 'results-stable/reproducer.log'),
+      `## world.free() borrow-guard panics (observations)\n\n1 recorded:\n- \`${BORROW}\` x1\n`);
+    const r = expectStableGated(root);
+    expect(r.manifest.arms.stable.issues.some((i) => /recognized borrow\/panic signature in a reference-arm probe log/.test(i))).toBe(true);
+  });
+
+  // The asymmetry is deliberate and must hold: the CANDIDATE is OBSERVE — a
+  // freeError or a probe-log panic on the candidate is Outcome-B evidence, NOT a
+  // usability failure. Over-gating the candidate here would suppress the very
+  // signal the experiment is built to record, so this pins candidate exemption.
+  test('a CANDIDATE freeError + probe-log panic is OBSERVE — candidate stays usable, run stays citable', () => {
+    const root = buildArtifacts({ heavy: true, bootstrapComplete: true });
+    setReportFreeErrors(root, 'candidate', 'reproducer', [BORROW]);
+    writeFileSync(join(root, 'results-candidate/reproducer.log'), `- \`${BORROW}\` x1\n`);
+    const r = runCompare(root);
+    expect(r.ok).toBe(true);
+    expect(r.manifest.arms.candidate.usable).toBe(true);
+    expect(r.manifest.verdict.citable).toBe(true);
+  });
 });
 
 // P1b (round-6): reproducerSummary must treat ABSENCE as missing (=> arm
@@ -560,24 +780,248 @@ describe('helpers and the committed inventory', () => {
       .some((a) => /engine changed — re-lock deliberately/.test(a.message))).toBe(true);
   });
 
+  const sumSignatures = (spec, file) => {
+    expect(Array.isArray(spec.allowedFailureSignatures), `${file}: reds must carry assertion-level signatures`).toBe(true);
+    const sum = spec.allowedFailureSignatures.reduce((n, s) => n + s.count, 0);
+    expect(sum, `${file}: signature counts must sum to expectedFailures`).toBe(spec.expectedFailures);
+    for (const s of spec.allowedFailureSignatures) expect(() => new RegExp(s.messageRegex)).not.toThrow();
+    return spec.expectedFailures;
+  };
+
   test('inventory self-consistency: signature counts sum to expectedFailures per Node file, and totals agree', () => {
     const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
     let total = 0;
-    for (const [file, spec] of Object.entries(inv.node.byFile)) {
-      expect(Array.isArray(spec.allowedFailureSignatures), `${file}: Node reds must carry assertion-level signatures`).toBe(true);
-      const sum = spec.allowedFailureSignatures.reduce((n, s) => n + s.count, 0);
-      expect(sum, `${file}: signature counts must sum to expectedFailures`).toBe(spec.expectedFailures);
-      for (const s of spec.allowedFailureSignatures) expect(() => new RegExp(s.messageRegex)).not.toThrow();
-      total += spec.expectedFailures;
-    }
+    for (const [file, spec] of Object.entries(inv.node.byFile)) total += sumSignatures(spec, file);
     expect(total).toBe(inv.node.totalExpectedFailures);
-    expect(inv.nodeChromiumRequiredKeys).toHaveLength(6);
+    expect(inv.nodeChromiumRequiredKeys).toEqual(['population:fitness-vector']);
     expect(inv.timing.allowedDriftChecks).toEqual(['re-enable resumes per-step updates']);
-    // The committed inventory ships bootstrapComplete=false (the browser
-    // section is not finalized yet), and heavyEvidence declares the coverage.
-    expect(inv.bootstrapComplete).toBe(false);
     expect(inv.heavyEvidence.prevalenceSeeds).toEqual([20260725, 20260728, 20260729]);
     expect(inv.heavyEvidence.freshSeeds).toEqual([20260730]);
     expect(inv.heavyEvidence.individualsPerSeed).toBe(20);
+  });
+
+  test('browser inventory self-consistency: signatures sum to expectedFailures per file, totals agree', () => {
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    let total = 0;
+    for (const [file, spec] of Object.entries(inv.browser.byFile)) total += sumSignatures(spec, file);
+    expect(total).toBe(inv.browser.totalExpectedFailures);
+  });
+
+  test('bootstrapComplete is TRUE and its structural precondition holds: every browser file has an integer count + signatures', () => {
+    // Stage 2 of the two-stage citability gate: the flag may be true ONLY when
+    // the browser inventory is finalized. Guard it so a future flip cannot
+    // out-run the browser section (which would let citable=true certify an
+    // unenforced browser arm).
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    expect(inv.bootstrapComplete).toBe(true);
+    expect(inv.titlesPendingFirstHeavyRun).toBe(false);
+    for (const [file, spec] of Object.entries(inv.browser.byFile)) {
+      expect(Number.isInteger(spec.expectedFailures), `${file}: bootstrapComplete requires an integer count`).toBe(true);
+      expect(Array.isArray(spec.allowedFailureSignatures), `${file}: bootstrapComplete requires signatures`).toBe(true);
+    }
+  });
+});
+
+// The borrow/panic scan reads the RAW test-suite logs (npmtest.log/browser.log),
+// which interleave vitest's captured console output with its reporter tree. THIS
+// suite is the one pure-JSON unit test whose captured output deliberately quotes
+// engine-panic strings ("RuntimeError: unreachable", "panicked at") as classify()
+// fixtures — verified pure: scripts/compare-spike-runs.js imports only node:*
+// builtins, and this file imports only its adjudicator functions, so no Rapier
+// instance and no subprocess can run under a compare-spike-runs.test.js header.
+// The scan must therefore ATTRIBUTE by the capturing test (skip this suite's
+// blocks) rather than content-match, or the stable arm — which is 0-failing —
+// falsely reads a "project-contract regression". Both directions are locked here.
+describe('borrowErrorScan — reports engine faults, ignores the adjudicator suite own captured fixtures', () => {
+  const scanOf = (name, content) => {
+    const dir = mkdtempSync(join(tmpdir(), 'spike-borrowscan-'));
+    writeFileSync(join(dir, name), content);
+    return borrowErrorScan(dir);
+  };
+
+  test('the self-contract test captured "RuntimeError: unreachable" fixture is NOT reported (the exact stable-arm false positive)', () => {
+    // classify() prints its SIGNATURE MISMATCH diagnostic (which quotes the
+    // fixture "RuntimeError: unreachable in afterAll") under a captured-stderr
+    // header vitest colours with ANSI even when piped — proves the ANSI strip.
+    const ansiHeader = '\x1b[90mstderr\x1b[2m | \x1b[22m\x1b[2mtests/compare-spike-runs.test.js\x1b[2m > \x1b[22mclassify > file-level error is caught';
+    const log = [
+      ansiHeader,
+      '',
+      'CLASSIFY FAIL (node) — the candidate failed-test set does not match the inventory:',
+      '  SIGNATURE MISMATCH — tests/evaluation-determinism.test.js: failing assertion "<file-level error>" matches NO allowed failure signature. Message head: RuntimeError: unreachable in afterAll',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.scanned).toBe(1);
+    expect(r.matches).toEqual([]);
+  });
+
+  test('a genuine engine panic captured under a DIFFERENT test header IS reported', () => {
+    const log = [
+      'stderr | tests/evaluation-determinism.test.js > gate (a): fresh-world byte-identity',
+      'RuntimeError: unreachable',
+      '    at wasm://wasm/0123abcd:1:1234',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+  });
+
+  test('a panic in the vitest failed-tests summary IS reported even after a self-test block (owner reset at the ⎯ banner)', () => {
+    const log = [
+      'stdout | tests/compare-spike-runs.test.js > classify > prints its report',
+      '# candidate-red classification (node)',
+      '⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯',
+      ' FAIL  tests/evaluation-determinism.test.js > teardown',
+      'RuntimeError: unreachable in afterAll',
+      '',
+    ].join('\n');
+    const r = scanOf('npmtest.log', log);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/unreachable in afterAll/);
+  });
+
+  test('attribution not content: the IDENTICAL sentence is hidden under a self-test header, surfaced under a real one', () => {
+    const sentence = 'SIGNATURE MISMATCH — foo: Message head: RuntimeError: unreachable in afterAll';
+    const hidden = scanOf('npmtest.log', ['stderr | tests/compare-spike-runs.test.js > x', sentence, ''].join('\n'));
+    const shown = scanOf('npmtest.log', ['stderr | tests/evaluation-determinism.test.js > x', sentence, ''].join('\n'));
+    expect(hidden.matches).toEqual([]);
+    expect(shown.matches.length).toBe(1);
+  });
+
+  test('a non-vitest log (no capture headers) still reports a raw Rust panic — owner stays null', () => {
+    const r = scanOf('build.log', "thread 'main' panicked at 'assertion failed', src/lib.rs:42\n");
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/panicked at/);
+  });
+
+  test('benign build-log strings (panic = "abort", "no borrow errors") are not matched', () => {
+    const r = scanOf('build.log', 'panic = "abort"\nno borrow errors detected\n');
+    expect(r.matches).toEqual([]);
+  });
+
+  test('the wasm-bindgen borrow-GUARD message is matched (core-0.34 world.free() panic)', () => {
+    // The candidate's first crash class — distinct wording from "already
+    // borrowed"/"BorrowMutError", so the signature must name it explicitly.
+    const r = scanOf('witnesses.log', 'Error: attempted to take ownership of Rust value while it was borrowed\n');
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/attempted to take ownership/);
+  });
+
+  test('the unrecoverable "RuntimeError: unreachable" wasm trap is matched (candidate step() crash)', () => {
+    const r = scanOf('witnesses.log', 'RuntimeError: unreachable\n    at wasm://wasm/0067f38e:1:1\n');
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+  });
+
+  test('a multi-KB minified source-dump line is skipped, not reported (no report bloat on an uncaught crash)', () => {
+    // Node prints the offending rapier.mjs SOURCE on an uncaught wasm crash —
+    // one ~2 MB minified line that contains the trigger literals. The short
+    // real crash message is still reported; the giant source line is not.
+    const sourceDump = `class A{free(){throw "attempted to take ownership of Rust value while it was borrowed"}}${'x'.repeat(3000)}`;
+    const r = scanOf('witnesses.log', `${sourceDump}\nRuntimeError: unreachable\n`);
+    expect(r.matches.length).toBe(1);
+    expect(r.matches[0]).toMatch(/RuntimeError: unreachable/);
+    expect(r.matches.every((m) => m.length < 2100)).toBe(true);
+  });
+});
+
+// F5 — coverage validator rejects duplicate rows, padded/duplicated individuals,
+// and wrong cardinality (not just unique-count). The old last-write-wins Map +
+// unique-only check let malformed heavy reports through into a citable verdict.
+describe('prevalenceCoverageIssues — exact raw + unique cardinality, one row per seed', () => {
+  const indiv = (id) => ({ individualId: id, maxForwardDistance: 1, peakBodySpeed: 1 });
+  const seedRow = (seed, ids) => ({ populationSeed: seed, individuals: ids.map(indiv) });
+  const range = (n) => Array.from({ length: n }, (_, i) => i);
+  const rep = (rows) => ({ prevalence: rows });
+  const SEEDS = [100, 200];
+  const PER = 20;
+
+  test('a valid report (one row per seed, exactly PER unique individuals) has no issues', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r).toEqual([]);
+  });
+
+  test('DUPLICATE seed rows are detected (the last-write-wins hole)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(100, range(20)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /3 rows, expected exactly 2/.test(i))).toBe(true);
+    expect(r.some((i) => /seed 100 has 2 rows/.test(i))).toBe(true);
+  });
+
+  test('a row PADDED past PER individuals fails raw cardinality (20 unique + 20 padding)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, range(40)), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /seed 100 has 40 individuals, expected 20/.test(i))).toBe(true);
+  });
+
+  test('PER rows but DUPLICATED individualIds fails unique cardinality (20 ids, 19 unique)', () => {
+    const r = prevalenceCoverageIssues(rep([seedRow(100, [...range(19), 18]), seedRow(200, range(20))]), SEEDS, PER, 'x');
+    expect(r.some((i) => /seed 100 has 19 unique of 20 individuals/.test(i))).toBe(true);
+  });
+
+  test('a missing declared seed and an undeclared seed both fail', () => {
+    const miss = prevalenceCoverageIssues(rep([seedRow(100, range(20))]), SEEDS, PER, 'x');
+    expect(miss.some((i) => /declared seed 200 MISSING/.test(i))).toBe(true);
+    const extra = prevalenceCoverageIssues(rep([seedRow(100, range(20)), seedRow(200, range(20)), seedRow(999, range(20))]), SEEDS, PER, 'x');
+    expect(extra.some((i) => /UNDECLARED seed 999/.test(i))).toBe(true);
+  });
+});
+
+// F3 — a structured, NON-throwing read so a truncated/interrupted artifact
+// surfaces as an issue instead of crashing compare() before it writes anything.
+describe('readJsonSafe — distinguishes missing / valid / malformed, never throws', () => {
+  const write = (name, text) => { const p = join(TMP, name); writeFileSync(p, text); return p; };
+
+  test('a missing file: present false, valid false, no error', () => {
+    const r = readJsonSafe(join(TMP, 'does-not-exist.json'));
+    expect(r).toEqual({ present: false, valid: false, value: null, error: null });
+  });
+
+  test('a valid file: present true, valid true, parsed value', () => {
+    const r = readJsonSafe(write('valid.json', JSON.stringify({ a: 1 })));
+    expect(r.present).toBe(true);
+    expect(r.valid).toBe(true);
+    expect(r.value).toEqual({ a: 1 });
+  });
+
+  test('a malformed (truncated) file: present true, valid false, error set — no throw', () => {
+    const p = write('truncated.json', '{ "a": 1, "b":');
+    let r;
+    expect(() => { r = readJsonSafe(p); }).not.toThrow();
+    expect(r.present).toBe(true);
+    expect(r.valid).toBe(false);
+    expect(r.value).toBeNull();
+    expect(typeof r.error).toBe('string');
+    expect(r.error.length).toBeGreaterThan(0);
+  });
+});
+
+// The SHARED panic scanner + classifier — one regex source used by both the
+// workflow (via --mode witness-scan) and compare()'s stable usability check.
+describe('witnessLogPanicSignature + classifyWitnessMatrix', () => {
+  const write = (name, text) => { const p = join(TMP, name); writeFileSync(p, text); return p; };
+
+  test('witnessLogPanicSignature returns the panic line, null on a clean or missing log', () => {
+    expect(witnessLogPanicSignature(write('ws-clean.log', 'all good\nno errors\n'))).toBeNull();
+    expect(witnessLogPanicSignature(join(TMP, 'ws-absent.log'))).toBeNull();
+    expect(witnessLogPanicSignature(write('ws-panic.log', 'RuntimeError: unreachable\n    at wasm\n'))).toMatch(/RuntimeError: unreachable/);
+    expect(witnessLogPanicSignature(write('ws-borrow.log', 'Error: attempted to take ownership of Rust value while it was borrowed\n'))).toMatch(/attempted to take ownership/);
+  });
+
+  test('classifyWitnessMatrix folds exit + signature + witnesses.json into one class, fail-closed', () => {
+    const w = (freeErrors) => ({ present: true, valid: true, value: { freeErrors } });
+    // completed ONLY with exit 0 + valid json + empty freeErrors + no signature.
+    expect(classifyWitnessMatrix('stable', 0, null, w([])).classification).toBe('completed');
+    // a signature dominates even at exit 0 — and is a FAILURE on the reference arm.
+    expect(classifyWitnessMatrix('stable', 0, 'RuntimeError: unreachable', w([])).classification).toBe('engineCrash');
+    expect(classifyWitnessMatrix('candidate', 1, 'RuntimeError: unreachable', { present: false }).blurb).toMatch(/Outcome-B evidence/);
+    // exit 0 but no valid json is NOT clean.
+    expect(classifyWitnessMatrix('stable', 0, null, { present: false, valid: false }).classification).toBe('exit0NoValidJson');
+    expect(classifyWitnessMatrix('stable', 0, null, w('nope')).classification).toBe('exit0NoValidJson');
+    // freeErrors non-empty, timeout, missing, unexplained.
+    expect(classifyWitnessMatrix('stable', 0, null, w(['x'])).classification).toBe('completedWithFreeErrors');
+    expect(classifyWitnessMatrix('stable', 124, null, w([])).classification).toBe('timeout');
+    expect(classifyWitnessMatrix('stable', null, null, w([])).classification).toBe('missing');
+    expect(classifyWitnessMatrix('stable', 7, null, w([])).classification).toBe('unexplained');
   });
 });

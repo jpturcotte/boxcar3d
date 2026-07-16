@@ -49,8 +49,24 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+// Structured, NON-throwing read: distinguishes missing from present-but-malformed
+// (a timed-out or interrupted command can leave truncated JSON). Callers that
+// must REPORT a malformed artifact (compare's arm loop) use this directly; the
+// rest use readJsonIf below.
+function readJsonSafe(path) {
+  if (!existsSync(path)) return { present: false, valid: false, value: null, error: null };
+  try {
+    return { present: true, valid: true, value: JSON.parse(readFileSync(path, 'utf8')), error: null };
+  } catch (err) {
+    return { present: true, valid: false, value: null, error: String(err?.message ?? err) };
+  }
+}
+
+// null on missing OR malformed — NEVER throws, so a truncated artifact can never
+// crash compare() before it writes comparison.md + result-manifest.json.
 function readJsonIf(path) {
-  return existsSync(path) ? readJson(path) : null;
+  const r = readJsonSafe(path);
+  return r.valid ? r.value : null;
 }
 
 // Normalize a vitest testResults[].name (absolute path, either separator) to a
@@ -336,13 +352,30 @@ function prevalenceCoverageIssues(report, expectedSeeds, perSeed, label) {
   const rows = Array.isArray(report?.prevalence) ? report.prevalence : null;
   if (rows === null) return [`${label}: prevalence array missing or malformed`];
   const issues = [];
-  const bySeed = new Map(rows.map((r) => [r.populationSeed, r]));
+  // Group by seed (NOT a last-write-wins Map): a duplicate seed row must be
+  // DETECTED, not silently collapsed. Exact coverage = one row per declared
+  // seed, no undeclared seeds, and per row BOTH raw AND unique individual
+  // cardinality (a row padded with duplicate individualIds must not pass).
+  const rowsBySeed = new Map();
+  for (const r of rows) {
+    const list = rowsBySeed.get(r.populationSeed) ?? [];
+    list.push(r);
+    rowsBySeed.set(r.populationSeed, list);
+  }
+  if (rows.length !== expectedSeeds.length) {
+    issues.push(`${label}: ${rows.length} rows, expected exactly ${expectedSeeds.length} (one per declared seed)`);
+  }
   for (const seed of expectedSeeds) {
-    const row = bySeed.get(seed);
-    if (row === undefined) { issues.push(`${label}: declared seed ${seed} MISSING`); continue; }
-    const ids = (row.individuals ?? []).map((i) => i.individualId);
+    const seedRows = rowsBySeed.get(seed) ?? [];
+    if (seedRows.length === 0) { issues.push(`${label}: declared seed ${seed} MISSING`); continue; }
+    if (seedRows.length > 1) { issues.push(`${label}: seed ${seed} has ${seedRows.length} rows, expected exactly 1 (duplicate rows)`); continue; }
+    const ids = (seedRows[0].individuals ?? []).map((i) => i.individualId);
     const uniq = new Set(ids);
-    if (uniq.size !== perSeed) issues.push(`${label}: seed ${seed} has ${uniq.size} unique individuals, expected ${perSeed}`);
+    if (ids.length !== perSeed) {
+      issues.push(`${label}: seed ${seed} has ${ids.length} individuals, expected ${perSeed}`);
+    } else if (uniq.size !== perSeed) {
+      issues.push(`${label}: seed ${seed} has ${uniq.size} unique of ${ids.length} individuals (duplicated individualIds), expected ${perSeed} unique`);
+    }
   }
   for (const r of rows) {
     if (!expectedSeeds.includes(r.populationSeed)) issues.push(`${label}: UNDECLARED seed ${r.populationSeed} present (coverage must be exact)`);
@@ -377,7 +410,55 @@ function rapierVersionOf(report) {
 // `panicked at`, wasm-bindgen's `recursive use of an object` / `unsafe aliasing`,
 // and `RuntimeError: unreachable` / `unreachable executed`.
 const BORROW_SIGNATURE =
-  /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
+  /already (?:mutably )?borrowed|Borrow(?:Mut)?Error|attempted to take ownership of Rust value while it was borrowed|panicked at|thread '[^']*' panicked|recursive use of an object|unsafe aliasing|RuntimeError: unreachable|unreachable executed/;
+// An uncaught wasm crash makes Node print the offending module SOURCE line —
+// for rapier.mjs that is one minified ~2 MB line that happens to contain the
+// borrow/unreachable trigger literals. Skip lines this long: a real panic
+// MESSAGE is short; a multi-KB line is a source dump, not evidence.
+const MAX_SCAN_LINE = 2000;
+
+// CSI SGR (colour) matcher, built from a string so the source carries no literal
+// ESC control char (eslint no-control-regex stays happy). Vitest colours its
+// captured-output headers even when piped in CI, so we strip before matching.
+const ANSI_ESCAPE = new RegExp('\\x1b\\[[0-9;]*m', 'g');
+// Vitest attributes each captured console block to a test via a header line
+// `stdout | <file> > <test>` / `stderr | <file> > <test>`. The owning file lets
+// us drop console output that a pure unit test PRINTED (never an engine fault).
+const CAPTURE_HEADER = /^\s*(?:stdout|stderr)\s*\|\s*(\S+)/;
+// The run of horizontal-line glyphs vitest prints around its failed-tests /
+// unhandled-errors summary — the boundary where captured console output ends.
+// vitest 3.x uses U+23AF (⎯); include U+2500/U+2501 for other builds. Excludes
+// the em-dash U+2014 that appears in prose test names, so a ≥4 run never matches
+// a describe/test title.
+const VITEST_SUMMARY_BOUNDARY = /[⎯─━]{4,}/;
+// The self-referential contract test: scripts/compare-spike-runs.js's OWN unit
+// suite deliberately feeds synthetic borrow/panic/unreachable FIXTURES through
+// classify(), which prints them to stdout/stderr. That captured output lands in
+// npmtest.log and is NOT an engine panic — it appears identically on BOTH arms
+// (same `npm test`) and would falsely read as a "project-contract regression" on
+// the fully-green stable arm. This test never touches Rapier, so attributing and
+// skipping its captured blocks can never hide a real engine fault.
+const SELF_CONTRACT_TEST = 'compare-spike-runs.test.js';
+
+// The ONE panic scanner (single source of the regex). Returns the trimmed
+// matching lines in `text`; prefixes each with `${label}: ` when a label is
+// given. The vitest capture-owner + summary-boundary + source-dump-line logic
+// keeps it from flagging the adjudicator's own printed fixtures.
+function scanTextForBorrowSignatures(text, label) {
+  const matches = [];
+  let capturedOwner = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > MAX_SCAN_LINE) continue; // minified source dump, not a message
+    const line = raw.replace(ANSI_ESCAPE, '');
+    const header = CAPTURE_HEADER.exec(line);
+    if (header !== null) { capturedOwner = header[1]; continue; }
+    if (VITEST_SUMMARY_BOUNDARY.test(line)) { capturedOwner = null; continue; }
+    if (!BORROW_SIGNATURE.test(line)) continue;
+    if (capturedOwner !== null && capturedOwner.endsWith(SELF_CONTRACT_TEST)) continue;
+    matches.push(label === undefined ? line.trim() : `${label}: ${line.trim()}`);
+  }
+  return matches;
+}
 
 function borrowErrorScan(dir) {
   if (!existsSync(dir)) return { scanned: 0, matches: [] };
@@ -386,39 +467,63 @@ function borrowErrorScan(dir) {
   for (const f of readdirSync(dir)) {
     if (!/\.(log|txt)$/.test(f)) continue;
     scanned += 1;
-    const text = readFileSync(join(dir, f), 'utf8');
-    for (const line of text.split(/\r?\n/)) {
-      if (BORROW_SIGNATURE.test(line)) matches.push(`${f}: ${line.trim()}`);
-    }
+    matches.push(...scanTextForBorrowSignatures(readFileSync(join(dir, f), 'utf8'), f));
   }
   return { scanned, matches };
 }
 
-// The Node and Chromium determinism assertions for the SAME fixture digest
-// carry DELIBERATELY DIFFERENT titles (Node "eval-a-s0-flat: run matches the
-// committed lock ..." vs Chromium "eval-a-s0-flat: digest, counts, and every
-// checkpoint state match the golden lock"; population likewise), so keying a
-// digest by the raw vitest fullName can NEVER match across environments — the
-// agreement check would find zero shared keys and hard-fail on every run for
-// a reason unrelated to determinism. These rules map both environments' titles
-// to ONE stable SEMANTIC key. Each pattern lives entirely within a single
-// describe/it leaf, so it is independent of however the reporter joins the
-// describe chain.
+// The first recognized panic signature in a SINGLE log file (unprefixed), or
+// null. The stable witness gate — in BOTH the workflow (via the witness-scan
+// CLI mode) and compare() — uses this, so "the reference engine crashed" is
+// decided by the same regex, never a second independently-maintained one.
+function witnessLogPanicSignature(logPath) {
+  if (!existsSync(logPath)) return null;
+  const m = scanTextForBorrowSignatures(readFileSync(logPath, 'utf8'));
+  return m.length > 0 ? m[0] : null;
+}
+
+// Classify a forensic witness-matrix outcome from (exit code, recognized panic
+// signature, witnesses.json read). "completed" is PROVEN, never assumed: exit 0
+// + a valid witnesses.json + an EMPTY freeErrors array + no panic signature.
+// Returns { classification, blurb, summary }. Computed BEFORE arm usability is
+// finalized so the reference arm's cleanliness can gate the verdict.
+function classifyWitnessMatrix(arm, wexit, sig, witnesses) {
+  const freeErrsArr = Array.isArray(witnesses?.value?.freeErrors) ? witnesses.value.freeErrors : null;
+  if (sig !== null) {
+    return arm === 'candidate'
+      ? { classification: 'engineCrash', summary: `recognized signature \`${sig}\``, blurb: `**engine CRASH** — \`${sig}\` (recognized ownership/unreachable signature — THIS is the Outcome-B evidence; not gated on the candidate).` }
+      : { classification: 'engineCrash', summary: `recognized signature \`${sig}\` on the reference arm`, blurb: `**engine CRASH on the REFERENCE arm** — \`${sig}\` (a recognized panic on stable is a FAILURE, not evidence — it must NOT appear here).` };
+  }
+  if (wexit === 0 && freeErrsArr !== null && freeErrsArr.length > 0) {
+    return { classification: 'completedWithFreeErrors', summary: `${freeErrsArr.length} freeErrors`, blurb: `completed BUT recorded ${freeErrsArr.length} world.free() borrow-guard observation(s) — on the reference engine this is a FAILURE, not clean (\`${freeErrsArr[0]}\`).` };
+  }
+  if (wexit === 0 && witnesses?.present && witnesses?.valid && freeErrsArr !== null && freeErrsArr.length === 0) {
+    return { classification: 'completed', summary: 'clean', blurb: 'completed the full forensic matrix cleanly (valid witnesses.json, empty freeErrors, no panic signature).' };
+  }
+  if (wexit === 0) {
+    const why = !witnesses?.present ? 'ABSENT' : !witnesses?.valid ? 'MALFORMED' : 'missing a freeErrors array';
+    return { classification: 'exit0NoValidJson', summary: `exit 0 but witnesses.json ${why}`, blurb: `**exit 0 but witnesses.json is ${why}** — NOT provably clean (a --json regression or truncation would look like this; fail-closed, never "clean").` };
+  }
+  if (wexit === 124 || wexit === 137) {
+    return { classification: 'timeout', summary: `timeout (exit ${wexit})`, blurb: `**TIMED OUT** (exit ${wexit} — hit the RUN_TIMEOUT backstop; a hang, NOT observed-engine-crash evidence).` };
+  }
+  if (wexit === null) {
+    return { classification: 'missing', summary: 'no exit recorded', blurb: 'MISSING (no witnesses exit/artifact recorded — a missing observation, not evidence).' };
+  }
+  return { classification: 'unexplained', summary: `exit ${wexit}, no signature`, blurb: `**UNEXPLAINED FAILURE** (exit ${wexit}, no recognized crash signature — investigate; NOT Outcome-B evidence).` };
+}
+
+// ONLY the population fitness-vector digest is reliably comparable across Node
+// and Chromium: BOTH reporters emit it via a short `.toBe('<digest>')` whose
+// message is not truncated. The eval A-D checkpoint states and the champion
+// trace are deliberately NOT semantic keys — Node's `.toBeNull()` on a
+// formatted divergence string is TRUNCATED by the reporter (the state hex is
+// dropped) while Chromium keeps the full `expect.fail` message, so scraping
+// them yields Chromium-only extractions that would fail set-equality for a
+// reason unrelated to determinism. (Measured on the first heavy dispatch; see
+// nodeChromiumRequiredKeysRationale in the inventory.)
 const DIGEST_SEMANTIC_RULES = [
-  // Evaluation fixtures A-D: both env titles carry the `eval-<x>-...:` fixture
-  // token AND render the divergence as `... actual <hex> ...` (the same
-  // first-divergent checkpoint state, identical cross-env under determinism).
-  // GUARD to the GOLDEN-lock assertion titles only ("run matches the committed
-  // lock" / "match the golden lock") — the gate-(a) "two fresh worlds agree"
-  // title ALSO carries the eval token, and a gate-(a) run-to-run divergence
-  // hex must never be mistaken for (and first-wins over) the golden digest.
-  { re: /(eval-[a-z0-9-]+):/, guard: /committed lock|golden lock/, key: (m) => `evaluation:${m[1]}` },
-  // Population fitness-vector digest (Node "two fresh evaluations agree
-  // byte-for-byte, and the second matches the committed lock" fails at the
-  // fitnessVector .toBe; Chromium "evaluation: fitness-vector digest, ...").
   { re: /two fresh evaluations agree byte-for-byte|fitness-vector digest/, key: () => 'population:fitness-vector' },
-  // Population champion solo-trace digest (both env titles share the phrase).
-  { re: /champion solo digest-mode rerun/, key: () => 'population:champion-trace' },
 ];
 
 function semanticDigestKey(fullName) {
@@ -443,20 +548,14 @@ function measuredDigests(vitestJson) {
       if (a.status !== 'failed') continue;
       const key = semanticDigestKey(a.fullName ?? a.title ?? '');
       if (key === null || out[key] !== undefined) continue;
-      const msg = (a.failureMessages ?? []).join('\n');
-      // Extraction rules, most-specific first:
-      //  1. an explicit "actual <hex8>" (both formatDivergence variants pad);
-      //  2. "(state <hex>)" — the Chromium champion-trace message prints the
-      //     divergent state UNPADDED via toString(16) in that exact bracket
-      //     shape, so accept 1-8 hex chars and left-pad to the canonical 8;
-      //  3. the first bare hex8 (vitest's `.toBe` diff renders the RECEIVED —
-      //     i.e. measured — value first: "expected '<measured>' to be '<lock>'").
-      const actual = /(?:actual|received|got)[^0-9a-f]{0,20}([0-9a-f]{8})/i.exec(msg);
-      const stateBracket = /\(state ([0-9a-f]{1,8})\)/.exec(msg);
-      const any = HEX8.exec(msg);
-      const digest = actual ? actual[1]
-        : (stateBracket ? stateBracket[1].padStart(8, '0') : (any ? any[0] : null));
-      if (digest !== null) out[key] = digest;
+      // Scan ONLY the first line (the assertion message). The stack-trace lines
+      // that follow carry vitest bundle URLs like `?v=d9c9c21b` whose 8-hex
+      // query hash would be a false digest match. The fitness-vector digest is
+      // the RECEIVED (measured) value, which vitest renders first in the
+      // `.toBe` diff: "expected '<measured>' to be '<lock>'".
+      const msg = ((a.failureMessages ?? []).join('\n').split('\n')[0]) ?? '';
+      const m = HEX8.exec(msg);
+      if (m !== null) out[key] = m[0];
     }
   }
   return out;
@@ -493,16 +592,45 @@ function compare({ artifacts, out, expectedPath }) {
   for (const arm of ARMS) {
     const dir = armDir(artifacts, arm);
     const present = existsSync(dir);
-    const reproducer = present ? readJsonIf(join(dir, 'reproducer.json')) : null;
-    const freshseed = present ? readJsonIf(join(dir, 'freshseed.json')) : null;
-    const prevalence = present ? readJsonIf(join(dir, 'prevalence.json')) : null;
-    const npmTest = present ? readJsonIf(join(dir, 'npm-test.json')) : null;
-    const browser = present ? readJsonIf(join(dir, 'browser.json')) : null;
-    const armManifest = present ? readJsonIf(join(dir, 'arm-manifest.json')) : null;
-    const adjudication = present ? readJsonIf(join(dir, 'adjudication.json')) : null;
+    const read = (name) => (present ? readJsonSafe(join(dir, name)) : { present: false, valid: false, value: null, error: null });
+    const rd = {
+      reproducer: read('reproducer.json'),
+      freshseed: read('freshseed.json'),
+      prevalence: read('prevalence.json'),
+      npmTest: read('npm-test.json'),
+      browser: read('browser.json'),
+      armManifest: read('arm-manifest.json'),
+      adjudication: read('adjudication.json'),
+    };
+    // witnesses.json is read SEPARATELY from `rd` (not the generic malformed
+    // loop): on the candidate it is OBSERVE and expected ABSENT when the matrix
+    // crashes, so a candidate malformed/missing witnesses must NOT fail that arm.
+    // The stable-heavy fail-closed check below handles the reference arm.
+    const witnesses = read('witnesses.json');
+    const reproducer = rd.reproducer.value;
+    const freshseed = rd.freshseed.value;
+    const prevalence = rd.prevalence.value;
+    const npmTest = rd.npmTest.value;
+    const browser = rd.browser.value;
+    const armManifest = rd.armManifest.value;
+    const adjudication = rd.adjudication.value;
+    // The forensic witness-matrix outcome is computed HERE — BEFORE usability is
+    // finalized — from the exit code, a recognized panic signature (the shared
+    // scanner), and the witnesses.json read. The stable arm's usability then
+    // requires classification 'completed'; the F6 section reuses these.
+    const scan = present ? borrowErrorScan(dir) : { scanned: 0, matches: [] };
+    const wexit = armManifest?.exits?.witnesses ?? null;
+    const witnessCrash = scan.matches.find((m) => m.startsWith('witnesses.log:')) ?? null;
+    const witnessSig = witnessCrash === null ? null : witnessCrash.replace(/^witnesses\.log:\s*/, '');
+    const witnessMatrix = classifyWitnessMatrix(arm, wexit, witnessSig, witnesses);
     const issues = [];
     if (!present) issues.push('artifact dir missing (job did not upload — build failure, cancelled, or skipped)');
     else {
+      // A present-but-unparseable artifact (a timed-out/interrupted command can
+      // leave truncated JSON) is an explicit issue — never a silent "missing".
+      for (const [name, r] of Object.entries(rd)) {
+        if (r.present && !r.valid) issues.push(`${name}.json present but MALFORMED JSON (${r.error})`);
+      }
       if (adjudication === null) issues.push('adjudication.json missing (arm did not reach the adjudicate step)');
       else if (adjudication.passed !== true) issues.push('adjudication FAILED');
       if (reproducerSummary(reproducer)?.original?.classification == null) issues.push('reproducer original classification missing');
@@ -517,11 +645,61 @@ function compare({ artifacts, out, expectedPath }) {
         } else if (!(Array.isArray(prevalence?.prevalence) && prevalence.prevalence.length > 0)) {
           issues.push('heavy run but prevalence.json missing or malformed (no declared heavyEvidence to check against)');
         }
+        // Stable heavy run must PROVABLY complete the forensic matrix cleanly —
+        // FAIL-CLOSED, and this is a real USABILITY condition (not just a
+        // rendered classification): exit MUST be 0, the witnesses.log MUST carry
+        // no recognized panic signature, witnesses.json MUST be present + valid +
+        // an EMPTY freeErrors array, and the folded classification MUST be
+        // exactly 'completed'. Any of these fails the arm => not citable.
+        // (Candidate is OBSERVE — its witnesses.json is expected ABSENT on a
+        // matrix crash, so none of this applies to it.)
+        if (arm === 'stable') {
+          if (wexit !== 0) issues.push(`stable heavy: witnesses exit ${wexit ?? 'missing'} — the forensic matrix must exit 0 on the reference engine`);
+          if (witnessSig !== null) issues.push(`stable heavy: recognized panic signature in witnesses.log (${witnessSig}) — the reference engine must not crash`);
+          if (!witnesses.present) issues.push('stable heavy: witnesses.json MISSING (exit 0 alone is not proof of a completed matrix)');
+          else if (!witnesses.valid) issues.push(`stable heavy: witnesses.json MALFORMED JSON (${witnesses.error})`);
+          else if (!Array.isArray(witnesses.value?.freeErrors)) issues.push('stable heavy: witnesses.json has no freeErrors ARRAY (schema-invalid)');
+          else if (witnesses.value.freeErrors.length > 0) issues.push(`stable heavy: witnesses.json recorded ${witnesses.value.freeErrors.length} world.free() borrow-guard observation(s) — the reference engine must free cleanly`);
+          // Integration backstop: the folded classification must be 'completed'
+          // (defends against any future class the granular checks above miss).
+          if (witnessMatrix.classification !== 'completed') issues.push(`stable heavy: forensic-matrix classification is '${witnessMatrix.classification}' (${witnessMatrix.summary}), require 'completed'`);
+        }
+      }
+      // The reference (stable) arm must free EVERY pass's worlds cleanly, not
+      // only the witness matrix (the witnesses gate above). safeFreeWorld
+      // swallows a wasm-bindgen ownership guard into report.freeErrors and the
+      // probe STILL EXITS 0, so a reference-engine borrow-guard in the
+      // reproducer/freshseed/prevalence passes is invisible to the exit-code
+      // `gate` — yet classifyWitnessMatrix already rules a reference freeError
+      // "a FAILURE, not clean". Enforce that same principle across every pass:
+      //   (1) STRUCTURED — a non-empty freeErrors array in the pass report (the
+      //       reproducer pass threads freeErrors today; freshseed/prevalence are
+      //       covered defensively so a future probe that threads them is gated
+      //       by construction). No log false-positive risk.
+      //   (2) LOG — a recognized panic signature in the pass's PROBE STDOUT log.
+      //       Scoped to reproducer/freshseed/prevalence.log ONLY: those are
+      //       probe stdout (no vitest capture headers, so no self-contract
+      //       false-positive — the round-1 class). The vitest logs
+      //       (npmtest/browser) are deliberately NOT gated here — a real
+      //       reference panic there already fails the separately-required-green
+      //       timing/npmtest/browser gates, while their captured test FIXTURES
+      //       would false-match. witnesses.log is gated in the heavy block above.
+      // Candidate is OBSERVE — its panics ARE the Outcome-B evidence, never gated.
+      if (arm === 'stable') {
+        for (const [name, rep] of [['reproducer', reproducer], ['freshseed', freshseed], ['prevalence', prevalence]]) {
+          if (Array.isArray(rep?.freeErrors) && rep.freeErrors.length > 0) {
+            issues.push(`stable ${name}.json recorded ${rep.freeErrors.length} world.free() borrow-guard observation(s) — the reference engine must free cleanly in EVERY pass (\`${rep.freeErrors[0]}\`)`);
+          }
+        }
+        for (const m of scan.matches.filter((s) => /^(?:reproducer|freshseed|prevalence)\.log:/.test(s))) {
+          issues.push(`stable: recognized borrow/panic signature in a reference-arm probe log — the control engine must not panic in ANY pass: ${m}`);
+        }
       }
     }
     const usable = issues.length === 0;
     armReports[arm] = {
-      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication, usable, issues,
+      present, dir, reproducer, freshseed, prevalence, npmTest, browser, armManifest, adjudication,
+      witnesses, scan, witnessMatrix, usable, issues,
     };
     manifest.arms[arm] = {
       present,
@@ -615,34 +793,59 @@ function compare({ artifacts, out, expectedPath }) {
   push('## Determinism digests (candidate: Node vs Chromium)');
   const nodeD = measuredDigests(armReports.candidate.npmTest);
   const chromeD = measuredDigests(armReports.candidate.browser);
-  const keys = [...new Set([...Object.keys(nodeD), ...Object.keys(chromeD)])];
-  if (keys.length === 0) {
-    push('_No determinism failure digests could be extracted — either both green (unexpected on candidate) or the failure-message format changed. See raw logs._');
-    manifest.findings.nodeChromiumAgreement = { extracted: false };
+  // Judge agreement against the DECLARED required set (mirrors --mode
+  // invariants), NOT the union of whatever happened to extract: a required
+  // digest missing on EITHER environment is a failure, not a silent "n/a" pass.
+  const requiredKeys = Array.isArray(expected?.nodeChromiumRequiredKeys) ? expected.nodeChromiumRequiredKeys : [];
+  const extraKeys = [...new Set([...Object.keys(nodeD), ...Object.keys(chromeD)])].filter((k) => !requiredKeys.includes(k));
+  if (requiredKeys.length === 0) {
+    push('_No nodeChromiumRequiredKeys declared in the inventory — cross-env agreement is NOT asserted._');
+    manifest.findings.nodeChromiumAgreement = { extracted: false, requiredKeys: [] };
   } else {
     let agree = true;
-    push(mdTable(['determinism assertion', 'Node digest', 'Chromium digest', 'agree'],
-      keys.map((k) => {
-        const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
-        const ok = n !== null && c !== null && n === c;
-        if (n !== null && c !== null && !ok) agree = false;
-        return [k, n, c, ok ? 'yes' : (n === null || c === null ? 'n/a' : 'NO')];
-      })));
+    const rows = requiredKeys.map((k) => {
+      const n = nodeD[k] ?? null; const c = chromeD[k] ?? null;
+      const ok = n !== null && c !== null && n === c;
+      if (!ok) agree = false;
+      const verdict = ok ? 'yes' : (n === null ? '**NO (missing on Node)**' : c === null ? '**NO (missing on Chromium)**' : '**NO**');
+      return [k, n ?? '—', c ?? '—', verdict];
+    });
+    push(mdTable(['required cross-env digest', 'Node digest', 'Chromium digest', 'agree'], rows));
     push('');
     push(agree
-      ? '_Node and Chromium agree on every extracted candidate digest (cross-env determinism holds on core 0.34)._'
-      : '> **Node↔Chromium DISAGREEMENT on a candidate digest — investigate before any claim of cross-env determinism.**');
-    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, node: nodeD, chromium: chromeD };
+      ? '_Node and Chromium agree on the population fitness-vector digest — the ONLY digest mechanically comparable across environments. The eval A–D checkpoint states and the champion trace are NOT cross-env compared (Node truncates their divergence messages; see nodeChromiumRequiredKeysRationale). This one digest is the FULL extent of the cross-env determinism evidence — it is NOT a claim about the A–D or champion traces._'
+      : '> **Node↔Chromium: a REQUIRED digest is missing on one environment or disagrees — cross-env determinism NOT established. Investigate.**');
+    if (extraKeys.length > 0) push(`_(Note: ${extraKeys.length} digest key(s) extracted OUTSIDE the required set: ${extraKeys.join(', ')} — not part of the agreement verdict.)_`);
+    manifest.findings.nodeChromiumAgreement = { extracted: true, agree, requiredKeys, extraKeys, node: nodeD, chromium: chromeD };
   }
   push('');
 
-  // Borrow-error scan.
+  // Borrow-error scan (reuses the per-arm scan computed in the arm loop).
   push('## `world.free()` borrow/panic scan');
   for (const arm of ARMS) {
-    const scan = borrowErrorScan(armReports[arm].dir);
+    const scan = armReports[arm].scan;
     push(`- **${arm}:** scanned ${scan.scanned} log(s); ${scan.matches.length} borrow/ownership/unreachable/panic match(es)`
       + (scan.matches.length ? `:\n  - ${scan.matches.slice(0, 10).join('\n  - ')}` : '.'));
     manifest.findings[`borrow_${arm}`] = scan;
+  }
+  push('');
+
+  // Forensic witness matrix (`--witness all --pass all`): a GATE on stable
+  // (its cleanliness is a USABILITY condition — see the arm loop), OBSERVE on
+  // the candidate (its crash IS Outcome-B evidence — core 0.34 cannot complete
+  // the matrix). This section RENDERS the classification the usability check
+  // already computed (single source of truth — no re-derivation).
+  push('## Forensic witness matrix (`--witness all --pass all`) — stable GATE / candidate OBSERVE');
+  push('');
+  for (const arm of ARMS) {
+    const wexit = armReports[arm].armManifest?.exits?.witnesses ?? null;
+    const wm = armReports[arm].witnessMatrix;
+    push(`- **${arm}:** witnesses exit ${wexit ?? 'missing'} — ${wm.blurb}`);
+    manifest.findings[`witnessMatrix_${arm}`] = {
+      exit: wexit,
+      classification: wm.classification,
+      crashSignature: armReports[arm].scan.matches.find((m) => m.startsWith('witnesses.log:'))?.replace(/^witnesses\.log:\s*/, '') ?? null,
+    };
   }
   push('');
 
@@ -657,7 +860,17 @@ function compare({ artifacts, out, expectedPath }) {
   } else {
     const runs = Array.isArray(perf.runs) ? perf.runs : [];
     const parsed = runs.filter((r) => r && r.json !== null && r.json !== undefined);
-    const errored = parsed.filter((r) => r.json && r.json.status === 'error');
+    // bench-physics writes status PER COMPARISON (report.comparisons[].status —
+    // 'ok'/'error'/'omitted'/'invalid'), NOT as a top-level field: a thrown
+    // comparison (e.g. a catchable core-0.34 borrow-guard/API-drift error) is
+    // caught, pushed as {status:'error'}, and the bench STILL exits 0. So a
+    // top-level `r.json.status` read is dead (always undefined) and would report
+    // an errored bench as clean. Scan the array, and treat a parsed run with NO
+    // comparisons array as errored (a valid report always has one — its absence
+    // is a malformed/truncated capture). Recomputed from raw comparisons so a
+    // wrong summary.status cannot re-launder the result.
+    const errored = parsed.filter((r) => !Array.isArray(r.json.comparisons)
+      || r.json.comparisons.some((c) => c && c.status === 'error'));
     const declaredOk = perf.summary?.status === 'ok' || perf.summary?.allParsed === true;
     perfStatus = (runs.length >= 4 && parsed.length === runs.length && errored.length === 0 && declaredOk)
       ? 'ok'
@@ -824,7 +1037,8 @@ function invariants({ nodeJson, browserJson, reproducerJson, expectedPath }) {
     console.error(`\nINVARIANTS FAIL:\n  ${errors.join('\n  ')}`);
     return { ok: false, errors };
   }
-  console.log('\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the COMPLETE required digest set.');
+  console.log(`\nINVARIANTS OK — dt readback holds and Node<->Chromium agree on the declared cross-env digest set (${required.join(', ')}). `
+    + 'That set is intentionally the digest(s) both reporters emit untruncated — NOT the full A-D/champion trace set (Node truncates those); see nodeChromiumRequiredKeysRationale.');
   return { ok: true, errors: [] };
 }
 
@@ -870,8 +1084,23 @@ function main() {
       process.exit(2);
     }
     result = timingGate({ logPath: values.log, exitCode: values.exit, expectedPath: values.expected });
+  } else if (values.mode === 'witness-scan') {
+    // The SHARED panic scanner (one regex source). Exits 1 if the witnesses.log
+    // carries a recognized ownership/unreachable signature — the workflow uses
+    // this for the stable arm instead of a second bash regex.
+    if (values.log === undefined) {
+      console.error('compare-spike-runs: --mode witness-scan needs --log');
+      process.exit(2);
+    }
+    const sig = witnessLogPanicSignature(values.log);
+    if (sig !== null) {
+      console.error(`witness-scan: recognized panic signature in ${values.log}: ${sig}`);
+      process.exit(1);
+    }
+    console.log(`witness-scan: no recognized panic signature in ${values.log}`);
+    result = { ok: true };
   } else {
-    console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', or 'timing'");
+    console.error("compare-spike-runs: --mode must be 'classify', 'compare', 'invariants', 'timing', or 'witness-scan'");
     process.exit(2);
   }
   if (result.ok !== true) process.exit(1);
@@ -883,7 +1112,8 @@ function main() {
 export {
   classify, invariants, timingGate, compare,
   failingByFile, measuredDigests, semanticDigestKey, parseDriftLines,
-  passedCountsBySubstring, relTestKey, reproducerSummary, F32_DT,
+  passedCountsBySubstring, relTestKey, reproducerSummary, borrowErrorScan,
+  prevalenceCoverageIssues, readJsonSafe, witnessLogPanicSignature, classifyWitnessMatrix, F32_DT,
 };
 
 const entry = process.argv[1];

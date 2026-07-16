@@ -1026,16 +1026,25 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   classification unchanged); prevalence is **5/60 — the SAME five individuals**,
   both fitness-hidden cases (20260725 ids 1, 14) intact; a fresh seed
   (**20260730**, allocated) adds 2/20, removing the selection confound (7/80).
-  The candidate is otherwise CLEAN over the surfaces exercised: internally
+  On the surfaces that COMPLETE on both arms the candidate is CLEAN: internally
   deterministic (determinism gate (a) byte-identical on A–D), every project
   contract (all 13 class-(a) gates) preserved, NO Class-1/3/4 regression on the
   Node suite/probes, and the PR #18 `world.free()` borrow error did NOT
-  reproduce across hundreds of frees (a recorded reproducibility finding). The
-  11 unit-suite reds are all expected class-(c) golden/version movement.
-  (Candidate Chromium, the Vite build + app-scene smoke, and paired bench were
-  the local run's SKIPS; Part C's controlled CI pair runs them all — that
-  substantiates the clean-across-required-surfaces claim once a heavy dispatch
-  lands.)
+  reproduce in the Node suite. The 11 unit-suite reds are all expected class-(c)
+  golden/version movement. **The citable `heavy=true` CI dispatch (run
+  29447984460, C5) landed and CONFIRMED this** — candidate Chromium GREEN
+  (Node↔Chromium `population:fitness-vector` = `ee605286` on both), Vite build +
+  app-scene smoke GREEN, paired bench GREEN — **and it surfaced a NEW finding
+  that REINFORCES Outcome B: core 0.34 CANNOT complete the full forensic witness
+  matrix (`--witness all --pass all`) — it crashes it UNRECOVERABLY** (a
+  wasm-bindgen borrow-guard panic at `world.free()`, and once that is caught, a
+  `RuntimeError: unreachable` trap at `world.step()`), while stable 0.19.3
+  completes the identical matrix cleanly. So the forensic matrix is
+  OBSERVE-on-candidate (stable GATE), citability rests on reproducer +
+  prevalence (both green on the candidate), and "otherwise clean" is scoped to
+  the completing surfaces — NOT absolute (see the decision record §5.4; the
+  probe now RECORDS a free() panic via `safeFreeWorld`/`report.freeErrors`
+  rather than dying on it).
 - **The multibody 2×2 (the representation-vs-solver discriminator, via the new
   `probe:physics-explosion --pass reproducer --arm multibody`):** re-expressing
   the UNDRIVEN reproducer's revolutes as reduced-coordinate multibody joints is
@@ -1072,8 +1081,12 @@ evidence: `docs/rapier-034-spike-2026-07.md`:**
   project contract inside the same red test fails the arm), POSITIVE
   must-pass presence (the gate-(a)/pure teeth must appear with status
   'passed' at exact multiplicity), the probe:timing DRIFT allowlist, and the
-  dt + COMPLETE-set Node↔Chromium digest invariants (semantic keys, set
-  equality both directions — a Node-only or Chromium-only extraction fails).
+  dt + declared-set Node↔Chromium digest invariants (the declared
+  `nodeChromiumRequiredKeys` — currently just `population:fitness-vector`, the
+  ONE digest both reporters emit untruncated — with set equality both
+  directions, so a Node-only or Chromium-only extraction fails; NOT a broad
+  cross-env determinism claim over the A-D/champion traces, which Node
+  truncates).
   The adjudicator itself is under ordinary CI:
   `tests/compare-spike-runs.test.js` (pure JSON fixtures with verbatim
   titles/messages, no physics, bound to the committed

@@ -728,6 +728,12 @@ export function serializeGenotype(genotype) {
   validateGenotype(genotype);
   const seg = genotype.frame.segments[0];
   const n = genotype.axles.length;
+  // Wire-representability guard (ruling R-D): axleCount is a u8 on the wire
+  // while validateGenotype caps no count — a 256+-axle domain-valid genotype
+  // would otherwise emit a WRAPPED count byte (a wire-inconsistent stream).
+  // Fail loud instead; no valid canonical byte changes (genotypeByteLength
+  // mirrors this bound).
+  if (n > 255) fail('axles.length', `${n} exceeds the u8 wire bound 255`);
   const bytes = 2 + 4 * 8 + 8 + 1 + 8 + NODE_SLOTS * 4 * 8 + 3 * 8 + 1 + n * 16 * 8;
   const view = new DataView(new ArrayBuffer(bytes));
   let o = 0;
@@ -757,6 +763,169 @@ export function serializeGenotype(genotype) {
     for (const k of ASYM_GENES) f64(a.asym[k]);
   }
   return new Uint8Array(view.buffer);
+}
+
+// --- Genotype schema walk + decoder -------------------------------------------
+//
+// serializeGenotype above remains the CANONICAL BYTE-LAYOUT AUTHORITY — it
+// alone produces the locked stream (the 24cd0dd5 corpus lock). The schema
+// walk below is a validated metadata MIRROR of that walk (ruling R-A): one
+// frozen entry per written field, in serialization order, so parametric
+// mutation can enumerate the genotype's leaves WITHOUT touching the
+// discrete/structural fields, and tests can prove exact conformance between
+// the two (the drift triangle: walk vs serializer vs decoder).
+//
+// The walk below describes SERIALIZATION ORDER ONLY. randomGenotype's
+// matching draw order is a convenience; sampleInitialGenotype's draw table
+// (population-initializer.js) is a separately versioned contract — neither
+// is defined by this walk.
+//
+// Entry shape (frozen): { path, key, type, kind, byteOffset, byteLength } —
+// plus `value` when built from an instance. type ∈ u16|u8|f64 (the wire
+// width); kind ∈ version|structural|discrete|continuous. 'discrete' is
+// single-sourced off DISCRETE_GENE_KEYS (a parametric operator preserves
+// those leaves verbatim); 'structural' marks the two array-length fields
+// (segmentCount, axleCount — not genes). NO expression/latency metadata
+// (ruling R-G): the latent-capable groups — the three fam blocks, the per-
+// axle asym blocks, node slots beyond the active nodeCount prefix, and
+// nodes[0].gap — are ALWAYS serialized, never dropped by repair, and future
+// parametric mutation perturbs them freely (heritable neutral variation),
+// so decoding, conformance, mutation traversal, and repair-change counting
+// need no expression flag.
+
+// Byte length of the serialized form for a given axle count: 268 fixed
+// prefix + 128 per axle (16 f64 genes). axleCount is validated against the
+// u8 wire bound — the mirror of serializeGenotype's R-D guard.
+export function genotypeByteLength(axleCount) {
+  if (!Number.isInteger(axleCount) || axleCount < 0 || axleCount > 255) fail('axleCount', axleCount);
+  return 268 + 128 * axleCount;
+}
+
+// The ONE entry builder — explicit hand-written pushes mirroring the
+// serializer statement-for-statement (the only data-driven loops are over
+// the declared frozen AXLE_GENES/ASYM_GENES/NODE_GENES, the serializer's own
+// idiom). When g is given, each entry also carries the instance's value.
+function genotypeEntries(g, axleCount) {
+  const entries = [];
+  let o = 0;
+  const push = (path, key, type, kind, byteLength, value) => {
+    const entry = { path, key, type, kind, byteOffset: o, byteLength };
+    if (g !== undefined) entry.value = value;
+    entries.push(Object.freeze(entry));
+    o += byteLength;
+  };
+  const gene = (path, key, value) => {
+    push(path, key, 'f64', DISCRETE_GENE_KEYS.includes(key) ? 'discrete' : 'continuous', 8, value);
+  };
+  const seg = g === undefined ? undefined : g.frame.segments[0];
+  push('version', 'version', 'u16', 'version', 2, g === undefined ? undefined : g.version);
+  gene('hue', 'hue', g?.hue);
+  gene('symmetric', 'symmetric', g?.symmetric);
+  gene('power', 'power', g?.power);
+  gene('frameDensity', 'frameDensity', g?.frameDensity);
+  gene('frame.family', 'family', g?.frame.family);
+  push('frame.segments.length', 'segmentCount', 'u8', 'structural', 1, g === undefined ? undefined : g.frame.segments.length);
+  gene('frame.segments[0].nodeCount', 'nodeCount', seg?.nodeCount);
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    for (const k of NODE_GENES) gene(`nodes[${i}].${k}`, k, seg?.nodes[i][k]);
+  }
+  gene('fam.spine.beamWidthFrac', 'beamWidthFrac', seg?.fam.spine.beamWidthFrac);
+  gene('fam.ladder.crossFrac', 'crossFrac', seg?.fam.ladder.crossFrac);
+  gene('fam.hull.bulge', 'bulge', seg?.fam.hull.bulge);
+  push('axles.length', 'axleCount', 'u8', 'structural', 1, axleCount);
+  for (let a = 0; a < axleCount; a += 1) {
+    const axle = g === undefined ? undefined : g.axles[a];
+    for (const k of AXLE_GENES) gene(`axles[${a}].${k}`, k, axle?.[k]);
+    for (const k of ASYM_GENES) gene(`axles[${a}].asym.${k}`, k, axle?.asym[k]);
+  }
+  return entries;
+}
+
+/**
+ * Static schema enumerator: the frozen field walk for a genotype with
+ * `axleCount` axles — metadata WITHOUT an instance (36 fixed-prefix entries
+ * + 16 per axle). Byte offsets/lengths are exactly serializeGenotype's.
+ */
+export function genotypeFieldWalk(axleCount) {
+  genotypeByteLength(axleCount); // the shared 0..255 validation
+  return Object.freeze(genotypeEntries(undefined, axleCount));
+}
+
+/**
+ * Visit every schema entry of a validated genotype, in walk order, each
+ * carrying the instance's current `value`. Equal-count zips of two walks
+ * suffice for pairwise traversal; unequal axle counts are a STRUCTURAL diff
+ * and the caller's explicit case (no paired iterator here by design).
+ */
+export function forEachGenotypeField(genotype, visit) {
+  validateGenotype(genotype);
+  if (typeof visit !== 'function') fail('visit', visit);
+  for (const entry of genotypeEntries(genotype, genotype.axles.length)) visit(entry);
+}
+
+function decodeFail(path, value) {
+  throw new Error(`assembly: invalid encoded genotype at ${path} (${String(value)})`);
+}
+
+/**
+ * Decode serializeGenotype's bytes back into a canonical-shape genotype.
+ * Exact inverse across the encoder's output domain (ruling R-C): the fixed
+ * layout needs no streaming reader — version u16@0, segmentCount u8@42 ===
+ * 1, axleCount u8@267, and ONE exact-total-length check covers both
+ * truncation and trailing bytes. Raw [0,1] genes are preserved bit-exact
+ * (−0 included); the decoded object is then re-run through validateGenotype
+ * — EXACTLY the validation the encoder runs, never a repair.
+ */
+export function deserializeGenotype(bytes) {
+  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
+  if (bytes.byteLength < 268) decodeFail('bytes', `length ${bytes.byteLength} < fixed prefix 268`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let o = 0;
+  const u8 = () => { const v = view.getUint8(o); o += 1; return v; };
+  const u16 = () => { const v = view.getUint16(o, true); o += 2; return v; };
+  const f64 = () => { const v = view.getFloat64(o, true); o += 8; return v; };
+  const version = u16();
+  if (version !== GENOTYPE_VERSION) decodeFail('version', version);
+  const hue = f64();
+  const symmetric = f64();
+  const power = f64();
+  const frameDensity = f64();
+  const family = f64();
+  const segmentCount = u8();
+  if (segmentCount !== 1) decodeFail('frame.segments.length', segmentCount);
+  const nodeCount = f64();
+  const nodes = [];
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    nodes.push({ gap: f64(), height: f64(), halfWidth: f64(), thickness: f64() });
+  }
+  const fam = {
+    spine: { beamWidthFrac: f64() },
+    ladder: { crossFrac: f64() },
+    hull: { bulge: f64() },
+  };
+  const axleCount = u8();
+  if (bytes.byteLength !== genotypeByteLength(axleCount)) {
+    decodeFail('bytes', `length ${bytes.byteLength} !== ${genotypeByteLength(axleCount)} for axleCount ${axleCount}`);
+  }
+  const axles = [];
+  for (let i = 0; i < axleCount; i += 1) {
+    const axle = {};
+    for (const k of AXLE_GENES) axle[k] = f64();
+    axle.asym = {};
+    for (const k of ASYM_GENES) axle.asym[k] = f64();
+    axles.push(axle);
+  }
+  const genotype = {
+    version,
+    hue,
+    symmetric,
+    power,
+    frameDensity,
+    frame: { family, segments: [{ nodeCount, nodes, fam }] },
+    axles,
+  };
+  validateGenotype(genotype);
+  return genotype;
 }
 
 // --- Random genotype (test corpus / dev scene) -------------------------------

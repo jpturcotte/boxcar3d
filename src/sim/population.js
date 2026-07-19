@@ -88,7 +88,18 @@ export function validatePopulation(population) {
         + 'repair moved it; populations must carry repaired genotypes (compileAssembly(...).genotype)');
     }
   }
-  return [...individuals].sort((a, b) => a.individualId - b.individualId);
+  // Copy BY INDEX, never by spread. Spreading reads the iterator, and the loop
+  // above validated the INDEXED members — so a caller-supplied Array carrying
+  // an overridden Symbol.iterator was validated as one set of individuals and
+  // returned as another. Measured: a population whose indices hold canonical
+  // genotypes and whose iterator yields a RAW draw passed this function and
+  // then serialized the raw draw, defeating the canonicality tooth twenty
+  // lines above — a snapshot digest attesting a population that was never
+  // approved. One indexed reading, and it is the reading every consumer
+  // performs.
+  const copy = [];
+  for (let i = 0; i < individuals.length; i += 1) copy.push(individuals[i]);
+  return copy.sort((a, b) => a.individualId - b.individualId);
 }
 
 /** Serialize canonical population content (see the encoding walk above). */

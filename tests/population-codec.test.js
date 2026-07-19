@@ -24,7 +24,10 @@ import {
   POPULATION_INITIALIZER_VERSION, createInitialPopulation,
   deserializePopulationInitialization, serializePopulationInitialization,
 } from '../src/sim/population-initializer.js';
-import { GENOTYPE_VERSION, serializeGenotype } from '../src/sim/assembly.js';
+import {
+  GENOTYPE_VERSION, randomGenotype, repairGenotype, serializeGenotype,
+} from '../src/sim/assembly.js';
+import { Rng } from '../src/sim/prng.js';
 import { POPULATION_FIXTURE_A, populationEvaluationInputsFor } from '../src/sim/population-fixtures.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from '../src/sim/fnv1a.js';
 
@@ -127,6 +130,52 @@ describe('population snapshot — round trips', () => {
     expect(decoded.individuals[0].individualId).toBe(4);
     assertBitEqual(decoded.individuals[0].genotype, canonicalGenotype(0.5), 'hand-built');
     expect(bytesEqual(serializePopulationSnapshot(decoded), out)).toBe(true);
+  });
+});
+
+describe('population snapshot — the validated members ARE the encoded members', () => {
+  // validatePopulation checks members BY INDEX and used to hand back
+  // `[...individuals]`, an ITERATOR read. A caller-supplied Array carrying an
+  // overridden Symbol.iterator was therefore validated as one population and
+  // encoded as another, defeating the canonicality tooth: the indices held
+  // repaired genotypes, the iterator yielded a RAW draw, and the snapshot
+  // attested the raw draw.
+  const canonical = (fork) => repairGenotype(randomGenotype(new Rng(20260710).fork(fork)));
+
+  test('a tampered Symbol.iterator cannot substitute members past validation', () => {
+    const raw = randomGenotype(new Rng(20260710).fork(3));
+    const canonA = repairGenotype(raw);
+    // The premise: this raw draw really is non-canonical, so encoding it is a
+    // detectable violation and not a vacuous pass.
+    expect(bytesEqual(serializeGenotype(raw), serializeGenotype(canonA))).toBe(false);
+
+    const individuals = [{ individualId: 0, genotype: canonA }, { individualId: 1, genotype: canonical(4) }];
+    individuals[Symbol.iterator] = function* lie() {
+      yield { individualId: 0, genotype: raw };
+      yield individuals[1];
+    };
+    expect(Array.isArray(individuals)).toBe(true);
+
+    const bytes = serializePopulationSnapshot(pop(individuals));
+    // The stream must carry what was VALIDATED (the indices), not what the
+    // iterator yielded — byte-identical to the untampered population.
+    const honest = [{ individualId: 0, genotype: canonA }, { individualId: 1, genotype: canonical(4) }];
+    expect(bytesEqual(bytes, serializePopulationSnapshot(pop(honest)))).toBe(true);
+    // And it round-trips, which the raw-carrying stream could not: the decoder
+    // re-runs validatePopulation, so encoding the raw draw produced bytes the
+    // codec itself refuses — a producible, undecodable stream.
+    const back = deserializePopulationSnapshot(bytes);
+    expect(bytesEqual(serializeGenotype(back.individuals[0].genotype), serializeGenotype(canonA))).toBe(true);
+  });
+
+  test('a tampered iterator cannot smuggle duplicate or unordered ids either', () => {
+    const individuals = [{ individualId: 0, genotype: canonical(3) }, { individualId: 1, genotype: canonical(4) }];
+    individuals[Symbol.iterator] = function* lie() {
+      yield individuals[1];
+      yield individuals[1]; // a duplicate id the indexed validation never saw
+    };
+    const back = deserializePopulationSnapshot(serializePopulationSnapshot(pop(individuals)));
+    expect(back.individuals.map((i) => i.individualId)).toEqual([0, 1]);
   });
 });
 

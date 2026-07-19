@@ -314,6 +314,28 @@ describe('evaluation spec — the u8 range-length wire bound', () => {
         .toThrow(/terrain\.craterRadiusRange\.length/);
     }
   });
+
+  test('a malformed spec OBJECT fails in this module dialect, not a foreign TypeError', () => {
+    // `typeof s === 'object'` admits [], Map, Date and a bare {} — none of
+    // which carry a terrain. The drift teeth call Object.keys(terrain)
+    // immediately after, so without a terrain guard the SIMPLEST malformed
+    // input a caller can pass leaked `TypeError: Cannot convert undefined or
+    // null to object` out of a public encoder. Replay and import tooling
+    // cannot act on a foreign error.
+    for (const [label, input] of [
+      ['{}', {}], ['[]', []], ['Map', new Map()], ['Date', new Date()],
+      ['terrain null', { ...resolvedFlat(), terrain: null }],
+      ['terrain scalar', { ...resolvedFlat(), terrain: 42 }],
+    ]) {
+      let thrown;
+      try { serializeEvaluationSpec(input); } catch (err) { thrown = err; }
+      expect(thrown, label).toBeDefined();
+      expect(thrown, `${label} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(TypeError);
+      expect(thrown.message, label)
+        .toMatch(/population-evaluation: invalid evaluation spec at terrain/);
+    }
+  });
 });
 
 describe('evaluation spec — malformed streams fail loud', () => {
@@ -523,6 +545,22 @@ describe('fitness vector — synthetic coverage', () => {
       assertVectorLeafEqual(decoded, evaluation);
       expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
     }
+  });
+
+  test('a non-array individuals field is refused before any length is trusted', () => {
+    // Why there is no u32 count guard here, unlike the axle-count,
+    // range-length and populationSize guards: Array.isArray gates the field,
+    // and a genuine Array cannot exceed 4294967295 — exactly the u32 max — so
+    // an over-long count is unreachable by the language spec, not merely
+    // unreachable today. An array-LIKE declaring a huge length never gets far
+    // enough for the length to matter.
+    const evaluation = synth([[0, 1, true]]);
+    for (const bad of [{ length: 0x100000000 }, { length: 2 }, new Set(), null, 42]) {
+      expect(() => serializeFitnessVector({ ...evaluation, individuals: bad }), String(bad))
+        .toThrow(/population-evaluation: invalid .* at evaluation\.individuals/);
+    }
+    expect(() => { const a = []; a.length = 0x100000000; }).toThrow(RangeError);
+    expect(serializeFitnessVector(evaluation).length).toBe(36);
   });
 
   test('an unselectable member may legally carry -0, and its sign bit survives', () => {

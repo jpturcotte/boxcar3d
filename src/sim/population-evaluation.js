@@ -318,6 +318,17 @@ export function serializeEvaluationSpec(resolvedSpec) {
   const s = resolvedSpec;
   if (typeof s !== 'object' || s === null) fail('resolvedSpec', s);
   const terrain = s.terrain;
+  // `terrain` is validated HERE, before the drift teeth below reach
+  // Object.keys(terrain). `typeof s === 'object'` admits [], new Map(),
+  // new Date() and a bare {} — none of which carry a terrain — so without
+  // this the simplest malformed input a caller can pass leaked a foreign
+  // `TypeError: Cannot convert undefined or null to object` out of
+  // Object.keys instead of this module's diagnosis. Measured on {}, [],
+  // new Map(), new Date(). That contradicts the standard this codec holds
+  // everywhere else (its own range tooth asserts "a module error, not a
+  // foreign TypeError"), and a foreign error from a PUBLIC encoder is
+  // exactly what replay and import tooling cannot act on.
+  if (typeof terrain !== 'object' || terrain === null) fail('terrain', terrain);
   // Drift teeth: the declared walk must cover the terrain contract exactly.
   const walkKeys = TERRAIN_SPEC_WALK.map(([k]) => k);
   const defaultKeys = Object.keys(TERRAIN_DEFAULTS);
@@ -665,6 +676,15 @@ export function serializeFitnessVector(evaluation) {
   if (typeof evaluation !== 'object' || evaluation === null) fail('evaluation', evaluation);
   const { individuals, populationSnapshotDigestState } = evaluation;
   if (!Array.isArray(individuals) || individuals.length === 0) fail('evaluation.individuals', individuals);
+  // NO u32 guard on individuals.length, deliberately, and NOT an omission from
+  // the axle-count / range-length / populationSize family. Those three each
+  // guard a REACHABLE gap and each has a committed test that triggers it.
+  // This one cannot be triggered at all: Array.isArray gates the field above,
+  // and a genuine Array's maximum length is exactly 4294967295 — the u32 max
+  // (`a.length = 0x100000000` throws `RangeError: Invalid array length`). A
+  // guard here would be unreachable by the language spec rather than merely
+  // unreachable today, i.e. dead code defending a shape JavaScript cannot
+  // construct.
   if (!Number.isInteger(populationSnapshotDigestState)
     || populationSnapshotDigestState < 0 || populationSnapshotDigestState > 0xffffffff) {
     fail('evaluation.populationSnapshotDigestState', populationSnapshotDigestState);

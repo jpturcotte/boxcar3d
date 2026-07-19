@@ -1346,6 +1346,36 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   variable-length wire field must follow this rule: count, allocation, and
   payload from ONE INDEXED reading, never from an iterator when indices are
   what execution consumes.
+- **THE THREAT-MODEL RULING (where the above stops):** a fifth adversarial
+  round produced 14 reproducible findings, 13 of which need a caller to hand
+  in a deliberately hostile object — a `Proxy` whose numeric-index getter
+  answers differently on successive reads (the strongest reached
+  `evaluatePopulation` returning a fitness vector attesting a genotype other
+  than the one physics ran), or an object whose `toString` throws. **Recorded,
+  deliberately NOT fixed: accepting them is an unbounded regress** — if a
+  hostile Proxy is in scope then EVERY property read in `src/sim` is a finding
+  (`genotype.version`, `spec.maxSteps`, `terrain.seed`), and the only real
+  defence is a deep structural clone at every public entry point, a separate
+  and much larger design decision. The distinction: the iterator/indexed-read
+  rulings above are CORRECTNESS properties (a genuine Array can carry an
+  overridden iterator, and the digest must attest what execution runs);
+  Proxy-TOCTOU is a SECURITY property against an in-process adversary, and
+  this codebase has no such boundary — the GA calls `evaluatePopulation` with
+  populations it built itself. These encoders assume plain data: objects whose
+  properties read back the same way twice. **One finding from that round WAS
+  in scope and is fixed:** `serializeEvaluationSpec({})` — also `[]`,
+  `new Map()`, `new Date()`, all `typeof === 'object'` with no terrain —
+  leaked a foreign `TypeError` out of `Object.keys(terrain)` instead of this
+  module's diagnosis, contradicting the codec's own "a module error, not a
+  foreign TypeError" standard; `terrain` is now validated before the drift
+  teeth. **Two guards were considered and REJECTED** (recorded so the
+  asymmetry reads as a decision): the fitness-vector member count and the
+  manifest category count are the only wire counts without explicit bounds,
+  but unlike the three guards above — each closing a REACHABLE gap with a test
+  that triggers it — neither can be triggered at all (`Array.isArray` gates
+  `individuals` and a genuine Array maxes at exactly the u32 bound 4294967295;
+  categories are mask-validated with duplicate rejection before counting), so
+  a guard there is dead code defending an unconstructable shape.
 - **Three wire-representability guards (fail loud; NO valid bytes change):**
   `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
   no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
@@ -1395,7 +1425,7 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   because `vitest.browser.config.js` collects only `tests/browser/**`, so
   without it no codec line would ever run in Chromium. No new lock anywhere;
   no `*-locks.js` file touched.
-- Full suite green (48 files, 932 tests), determinism gate green, pinned
+- Full suite green (48 files, 934 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

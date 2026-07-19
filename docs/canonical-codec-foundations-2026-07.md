@@ -297,6 +297,64 @@ payload must all come from one INDEXED reading of the caller's value — the sam
 reading the consumer of that field performs — never from two readings, and
 never from an iterator when indices are what execution consumes.
 
+## Where this stops: the threat model
+
+A fifth adversarial round asked whether "indices are the truth" survives an
+attack on indexed access *itself*, and produced fourteen reproducible findings.
+Thirteen require a caller to hand in a deliberately hostile object: a `Proxy`
+whose numeric-index getter returns different values on successive reads, or an
+object whose `toString` throws. The strongest reproduced all the way to
+`evaluatePopulation` returning a fitness vector attesting a genotype other than
+the one physics actually ran.
+
+**Those are recorded and deliberately not fixed, because accepting them is an
+unbounded regress.** If a caller-supplied `Proxy` with non-idempotent getters
+is in scope, then every property read in the sim layer is a finding —
+`genotype.version`, `spec.maxSteps`, `terrain.seed`, all of them. The fourteen
+are the first fourteen of an infinite list, and the only real defence is a deep
+structural clone at every public entry point, which is a different and much
+larger design decision than a codec PR.
+
+The distinction that matters: the `Symbol.iterator` and indexed-read rulings
+above are **correctness** properties, not security ones. A genuine `Array` can
+carry an overridden iterator, and the fix aligned the encoder with what
+`terrain.js` actually reads — the digest must attest what execution runs.
+Proxy-TOCTOU is a security property against an in-process adversary, and this
+codebase has no such trust boundary: `evaluatePopulation` is called by the GA
+loop with populations the GA itself built, from genotypes it drew itself.
+
+**Scope, stated plainly:** these encoders assume a caller passes plain data —
+ordinary objects and arrays whose properties read back the same way twice. They
+do not defend against a caller that is actively lying to them, and a future PR
+that wants that guarantee should buy it once, structurally, rather than by
+patching read sites one at a time.
+
+**One finding from that round was in scope and is fixed here:**
+`serializeEvaluationSpec({})` — the simplest malformed input a caller can pass
+— leaked `TypeError: Cannot convert undefined or null to object` out of
+`Object.keys(terrain)` instead of this module's diagnosis, and the same for
+`[]`, `new Map()`, and `new Date()`, all of which satisfy `typeof === 'object'`
+while carrying no terrain. That needs no hostile object and contradicts a
+standard this codec asserts about itself one section above, where the range
+tooth requires "a module error, not a foreign TypeError". The spec object now
+validates `terrain` before the drift teeth touch it.
+
+**Two guards were considered and deliberately rejected**, which is worth
+recording because the symmetry argument for them looks stronger than it is. The
+fitness vector's member count and the manifest's category count are the only
+two wire counts without an explicit bound, and adding them "for consistency"
+with the three guards above is a false analogy: those three each close a
+*reachable* gap and each carry a test that triggers it, whereas neither of
+these can be triggered by any input. `Array.isArray` gates `individuals`, and a
+genuine `Array` cannot exceed 4294967295 — exactly the u32 maximum
+(`a.length = 0x100000000` throws `RangeError: Invalid array length`); the
+category list is validated against `INITIAL_SUSPENSION_MASK` with duplicate
+rejection before it is counted. A guard at either site would be unreachable by
+the language spec or by an earlier validator, not merely unreachable today —
+dead code defending a shape that cannot be constructed. Both sites carry a
+comment saying so, so the asymmetry reads as a decision rather than an
+oversight.
+
 ## Binary identity vs the JSON envelope
 
 The canonical bytes **are** the identity. FNV digests are folded over them and
@@ -354,7 +412,7 @@ hidden extra touchpoint.
 
 ```
 npm run lint
-npm test                      # 48 files, 932 tests — the zero-lock-movement proof
+npm test                      # 48 files, 934 tests — the zero-lock-movement proof
 npm run test:determinism      # the narrow 4-file fresh-module gate
 npm run build
 npm run test:browser          # pinned Chromium 149.0.7827.55, incl. the new codec smoke

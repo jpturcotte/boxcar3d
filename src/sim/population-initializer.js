@@ -327,6 +327,13 @@ export function serializePopulationInitialization(initialization) {
   // holes, so a sparse `['S0'] with length 2` reaches this point), and
   // setUint8(-1) writes 255 silently — a manifest that encodes, folds into the
   // digest, and only fails much later at the decoder.
+  // NO u8 guard on catCount, deliberately. resolveConfig ran above, and
+  // resolvePolicy validates this list against INITIAL_SUSPENSION_MASK with
+  // duplicate rejection, so the count is structurally at most the number of
+  // legal suspension types — never within three orders of magnitude of 255.
+  // Unlike the axle-count / range-length / populationSize guards, which each
+  // close a reachable gap and each carry a test that triggers it, a guard here
+  // could not be triggered by any input.
   const catCount = cats.length;
   const catIndices = [];
   for (let i = 0; i < catCount; i += 1) {

@@ -230,7 +230,15 @@ export function analyzeTrace(traceResult, {
   const perBodyRecords = new Map();
   let firstStep = Infinity;
   let lastStep = -Infinity;
-  for (const bytes of traceResult.records) {
+  // Indexed, never `for...of`: the guard above gates `records` with
+  // Array.isArray + `.length` (an indexed reading), so consuming it through
+  // the caller's iterator let a genuine Array whose own Symbol.iterator
+  // disagrees with its indices be ANALYSED as a different trace than the one
+  // that was validated. Same rule as the encoders — one reading, the one the
+  // consumer performs.
+  const records = traceResult.records;
+  for (let ri = 0; ri < records.length; ri += 1) {
+    const bytes = records[ri];
     const rec = decodeTraceRecord(bytes);
     const key = bodyKey(rec);
     if (!perBodyRecords.has(key)) perBodyRecords.set(key, []);

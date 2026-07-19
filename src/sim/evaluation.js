@@ -85,7 +85,15 @@ function validateOptions(options) {
   // Domain validation of the values themselves stays delegated to
   // generateCorridorTerrain's function-wide validateConfig.
   if (!Array.isArray(vehicles) || vehicles.length === 0) fail('vehicles', vehicles);
-  vehicles.forEach((v, i) => {
+  // INDEXED, never forEach: forEach SKIPS HOLES, while the length guard above
+  // and the realization/step loops below are index-based. A sparse `vehicles`
+  // (a genuine Array grown by a `length` assignment — exactly what a
+  // structural operator produces) bypassed every per-vehicle guard here and
+  // then died as a foreign TypeError deep inside realization. Same defect the
+  // population layer's validateGenotype/resolvePolicy walks already fixed;
+  // this is the runner's copy of it.
+  for (let i = 0; i < vehicles.length; i += 1) {
+    const v = vehicles[i];
     if (typeof v !== 'object' || v === null) fail(`vehicles[${i}]`, v);
     // Migration tombstone BEFORE the generic key check: a stale caller using
     // the removed drive option must get the rename diagnosis, not a generic
@@ -104,7 +112,7 @@ function validateOptions(options) {
     }
     // rotation/linvel/targetWheelSurfaceSpeed/wheelFriction are validated in
     // depth by realizeVehicle — the existing thorough, message-rich gate.
-  });
+  }
   if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
   if (termination !== 'maxSteps') fail('termination', termination);
   if (typeof trace !== 'object' || trace === null) fail('trace', trace);
@@ -472,14 +480,18 @@ export async function runEvaluation(options) {
     const staticColliders = world.colliders.len();
 
     onPhase('realize');
-    const realized = cfg.vehicles.map((v) => {
+    // Indexed for the same reason validateOptions is: the guarded reading and
+    // the realized reading must be the same one.
+    const realized = [];
+    for (let vi = 0; vi < cfg.vehicles.length; vi += 1) {
+      const v = cfg.vehicles[vi];
       const opts = { position: v.spawn.position };
       if (v.spawn.rotation !== undefined) opts.rotation = v.spawn.rotation;
       if (v.spawn.linvel !== undefined) opts.linvel = v.spawn.linvel;
       if (v.targetWheelSurfaceSpeed !== undefined) opts.targetWheelSurfaceSpeed = v.targetWheelSurfaceSpeed;
       if (v.wheelFriction !== undefined) opts.wheelFriction = v.wheelFriction;
-      return realizeVehicle(RAPIER, world, v.ir, opts);
-    });
+      realized.push(realizeVehicle(RAPIER, world, v.ir, opts));
+    }
 
     // The shared loop — composed verbatim; inspect is never passed here
     // (the production path has no per-step observer).

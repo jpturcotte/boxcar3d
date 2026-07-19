@@ -25,6 +25,25 @@
 
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
 
+// INTRINSIC TypedArray geometry (the bytes.js ruling, applied here because this
+// codec also accepts byte buffers from outside). `buffer`, `byteOffset` and
+// `byteLength` are inherited ACCESSORS on %TypedArray%.prototype, so an own
+// data property on a genuine Uint8Array shadows them with ordinary
+// defineProperty — no Proxy. Reading them as plain properties let a caller
+// point this module's DataView at bytes outside the array's real window while
+// every bounds check still passed: encodeTraceRecord would write a 128-byte
+// record into a foreign buffer, and decodeTraceRecord would decode one from
+// bytes the caller never supplied.
+const TA_PROTO = Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0)));
+const taGetter = (name) => Object.getOwnPropertyDescriptor(TA_PROTO, name).get;
+const TA_BUFFER = taGetter('buffer');
+const TA_BYTE_OFFSET = taGetter('byteOffset');
+const TA_BYTE_LENGTH = taGetter('byteLength');
+const taByteLength = (bytes) => TA_BYTE_LENGTH.call(bytes);
+const taView = (bytes) => new DataView(
+  TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes), TA_BYTE_LENGTH.call(bytes),
+);
+
 export const EVALUATION_TRACE_VERSION = 1;
 export const RECORD_BYTES = 128;
 
@@ -169,8 +188,8 @@ function writeF64(view, offset, v) {
  */
 export function encodeTraceRecord(rec, out = new Uint8Array(RECORD_BYTES)) {
   validateRecord(rec);
-  if (!(out instanceof Uint8Array) || out.byteLength !== RECORD_BYTES) fail('out', out);
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  if (!(out instanceof Uint8Array) || taByteLength(out) !== RECORD_BYTES) fail('out', out);
+  const view = taView(out);
   view.setUint32(0, rec.stepIndex, true);
   view.setUint32(4, rec.vehicleIndex, true);
   view.setUint32(8, rec.axleIndex === null ? NO_INDEX : rec.axleIndex, true);
@@ -216,10 +235,11 @@ function decodeFlag(view, offset, path) {
  */
 export function decodeTraceRecord(bytes, offset = 0) {
   if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
-  if (!Number.isInteger(offset) || offset < 0 || offset + RECORD_BYTES > bytes.byteLength) {
-    decodeFail('offset', `${offset} (byteLength ${bytes.byteLength})`);
+  const total = taByteLength(bytes);
+  if (!Number.isInteger(offset) || offset < 0 || offset + RECORD_BYTES > total) {
+    decodeFail('offset', `${offset} (byteLength ${total})`);
   }
-  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, RECORD_BYTES);
+  const view = new DataView(TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes) + offset, RECORD_BYTES);
   const roleCode = view.getUint8(16);
   if (roleCode >= BODY_ROLES.length) decodeFail('bodyRole', roleCode);
   const jointCode = view.getUint8(19);
@@ -395,13 +415,26 @@ export class TraceWriter {
 
 // --- Comparison / diagnostics --------------------------------------------------
 
-const hexBytes = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+const hexBytes = (bytes) => {
+  const n = taByteLength(bytes);
+  const out = [];
+  for (let i = 0; i < n; i += 1) out.push(bytes[i].toString(16).padStart(2, '0'));
+  return out.join('');
+};
+
+// A module-owned window over n bytes at `from`. Never `subarray`: that method
+// is species-aware (it reads the caller's `constructor[Symbol.species]` and
+// CONSTRUCTS the result), so on a caller-supplied array it returns whatever
+// caller code chose. Diagnostics must report the real bytes.
+const taWindow = (bytes, from, n) => new Uint8Array(
+  TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes) + from, n,
+);
 
 // Lenient identity read for divergence reports: raw wire values, no
 // validation — a corrupt stream must still be REPORTABLE, so this never
 // throws on out-of-range codes (it reports the raw code instead).
 function identityOf(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = taView(bytes);
   const axleRaw = view.getUint32(8, true);
   const wheelRaw = view.getUint32(12, true);
   const roleCode = view.getUint8(16);
@@ -415,7 +448,7 @@ function identityOf(bytes) {
 }
 
 function fieldValueOf(f, bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = taView(bytes);
   if (f.type === 'f64') return view.getFloat64(f.offset, true);
   if (f.type === 'u32') {
     const v = view.getUint32(f.offset, true);
@@ -467,8 +500,9 @@ export function compareTraces(expected, actual) {
   }
   const toBytes = (entry, index, label) => {
     if (entry instanceof Uint8Array) {
-      if (entry.byteLength !== RECORD_BYTES) {
-        return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: entry.byteLength } };
+      const n = taByteLength(entry);
+      if (n !== RECORD_BYTES) {
+        return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: n } };
       }
       return { bytes: entry };
     }
@@ -505,8 +539,8 @@ export function compareTraces(expected, actual) {
       byteOffset: f.offset,
       expectedValue: fieldValueOf(f, e.bytes),
       actualValue: fieldValueOf(f, a.bytes),
-      expectedBytes: hexBytes(e.bytes.subarray(f.offset, f.offset + f.bytes)),
-      actualBytes: hexBytes(a.bytes.subarray(f.offset, f.offset + f.bytes)),
+      expectedBytes: hexBytes(taWindow(e.bytes, f.offset, f.bytes)),
+      actualBytes: hexBytes(taWindow(a.bytes, f.offset, f.bytes)),
     };
   }
   if (expRecords.length > actRecords.length) {

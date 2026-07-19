@@ -40,6 +40,18 @@ three legs so neither can move alone:
 Refactoring serialization onto the walk is a deliberate later PR, never an
 accident of this one.
 
+**The classification contract is anchored independently.** Production classifies
+a leaf by consulting `DISCRETE_GENE_KEYS`, so a test that derived its
+*expectations* from that same constant would be circular: delete `suspType` from
+it and production reclassifies the gene as continuous, the expectation follows,
+the suite stays green — and a future parametric operator silently gains
+permission to cross an enum-band boundary, which is the exact failure this
+schema exists to prevent. `tests/genotype-schema.test.js` therefore copy-declares
+`EXPECTED_DISCRETE_GENE_KEYS`, asserts the production constant equals it, and
+derives every expected kind — including the probe cross-check's partition — from
+the literal. Verified by mutation: removing `suspType` from the production
+constant turns **six** tests red, where previously all of them passed.
+
 ## The walk
 
 36 fixed-prefix entries + 16 per axle (68 at two axles); `268 + 128·axleCount`
@@ -181,6 +193,34 @@ the allocation first — measured: ~17 GB reserved at length 2³¹, and a generi
 module's diagnosis. A committed test asserts no foreign `RangeError` escapes at
 2³¹, 2⁴⁰, 2⁵⁰, and `MAX_SAFE_INTEGER`.
 
+## One source of truth per variable-length field
+
+A guard on the declared length is not sufficient on its own. The spec encoder
+took a range's `.length` for the allocation *and* the u8 count byte, then wrote
+the values with `for...of` — two readings of the same input that an iterable can
+make disagree:
+
+- **under-yield** (`length: 2`, iterator yields one value) produced a
+  correctly-*sized* 401-byte stream with a zero-filled hole shifting every later
+  field. This is the worst failure mode precisely because the stream looks
+  well-formed; whether a decoder happens to catch the shift downstream is luck,
+  not contract.
+- **over-yield** (`length: 1`, two values) overran the DataView with a foreign
+  `RangeError: Offset is outside the bounds of the DataView` — contradicting the
+  guarantee asserted one section above.
+
+`Array.isArray` is no defence: a genuine `Array` can carry an overridden
+`Symbol.iterator`, verified. So the encoder now **materializes each range once**
+(`Array.from`, after the u8 bound check, since both the size pass and
+`Array.from` scale with the declared length) and requires its cardinality to
+equal the declared length; both passes then consume that one array, so the
+count, the allocation, and the payload cannot disagree. An honest array-like
+still encodes, byte-identically to the equivalent real array.
+
+**The rule for any future variable-length wire field:** count, allocation, and
+payload must come from one materialized value, never from two readings of a
+caller-supplied object.
+
 ## Binary identity vs the JSON envelope
 
 The canonical bytes **are** the identity. FNV digests are folded over them and
@@ -238,7 +278,7 @@ hidden extra touchpoint.
 
 ```
 npm run lint
-npm test                      # 48 files, 915 tests — the zero-lock-movement proof
+npm test                      # 48 files, 926 tests — the zero-lock-movement proof
 npm run test:determinism      # the narrow 4-file fresh-module gate
 npm run build
 npm run test:browser          # pinned Chromium 149.0.7827.55, incl. the new codec smoke

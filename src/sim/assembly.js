@@ -889,6 +889,12 @@ export function genotypeFieldWalk(axleCount) {
  */
 export function forEachGenotypeField(genotype, visit) {
   validateGenotype(genotype);
+  // The walk describes the CANONICAL SERIALIZATION order, so its domain is the
+  // wire's, not validateGenotype's (which deliberately stays uncapped for
+  // in-memory genotypes). Without this, this function would happily emit
+  // byteOffsets for a genotype serializeGenotype refuses — metadata describing
+  // a stream that cannot exist. Same bound as genotypeFieldWalk.
+  genotypeByteLength(genotype.axles.length);
   if (typeof visit !== 'function') fail('visit', visit);
   for (const entry of genotypeEntries(genotype, genotype.axles.length)) visit(entry);
 }

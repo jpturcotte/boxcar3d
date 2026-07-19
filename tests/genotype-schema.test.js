@@ -102,7 +102,18 @@ function clone(value) {
   }
   return value;
 }
-const kindOf = (key) => (DISCRETE_GENE_KEYS.includes(key) ? 'discrete' : 'continuous');
+// THE INDEPENDENT CONTRACT. Copy-declared on purpose: production classifies by
+// consulting DISCRETE_GENE_KEYS, so deriving the EXPECTED kinds from that same
+// constant would make every classification assertion circular — delete
+// 'suspType' from the constant and production reclassifies it as continuous,
+// the expectation follows, and the suite stays green while a future parametric
+// operator gains permission to cross an enum-band boundary. This literal is the
+// thing that must be edited deliberately.
+const EXPECTED_DISCRETE_GENE_KEYS = Object.freeze([
+  'family', 'suspType', 'symmetric', 'paired', 'driven', 'nodeCount',
+]);
+
+const kindOf = (key) => (EXPECTED_DISCRETE_GENE_KEYS.includes(key) ? 'discrete' : 'continuous');
 
 // --- Leg 1: the copy-declared literal walk ----------------------------------
 //
@@ -285,20 +296,43 @@ describe('Leg 3 — perturbing one leaf moves exactly its own bytes', () => {
 });
 
 describe('classification teeth', () => {
-  test('the discrete leaf keys are exactly DISCRETE_GENE_KEYS', () => {
-    const walk = genotypeFieldWalk(3);
-    const discrete = [...new Set(walk.filter((e) => e.kind === 'discrete').map((e) => e.key))].sort();
-    expect(discrete).toEqual([...DISCRETE_GENE_KEYS].sort());
+  test('DISCRETE_GENE_KEYS equals the independently copy-declared contract', () => {
+    // The tooth that breaks the circle: production classifies BY this constant,
+    // so nothing else in this file may derive its expectations from it. Dropping
+    // a key here must be a deliberate edit to this literal, not a silent
+    // consequence of editing assembly.js.
+    expect([...DISCRETE_GENE_KEYS]).toEqual([...EXPECTED_DISCRETE_GENE_KEYS]);
   });
 
-  test('every discrete key appears at every occurrence it should', () => {
+  test('the discrete leaf keys are exactly the contract set', () => {
     const walk = genotypeFieldWalk(3);
-    const paths = (key) => walk.filter((e) => e.key === key).map((e) => e.path);
+    const discrete = [...new Set(walk.filter((e) => e.kind === 'discrete').map((e) => e.key))].sort();
+    expect(discrete).toEqual([...EXPECTED_DISCRETE_GENE_KEYS].sort());
+  });
+
+  test('every discrete key appears at every occurrence it should, WITH its kind', () => {
+    const walk = genotypeFieldWalk(3);
+    const entries = (key) => walk.filter((e) => e.key === key);
+    const paths = (key) => entries(key).map((e) => e.path);
     expect(paths('symmetric')).toEqual(['symmetric']);
     expect(paths('family')).toEqual(['frame.family']);
     expect(paths('nodeCount')).toEqual(['frame.segments[0].nodeCount']);
     for (const key of ['paired', 'suspType', 'driven']) {
       expect(paths(key), key).toEqual(['axles[0]', 'axles[1]', 'axles[2]'].map((a) => `${a}.${key}`));
+    }
+    // Paths alone are not enough — assert the KIND of every occurrence against
+    // the copy-declared contract, so a reclassification cannot slip through a
+    // path-only check.
+    for (const key of EXPECTED_DISCRETE_GENE_KEYS) {
+      const found = entries(key);
+      expect(found.length, `${key} has no occurrences`).toBeGreaterThan(0);
+      for (const e of found) expect(e.kind, `${e.path} is not discrete`).toBe('discrete');
+    }
+    // And the converse: every leaf NOT in the contract is continuous or
+    // structural — never silently discrete.
+    for (const e of walk) {
+      if (EXPECTED_DISCRETE_GENE_KEYS.includes(e.key)) continue;
+      expect(e.kind, `${e.path} is unexpectedly discrete`).not.toBe('discrete');
     }
   });
 
@@ -369,6 +403,24 @@ describe('static-ness and value iteration', () => {
     expect(() => forEachGenotypeField(bad, () => {})).toThrow(/assembly: invalid genotype at hue/);
     expect(() => forEachGenotypeField(genotypeWith(1), null)).toThrow(/assembly: invalid genotype at visit/);
   });
+
+  test('forEachGenotypeField shares the WIRE domain, not validateGenotype\'s uncapped one', () => {
+    // The walk describes canonical serialization order, so it must refuse what
+    // the serializer refuses: otherwise it would hand a consumer byteOffsets
+    // for a stream that cannot exist. validateGenotype stays deliberately
+    // uncapped for in-memory genotypes — that asymmetry is the point.
+    const huge = genotypeWith(0);
+    huge.axles = Array.from({ length: 256 }, () => genotypeWith(1).axles[0]);
+    expect(() => serializeGenotype(huge)).toThrow(/axles\.length \(256 exceeds the u8 wire bound/);
+    expect(() => genotypeFieldWalk(256)).toThrow(/assembly: invalid genotype at axleCount/);
+    expect(() => forEachGenotypeField(huge, () => {})).toThrow(/assembly: invalid genotype at axleCount/);
+    // ...while the largest wire-representable count still walks.
+    const max = genotypeWith(0);
+    max.axles = Array.from({ length: 255 }, () => genotypeWith(1).axles[0]);
+    let visited = 0;
+    forEachGenotypeField(max, () => { visited += 1; });
+    expect(visited).toBe(36 + 255 * 16);
+  });
 });
 
 describe('cross-check: the integrity probe\'s independent leaf walk', () => {
@@ -401,15 +453,21 @@ describe('cross-check: the integrity probe\'s independent leaf walk', () => {
     // clamp can pin one, so "unchanged" means "not a target").
     const child = jitterGenotype(parent, 0.05, new Rng(20260731).fork(0));
     const { changed, preserved } = collectNumericPaths(parent, child);
-    const walk = genotypeFieldWalk(3);
-    const schemaContinuous = walk.filter((e) => e.kind === 'continuous').map((e) => e.path).sort();
-    const schemaPreserved = walk
-      .filter((e) => e.kind === 'version' || e.kind === 'discrete')
-      .map((e) => e.path)
-      .sort();
+    // Partition the walk by the COPY-DECLARED contract, not by the schema's own
+    // `kind` — the probe and production both consult DISCRETE_GENE_KEYS, so
+    // splitting on `kind` would let a reclassification move both sides together
+    // and keep this green. Paths and keys come from the walk (Leg 1 pins those
+    // against a literal); only the partition is anchored independently.
+    const walk = genotypeFieldWalk(3).filter((e) => e.type === 'f64' || e.kind === 'version');
+    const expectedPerturbed = walk
+      .filter((e) => e.kind !== 'version' && !EXPECTED_DISCRETE_GENE_KEYS.includes(e.key))
+      .map((e) => e.path).sort();
+    const expectedPreserved = walk
+      .filter((e) => e.kind === 'version' || EXPECTED_DISCRETE_GENE_KEYS.includes(e.key))
+      .map((e) => e.path).sort();
     // The probe's path spelling matches the schema's (both index arrays), so
     // the two multisets compare directly.
-    expect(changed.slice().sort()).toEqual(schemaContinuous);
-    expect(preserved.slice().sort()).toEqual(schemaPreserved);
+    expect(changed.slice().sort()).toEqual(expectedPerturbed);
+    expect(preserved.slice().sort()).toEqual(expectedPreserved);
   });
 });

@@ -336,26 +336,41 @@ export function serializeEvaluationSpec(resolvedSpec) {
 
   // Size pass, then write pass (explicit, no push-buffers).
   //
-  // Wire representability is checked HERE, before the buffer exists: a range
-  // length is a u8, and the size pass below multiplies the DECLARED length by
-  // 8. Validating later (at the write) would let a pathological length size
-  // the allocation first — measured: ~17 GB reserved at length 2^31, and a
-  // generic `RangeError: Array buffer allocation failed` escaping at 2^40,
-  // instead of this module's diagnosis. A >255 range would also emit a
-  // wrapped count byte disagreeing with the payload that follows. No terrain
-  // knob is remotely this long and no valid stream changes; this converts a
-  // silent corruption (and a foreign error) into one loud failure. The
-  // axle-count guard in assembly.js is the same ruling.
+  // Ranges are MATERIALIZED here, once, and BOTH passes consume that snapshot —
+  // the count byte, the allocation, and the written values all come from one
+  // source. Sizing from a declared `.length` while writing by iteration would
+  // let an iterable whose cardinality disagrees with its length emit a
+  // wire-inconsistent stream: under-yielding leaves a zero-filled hole that
+  // shifts every later field (a correctly-SIZED but semantically wrong
+  // stream — the worst failure mode), and over-yielding overruns the DataView
+  // with a foreign RangeError. `Array.isArray` is NOT a defence here: a
+  // genuine Array can carry an overridden Symbol.iterator.
+  //
+  // Order is load-bearing. The u8 bound is checked BEFORE materializing and
+  // before the buffer exists, because both the size pass and Array.from scale
+  // with the declared length: validating later let a pathological length size
+  // the allocation first — measured, ~17 GB reserved at length 2^31 and a
+  // generic `RangeError: Array buffer allocation failed` at 2^40, instead of
+  // this module's diagnosis. The axle-count and populationSize guards are the
+  // same ruling.
+  const ranges = new Map();
   let size = 2 + 1 + 1 + 4 + 8 * 5 + 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
     if (kind === 'uint32') size += 4;
     else if (kind === 'f64') size += 8;
     else if (kind === 'range') {
-      const length = terrain[key].length;
-      if (!Number.isInteger(length) || length < 0 || length > 0xff) {
-        fail(`terrain.${key}.length`, `${length} exceeds the u8 wire bound (255)`);
+      const range = terrain[key];
+      if (range === null || typeof range !== 'object') fail(`terrain.${key}`, range);
+      const declared = range.length;
+      if (!Number.isInteger(declared) || declared < 0 || declared > 0xff) {
+        fail(`terrain.${key}.length`, `${declared} exceeds the u8 wire bound (255)`);
       }
-      size += 1 + length * 8;
+      const values = Array.from(range);
+      if (values.length !== declared) {
+        fail(`terrain.${key}.length`, `${declared} disagrees with iterable cardinality ${values.length}`);
+      }
+      ranges.set(key, values);
+      size += 1 + values.length * 8;
     } else size += 1 + WEIGHT_KEYS.length * (1 + 8);
   }
   const view = new DataView(new ArrayBuffer(size));
@@ -390,9 +405,11 @@ export function serializeEvaluationSpec(resolvedSpec) {
     } else if (kind === 'f64') {
       f64(v, `terrain.${key}`);
     } else if (kind === 'range') {
-      // The u8 bound was enforced in the size pass, before allocation.
-      view.setUint8(o, v.length); o += 1;
-      for (const e of v) f64(e, `terrain.${key}[]`);
+      // The MATERIALIZED values from the size pass — count and payload cannot
+      // disagree, because they are the same array.
+      const values = ranges.get(key);
+      view.setUint8(o, values.length); o += 1;
+      for (const e of values) f64(e, `terrain.${key}[]`);
     } else { // weights
       const keys = Object.keys(v);
       if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {

@@ -179,8 +179,13 @@ evidence notes. Reference only; never import from `legacy/`.
   inventory — no physics, no Rapier),
   `genotype-schema.test.js` (the schema-walk drift triangle: copy-declared
   literal walk, stride/tiling derivation, perturb-one-leaf byte exclusivity
-  against the real serializer, classification teeth, and the path-multiset
-  cross-check against probe-integrity's independent walk),
+  against the real serializer, classification teeth anchored to a COPY-DECLARED
+  `EXPECTED_DISCRETE_GENE_KEYS` literal — never to the production constant,
+  which production classifies BY, so deriving expectations from it would let a
+  reclassification move both sides together and stay green; proven by mutation
+  (deleting `suspType` from the constant reddens 6 tests) — and the
+  path-multiset cross-check against probe-integrity's independent walk,
+  partitioned by that same literal),
   `genotype-codec.test.js` + `population-codec.test.js` +
   `evaluation-codec.test.js` (the five decoders: round trips both
   directions, the locked-corpus inversion, the self-contained-history proof,
@@ -1290,6 +1295,19 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   passes the new field ⇒ the production branch is bit-for-bit unchanged
   (`a6d04f75` / `7acb271d` stand; the population-determinism gate is the
   tripwire).
+- **ONE SOURCE OF TRUTH per variable-length field (the review-round ruling):**
+  `serializeEvaluationSpec` MATERIALIZES each terrain range once and both the
+  size pass and the write pass consume that snapshot. Sizing/counting from a
+  declared `.length` while writing by `for...of` let an iterable whose
+  cardinality disagreed with its length emit a correctly-SIZED but
+  semantically wrong stream (under-yield ⇒ a zero-filled hole shifting every
+  later field — the worst failure mode, since the stream looks well-formed)
+  or overrun the DataView with a FOREIGN RangeError (over-yield). Measured
+  both ways. `Array.isArray` is NOT a defence — a genuine Array can carry an
+  overridden `Symbol.iterator`, verified. The u8 bound is still checked
+  BEFORE materializing (both the size pass and `Array.from` scale with the
+  declared length). Any future variable-length wire field must follow this
+  rule: count, allocation, and payload from ONE materialized value.
 - **Three wire-representability guards (fail loud; NO valid bytes change):**
   `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
   no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
@@ -1339,7 +1357,7 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   because `vitest.browser.config.js` collects only `tests/browser/**`, so
   without it no codec line would ever run in Chromium. No new lock anywhere;
   no `*-locks.js` file touched.
-- Full suite green (48 files, 915 tests), determinism gate green, pinned
+- Full suite green (48 files, 926 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

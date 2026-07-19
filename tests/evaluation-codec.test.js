@@ -219,6 +219,68 @@ describe('evaluation spec — the u8 range-length wire bound', () => {
     }
   });
 
+  test('a declared length disagreeing with iterable cardinality is refused', () => {
+    // The count byte, the allocation, and the written values must come from ONE
+    // source. Sizing from `.length` while writing by iteration let an
+    // under-yielding iterable emit a correctly-SIZED but semantically wrong
+    // stream (a zero-filled hole shifting every later field), and an
+    // over-yielding one overrun the DataView with a foreign RangeError.
+    const withRange = (range) => {
+      const spec = resolvedFlat();
+      spec.terrain = { ...spec.terrain, craterRadiusRange: range };
+      return spec;
+    };
+
+    // Declared 2, iterator yields 1.
+    expect(() => serializeEvaluationSpec(withRange({ length: 2, * [Symbol.iterator]() { yield 2; } })))
+      .toThrow(/craterRadiusRange\.length \(2 disagrees with iterable cardinality 1\)/);
+
+    // Declared 1, iterator yields 2 — must be a MODULE error, never a foreign
+    // RangeError from a DataView overrun.
+    let thrown;
+    try {
+      serializeEvaluationSpec(withRange({ length: 1, * [Symbol.iterator]() { yield 2; yield 5; } }));
+    } catch (err) { thrown = err; }
+    expect(thrown).toBeDefined();
+    expect(thrown).not.toBeInstanceOf(RangeError);
+    expect(thrown.message).toMatch(/craterRadiusRange\.length \(1 disagrees with iterable cardinality 2\)/);
+
+    // A GENUINE Array reaches this too — Array.isArray is no defence, because
+    // an array instance can carry an overridden Symbol.iterator.
+    const tampered = [2, 5];
+    tampered[Symbol.iterator] = function* short() { yield 2; };
+    expect(Array.isArray(tampered)).toBe(true);
+    expect(() => serializeEvaluationSpec(withRange(tampered)))
+      .toThrow(/craterRadiusRange\.length \(2 disagrees with iterable cardinality 1\)/);
+
+    // A null/non-object range fails as a module error, not a foreign TypeError.
+    for (const bad of [null, undefined, 42]) {
+      let err;
+      try { serializeEvaluationSpec(withRange(bad)); } catch (e) { err = e; }
+      expect(err, String(bad)).toBeDefined();
+      expect(err.message, String(bad)).toMatch(/population-evaluation: invalid evaluation spec at terrain\.craterRadiusRange/);
+    }
+  });
+
+  test('an HONEST array-like encodes exactly as the equivalent array (no hole, no shift)', () => {
+    // The positive half of the contract: cardinality matching its length is
+    // legal input, and the emitted stream is byte-identical to the real-array
+    // form — which is only possible if the writer consumed the whole buffer
+    // with no zero-filled gap.
+    const withRange = (range) => {
+      const spec = resolvedFlat();
+      spec.terrain = { ...spec.terrain, craterRadiusRange: range };
+      return spec;
+    };
+    const fromArrayLike = serializeEvaluationSpec(withRange({ length: 2, 0: 3, 1: 7 }));
+    const fromArray = serializeEvaluationSpec(withRange([3, 7]));
+    expect(bytesEqual(fromArrayLike, fromArray)).toBe(true);
+    expect(fromArrayLike.length).toBe(401); // the honest size — no over- or under-allocation
+    const decoded = deserializeEvaluationSpec(fromArrayLike);
+    expect(decoded.terrain.craterRadiusRange).toEqual([3, 7]);
+    expect(bytesEqual(serializeEvaluationSpec(decoded), fromArrayLike)).toBe(true);
+  });
+
   test('a non-integer or negative declared length is refused too', () => {
     for (const length of [1.5, -1, NaN]) {
       const spec = resolvedFlat();

@@ -158,9 +158,33 @@ adjudication time — instead of a copied digest literal that staled on
 re-lock. Full contract in
 [`docs/numerical-integrity-policy-2026-07.md`](docs/numerical-integrity-policy-2026-07.md);
 no physics changed and the A–D evaluation golden digests are byte-identical.
+**Canonical schema and codec foundations — landed** (the Phase-1B prep PR):
+the genotype now has a **schema walker** (`genotypeFieldWalk` /
+`forEachGenotypeField` in `src/sim/assembly.js`) — a validated metadata
+mirror of `serializeGenotype`'s locked byte layout that classifies every leaf
+(version / structural / discrete / continuous, discreteness single-sourced
+off `DISCRETE_GENE_KEYS`) so Phase-1B parametric mutation can enumerate and
+perturb continuous genes without ever touching discrete/structural fields —
+and every canonical byte format (genotype, population snapshot, evaluation
+spec, fitness vector, initialization manifest) now has a **lossless decoder**
+living next to its encoder, each re-running exactly its encoder's validation
+(malformed bytes fail loud in the owning module's idiom; nothing is ever
+silently normalized or repaired). Shared strict little-endian reading and the
+canonical lowercase-hex JSON-safe byte representation (hex + schema tags in
+JSON envelopes, never digests-over-JSON) live in a new `src/sim/bytes.js`.
+The committed `a6d04f75` fitness vector is reconstructed **without physics**
+in the test suite and round-trips byte-identical; two fail-loud
+wire-representability guards (u8 axle count, u8 range length) close the only
+holes that could have emitted wire-inconsistent bytes — with **zero change to
+any valid canonical byte, zero re-locks, and every fingerprint
+byte-identical** (Node full suite, the 4-file determinism gate, and pinned
+Chromium). Rulings in
+[`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).
 Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement), now unblocked — elitism
-consumes `selectableChampionFromEvaluation`; the multibody binding-extension
+consumes `selectableChampionFromEvaluation`, mutation traverses the genotype
+schema walk, and persistence consumes the five decoders; the multibody
+binding-extension
 feasibility investigation, zone material response, S2 trailing arms, and worker
 sharding are deferred behind it, each in its own PR. The design docs in `docs/`
 define

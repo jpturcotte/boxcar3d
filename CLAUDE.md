@@ -1212,6 +1212,73 @@ stable 0.19.3. Full evidence: `docs/numerical-integrity-policy-2026-07.md`:**
   `tests/integrity-probe-schema.test.js` joins the expected candidate reds,
   Node totals 11→12; the July 2026 C5 evidence stays historical/untouched).
 
+**The canonical schema + codec foundations PR landed — Phase-1B prep: a
+genotype-schema walker, lossless decoders for all five canonical byte
+formats, shared reader/hex helpers — with ZERO change to any valid canonical
+byte and ZERO lock movement. Full rulings:
+`docs/canonical-codec-foundations-2026-07.md`:**
+- **`src/sim/bytes.js`** (new, pure, under the sim ban) — `createByteReader`
+  (strict bounds-checked LE cursor over one subarray-safe DataView; cursor
+  state as getters on a frozen object; every error surfaces through the
+  CALLING module's fail idiom) + `bytesToHex`/`hexToBytes` (canonical
+  LOWERCASE hex — THE JSON-safe byte representation: JSON envelopes carry hex
+  + `boxcar3d.<name>/<v>` schema tags, never raw bytes, never base64, never
+  digests-over-JSON; uppercase/odd-length/non-hex rejected by one declared
+  pattern). `trace.js hexBytes` / `characterize-population.js bytesToHex`
+  deliberately left in place.
+- **The genotype schema walk** (`src/sim/assembly.js`) — `serializeGenotype`
+  stays the canonical byte-layout AUTHORITY (ruling R-A; structurally
+  intact); `genotypeFieldWalk(axleCount)` / `forEachGenotypeField(g, visit)`
+  are a validated metadata MIRROR + the future parametric-mutation traversal:
+  frozen `{path, key, type, kind, byteOffset, byteLength}` entries, 36 fixed
+  prefix + 16 per axle, kind ∈ version/structural/discrete/continuous with
+  discreteness single-sourced off `DISCRETE_GENE_KEYS`. NO expression
+  metadata (R-G): the latent groups (fam blocks, asym blocks, inactive node
+  slots, `nodes[0].gap`) are always serialized, never repair-dropped, and
+  freely perturbable — prose-documented. The drift triangle
+  (`tests/genotype-schema.test.js`) pins walk ≡ serializer: hand-computed
+  36/68-entry literals, stride + tiling, perturb-one-leaf byte exclusivity.
+- **Decoders live with their encoders** (the trace.js precedent), each
+  re-running EXACTLY its encoder's validation (ruling R-C — never a repair,
+  never a normalization): `deserializeGenotype` (fixed-layout cursor, one
+  exact-length check, `validateGenotype` re-run; −0 bit-exact),
+  `deserializePopulationSnapshot` (+ strict-ascending STREAM ids — an
+  unsorted stream would re-serialize sorted and break byte identity; the
+  canonicality tooth re-run so a raw draw can't re-enter as heredity),
+  `deserializeEvaluationSpec` (mirrors the serializer's wire validation —
+  NOT `resolveSpec`, whose execution-level constraints would reject
+  encoder-producible bytes; the R-C asymmetry; all 33 knobs explicit, no
+  re-defaulting), `deserializeFitnessVector` (the `!== 0` contradiction tooth
+  verbatim — a legally-encoded −0 on an unselectable member preserved),
+  `deserializePopulationInitialization` (`resolveConfig` re-run; completes
+  the family + enables the self-contained-history proof).
+- **R-D wire guards (fail loud, no valid byte moves):** `serializeGenotype`
+  rejects `axles.length > 255` and `serializeEvaluationSpec` rejects range
+  lengths > 255 — both were u8-on-the-wire with no cap, so out-of-range
+  values emitted wire-inconsistent streams. **R-E additive digest-state
+  inputs:** both digest-deriving serializers accept a declared canonical-
+  uint32 state when `evaluation.spec` / `initialization.population` is absent
+  (both-present must AGREE, else fail loud; original statements verbatim when
+  present — grep-verified no existing caller passes the new fields, so
+  `a6d04f75`/`7acb271d` provably stand). **R-F:** every decoder rejects any
+  version ≠ its current module constant.
+- **Test suite (74 Node tests + 4 Chromium, all pure — no Rapier):**
+  `tests/bytes.test.js`, `genotype-schema`, `genotype-codec` (hand-built
+  round trips, boundary genes, −0 sign byte, the R-D guard teeth, the
+  locked-corpus inversion of the EXACT `24cd0dd5` corpus with zero new digest
+  literals, the seed-**20260732** sprinkle corpus), `population-codec` (the
+  self-contained-history proof), `evaluation-codec` (the **committed
+  `a6d04f75` vector reconstructed WITHOUT physics** through the imported
+  lock, then decoded/re-serialized byte-identical), `browser/codec-smoke`.
+  Every leaf comparison `Object.is` via copy-declared `assertBitEqual`.
+- Full suite green (48 files, 868 tests); `test:determinism` and
+  `test:browser` green; every fingerprint/lock byte-identical
+  (`24cd0dd5`, noise/terrain/features, A–D golden, `cae92db7`/`7acb271d`/
+  `1bc14aba`/`a6d04f75` + champion trace); no version constant changed.
+  **Phase 1B additionally consumes**: the schema walk (parametric-mutation
+  traversal), the five decoders (lossless persistence), and the hex/reader
+  helpers (JSON envelopes).
+
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a
 generational loop over `evaluatePopulation`, sim-time pure), now UNBLOCKED (the

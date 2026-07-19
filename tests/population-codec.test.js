@@ -168,6 +168,37 @@ describe('population snapshot — the validated members ARE the encoded members'
     expect(bytesEqual(serializeGenotype(back.individuals[0].genotype), serializeGenotype(canonA))).toBe(true);
   });
 
+  test('the snapshot attests the tooth-checked bytes — a sibling cannot mutate a validated member', () => {
+    // The deepest instance of the class: sibling B's axles carried an own
+    // `map` that, when invoked by the canonicality tooth's repairGenotype →
+    // cloneGenotype, swapped ALREADY-VALIDATED sibling A's genotype for a raw
+    // draw. Pre-fix the snapshot then embedded the raw draw (its own decoder
+    // rejected the bytes — a producible, undecodable stream whose digest
+    // attested a population never approved). Two independent fixes both close
+    // it, and this tooth holds if EITHER stands: cloneGenotype no longer
+    // invokes caller methods, and the encoder now emits the exact bytes the
+    // tooth checked rather than re-reading ind.genotype afterwards.
+    const rawDraw = randomGenotype(new Rng(20260710).fork(3));
+    const A = { individualId: 0, genotype: canonical(3) };
+    const B = { individualId: 1, genotype: canonical(4) };
+    B.genotype.axles = [...B.genotype.axles];
+    B.genotype.axles.map = function evil(fn) {
+      A.genotype = rawDraw;
+      return Array.prototype.map.call(this, fn);
+    };
+    const bytes = serializePopulationSnapshot(pop([A, B]));
+    const honest = serializePopulationSnapshot(pop([
+      { individualId: 0, genotype: canonical(3) },
+      { individualId: 1, genotype: canonical(4) },
+    ]));
+    expect(bytesEqual(bytes, honest)).toBe(true);
+    const back = deserializePopulationSnapshot(bytes); // decodes — no asymmetry
+    expect(bytesEqual(
+      serializeGenotype(back.individuals[0].genotype),
+      serializeGenotype(canonical(3)),
+    )).toBe(true);
+  });
+
   test('a tampered iterator cannot smuggle duplicate or unordered ids either', () => {
     const individuals = [{ individualId: 0, genotype: canonical(3) }, { individualId: 1, genotype: canonical(4) }];
     individuals[Symbol.iterator] = function* lie() {
@@ -358,6 +389,61 @@ describe('initialization manifest — round trips', () => {
     const decoded = deserializePopulationInitialization(bytes);
     expect([...decoded.config.initialSuspensionTypes]).toEqual(['S0', 'S1']);
     expect(bytesEqual(serializePopulationInitialization(decoded), bytes)).toBe(true);
+  });
+
+  test('caller-owned category methods are never consulted and holes are refused', () => {
+    // resolvePolicy used cats.forEach + cats.indexOf — caller-owned methods
+    // on a genuine Array. An own no-op forEach let 'S2' past the mask and an
+    // own indexOf defeated the duplicate check, each producing a manifest the
+    // decoder then REJECTED (encode/decode asymmetry); a sparse array's hole
+    // was skipped by forEach and reached sampleInitialGenotype as a SILENT
+    // out-of-domain suspType gene. The indexed walk + module-owned Set close
+    // all three.
+    const s2 = ['S2'];
+    s2.forEach = () => {};
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 2, initialSuspensionTypes: s2 }))
+      .toThrow(/initialSuspensionTypes\[0\] \(S2/);
+
+    const dup = ['S0', 'S0'];
+    let calls = 0;
+    dup.indexOf = () => calls++; // answers 0 then 1 — never !== i
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 2, initialSuspensionTypes: dup }))
+      .toThrow(/initialSuspensionTypes\[1\] \(duplicate S0\)/);
+
+    const sparse = ['S0'];
+    sparse.length = 2;
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 2, initialSuspensionTypes: sparse }))
+      .toThrow(/initialSuspensionTypes\[1\] \(undefined/);
+  });
+
+  test('the returned config OWNS its category list — caller mutation cannot rewrite provenance', () => {
+    // createInitialPopulation froze its config object, but a shallow freeze
+    // left the caller holding a live alias to the array inside: mutating it
+    // after generation changed what the manifest ENCODED while the digest
+    // still attested the population the ORIGINAL categories produced — a
+    // manifest whose decoded config rebuilds a DIFFERENT population
+    // (self-contained history broken by a plain array write).
+    const categories = ['S0'];
+    const init = createInitialPopulation({ seed: 123456, populationSize: 3, initialSuspensionTypes: categories });
+    categories[0] = 'S1';
+    expect([...init.config.initialSuspensionTypes]).toEqual(['S0']);
+    expect(Object.isFrozen(init.config.initialSuspensionTypes)).toBe(true);
+    // The self-contained-history proof survives the mutation: decoded config
+    // rebuilds the exact population the digest attests.
+    const decoded = deserializePopulationInitialization(serializePopulationInitialization(init));
+    const rebuilt = createInitialPopulation({ seed: decoded.seed, ...decoded.config });
+    const state = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(rebuilt.population));
+    expect(decoded.populationSnapshotDigestState).toBe(state);
+  });
+
+  test('an explicit keepRaw: null fails loud like every other non-boolean', () => {
+    // `options.keepRaw ?? false` silently coerced null past the typeof gate —
+    // the one value class that slipped the fail-loud idiom.
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 2 }, { keepRaw: null }))
+      .toThrow(/options\.keepRaw \(null\)/);
+    // Absent still defaults, true still keeps.
+    const kept = createInitialPopulation({ seed: 1, populationSize: 2 }, { keepRaw: true });
+    expect(kept.diagnostics.every((d) => Object.hasOwn(d, 'rawGenotype'))).toBe(true);
   });
 
   test('a populationSize beyond the u32 wire bound fails loud on the digest-only path', () => {

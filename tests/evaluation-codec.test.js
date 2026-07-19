@@ -315,6 +315,49 @@ describe('evaluation spec — the u8 range-length wire bound', () => {
     }
   });
 
+  test('deterministic is a STRICT boolean — truthiness can never flip the physics flavor', () => {
+    // `s.deterministic ? 1 : 0` encoded the string 'false' and a boxed
+    // `new Boolean(false)` (which PRINTS as false) as TRUE — silently flipping
+    // the field that selects the engine, so deserialize(serialize(spec)) was
+    // no longer semantically the input and the digest attested the wrong
+    // flavor. resolveSpec was already strict; the public encoder now is too.
+    for (const bad of ['false', 'true', 0, 1, undefined, null, new Boolean(false), new Boolean(true)]) {
+      const spec = resolvedFlat();
+      spec.deterministic = bad;
+      expect(() => serializeEvaluationSpec(spec), String(bad))
+        .toThrow(/population-evaluation: invalid evaluation spec at deterministic/);
+    }
+    for (const good of [true, false]) {
+      const spec = resolvedFlat();
+      spec.deterministic = good;
+      const decoded = deserializeEvaluationSpec(serializeEvaluationSpec(spec));
+      expect(decoded.deterministic).toBe(good);
+    }
+  });
+
+  test('spawn and featureTypeWeights are structurally guarded — no foreign TypeError', () => {
+    // The round-5 terrain guard was a one-instance patch: spawn: null leaked
+    // `Cannot read properties of null (reading 'x')` and a null weights
+    // object leaked `Cannot convert undefined or null to object`. Every
+    // structural dereference in the encoder now fails in the module dialect.
+    for (const [label, mutate] of [
+      ['spawn null', (s) => { s.spawn = null; }],
+      ['spawn missing', (s) => { delete s.spawn; }],
+      ['spawn scalar', (s) => { s.spawn = 42; }],
+      ['weights null', (s) => { s.terrain = { ...s.terrain, featureTypeWeights: null }; }],
+      ['weights scalar', (s) => { s.terrain = { ...s.terrain, featureTypeWeights: 42 }; }],
+    ]) {
+      const spec = resolvedFlat();
+      mutate(spec);
+      let thrown;
+      try { serializeEvaluationSpec(spec); } catch (err) { thrown = err; }
+      expect(thrown, label).toBeDefined();
+      expect(thrown, `${label} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(TypeError);
+      expect(thrown.message, label).toMatch(/population-evaluation: invalid evaluation spec at/);
+    }
+  });
+
   test('a malformed spec OBJECT fails in this module dialect, not a foreign TypeError', () => {
     // `typeof s === 'object'` admits [], Map, Date and a bare {} — none of
     // which carry a terrain. The drift teeth call Object.keys(terrain)
@@ -544,6 +587,32 @@ describe('fitness vector — synthetic coverage', () => {
       const decoded = deserializeFitnessVector(bytes);
       assertVectorLeafEqual(decoded, evaluation);
       expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
+    }
+  });
+
+  test('malformed rows fail in the module dialect — the preflight owns every row before the buffer exists', () => {
+    // `individuals[i].individualId` was dereferenced without a shape check in
+    // BOTH the ordering pass and the write pass: [null], sparse arrays, and a
+    // null second row all leaked foreign TypeErrors from a public encoder.
+    // The indexed preflight now snapshots every row into module-owned records
+    // before allocation; the write pass re-reads nothing from the caller.
+    const good = { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 0 };
+    const sparse = [good]; sparse.length = 2;
+    for (const [label, inds] of [
+      ['[null]', [null]],
+      ['[undefined]', [undefined]],
+      ['sparse', sparse],
+      ['second row null', [good, null]],
+    ]) {
+      let thrown;
+      try {
+        serializeFitnessVector({ individuals: inds, populationSnapshotDigestState: 1, evaluationSpecDigestState: 2 });
+      } catch (err) { thrown = err; }
+      expect(thrown, label).toBeDefined();
+      expect(thrown, `${label} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(TypeError);
+      expect(thrown.message, label)
+        .toMatch(/population-evaluation: invalid evaluation spec at evaluation\.individuals\[/);
     }
   });
 

@@ -173,6 +173,21 @@ export const HUB_RADIUS_FRACTION = 0.4; // of the wheel radius
 export const HUB_LENGTH_FRACTION = 0.5; // of the wheel width
 
 export function hubMassProperties(wheel) {
+  // Fail-loud on the record's shape and the three inputs the formulas
+  // consume: without this, `hubMassProperties(null)` leaked a foreign
+  // TypeError and — worse — `hubMassProperties({})` returned a SILENT
+  // all-NaN record, and radius 0 a density of Infinity. The internal callers
+  // (buildIR, the adapter's tamper guard) always pass validated wheel
+  // records, so this guards direct consumers of the exported policy only.
+  if (typeof wheel !== 'object' || wheel === null) {
+    throw new Error(`assembly: invalid hub wheel record (${String(wheel)})`);
+  }
+  for (const k of ['mass', 'radius', 'width']) {
+    const v = wheel[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`assembly: invalid hub wheel record at ${k} (${String(v)})`);
+    }
+  }
   const mass = Math.min(HUB_MASS_RANGE[1], Math.max(HUB_MASS_RANGE[0], HUB_MASS_FRACTION * wheel.mass));
   const radius = HUB_RADIUS_FRACTION * wheel.radius;
   const halfWidth = (HUB_LENGTH_FRACTION * wheel.width) / 2;
@@ -285,30 +300,42 @@ function validateOptions(cfg) {
   }
 }
 
+// Unknown option keys reject loud (the repo-wide runner convention — a typo'd
+// knob must never silently become a no-op that compiles a different vehicle
+// than the caller believes it configured).
+const ASSEMBLY_OPTION_KEYS = Object.freeze(Object.keys(ASSEMBLY_DEFAULTS));
+function checkOptionKeys(options) {
+  for (const k of Object.keys(options)) {
+    if (!ASSEMBLY_OPTION_KEYS.includes(k)) {
+      throw new Error(`assembly: unknown option key '${k}' (known: ${ASSEMBLY_OPTION_KEYS.join(', ')})`);
+    }
+  }
+}
+
 // Explicit structural clone in canonical field shape. Unknown extra fields do
 // not survive (the clone enumerates the schema, so the repaired output is
 // always in canonical shape); all leaves are f64 copied exactly.
 function cloneGenotype(g) {
   const seg = g.frame.segments[0];
-  return {
-    version: g.version,
-    hue: g.hue,
-    symmetric: g.symmetric,
-    power: g.power,
-    frameDensity: g.frameDensity,
-    frame: {
-      family: g.frame.family,
-      segments: [{
-        nodeCount: seg.nodeCount,
-        nodes: seg.nodes.map((n) => ({ gap: n.gap, height: n.height, halfWidth: n.halfWidth, thickness: n.thickness })),
-        fam: {
-          spine: { beamWidthFrac: seg.fam.spine.beamWidthFrac },
-          ladder: { crossFrac: seg.fam.ladder.crossFrac },
-          hull: { bulge: seg.fam.hull.bulge },
-        },
-      }],
-    },
-    axles: g.axles.map((a) => ({
+  // INDEXED loops, never .map: `.map` is looked up on the CALLER's array, so
+  // an own data property on a genuine Array runs caller code inside the
+  // "owned" clone and its return value BECOMES the clone. Measured three
+  // ways: a substituting map put NaN genes into the compiled IR past the
+  // validated layer (validateGenotype reads indices and saw the real, valid
+  // elements); an identity map made repairGenotype MUTATE the caller's input
+  // (breaking the never-mutates contract); and the returned IR shared live
+  // axle objects with the caller, so a post-compile mutation changed
+  // serializeGenotype's bytes. The clone is the module's ownership boundary —
+  // it must be built from indexed reads only.
+  const nodes = [];
+  for (let i = 0; i < seg.nodes.length; i += 1) {
+    const n = seg.nodes[i];
+    nodes.push({ gap: n.gap, height: n.height, halfWidth: n.halfWidth, thickness: n.thickness });
+  }
+  const axles = [];
+  for (let i = 0; i < g.axles.length; i += 1) {
+    const a = g.axles[i];
+    axles.push({
       posX01: a.posX01,
       paired: a.paired,
       trackHalf: a.trackHalf,
@@ -323,7 +350,27 @@ function cloneGenotype(g) {
       driven: a.driven,
       share: a.share,
       asym: { driveBias: a.asym.driveBias, sizeBias: a.asym.sizeBias, centerOffset: a.asym.centerOffset },
-    })),
+    });
+  }
+  return {
+    version: g.version,
+    hue: g.hue,
+    symmetric: g.symmetric,
+    power: g.power,
+    frameDensity: g.frameDensity,
+    frame: {
+      family: g.frame.family,
+      segments: [{
+        nodeCount: seg.nodeCount,
+        nodes,
+        fam: {
+          spine: { beamWidthFrac: seg.fam.spine.beamWidthFrac },
+          ladder: { crossFrac: seg.fam.ladder.crossFrac },
+          hull: { bulge: seg.fam.hull.bulge },
+        },
+      }],
+    },
+    axles,
   };
 }
 
@@ -490,6 +537,7 @@ function supportsOf(colliders) {
 // --- Repair (gene space, exactly idempotent) --------------------------------
 
 export function repairGenotype(genotype, options = {}) {
+  checkOptionKeys(options);
   const cfg = { ...ASSEMBLY_DEFAULTS, ...options };
   validateOptions(cfg);
   validateGenotype(genotype);
@@ -712,6 +760,7 @@ function buildIR(repaired, cfg) {
 // Genotype -> repaired assembly IR. Never mutates its input (repair works on
 // an explicit structural clone; the IR embeds that clone as ir.genotype).
 export function compileAssembly(genotype, options = {}) {
+  checkOptionKeys(options);
   const cfg = { ...ASSEMBLY_DEFAULTS, ...options };
   const repaired = repairGenotype(genotype, cfg); // validates options + domain
   return buildIR(repaired, cfg);
@@ -956,12 +1005,25 @@ function decodeFail(path, value) {
   throw new Error(`assembly: invalid encoded genotype at ${path} (${String(value)})`);
 }
 
+// Intrinsic TypedArray geometry (the bytes.js idiom, duplicated locally
+// because this module keeps ZERO imports by ruling): `buffer`, `byteOffset`
+// and `byteLength` are inherited accessors, so an own data property on a
+// genuine Uint8Array shadows them and would redirect the DataView to bytes
+// outside the array's real window while every check below still passes. The
+// prototype getters report the runtime's truth regardless.
+const U8_PROTO = Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0)));
+const u8Geom = (name) => Object.getOwnPropertyDescriptor(U8_PROTO, name).get;
+const U8_BUFFER = u8Geom('buffer');
+const U8_BYTE_OFFSET = u8Geom('byteOffset');
+const U8_BYTE_LENGTH = u8Geom('byteLength');
+
 /** Canonical bytes -> genotype. The exact inverse of serializeGenotype. */
 export function deserializeGenotype(bytes) {
   if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
-  if (bytes.byteLength < GENOTYPE_BASE_BYTES) decodeFail('byteLength', bytes.byteLength);
+  const byteLength = U8_BYTE_LENGTH.call(bytes);
+  if (byteLength < GENOTYPE_BASE_BYTES) decodeFail('byteLength', byteLength);
   // byteOffset folded in: a subarray of a larger buffer reads its own window.
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = new DataView(U8_BUFFER.call(bytes), U8_BYTE_OFFSET.call(bytes), byteLength);
   const version = view.getUint16(0, true);
   if (version !== GENOTYPE_VERSION) decodeFail('version', version);
   const segmentCount = view.getUint8(42);
@@ -970,8 +1032,8 @@ export function deserializeGenotype(bytes) {
   // ONE exact-length identity rejects truncation AND trailing bytes: the
   // stream is exactly its content, so any other length is malformed.
   const expected = genotypeByteLength(axleCount);
-  if (bytes.byteLength !== expected) {
-    decodeFail('byteLength', `${bytes.byteLength} (expected ${expected} for axleCount ${axleCount})`);
+  if (byteLength !== expected) {
+    decodeFail('byteLength', `${byteLength} (expected ${expected} for axleCount ${axleCount})`);
   }
   let o = 2; // version consumed
   const f64 = () => { const v = view.getFloat64(o, true); o += 8; return v; };

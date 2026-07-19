@@ -741,3 +741,77 @@ describe('S1 hub policy and mass accounting', () => {
     }
   });
 });
+
+describe('ownership boundary — caller-owned code and references never cross it', () => {
+  // The clone is where the module takes ownership of a genotype. Pre-fix,
+  // cloneGenotype invoked `.map` LOOKED UP ON THE CALLER'S ARRAYS, so an own
+  // data property on a genuine Array ran caller code inside the boundary and
+  // its return value BECAME the clone. Three measured consequences, each now
+  // a committed tooth: silent out-of-domain IR past the validated layer,
+  // repair mutating its input, and the returned IR sharing live objects with
+  // the caller. Indexed loops close all three at once.
+  // fork(4) repairs to a 6-axle genotype (fork(3) is a zero-axle sled).
+  const base = () => repairGenotype(randomGenotype(new Rng(20260710).fork(4)));
+
+  test('an own axles.map is never invoked, and its substitute never reaches the IR', () => {
+    const g = base();
+    const nan = { ...g.axles[0], trackHalf: NaN };
+    let invoked = false;
+    g.axles = [...g.axles];
+    g.axles.map = function evil() { invoked = true; return [nan]; };
+    const honest = compileAssembly(base());
+    const ir = compileAssembly(g);
+    expect(invoked).toBe(false);
+    expect(ir.axles.length).toBe(honest.axles.length);
+    expect(ir.axles.length).toBeGreaterThan(0);
+    // The measured pre-fix consequence was NaN wheel geometry (wheel z from
+    // the substituted NaN trackHalf). trackHalf itself is null on singles.
+    for (const a of ir.axles) {
+      for (const w of a.wheels) expect(Number.isFinite(w.z), `axle ${a.index}`).toBe(true);
+    }
+  });
+
+  test('an own nodes.map is never invoked either', () => {
+    const g = base();
+    const seg = g.frame.segments[0];
+    seg.nodes = [...seg.nodes];
+    let invoked = false;
+    seg.nodes.map = function evil() { invoked = true; return seg.nodes.map; };
+    const ir = compileAssembly(g);
+    expect(invoked).toBe(false);
+    expect(Number.isFinite(ir.mass.total)).toBe(true);
+  });
+
+  test('repair never mutates its input and the IR shares nothing with it', () => {
+    const g = base();
+    const beforeBytes = serializeGenotype(g);
+    const ir = compileAssembly(g);
+    // Same-object identity would let a post-compile caller write change the
+    // IR's genotype bytes after the fact (the retained-reference class).
+    expect(ir.genotype.axles[0]).not.toBe(g.axles[0]);
+    expect(ir.genotype.frame.segments[0].nodes[0]).not.toBe(g.frame.segments[0].nodes[0]);
+    const irBytes = serializeGenotype(ir.genotype);
+    g.axles[0].posX01 = 0.123456789;
+    expect([...serializeGenotype(ir.genotype)]).toEqual([...irBytes]); // unchanged
+    expect([...serializeGenotype(g)]).not.toEqual([...beforeBytes]); // the caller's own copy moved, not ours
+  });
+
+  test('hubMassProperties fails loud on malformed records instead of returning NaN', () => {
+    expect(() => hubMassProperties(null)).toThrow(/assembly: invalid hub wheel record \(null\)/);
+    expect(() => hubMassProperties({})).toThrow(/assembly: invalid hub wheel record at mass/);
+    expect(() => hubMassProperties({ mass: 10, radius: 0, width: 0.3 }))
+      .toThrow(/assembly: invalid hub wheel record at radius \(0\)/); // pre-fix: silent density Infinity
+    expect(() => hubMassProperties({ mass: 10, radius: NaN, width: 0.3 }))
+      .toThrow(/assembly: invalid hub wheel record at radius/);
+  });
+
+  test('unknown option keys reject loud instead of silently configuring nothing', () => {
+    const g = base();
+    expect(() => compileAssembly(g, { maxAxels: 3 })) // the typo that motivates this
+      .toThrow(/assembly: unknown option key 'maxAxels'/);
+    expect(() => repairGenotype(g, { corridorHalfwidth: 2 }))
+      .toThrow(/assembly: unknown option key 'corridorHalfwidth'/);
+    // The known keys still work.
+    expect(() => compileAssembly(g, { maxAxles: 3, corridorHalfWidth: 6 })).not.toThrow();
+  });
+});

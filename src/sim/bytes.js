@@ -53,6 +53,27 @@
 // other in a script outside the sim ESLint ban, and migrating either widens
 // this PR's blast radius into locked territory for zero behavioural gain.
 
+// INTRINSIC TypedArray geometry reads, cached once at module load. `length`,
+// `buffer`, `byteOffset` and `byteLength` are inherited ACCESSORS on
+// %TypedArray%.prototype, so an own data property on a genuine Uint8Array
+// shadows them with ordinary JavaScript — no Proxy involved. Measured: a
+// 4-byte array with an own `length: 2` hex-encoded as 'dead' instead of
+// 'deadbeef', and an own `byteOffset`/`byteLength`/`buffer` redirected the
+// reader's DataView to bytes outside the array's own window while every
+// bounds check passed. The byte-boundary functions in this family therefore
+// read geometry through the module-owned prototype getters, which report the
+// array's REAL window regardless of own properties (and throw a TypeError on
+// any non-TypedArray, backing the instanceof check). This is the same ruling
+// as "indices are the truth", one level down: the module reads what the
+// runtime knows, not what the caller claims.
+const TA_PROTO = Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0)));
+const taGetter = (name) => Object.getOwnPropertyDescriptor(TA_PROTO, name).get;
+const TA_LENGTH = taGetter('length');
+const TA_BUFFER = taGetter('buffer');
+const TA_BYTE_OFFSET = taGetter('byteOffset');
+const TA_BYTE_LENGTH = taGetter('byteLength');
+const TA_SUBARRAY = TA_PROTO.subarray;
+
 /**
  * A strict little-endian cursor over `bytes`. `fail(path, value)` is the
  * calling module's fail-loud helper; every rejection routes through it.
@@ -61,13 +82,26 @@ export function createByteReader(bytes, fail) {
   if (typeof fail !== 'function') {
     throw new Error(`bytes: invalid fail callback (${String(fail)})`);
   }
-  if (!(bytes instanceof Uint8Array)) fail('bytes', bytes);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  // The caller's fail idiom gets first say, but the reader ABORTS regardless:
+  // every path below assumes a rejection stops the walk, and a fail callback
+  // that returns (a log-and-continue handler) let the cursor resume — a
+  // negative count REWOUND it, flag() returned a coerced boolean, expectEnd
+  // accepted trailing bytes. Measured. The backstop makes the assumption a
+  // guarantee instead of a convention.
+  const raise = (path, value) => {
+    fail(path, value);
+    throw new Error(`bytes: reader aborted at ${path} (${String(value)}) — the fail callback returned`);
+  };
+  if (!(bytes instanceof Uint8Array)) raise('bytes', bytes);
+  // Geometry via the intrinsic getters (see the module-load block above);
+  // captured ONCE so every later check agrees with the DataView's window.
+  const byteLength = TA_BYTE_LENGTH.call(bytes);
+  const view = new DataView(TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes), byteLength);
   let o = 0;
 
   const need = (n, path) => {
-    if (o + n > bytes.byteLength) {
-      fail(path, `truncated at byte ${o} (need ${n}, have ${bytes.byteLength - o})`);
+    if (o + n > byteLength) {
+      raise(path, `truncated at byte ${o} (need ${n}, have ${byteLength - o})`);
     }
   };
   const u8 = (path) => { need(1, path); const v = view.getUint8(o); o += 1; return v; };
@@ -77,7 +111,7 @@ export function createByteReader(bytes, fail) {
 
   return Object.freeze({
     get offset() { return o; },
-    get remaining() { return bytes.byteLength - o; },
+    get remaining() { return byteLength - o; },
     u8,
     u16,
     u32,
@@ -85,27 +119,29 @@ export function createByteReader(bytes, fail) {
     /** An f64 that must be finite (the encoders' write-side gate, mirrored). */
     finiteF64: (path) => {
       const v = f64(path);
-      if (!Number.isFinite(v)) fail(path, v);
+      if (!Number.isFinite(v)) raise(path, v);
       return v;
     },
     /** A boolean byte: exactly 0 or 1 (the trace decodeFlag discipline). */
     flag: (path) => {
       const v = u8(path);
-      if (v !== 0 && v !== 1) fail(path, v);
+      if (v !== 0 && v !== 1) raise(path, v);
       return v === 1;
     },
     /** A sub-view of n bytes (no copy; the caller must not retain it mutably). */
     bytes: (n, path) => {
-      if (!Number.isInteger(n) || n < 0) fail(path, n);
+      if (!Number.isInteger(n) || n < 0) raise(path, n);
       need(n, path);
-      const v = bytes.subarray(o, o + n);
+      // Intrinsic subarray: an own `subarray` property on the caller's array
+      // would be caller code, and this module invokes none.
+      const v = TA_SUBARRAY.call(bytes, o, o + n);
       o += n;
       return v;
     },
     /** Reject trailing bytes — every format here is exactly its content. */
     expectEnd: (path) => {
-      if (o !== bytes.byteLength) {
-        fail(path, `${bytes.byteLength - o} trailing byte(s) at offset ${o}`);
+      if (o !== byteLength) {
+        raise(path, `${byteLength - o} trailing byte(s) at offset ${o}`);
       }
     },
   });
@@ -123,13 +159,14 @@ function hexFail(what, value) {
 /** Bytes -> the canonical lowercase-hex JSON-safe representation. */
 export function bytesToHex(bytes) {
   if (!(bytes instanceof Uint8Array)) hexFail('bytes (Uint8Array required)', bytes);
-  // Indexed, like every other length-driven read in the codec family. A
-  // TypedArray's iterator is not user-overridable per instance the way a plain
-  // Array's is, so this is consistency rather than a fix — but a reader who
-  // finds an Array.from here has to work that out, and the file's own ruling
-  // says indices are the truth.
+  // Indexed reads with the length from the INTRINSIC getter. `length` is an
+  // inherited accessor, so an own data property on a genuine Uint8Array
+  // shadows it: measured, a 4-byte array claiming `length: 2` hex-encoded as
+  // 'dead' where its content is deadbeef — the canonical JSON-safe identity
+  // silently truncated. The intrinsic reports the real window regardless.
+  const length = TA_LENGTH.call(bytes);
   const out = [];
-  for (let i = 0; i < bytes.length; i += 1) out.push(bytes[i].toString(16).padStart(2, '0'));
+  for (let i = 0; i < length; i += 1) out.push(bytes[i].toString(16).padStart(2, '0'));
   return out.join('');
 }
 

@@ -1346,36 +1346,54 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   variable-length wire field must follow this rule: count, allocation, and
   payload from ONE INDEXED reading, never from an iterator when indices are
   what execution consumes.
-- **THE THREAT-MODEL RULING (where the above stops):** a fifth adversarial
-  round produced 14 reproducible findings, 13 of which need a caller to hand
-  in a deliberately hostile object — a `Proxy` whose numeric-index getter
-  answers differently on successive reads (the strongest reached
-  `evaluatePopulation` returning a fitness vector attesting a genotype other
-  than the one physics ran), or an object whose `toString` throws. **Recorded,
-  deliberately NOT fixed: accepting them is an unbounded regress** — if a
-  hostile Proxy is in scope then EVERY property read in `src/sim` is a finding
-  (`genotype.version`, `spec.maxSteps`, `terrain.seed`), and the only real
-  defence is a deep structural clone at every public entry point, a separate
-  and much larger design decision. The distinction: the iterator/indexed-read
-  rulings above are CORRECTNESS properties (a genuine Array can carry an
-  overridden iterator, and the digest must attest what execution runs);
-  Proxy-TOCTOU is a SECURITY property against an in-process adversary, and
-  this codebase has no such boundary — the GA calls `evaluatePopulation` with
-  populations it built itself. These encoders assume plain data: objects whose
-  properties read back the same way twice. **One finding from that round WAS
-  in scope and is fixed:** `serializeEvaluationSpec({})` — also `[]`,
-  `new Map()`, `new Date()`, all `typeof === 'object'` with no terrain —
-  leaked a foreign `TypeError` out of `Object.keys(terrain)` instead of this
-  module's diagnosis, contradicting the codec's own "a module error, not a
-  foreign TypeError" standard; `terrain` is now validated before the drift
-  teeth. **Two guards were considered and REJECTED** (recorded so the
-  asymmetry reads as a decision): the fitness-vector member count and the
-  manifest category count are the only wire counts without explicit bounds,
-  but unlike the three guards above — each closing a REACHABLE gap with a test
-  that triggers it — neither can be triggered at all (`Array.isArray` gates
-  `individuals` and a genuine Array maxes at exactly the u32 bound 4294967295;
-  categories are mask-validated with duplicate rejection before counting), so
-  a guard there is dead code defending an unconstructable shape.
+- **THE OWNERSHIP BOUNDARY (the ruling that superseded the first threat-model
+  draft):** the fifth adversarial round drew the line at "plain data in scope,
+  hostile objects out" — and a sixth round broke that line with ordinary
+  JavaScript (a genuine Array's own no-op `forEach` walked 'S2' past the
+  suspension mask; a caller's retained reference rewrote provenance after
+  generation). A FULL TRUST INVENTORY then swept every public function for one
+  question — what does this code trust that a caller controls? — 149 trust
+  points, 20 confirmed findings, 0 refuted, incl. two more blockers: member
+  B's own `axles.map`, invoked BY the canonicality tooth's own repairGenotype
+  call, swapped already-validated member A for a raw draw the snapshot then
+  attested; and an own `length` DATA property on a genuine Uint8Array (length
+  is an inherited ACCESSOR — plain defineProperty shadows it) made bytesToHex
+  emit 'dead' for content deadbeef. **The corrected boundary — the module owns
+  what it attests:** copy on intake by index (cloneGenotype, ownTerrain, the
+  vector row preflight); NEVER invoke caller-owned code (no method looked up
+  on caller objects — no .map/.forEach/.indexOf/.slice/.subarray/iterators);
+  attest exactly what was validated (`serializePopulationSnapshot` emits the
+  very bytes the tooth checked via the shared `validatedMembers` walk;
+  `serializeFitnessVector` writes from its preflight's module-owned rows —
+  nothing re-reads the caller after validation); byte-boundary geometry via
+  cached `%TypedArray%.prototype` intrinsic getters (bytes.js +
+  deserializeGenotype), and the reader wraps the caller `fail` callback with
+  an unconditional abort (a returning fail could REWIND the cursor); no
+  retained caller references in attested records (resolvePolicy returns an
+  owned frozen category list; the IR shares nothing with the input genotype);
+  structural checks before every deep dereference and coercion nowhere
+  (strict-boolean `deterministic` — truthiness encoded the string 'false' and
+  a boxed Boolean as TRUE, the field that selects the physics flavor; explicit
+  null fails where absent defaults — keepRaw, spawn.clearance; unknown
+  assembly option keys loud; the flat-pad guard validates the scalars it
+  compares — NaN made it vacuously pass; hubMassProperties refuses the shapes
+  that silently returned all-NaN; spawnPose/validity/champion entry points
+  shape-check rows and read them BY INDEX). **Still out of scope (the regress
+  argument holds only here):** exotic objects whose FUNDAMENTAL operations lie
+  — Proxy non-idempotent getters, lying prototypes, throwing toString on
+  otherwise-valid values. The line is CODE vs DATA: never run caller code,
+  never re-read caller data after validating it, but assume a plain data read
+  returns what the runtime holds. **Documented-not-fixed (loud-on-first-use,
+  none silent):** bytesEqual's inputs; the rng injection contract
+  (randomGenotype/sampleInitialGenotype — downstream domain validation
+  contains out-of-range draws); fnv1a.js (locked, untouched); the adapter
+  trusts compiler-owned IRs. **Two guards considered and REJECTED** (recorded
+  so the asymmetry reads as a decision): u32 fitness-vector member count and
+  u8 category count — unlike the three shipping guards, each closing a
+  REACHABLE gap with a triggering test, neither can be triggered at all
+  (`Array.isArray` gates `individuals` and a genuine Array maxes at exactly
+  the u32 bound 4294967295; categories are mask-validated with duplicate
+  rejection before counting) — dead code defending an unconstructable shape.
 - **Three wire-representability guards (fail loud; NO valid bytes change):**
   `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
   no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
@@ -1425,7 +1443,7 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   because `vitest.browser.config.js` collects only `tests/browser/**`, so
   without it no codec line would ever run in Chromium. No new lock anywhere;
   no `*-locks.js` file touched.
-- Full suite green (48 files, 934 tests), determinism gate green, pinned
+- Full suite green (48 files, 957 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

@@ -134,12 +134,37 @@ function resolvePolicy(config) {
   if (!isProbability(cfg.minInitialPowerGene)) fail('minInitialPowerGene', cfg.minInitialPowerGene);
   const cats = cfg.initialSuspensionTypes;
   if (!Array.isArray(cats) || cats.length === 0) fail('initialSuspensionTypes', cats);
-  cats.forEach((c, i) => {
+  // INDEXED walk with a module-owned Set — never caller-owned array methods.
+  // The former `cats.forEach(...)` + `cats.indexOf(...)` had three measured
+  // failures on plain data: forEach SKIPS HOLES, so a sparse `['S0']` with
+  // length 2 passed validation and sampleInitialGenotype then drew
+  // suspType = (indexOf(undefined)+v)/3 < 0 — a SILENT out-of-domain gene
+  // from a public export (or a seed-dependent wrong-module error out of
+  // assembly); an own `forEach` no-op property let 'S2' straight past the
+  // mask; and an own `indexOf` defeated the duplicate check — each producing
+  // a manifest the decoder then rejects, breaking the exact-inverse contract.
+  // The indexed read catches the hole naturally (undefined fails the mask),
+  // and the Set is this module's, not the caller's.
+  const owned = [];
+  const seenCats = new Set();
+  for (let i = 0; i < cats.length; i += 1) {
+    const c = cats[i];
     if (!INITIAL_SUSPENSION_MASK.includes(c)) {
       fail(`initialSuspensionTypes[${i}]`, `${String(c)} — initial seeding masks to ${INITIAL_SUSPENSION_MASK.join('/')} (S2 lands with its realization PR)`);
     }
-    if (cats.indexOf(c) !== i) fail(`initialSuspensionTypes[${i}]`, `duplicate ${c}`);
-  });
+    if (seenCats.has(c)) fail(`initialSuspensionTypes[${i}]`, `duplicate ${c}`);
+    seenCats.add(c);
+    owned.push(c);
+  }
+  // The resolved config carries an OWNED, FROZEN copy — never the caller's
+  // array. createInitialPopulation freezes the config object it returns, but
+  // a shallow freeze left the caller holding a live alias to the array
+  // inside: mutating it after generation changed what the provenance
+  // manifest ENCODED while the digest still attested the population the
+  // ORIGINAL categories produced — a manifest that decodes into a config
+  // which rebuilds a different population (measured; the
+  // self-contained-history guarantee broke on a plain array write).
+  cfg.initialSuspensionTypes = Object.freeze(owned);
   return cfg;
 }
 
@@ -240,7 +265,11 @@ export function createInitialPopulation(config, options = {}) {
   for (const k of Object.keys(options)) {
     if (k !== 'keepRaw') fail(`options.${k}`, 'unknown key');
   }
-  const keepRaw = options.keepRaw ?? false;
+  // Absent defaults to false; an EXPLICIT null fails like every other
+  // non-boolean. The former `options.keepRaw ?? false` silently coerced null
+  // past the typeof gate — the one value class that slipped the module's
+  // fail-loud idiom.
+  const keepRaw = Object.hasOwn(options, 'keepRaw') ? options.keepRaw : false;
   if (typeof keepRaw !== 'boolean') fail('options.keepRaw', keepRaw);
 
   const root = new Rng(cfg.seed);

@@ -533,6 +533,15 @@ describe('evaluatePopulation validation', () => {
     ['unknown hook', { ...baseSpec(), hooks: { onphase: () => {} } }],
     ['non-finite target speed', { ...baseSpec(), targetWheelSurfaceSpeed: NaN }],
     ['negative wheelFriction', { ...baseSpec(), wheelFriction: -1 }],
+    // An EXPLICIT null clearance fails like any other non-number — the `??`
+    // default silently substituted SPAWN_CLEARANCE for it (the keepRaw class).
+    ['explicit null clearance', { ...baseSpec(), spawn: { x: -45, z: 0, clearance: null } }],
+    // The flat-pad guard computes with terrain.length/startFlatLength: NaN
+    // made both comparisons vacuously FALSE (the guard silently passed) and a
+    // string coerced through the arithmetic. The scalars it consumes are now
+    // validated first; full terrain validation stays at generation time.
+    ['NaN terrain.length (vacuous pad guard)', { ...baseSpec(), terrain: { ...FLAT_TERRAIN, length: NaN } }],
+    ['string startFlatLength (coercing pad guard)', { ...baseSpec(), terrain: { ...FLAT_TERRAIN, startFlatLength: '80' } }],
   ])('rejects %s pre-world', async (_name, spec) => {
     await expect(evaluatePopulation(goodPop(), spec)).rejects.toThrow(/population-evaluation: invalid/);
   });
@@ -683,5 +692,61 @@ describe('evaluatePopulation (deterministic flavor)', () => {
     expect(sled.fitness).toBeGreaterThanOrEqual(0);
     expect(sled.fitness).toBeLessThan(0.01); // settle noise only
     expect(sled.diagnostics.stationCount).toBe(0);
+  });
+});
+
+// --- Round-7 caller-trust teeth (pure; no physics) ----------------------------
+
+describe('caller-trust boundary — the pure policy exports', () => {
+  const row = (individualId, fitness, valid = true, integrityStatus = 'ok') => (
+    { individualId, fitness, valid, integrityStatus });
+
+  test('spawnPoseOnFlatStart fails structurally in the module dialect', () => {
+    // A version-only gate let `{version: 2}` leak a foreign TypeError off
+    // `.aabb.min.y`, and a chassis-only IR another off `ir.axles`.
+    for (const [label, ir] of [
+      ['chassis missing', { version: 2 }],
+      ['aabb missing', { version: 2, chassis: {} }],
+      ['axles missing', { version: 2, chassis: { aabb: { min: { y: 0 } } } }],
+    ]) {
+      let thrown;
+      try { spawnPoseOnFlatStart(ir, { x: 0, z: 0 }); } catch (err) { thrown = err; }
+      expect(thrown, label).toBeDefined();
+      expect(thrown, `${label} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(TypeError);
+      expect(thrown.message, label).toMatch(/population-evaluation: invalid evaluation spec at ir\./);
+    }
+  });
+
+  test('the validity predicates refuse malformed results loud — never a foreign error, never a silent false', () => {
+    // The requireIntegrity precedent extended to the body/joint reads: a
+    // malformed record must be refused, not scored as an ordinary invalid
+    // vehicle (silent false) and not leaked as a TypeError.
+    for (const bad of [null, 42, {}, { finite: true }, { finite: true, bodies: {} }]) {
+      let thrown;
+      try { isVehicleResultValid(bad); } catch (err) { thrown = err; }
+      expect(thrown, String(bad)).toBeDefined();
+      expect(thrown, String(bad)).not.toBeInstanceOf(TypeError);
+    }
+  });
+
+  test('the champions read rows by INDEX and refuse malformed rows', () => {
+    // Both selectors iterated `for...of` over the caller's array — the
+    // caller-iterator class, in the SELECTION entry point — and a null row
+    // leaked a foreign TypeError.
+    const a = row(0, 5);
+    const b = row(1, 9);
+    const individuals = [a, b];
+    individuals[Symbol.iterator] = function* lie() { yield a; yield a; };
+    expect(selectableChampionFromEvaluation({ individuals }).individualId).toBe(1);
+    expect(championFromEvaluation({ individuals }).individualId).toBe(1);
+
+    for (const fn of [championFromEvaluation, selectableChampionFromEvaluation]) {
+      let thrown;
+      try { fn({ individuals: [a, null] }); } catch (err) { thrown = err; }
+      expect(thrown, fn.name).toBeDefined();
+      expect(thrown, fn.name).not.toBeInstanceOf(TypeError);
+      expect(thrown.message, fn.name).toMatch(/evaluation\.individuals\[1\] \(null\)/);
+    }
   });
 });

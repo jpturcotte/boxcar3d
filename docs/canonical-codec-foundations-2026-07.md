@@ -299,45 +299,89 @@ never from an iterator when indices are what execution consumes.
 
 ## Where this stops: the threat model
 
-A fifth adversarial round asked whether "indices are the truth" survives an
-attack on indexed access *itself*, and produced fourteen reproducible findings.
-Thirteen require a caller to hand in a deliberately hostile object: a `Proxy`
-whose numeric-index getter returns different values on successive reads, or an
-object whose `toString` throws. The strongest reproduced all the way to
-`evaluatePopulation` returning a fitness vector attesting a genotype other than
-the one physics actually ran.
+This boundary was settled over three adversarial rounds, and the first draft of
+it was wrong in a way worth recording.
 
-**Those are recorded and deliberately not fixed, because accepting them is an
-unbounded regress.** If a caller-supplied `Proxy` with non-idempotent getters
-is in scope, then every property read in the sim layer is a finding —
-`genotype.version`, `spec.maxSteps`, `terrain.seed`, all of them. The fourteen
-are the first fourteen of an infinite list, and the only real defence is a deep
-structural clone at every public entry point, which is a different and much
-larger design decision than a codec PR.
+A fifth review round probed whether "indices are the truth" survives attacks on
+indexed access itself, and the boundary drawn from it — "plain data in scope,
+hostile objects out" — lumped **caller-owned code** in with **lying exotic
+objects**. A sixth round broke that line with ordinary JavaScript: a genuine
+`Array` whose own `forEach` property is a no-op walked `'S2'` straight past the
+initializer's suspension mask, and a caller who simply kept their reference to
+a category array mutated the provenance record *after* generation. No `Proxy`,
+no getter — the same general class as the overridden `Symbol.iterator` the PR
+had treated as in scope from the start.
 
-The distinction that matters: the `Symbol.iterator` and indexed-read rulings
-above are **correctness** properties, not security ones. A genuine `Array` can
-carry an overridden iterator, and the fix aligned the encoder with what
-`terrain.js` actually reads — the digest must attest what execution runs.
-Proxy-TOCTOU is a security property against an in-process adversary, and this
-codebase has no such trust boundary: `evaluatePopulation` is called by the GA
-loop with populations the GA itself built, from genotypes it drew itself.
+A full trust inventory then swept every public function in the family for one
+question — *what does this code trust that a caller controls?* — across five
+categories: unvalidated data reads, invoked caller-owned code, retained
+mutable references, coercions, and anything else assumed without checking. It
+examined 149 trust points and confirmed 20 findings (none refuted), including
+two more of blocker class: the canonicality tooth itself could be turned
+against a sibling (member B's own `axles.map`, invoked *by the tooth's own
+`repairGenotype` call*, swapped already-validated member A for a raw draw the
+snapshot then attested), and an own `length` data property on a genuine
+`Uint8Array` — `length` is an inherited *accessor*, so ordinary
+`Object.defineProperty` shadows it — made `bytesToHex` emit `'dead'` for a
+buffer whose content is `deadbeef`.
 
-**Scope, stated plainly:** these encoders assume a caller passes plain data —
-ordinary objects and arrays whose properties read back the same way twice. They
-do not defend against a caller that is actively lying to them, and a future PR
-that wants that guarantee should buy it once, structurally, rather than by
-patching read sites one at a time.
+**The boundary, corrected — the module owns what it attests:**
 
-**One finding from that round was in scope and is fixed here:**
-`serializeEvaluationSpec({})` — the simplest malformed input a caller can pass
-— leaked `TypeError: Cannot convert undefined or null to object` out of
-`Object.keys(terrain)` instead of this module's diagnosis, and the same for
-`[]`, `new Map()`, and `new Date()`, all of which satisfy `typeof === 'object'`
-while carrying no terrain. That needs no hostile object and contradicts a
-standard this codec asserts about itself one section above, where the range
-tooth requires "a module error, not a foreign TypeError". The spec object now
-validates `terrain` before the drift teeth touch it.
+- **Copy on intake, by index.** Ownership boundaries (`cloneGenotype`,
+  `ownTerrain`, the fitness-vector row preflight, `validatePopulation`'s copy)
+  build module-owned structures from indexed reads before anything is trusted.
+- **Never invoke caller-owned code.** No method looked up on a caller-supplied
+  object is ever called — no `.map`, `.forEach`, `.indexOf`, `.slice`,
+  `.subarray`, no iteration protocols. Own properties shadow prototype methods
+  on plain objects and arrays; the module's loops and the module's `Set`s do
+  the work instead.
+- **Attest exactly what was validated.** `serializePopulationSnapshot` emits
+  the very bytes the canonicality tooth checked (one validation walk returns
+  `{individual, bytes}` pairs; the encoder re-reads nothing), and
+  `serializeFitnessVector` writes from its preflight's module-owned rows.
+  Nothing is re-read from the caller after it was checked.
+- **Read byte-boundary geometry through intrinsics.** `bytes.js` and
+  `deserializeGenotype` fetch `length`/`buffer`/`byteOffset`/`byteLength`
+  through the cached `%TypedArray%.prototype` getters, which report the
+  runtime's real window regardless of own properties. The reader also wraps
+  the caller's `fail` callback with an unconditional abort, so a
+  log-and-continue callback can no longer resume the walk after a rejection
+  (measured: a negative count *rewound* the cursor).
+- **No retained caller references in attested records.** `resolvePolicy`
+  returns an owned frozen category list; the IR shares no structure with the
+  input genotype; a caller mutating their original objects after the call
+  changes nothing the module produced (the self-contained-history test now
+  mutates and re-proves).
+- **Structural checks before dereference, coercion nowhere.**
+  `spawn`/`featureTypeWeights`/`ir.chassis.aabb.min`/vector rows are shape-
+  checked in the module dialect before any deep read; `deterministic` is a
+  strict boolean (truthiness encoded the string `'false'` and a boxed
+  `new Boolean(false)` as *true* — the field that selects the physics
+  flavor); explicit `null` fails where absent defaults (`keepRaw`,
+  `spawn.clearance`); unknown assembly option keys reject loud; the flat-pad
+  guard validates the scalars it compares (NaN made it vacuously pass);
+  `hubMassProperties` refuses the record shapes that silently returned
+  all-NaN.
+
+**What stays out of scope, and why the regress argument still holds there:**
+exotic objects whose *fundamental operations* lie — a `Proxy` whose numeric-
+index getter answers differently on successive reads, a lying
+`[[GetPrototypeOf]]`, a `toString` that throws on an otherwise-valid value.
+Against those, every property read in `src/sim` is attackable and the only
+real defence is a deep structural clone at every entry point — a different,
+larger design decision. The corrected line is *code vs data*: the module never
+runs caller code and never re-reads caller data after validating it, but it
+does assume that a plain data read returns what the runtime holds.
+
+**Documented, deliberately not fixed** (each loud-on-first-use, none silent):
+`bytesEqual` compares whatever byte-likes it is given (every attesting caller
+passes module-produced arrays); `randomGenotype`/`sampleInitialGenotype` trust
+their injected `rng`'s capability and range (the documented injection
+contract — a missing method is immediately loud, and out-of-range draws are
+contained by downstream domain validation); `fnv1a.js` is the locked house
+hash and stays byte-for-byte untouched; the physics adapter trusts
+compiler-owned IRs (which, after the `cloneGenotype` fix, share nothing with
+any caller).
 
 **Two guards were considered and deliberately rejected**, which is worth
 recording because the symmetry argument for them looks stronger than it is. The
@@ -412,7 +456,7 @@ hidden extra touchpoint.
 
 ```
 npm run lint
-npm test                      # 48 files, 934 tests — the zero-lock-movement proof
+npm test                      # 48 files, 957 tests — the zero-lock-movement proof
 npm run test:determinism      # the narrow 4-file fresh-module gate
 npm run build
 npm run test:browser          # pinned Chromium 149.0.7827.55, incl. the new codec smoke

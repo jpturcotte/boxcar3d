@@ -111,6 +111,15 @@ function fail(path, value) {
 // --- Fitness policy (pure) ---------------------------------------------------
 
 export function isVehicleResultValid(vehicleResult) {
+  // Structural refusal in this module's dialect (the requireIntegrity
+  // precedent): a malformed result must fail LOUD here, never leak a foreign
+  // TypeError off `.bodies.allValid` — and never silently return false, which
+  // would score a malformed record as an ordinary invalid vehicle.
+  if (typeof vehicleResult !== 'object' || vehicleResult === null
+    || typeof vehicleResult.bodies !== 'object' || vehicleResult.bodies === null
+    || typeof vehicleResult.joints !== 'object' || vehicleResult.joints === null) {
+    fail('vehicleResult', vehicleResult);
+  }
   return vehicleResult.finite === true
     && vehicleResult.bodies.allValid === true
     && vehicleResult.joints.allValid === true;
@@ -172,6 +181,16 @@ export function spawnPoseOnFlatStart(ir, { x, z, clearance = SPAWN_CLEARANCE } =
   if (!Number.isFinite(x)) fail('spawn.x', x);
   if (!Number.isFinite(z)) fail('spawn.z', z);
   if (!Number.isFinite(clearance) || clearance <= 0 || clearance > 0.05) fail('spawn.clearance', clearance);
+  // Structural guards for the two shapes dereferenced below — a version-only
+  // gate let `{version: 2}` leak a foreign TypeError off `.aabb.min.y`. The
+  // production path always passes compileAssembly output (module-owned), so
+  // these guard direct callers with hand-built IRs.
+  if (typeof ir.chassis !== 'object' || ir.chassis === null
+    || typeof ir.chassis.aabb !== 'object' || ir.chassis.aabb === null
+    || typeof ir.chassis.aabb.min !== 'object' || ir.chassis.aabb.min === null) {
+    fail('ir.chassis', ir.chassis);
+  }
+  if (!Array.isArray(ir.axles)) fail('ir.axles', ir.axles);
   let drop = -ir.chassis.aabb.min.y; // sled fallback: belly bottom
   for (const t of vehicleWheelTransforms(ir, {})) {
     const wheel = ir.axles[t.axleIndex].wheels[t.wheelIndex];
@@ -260,7 +279,9 @@ function resolveSpec(spec) {
   for (const k of Object.keys(spawn)) {
     if (!SPAWN_SPEC_KEYS.includes(k)) fail(`spawn.${k}`, 'unknown key');
   }
-  const clearance = spawn.clearance ?? SPAWN_CLEARANCE;
+  // Absent defaults; an EXPLICIT null fails like any other non-number (the
+  // `??` shape silently substituted the default for null — the keepRaw class).
+  const clearance = Object.hasOwn(spawn, 'clearance') ? spawn.clearance : SPAWN_CLEARANCE;
   if (!Number.isFinite(spawn.x)) fail('spawn.x', spawn.x);
   if (!Number.isFinite(spawn.z)) fail('spawn.z', spawn.z);
   if (!Number.isFinite(clearance) || clearance <= 0 || clearance > 0.05) fail('spawn.clearance', clearance);
@@ -274,6 +295,18 @@ function resolveSpec(spec) {
     fail('hooks.onIndividual', hooks.onIndividual);
   }
   const resolvedTerrain = ownTerrain({ ...TERRAIN_DEFAULTS, ...terrain });
+  // The two scalars the flat-pad guard computes with must be honest numbers
+  // BEFORE the comparison: a NaN length made both comparisons vacuously false
+  // (the guard silently passed), and a string coerced through the arithmetic.
+  // Full terrain validation stays at generation time (generateCorridorTerrain
+  // validateConfig — the execution gate); this validates only what THIS guard
+  // consumes, so the guard can never be a no-op.
+  if (typeof resolvedTerrain.length !== 'number' || !Number.isFinite(resolvedTerrain.length)) {
+    fail('terrain.length', resolvedTerrain.length);
+  }
+  if (typeof resolvedTerrain.startFlatLength !== 'number' || !Number.isFinite(resolvedTerrain.startFlatLength)) {
+    fail('terrain.startFlatLength', resolvedTerrain.startFlatLength);
+  }
   // The flat-pad guard: the whole vehicle must sit on exactly-flat ground.
   const padStart = -resolvedTerrain.length / 2;
   const padEnd = padStart + resolvedTerrain.startFlatLength;
@@ -302,7 +335,14 @@ function ownTerrain(terrain) {
   const out = {};
   for (const [k, v] of Object.entries(terrain)) {
     if (Array.isArray(v)) {
-      out[k] = Object.freeze(v.slice());
+      // Indexed copy, never `v.slice()`: slice is looked up on the CALLER's
+      // array, so an own `slice` property would run caller code inside the
+      // ownership boundary and its return value would BECOME the owned copy —
+      // the cloneGenotype class. The whole point of this function is that
+      // nothing caller-controlled survives into the result.
+      const copy = [];
+      for (let i = 0; i < v.length; i += 1) copy.push(v[i]);
+      out[k] = Object.freeze(copy);
     } else if (v !== null && typeof v === 'object') {
       out[k] = Object.freeze({ ...v });
     } else {
@@ -344,6 +384,17 @@ export function serializeEvaluationSpec(resolvedSpec) {
   // maxSteps is a u32 on the wire — reject anything that would silently wrap
   // (a public export cannot assume it was routed through resolveSpec).
   if (!Number.isInteger(s.maxSteps) || s.maxSteps < 1 || s.maxSteps > 0xffffffff) fail('maxSteps', s.maxSteps);
+  // deterministic selects the PHYSICS FLAVOR — a strict boolean, never
+  // truthiness. The former `s.deterministic ? 1 : 0` silently flipped the
+  // field's meaning for plausible wrong types: the string 'false' and a boxed
+  // `new Boolean(false)` (which PRINTS as false) both encoded as true, so
+  // deserialize(serialize(spec)) was no longer semantically the input, and
+  // the digest attested the wrong engine. resolveSpec already requires a
+  // strict boolean; the public encoder must too.
+  if (typeof s.deterministic !== 'boolean') fail('deterministic', s.deterministic);
+  // spawn is dereferenced three times below — the same structural-guard
+  // ruling as `terrain` above (spawn: null leaked a foreign TypeError).
+  if (typeof s.spawn !== 'object' || s.spawn === null) fail('spawn', s.spawn);
 
   // Size pass, then write pass (explicit, no push-buffers).
   //
@@ -432,6 +483,9 @@ export function serializeEvaluationSpec(resolvedSpec) {
       view.setUint8(o, values.length); o += 1;
       for (let i = 0; i < values.length; i += 1) f64(values[i], `terrain.${key}[]`);
     } else { // weights
+      // Structural guard before Object.keys — a null/scalar weights object
+      // leaked a foreign TypeError here (the spawn/terrain guard ruling).
+      if (typeof v !== 'object' || v === null) fail(`terrain.${key}`, v);
       const keys = Object.keys(v);
       if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {
         fail(`terrain.${key}`, `keys [${keys}] must equal the declared [${WEIGHT_KEYS}]`);
@@ -690,29 +744,26 @@ export function serializeFitnessVector(evaluation) {
     fail('evaluation.populationSnapshotDigestState', populationSnapshotDigestState);
   }
   const specState = resolveSpecDigestState(evaluation);
-  for (let i = 1; i < individuals.length; i += 1) {
-    if (!(individuals[i].individualId > individuals[i - 1].individualId)) {
-      fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
-    }
-  }
-  const view = new DataView(new ArrayBuffer(fitnessVectorByteLength(individuals.length)));
-  let o = 0;
-  view.setUint16(o, FITNESS_VECTOR_VERSION, true); o += 2;
-  view.setUint16(o, FITNESS_POLICY_VERSION, true); o += 2;
-  view.setUint16(o, INTEGRITY_POLICY_VERSION, true); o += 2;
-  view.setUint16(o, POPULATION_SNAPSHOT_VERSION, true); o += 2;
-  view.setUint32(o, populationSnapshotDigestState, true); o += 4;
-  view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
-  view.setUint32(o, specState, true); o += 4;
-  view.setUint32(o, individuals.length, true); o += 4;
-  // INDEXED, never for...of: the count byte above came from individuals.length,
-  // so iterating would let an overridden Symbol.iterator write fewer records
-  // than the header promises and leave a zero-filled tail (the ascending-id
-  // check above is index-based and would not catch it).
+  // ONE indexed preflight builds a module-owned snapshot of every row —
+  // structural shape, canonical id, strictly-ascending order, strict boolean
+  // validity, known integrity status, finite non-negative fitness, and the
+  // policy-v2 coherence tooth — BEFORE the buffer exists. The write pass
+  // below is then a pure encoding pass over already-validated module-owned
+  // rows: it re-reads nothing from the caller, so nothing can differ from
+  // what was checked (the validatedMembers ruling in population.js). The
+  // former shape read `individuals[i].individualId` in the ordering pass and
+  // again in the write pass, and dereferenced rows without a shape check —
+  // `[null]` or a sparse array leaked a foreign TypeError from a public
+  // encoder.
+  const rows = [];
   for (let i = 0; i < individuals.length; i += 1) {
     const ind = individuals[i];
+    if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
     if (!Number.isInteger(ind.individualId) || ind.individualId < 0 || ind.individualId > 0xffffffff) {
       fail('individualId', ind.individualId);
+    }
+    if (i > 0 && !(ind.individualId > rows[i - 1].individualId)) {
+      fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
     }
     if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
     const statusIndex = INTEGRITY_STATUS.indexOf(ind.integrityStatus);
@@ -728,10 +779,23 @@ export function serializeFitnessVector(evaluation) {
       fail(`individual ${ind.individualId} fitness`,
         `unselectable individual (valid ${ind.valid}, integrity ${ind.integrityStatus}) must have fitness 0, got ${ind.fitness}`);
     }
-    view.setUint32(o, ind.individualId, true); o += 4;
-    view.setUint8(o, ind.valid ? 1 : 0); o += 1;
-    view.setUint8(o, statusIndex); o += 1;
-    view.setFloat64(o, ind.fitness, true); o += 8;
+    rows.push({ individualId: ind.individualId, valid: ind.valid, statusIndex, fitness: ind.fitness });
+  }
+  const view = new DataView(new ArrayBuffer(fitnessVectorByteLength(rows.length)));
+  let o = 0;
+  view.setUint16(o, FITNESS_VECTOR_VERSION, true); o += 2;
+  view.setUint16(o, FITNESS_POLICY_VERSION, true); o += 2;
+  view.setUint16(o, INTEGRITY_POLICY_VERSION, true); o += 2;
+  view.setUint16(o, POPULATION_SNAPSHOT_VERSION, true); o += 2;
+  view.setUint32(o, populationSnapshotDigestState, true); o += 4;
+  view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
+  view.setUint32(o, specState, true); o += 4;
+  view.setUint32(o, rows.length, true); o += 4;
+  for (let i = 0; i < rows.length; i += 1) {
+    view.setUint32(o, rows[i].individualId, true); o += 4;
+    view.setUint8(o, rows[i].valid ? 1 : 0); o += 1;
+    view.setUint8(o, rows[i].statusIndex); o += 1;
+    view.setFloat64(o, rows[i].fitness, true); o += 8;
   }
   return new Uint8Array(view.buffer);
 }
@@ -844,9 +908,15 @@ export function championFromEvaluation(evaluation) {
     if (a.valid !== b.valid) return a.valid; // valid outranks invalid on a fitness tie
     return a.individualId < b.individualId;
   };
-  let champion = evaluation.individuals[0];
-  for (const ind of evaluation.individuals) {
-    if (better(ind, champion)) champion = ind;
+  // Indexed, with a per-row shape check: `for...of` read the caller's
+  // iterator (which can disagree with the indices every other consumer
+  // reads), and a null row leaked a foreign TypeError.
+  const individuals = evaluation.individuals;
+  let champion = null;
+  for (let i = 0; i < individuals.length; i += 1) {
+    const ind = individuals[i];
+    if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
+    if (champion === null || better(ind, champion)) champion = ind;
   }
   return champion;
 }
@@ -866,8 +936,14 @@ export function selectableChampionFromEvaluation(evaluation) {
     || !Array.isArray(evaluation.individuals) || evaluation.individuals.length === 0) {
     fail('evaluation.individuals', evaluation && evaluation.individuals);
   }
+  // Indexed + per-row shape check (see championFromEvaluation): this is the
+  // SELECTION entry point, so the rows it judges must be the rows every other
+  // consumer reads — the indices — never a caller iterator's answers.
+  const individuals = evaluation.individuals;
   let champion = null;
-  for (const ind of evaluation.individuals) {
+  for (let i = 0; i < individuals.length; i += 1) {
+    const ind = individuals[i];
+    if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
     if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
     if (!INTEGRITY_STATUS.includes(ind.integrityStatus)) {
       fail(`individual ${ind.individualId} integrityStatus`, ind.integrityStatus);

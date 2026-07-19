@@ -180,3 +180,100 @@ describe('bytesToHex / hexToBytes — the lossless JSON-safe representation', ()
     }
   });
 });
+
+describe('intrinsic geometry — own-property shadowing cannot redirect a read', () => {
+  // `length`/`buffer`/`byteOffset`/`byteLength` are inherited ACCESSORS on
+  // %TypedArray%.prototype, so an own data property on a GENUINE Uint8Array
+  // shadows them with ordinary JavaScript. Pre-fix, a 4-byte array claiming
+  // `length: 2` hex-encoded as 'dead' (content deadbeef), and a shadowed
+  // byteOffset/byteLength/buffer silently pointed the reader's DataView at
+  // bytes OUTSIDE the array's real window. The module now reads geometry
+  // through the intrinsic prototype getters, which report the runtime's truth.
+  const moduleFail = (path, value) => {
+    throw new Error(`mod: invalid at ${path} (${String(value)})`);
+  };
+
+  test('bytesToHex encodes the REAL window under a shadowed length', () => {
+    const u = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    Object.defineProperty(u, 'length', { value: 2 });
+    expect(u instanceof Uint8Array).toBe(true);
+    expect(bytesToHex(u)).toBe('deadbeef');
+    // Shadowed LARGER must not throw a foreign TypeError either.
+    const v = new Uint8Array([1, 2]);
+    Object.defineProperty(v, 'length', { value: 8 });
+    expect(bytesToHex(v)).toBe('0102');
+  });
+
+  test('the reader reads a subarray\'s OWN window under shadowed geometry', () => {
+    const backing = new Uint8Array([0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd]);
+    const sub = backing.subarray(4, 8);
+    Object.defineProperty(sub, 'byteOffset', { value: 0 }); // claims the head
+    const r = createByteReader(sub, moduleFail);
+    expect(r.u32('w')).toBe(0xddccbbaa); // the REAL window, not the head
+
+    const short = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]).subarray(0, 4);
+    Object.defineProperty(short, 'byteLength', { value: 8 }); // claims the tail
+    const r2 = createByteReader(short, moduleFail);
+    r2.u32('a');
+    expect(() => r2.u32('b')).toThrow(/truncated at byte 4/); // window is 4, not 8
+
+    const foreign = new Uint8Array([9, 9, 9, 9]);
+    Object.defineProperty(foreign, 'buffer', { value: new Uint8Array([0xca, 0xfe, 0xba, 0xbe]).buffer });
+    const r3 = createByteReader(foreign, moduleFail);
+    expect(r3.u32('c')).toBe(0x09090909); // the array's real buffer
+  });
+
+  test('an own subarray property is never invoked by r.bytes', () => {
+    const u = new Uint8Array([1, 2, 3, 4]);
+    let invoked = false;
+    u.subarray = function evil() { invoked = true; return new Uint8Array([9]); };
+    const r = createByteReader(u, moduleFail);
+    const out = r.bytes(4, 'all');
+    expect(invoked).toBe(false);
+    expect([...out]).toEqual([1, 2, 3, 4]);
+  });
+});
+
+describe('the fail-callback backstop — a returning fail can never resume the walk', () => {
+  // Every decoder in the repo passes a throwing fail idiom, but the reader is
+  // a public export usable with any callback. Pre-fix, a log-and-continue
+  // callback let the cursor RESUME after notification: a negative byte count
+  // rewound it, flag() returned a coerced boolean, expectEnd accepted
+  // trailing bytes, finiteF64 returned the non-finite value. The reader now
+  // throws its own backstop after fail returns — fail gets first say, the
+  // abort is unconditional.
+  const returningFail = () => { /* logs and returns */ };
+
+  test('every failure path aborts even when fail returns', () => {
+    const abort = /bytes: reader aborted at/;
+    const r1 = createByteReader(new Uint8Array(2), returningFail);
+    expect(() => r1.u32('trunc')).toThrow(abort);
+
+    const r2 = createByteReader(new Uint8Array([7]), returningFail);
+    expect(() => r2.flag('flag')).toThrow(abort);
+
+    const r3 = createByteReader(new Uint8Array(8), returningFail);
+    r3.u32('a');
+    expect(() => r3.bytes(-4, 'neg')).toThrow(abort); // pre-fix: cursor REWOUND
+    expect(r3.offset).toBe(4); // cursor unchanged by the aborted call
+
+    const view = new DataView(new ArrayBuffer(8));
+    view.setFloat64(0, Infinity, true);
+    const r4 = createByteReader(new Uint8Array(view.buffer), returningFail);
+    expect(() => r4.finiteF64('inf')).toThrow(abort);
+
+    const r5 = createByteReader(new Uint8Array(4), returningFail);
+    r5.u16('a');
+    expect(() => r5.expectEnd('end')).toThrow(abort); // pre-fix: trailing accepted
+
+    expect(() => createByteReader([1, 2], returningFail)).toThrow(abort);
+  });
+
+  test('a throwing fail still wins — the backstop never masks the module dialect', () => {
+    const moduleFail = (path, value) => {
+      throw new Error(`mod: invalid at ${path} (${String(value)})`);
+    };
+    const r = createByteReader(new Uint8Array(2), moduleFail);
+    expect(() => r.u32('x')).toThrow(/^mod: invalid at x/);
+  });
+});

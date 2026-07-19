@@ -63,7 +63,18 @@ export function bytesEqual(a, b) {
  * the evaluator seam runs the same gate before adding its own realizability
  * checks.
  */
-export function validatePopulation(population) {
+// The one validation walk, shared by the public gate and the encoder. Returns
+// the individuals sorted by individualId ascending PLUS, per member, the exact
+// canonicality-checked bytes — so the encoder can emit precisely what was
+// validated. Copy BY INDEX, never by spread (spreading reads the iterator; the
+// loop validates the INDEXED members — measured divergence in an earlier
+// round). The bytes-threading matters for the same reason one level deeper:
+// the canonicality tooth calls repairGenotype, which is caller-reachable code
+// territory in the general case, so validation captures each member's bytes
+// ONCE and nothing after that point re-reads `ind.genotype`. What the tooth
+// approved is, by construction, what the snapshot attests. (It also halves the
+// encoder's serialization work — the tooth had already produced these bytes.)
+function validatedMembers(population) {
   if (typeof population !== 'object' || population === null) fail('population', population);
   if (population.snapshotVersion !== POPULATION_SNAPSHOT_VERSION) {
     fail('snapshotVersion', population.snapshotVersion);
@@ -71,6 +82,7 @@ export function validatePopulation(population) {
   const individuals = population.individuals;
   if (!Array.isArray(individuals) || individuals.length === 0) fail('individuals', individuals);
   const seen = new Set();
+  const members = [];
   for (let i = 0; i < individuals.length; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`individuals[${i}]`, ind);
@@ -87,36 +99,35 @@ export function validatePopulation(population) {
       throw new Error(`population: individuals[${i}] (individualId ${ind.individualId}) is not canonical — `
         + 'repair moved it; populations must carry repaired genotypes (compileAssembly(...).genotype)');
     }
+    members.push({ individual: ind, bytes });
   }
-  // Copy BY INDEX, never by spread. Spreading reads the iterator, and the loop
-  // above validated the INDEXED members — so a caller-supplied Array carrying
-  // an overridden Symbol.iterator was validated as one set of individuals and
-  // returned as another. Measured: a population whose indices hold canonical
-  // genotypes and whose iterator yields a RAW draw passed this function and
-  // then serialized the raw draw, defeating the canonicality tooth twenty
-  // lines above — a snapshot digest attesting a population that was never
-  // approved. One indexed reading, and it is the reading every consumer
-  // performs.
-  const copy = [];
-  for (let i = 0; i < individuals.length; i += 1) copy.push(individuals[i]);
-  return copy.sort((a, b) => a.individualId - b.individualId);
+  return members.sort((a, b) => a.individual.individualId - b.individual.individualId);
+}
+
+export function validatePopulation(population) {
+  const members = validatedMembers(population);
+  const sorted = [];
+  for (let i = 0; i < members.length; i += 1) sorted.push(members[i].individual);
+  return sorted;
 }
 
 /** Serialize canonical population content (see the encoding walk above). */
 export function serializePopulationSnapshot(population) {
-  const sorted = validatePopulation(population);
-  const genotypeBytes = sorted.map((ind) => serializeGenotype(ind.genotype));
-  const total = 2 + 2 + 4 + genotypeBytes.reduce((s, g) => s + 4 + 4 + g.length, 0);
+  // The encoder consumes the tooth-checked bytes from the validation walk —
+  // it never re-reads `ind.genotype` after validation, so no code running
+  // between (or during) the two can substitute a member the tooth approved.
+  const members = validatedMembers(population);
+  const total = 2 + 2 + 4 + members.reduce((s, m) => s + 4 + 4 + m.bytes.length, 0);
   const view = new DataView(new ArrayBuffer(total));
   const out = new Uint8Array(view.buffer);
   let o = 0;
   view.setUint16(o, POPULATION_SNAPSHOT_VERSION, true); o += 2;
   view.setUint16(o, GENOTYPE_VERSION, true); o += 2;
-  view.setUint32(o, sorted.length, true); o += 4;
-  for (let i = 0; i < sorted.length; i += 1) {
-    view.setUint32(o, sorted[i].individualId, true); o += 4;
-    view.setUint32(o, genotypeBytes[i].length, true); o += 4;
-    out.set(genotypeBytes[i], o); o += genotypeBytes[i].length;
+  view.setUint32(o, members.length, true); o += 4;
+  for (let i = 0; i < members.length; i += 1) {
+    view.setUint32(o, members[i].individual.individualId, true); o += 4;
+    view.setUint32(o, members[i].bytes.length, true); o += 4;
+    out.set(members[i].bytes, o); o += members[i].bytes.length;
   }
   return out;
 }

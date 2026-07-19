@@ -14,8 +14,8 @@ import { describe, test, expect } from 'vitest';
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   POPULATION_WORLD_MODE, SPAWN_CLEARANCE,
-  championFromEvaluation, evaluatePopulation, fitnessFromVehicleResult,
-  isVehicleResultSelectable, isVehicleResultValid,
+  championFromEvaluation, deserializeEvaluationSpec, evaluatePopulation,
+  fitnessFromVehicleResult, isVehicleResultSelectable, isVehicleResultValid,
   selectableChampionFromEvaluation, serializeEvaluationSpec,
   serializeFitnessVector, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
@@ -552,6 +552,37 @@ describe('evaluatePopulation validation', () => {
 });
 
 // --- Physics witnesses (deterministic flavor) ---------------------------------
+
+describe('a RESOLVED spec re-enters the resolver (replay from canonical bytes)', () => {
+  // deserializeEvaluationSpec returns the RESOLVED shape, because that is what
+  // serializeEvaluationSpec consumes. The natural next move — rerun the
+  // evaluation those bytes describe — must therefore work: `termination` is an
+  // accepted input key, so a resolved spec is a legal input. Byte-neutral (the
+  // resolver already emitted this exact value) and still fail-loud.
+  test('a decoded spec replays, and re-resolving reproduces its bytes exactly', { timeout: 240000 }, async () => {
+    // The encoder consumes a RESOLVED spec, so build that shape explicitly
+    // (baseSpec is the unresolved caller-facing form).
+    const decoded = deserializeEvaluationSpec(serializeEvaluationSpec({
+      deterministic: true,
+      termination: 'maxSteps',
+      maxSteps: 120,
+      spawn: { x: -45, z: 0, clearance: SPAWN_CLEARANCE },
+      targetWheelSurfaceSpeed: 5,
+      wheelFriction: 1,
+      terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
+    }));
+    const ev = await evaluatePopulation(popOf(member(5, s0PlainGenotype())), decoded);
+    expect(ev.individuals.map((i) => i.individualId)).toEqual([5]);
+    // The resolver left the decoded spec byte-identical: replay binds the same
+    // evaluation identity, so a persisted fitness vector stays comparable.
+    expect(bytesEqual(serializeEvaluationSpec(ev.spec), serializeEvaluationSpec(decoded))).toBe(true);
+  });
+
+  test('an unknown termination is still rejected, never coerced to the default', async () => {
+    await expect(evaluatePopulation(popOf(member(5, s0PlainGenotype())), { ...baseSpec(), termination: 'onStuck' }))
+      .rejects.toThrow(/invalid evaluation spec at termination \(onStuck\)/);
+  });
+});
 
 describe('evaluatePopulation (deterministic flavor)', () => {
   test('id-keyed results, isolation contract vs a MANUAL solo run, and input-permutation invariance', { timeout: 240000 }, async () => {

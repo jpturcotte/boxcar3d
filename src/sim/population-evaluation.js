@@ -182,8 +182,16 @@ export function spawnPoseOnFlatStart(ir, { x, z, clearance = SPAWN_CLEARANCE } =
 
 // --- Evaluation-spec resolution + encoding -----------------------------------
 
+// `termination` is accepted as INPUT even though resolveSpec derives it, so a
+// RESOLVED spec re-enters the resolver unchanged — which is what makes a spec
+// decoded from canonical bytes directly replayable (deserializeEvaluationSpec
+// returns the resolved shape, since that is what serializeEvaluationSpec
+// consumes). Accepting it is additive and byte-neutral: the resolved output
+// already carried this exact value. It stays fail-loud — a termination outside
+// TERMINATIONS is rejected below, never coerced to the default.
 const SPEC_KEYS = Object.freeze([
-  'terrain', 'maxSteps', 'deterministic', 'spawn', 'targetWheelSurfaceSpeed', 'wheelFriction', 'hooks',
+  'terrain', 'maxSteps', 'deterministic', 'spawn', 'targetWheelSurfaceSpeed', 'wheelFriction',
+  'termination', 'hooks',
 ]);
 const SPAWN_SPEC_KEYS = Object.freeze(['x', 'z', 'clearance']);
 const HOOK_KEYS = Object.freeze(['onIndividual']);
@@ -236,8 +244,9 @@ function resolveSpec(spec) {
   const {
     terrain, maxSteps, deterministic = false,
     spawn, targetWheelSurfaceSpeed = MOTOR_TARGET_WHEEL_SURFACE_SPEED,
-    wheelFriction = WHEEL_FRICTION, hooks = {},
+    wheelFriction = WHEEL_FRICTION, termination = TERMINATIONS[0], hooks = {},
   } = spec;
+  if (!TERMINATIONS.includes(termination)) fail('termination', termination);
   if (typeof terrain !== 'object' || terrain === null) fail('terrain', terrain);
   if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
     fail('terrain.seed', 'missing (a fitness vector must never bind the default seed by accident)');
@@ -273,7 +282,7 @@ function resolveSpec(spec) {
   }
   return {
     deterministic,
-    termination: 'maxSteps',
+    termination, // validated against TERMINATIONS above; defaults to the only value
     maxSteps,
     spawn: { x: spawn.x, z: spawn.z, clearance },
     targetWheelSurfaceSpeed,
@@ -326,12 +335,28 @@ export function serializeEvaluationSpec(resolvedSpec) {
   if (!Number.isInteger(s.maxSteps) || s.maxSteps < 1 || s.maxSteps > 0xffffffff) fail('maxSteps', s.maxSteps);
 
   // Size pass, then write pass (explicit, no push-buffers).
+  //
+  // Wire representability is checked HERE, before the buffer exists: a range
+  // length is a u8, and the size pass below multiplies the DECLARED length by
+  // 8. Validating later (at the write) would let a pathological length size
+  // the allocation first — measured: ~17 GB reserved at length 2^31, and a
+  // generic `RangeError: Array buffer allocation failed` escaping at 2^40,
+  // instead of this module's diagnosis. A >255 range would also emit a
+  // wrapped count byte disagreeing with the payload that follows. No terrain
+  // knob is remotely this long and no valid stream changes; this converts a
+  // silent corruption (and a foreign error) into one loud failure. The
+  // axle-count guard in assembly.js is the same ruling.
   let size = 2 + 1 + 1 + 4 + 8 * 5 + 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
     if (kind === 'uint32') size += 4;
     else if (kind === 'f64') size += 8;
-    else if (kind === 'range') size += 1 + terrain[key].length * 8;
-    else size += 1 + WEIGHT_KEYS.length * (1 + 8);
+    else if (kind === 'range') {
+      const length = terrain[key].length;
+      if (!Number.isInteger(length) || length < 0 || length > 0xff) {
+        fail(`terrain.${key}.length`, `${length} exceeds the u8 wire bound (255)`);
+      }
+      size += 1 + length * 8;
+    } else size += 1 + WEIGHT_KEYS.length * (1 + 8);
   }
   const view = new DataView(new ArrayBuffer(size));
   let o = 0;
@@ -365,13 +390,7 @@ export function serializeEvaluationSpec(resolvedSpec) {
     } else if (kind === 'f64') {
       f64(v, `terrain.${key}`);
     } else if (kind === 'range') {
-      // Wire representability: a range length is a u8. The size pass above
-      // used the TRUE length, so a >255-element range would emit a wrapped
-      // count byte disagreeing with the payload that follows — malformed
-      // bytes produced silently. No terrain knob is remotely this long; this
-      // converts a silent corruption into a loud failure and changes no valid
-      // stream (the axle-count guard in assembly.js is the same ruling).
-      if (v.length > 0xff) fail(`terrain.${key}.length`, `${v.length} exceeds the u8 wire bound (255)`);
+      // The u8 bound was enforced in the size pass, before allocation.
       view.setUint8(o, v.length); o += 1;
       for (const e of v) f64(e, `terrain.${key}[]`);
     } else { // weights

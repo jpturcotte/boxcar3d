@@ -294,6 +294,27 @@ describe('initialization manifest — round trips', () => {
       .toThrow(/populationSnapshotDigestState.*disagrees with the population's computed state/);
   });
 
+  test('a populationSize beyond the u32 wire bound fails loud on the digest-only path', () => {
+    // The population path bounds this implicitly (no array can match such a
+    // length), but the digest-only path has no population to compare against:
+    // without the guard, 0x100000001 wraps to 1 on the wire and the manifest
+    // decodes into a config that REBUILDS a different population while still
+    // carrying the original's digest state.
+    const init = createInitialPopulation({ seed: 123456, populationSize: 2 });
+    const digestOnly = {
+      initializerVersion: init.initializerVersion,
+      seed: init.seed,
+      config: { ...init.config, populationSize: 0x100000001 },
+      populationSnapshotDigestState: 0xdeadbeef,
+    };
+    expect(() => serializePopulationInitialization(digestOnly))
+      .toThrow(/populationSize \(4294967297 exceeds the u32 wire bound/);
+    // A legal size on the same path still encodes and round-trips.
+    const legal = { ...digestOnly, config: { ...init.config, populationSize: 2 } };
+    const bytes = serializePopulationInitialization(legal);
+    expect(deserializePopulationInitialization(bytes).config.populationSize).toBe(2);
+  });
+
   test('neither population nor digest state fails loud', () => {
     const withoutPopulation = { ...createInitialPopulation({ seed: 123456, populationSize: 2 }) };
     delete withoutPopulation.population;

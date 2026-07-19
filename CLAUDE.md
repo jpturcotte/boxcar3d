@@ -1290,13 +1290,31 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   passes the new field ⇒ the production branch is bit-for-bit unchanged
   (`a6d04f75` / `7acb271d` stand; the population-determinism gate is the
   tripwire).
-- **Two wire-representability guards (fail loud; NO valid bytes change):**
-  `serializeGenotype` capped `axles.length` at the u8 bound (validateGenotype
-  has no axle cap — `maxAxles` is repair POLICY) and `serializeEvaluationSpec`
-  capped each range length, whose size pass used the TRUE length so a >255
-  range emitted a wire-inconsistent stream. Unreachable today (repair and the
-  initializer cap at 6); this converts silent corruption into a loud error and
-  is what makes the exact-inverse claim honest rather than scoped.
+- **Three wire-representability guards (fail loud; NO valid bytes change):**
+  `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
+  no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
+  each range length **in the SIZE pass, before allocation** (validating at the
+  write let a pathological declared length size the buffer first — measured
+  ~17 GB reserved at 2^31 and a foreign `RangeError: Array buffer allocation
+  failed` at 2^40 escaping instead of the module's diagnosis); and
+  `serializePopulationInitialization` caps `populationSize` at the u32 bound —
+  `resolveConfig` bounds it below but not above, and the digest-only path has
+  no population array to bound it implicitly, so `0x100000001` wrapped to 1 and
+  produced a manifest that REBUILDS a different population while carrying the
+  original's digest state. All unreachable today; each converts silent
+  corruption into a loud error and is what makes the exact-inverse claim honest
+  rather than scoped.
+- **Replay ruling:** `deserializeEvaluationSpec` returns the RESOLVED shape
+  (what `serializeEvaluationSpec` consumes), so rerunning the evaluation those
+  bytes describe must work — but `resolveSpec` rejected `termination` as an
+  unknown key (it DERIVES it), making the resolver non-idempotent on its own
+  output and a decoded spec unusable with `evaluatePopulation`. `termination`
+  is now an accepted input key validated against `TERMINATIONS` (an unknown
+  value still fails loud, never coerced). Additive and byte-neutral — the
+  resolver already emitted that exact value, no digest moves; a committed test
+  replays a decoded spec and asserts the re-resolved spec re-encodes
+  byte-identically, so a persisted fitness vector stays comparable across a
+  reload.
 - **`src/sim/bytes.js`** (new, pure) — `createByteReader(bytes, fail)`
   (little-endian, bounds-checked before every read, `byteOffset` folded in so
   a subarray reads its own window, cursor state as GETTERS on a frozen

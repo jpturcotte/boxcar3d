@@ -197,6 +197,39 @@ describe('evaluation spec — the u8 range-length wire bound', () => {
     expect(() => serializeEvaluationSpec(spec))
       .toThrow(/terrain\.craterRadiusRange\.length \(256 exceeds the u8 wire bound/);
   });
+
+  test('the bound is enforced BEFORE allocation, so no foreign RangeError escapes', () => {
+    // The size pass multiplies the DECLARED length by 8. Validating at the
+    // write instead would size the buffer from an unvalidated length first:
+    // measured, ~17 GB reserved at 2^31 and a generic `RangeError: Array
+    // buffer allocation failed` at 2^40. An array-LIKE carries the huge
+    // length without allocating storage, so this test is cheap.
+    for (const length of [2 ** 31, 2 ** 40, 2 ** 50, Number.MAX_SAFE_INTEGER]) {
+      const spec = resolvedFlat();
+      spec.terrain = {
+        ...spec.terrain,
+        craterRadiusRange: { length, [Symbol.iterator]: function* gen() {} },
+      };
+      let thrown;
+      try { serializeEvaluationSpec(spec); } catch (err) { thrown = err; }
+      expect(thrown, `length ${length} did not throw`).toBeDefined();
+      expect(thrown, `length ${length} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(RangeError);
+      expect(thrown.message).toMatch(/population-evaluation: invalid evaluation spec at terrain\.craterRadiusRange\.length/);
+    }
+  });
+
+  test('a non-integer or negative declared length is refused too', () => {
+    for (const length of [1.5, -1, NaN]) {
+      const spec = resolvedFlat();
+      spec.terrain = {
+        ...spec.terrain,
+        craterRadiusRange: { length, [Symbol.iterator]: function* gen() {} },
+      };
+      expect(() => serializeEvaluationSpec(spec), `length ${length}`)
+        .toThrow(/terrain\.craterRadiusRange\.length/);
+    }
+  });
 });
 
 describe('evaluation spec — malformed streams fail loud', () => {
@@ -406,6 +439,33 @@ describe('fitness vector — synthetic coverage', () => {
       assertVectorLeafEqual(decoded, evaluation);
       expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
     }
+  });
+
+  test('an unselectable member may legally carry -0, and its sign bit survives', () => {
+    // The encoder's coherence tooth is `fitness !== 0`, which -0 satisfies, so
+    // -0 on an unselectable member is a LEGAL encoding. The decoder mirrors
+    // that comparison verbatim: an Object.is-strict re-validation would be
+    // stricter than the encoder and would reject bytes it legally produced.
+    for (const [valid, integrityStatus] of [[false, 'ok'], [true, 'numericalDivergence'], [false, 'nonFinite']]) {
+      const evaluation = synth([[2, -0, valid, integrityStatus]]);
+      const bytes = serializeFitnessVector(evaluation);
+      // The f64 sign byte of the member's fitness (member 0 at 22, fitness at
+      // +6 => 28; little-endian, so the sign lands in the last byte, 35).
+      expect(bytes[35], `${valid}/${integrityStatus} lost the sign bit`).toBe(0x80);
+      const decoded = deserializeFitnessVector(bytes);
+      expect(Object.is(decoded.individuals[0].fitness, -0)).toBe(true);
+      expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
+    }
+  });
+
+  test('a selectable member carrying -0 also round-trips bit-exactly', () => {
+    const evaluation = synth([[2, -0, true]]);
+    const bytes = serializeFitnessVector(evaluation);
+    const decoded = deserializeFitnessVector(bytes);
+    expect(Object.is(decoded.individuals[0].fitness, -0)).toBe(true);
+    // -0 and +0 are DISTINCT streams: a normalizing codec would erase this.
+    expect(bytesEqual(bytes, serializeFitnessVector(synth([[2, 0, true]])))).toBe(false);
+    expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 
   test('every integrity status is representable and decodes to its name', () => {

@@ -109,6 +109,23 @@ are ascending by construction, `validatePopulation` sorts a copy and so cannot
 see stream order, and a decoder that silently re-sorted would accept
 non-canonical bytes while breaking byte identity on re-encode.
 
+## Replay: a resolved spec re-enters the resolver
+
+`deserializeEvaluationSpec` returns the **resolved** shape, because that is what
+`serializeEvaluationSpec` consumes. The natural next move — rerun the evaluation
+those bytes describe — used to fail: `resolveSpec` rejects unknown keys, and
+`termination` was absent from `SPEC_KEYS` because the resolver *derives* it. So
+`resolveSpec` was not idempotent on its own output, and a spec decoded from
+canonical bytes could not be handed to `evaluatePopulation`.
+
+`termination` is now an accepted input key, validated against `TERMINATIONS`
+(an unknown value still fails loud — it is never coerced to the default). This
+is additive and byte-neutral: the resolver already emitted exactly this value,
+so no digest moves. A committed test replays a decoded spec through
+`evaluatePopulation` and asserts the re-resolved spec re-encodes to
+byte-identical bytes — meaning a persisted fitness vector stays comparable
+across a reload.
+
 **Only current-version streams decode.** Every encoder writes its current
 version constant unconditionally, so accepting an older version would either
 misread bytes or re-encode under a different version and break
@@ -137,20 +154,32 @@ population-determinism gate is the tripwire that says so.
 
 ## Wire-representability guards
 
-Two encoders could silently emit malformed bytes, because a count that does not
-fit its wire field wrapped instead of failing:
+Three encoders could silently emit malformed bytes, because a count that does
+not fit its wire field wrapped instead of failing:
 
 - `serializeGenotype` wrote `axles.length` as a u8 while `validateGenotype`
   imposes no axle cap (`maxAxles` is repair *policy*, not domain);
 - `serializeEvaluationSpec` wrote each range length as a u8 while its size pass
   used the true length — a >255-element range would have produced a count byte
-  disagreeing with the payload that followed.
+  disagreeing with the payload that followed;
+- `serializePopulationInitialization` wrote `populationSize` as a u32 while
+  `resolveConfig` bounds it below (≥ 1) but not above. On the population path an
+  array length bounded it implicitly; the digest-only path has no such array, so
+  `0x100000001` would have wrapped to `1` and produced a manifest that decodes
+  and **rebuilds a different population** while carrying the original's digest
+  state.
 
-Both now fail loud above 255. No reachable input hits either (repair and the
-initializer cap axles at 6; no terrain knob is remotely that long) and **no
-valid stream changes** — this converts a silent corruption into a loud error,
-and it is what makes the "exact inverse" claim honest rather than scoped to
-inputs that happen never to occur.
+All three now fail loud, and **no valid stream changes** — this converts silent
+corruption into a loud error, and it is what makes the "exact inverse" claim
+honest rather than scoped to inputs that happen never to occur.
+
+**Guards run before allocation.** The spec encoder's range check lives in the
+size pass, not the write pass, because the size pass multiplies the *declared*
+length by 8 to size the buffer. Validating later let a pathological length size
+the allocation first — measured: ~17 GB reserved at length 2³¹, and a generic
+`RangeError: Array buffer allocation failed` escaping at 2⁴⁰ instead of this
+module's diagnosis. A committed test asserts no foreign `RangeError` escapes at
+2³¹, 2⁴⁰, 2⁵⁰, and `MAX_SAFE_INTEGER`.
 
 ## Binary identity vs the JSON envelope
 

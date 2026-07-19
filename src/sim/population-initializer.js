@@ -278,6 +278,16 @@ export function serializePopulationInitialization(initialization) {
     fail('initialization.seed', `${initialization.seed} disagrees with config.seed ${initialization.config.seed}`);
   }
   const cfg = resolveConfig({ ...initialization.config, seed: initialization.seed });
+  // Wire representability: populationSize is a u32. resolveConfig bounds it
+  // below (>= 1) but not above, and the digest-only path below has no
+  // population array whose length would implicitly bound it — so without this
+  // a populationSize of 0x100000001 would wrap to 1 on the wire and produce a
+  // manifest that decodes and REBUILDS a different population while carrying
+  // the digest state of the original. Same ruling as the u8 axle-count and
+  // range-length guards; no valid stream changes.
+  if (cfg.populationSize > 0xffffffff) {
+    fail('populationSize', `${cfg.populationSize} exceeds the u32 wire bound (4294967295)`);
+  }
   // Where the encoded snapshot digest state comes from. The production path
   // carries the population itself and folds its snapshot — unchanged,
   // statement for statement. The ADDITIVE path exists because the digest is a

@@ -219,39 +219,61 @@ describe('evaluation spec — the u8 range-length wire bound', () => {
     }
   });
 
-  test('a declared length disagreeing with iterable cardinality is refused', () => {
-    // The count byte, the allocation, and the written values must come from ONE
-    // source. Sizing from `.length` while writing by iteration let an
-    // under-yielding iterable emit a correctly-SIZED but semantically wrong
-    // stream (a zero-filled hole shifting every later field), and an
-    // over-yielding one overrun the DataView with a foreign RangeError.
+  test('a range is read BY INDEX, so a tampered iterator cannot change what is attested', () => {
+    // INDICES ARE THE TRUTH. terrain.js consumes every range by index
+    // (`cfg.craterRadiusRange[0]`, `[1]`), so the indexed content is what the
+    // described run actually executes on. The encoder therefore reads indices
+    // and never iterates — which makes an overridden Symbol.iterator
+    // irrelevant rather than a special case to detect.
     const withRange = (range) => {
       const spec = resolvedFlat();
       spec.terrain = { ...spec.terrain, craterRadiusRange: range };
       return spec;
     };
 
-    // Declared 2, iterator yields 1.
-    expect(() => serializeEvaluationSpec(withRange({ length: 2, * [Symbol.iterator]() { yield 2; } })))
-      .toThrow(/craterRadiusRange\.length \(2 disagrees with iterable cardinality 1\)/);
-
-    // Declared 1, iterator yields 2 — must be a MODULE error, never a foreign
-    // RangeError from a DataView overrun.
-    let thrown;
-    try {
-      serializeEvaluationSpec(withRange({ length: 1, * [Symbol.iterator]() { yield 2; yield 5; } }));
-    } catch (err) { thrown = err; }
-    expect(thrown).toBeDefined();
-    expect(thrown).not.toBeInstanceOf(RangeError);
-    expect(thrown.message).toMatch(/craterRadiusRange\.length \(1 disagrees with iterable cardinality 2\)/);
-
-    // A GENUINE Array reaches this too — Array.isArray is no defence, because
-    // an array instance can carry an overridden Symbol.iterator.
+    // A GENUINE Array carrying a lying iterator. Array.isArray stays true, so
+    // an isArray check alone was never the discriminator — the READ is. The
+    // stream must carry [2, 5] (the indices terrain.js reads), not [9, 9].
     const tampered = [2, 5];
-    tampered[Symbol.iterator] = function* short() { yield 2; };
+    tampered[Symbol.iterator] = function* lie() { yield 9; yield 9; };
     expect(Array.isArray(tampered)).toBe(true);
-    expect(() => serializeEvaluationSpec(withRange(tampered)))
-      .toThrow(/craterRadiusRange\.length \(2 disagrees with iterable cardinality 1\)/);
+    const fromTampered = serializeEvaluationSpec(withRange(tampered));
+    expect(bytesEqual(fromTampered, serializeEvaluationSpec(withRange([2, 5])))).toBe(true);
+    expect(bytesEqual(fromTampered, serializeEvaluationSpec(withRange([9, 9])))).toBe(false);
+    expect(deserializeEvaluationSpec(fromTampered).terrain.craterRadiusRange).toEqual([2, 5]);
+
+    // THE WORST CASE, and the reason a downstream decoder can never be the
+    // backstop: at the LAST range in the declared walk nothing follows to run
+    // short, so an iterator-sourced stream decoded CLEANLY and re-encoded
+    // byte-identically — a digest attesting a terrain that never existed.
+    const lastRange = [3, 7];
+    lastRange[Symbol.iterator] = function* lie() { yield 1; yield 1; };
+    const lastSpec = resolvedFlat();
+    lastSpec.terrain = { ...lastSpec.terrain, logLengthRange: lastRange };
+    const honest = resolvedFlat();
+    honest.terrain = { ...honest.terrain, logLengthRange: [3, 7] };
+    expect(bytesEqual(serializeEvaluationSpec(lastSpec), serializeEvaluationSpec(honest))).toBe(true);
+
+    // An iterable with NO indices cannot be encoded at all: the declared slots
+    // read `undefined` and the f64 gate refuses them loud. Under- and
+    // over-yielding and an INFINITE generator all land here identically —
+    // the iterator is never consumed, so there is nothing to run short,
+    // overrun the DataView, or hang on.
+    const started = Date.now();
+    for (const [label, range] of [
+      ['under-yields', { length: 2, * [Symbol.iterator]() { yield 2; } }],
+      ['over-yields', { length: 1, * [Symbol.iterator]() { yield 2; yield 5; } }],
+      ['never ends', { length: 2, * [Symbol.iterator]() { for (;;) yield 1; } }],
+    ]) {
+      let thrown;
+      try { serializeEvaluationSpec(withRange(range)); } catch (err) { thrown = err; }
+      expect(thrown, label).toBeDefined();
+      expect(thrown, `${label} threw a foreign ${thrown && thrown.constructor.name}`)
+        .not.toBeInstanceOf(RangeError);
+      expect(thrown.message, label)
+        .toMatch(/population-evaluation: invalid evaluation spec at terrain\.craterRadiusRange\[\] \(undefined\)/);
+    }
+    expect(Date.now() - started).toBeLessThan(1000); // no hang on the infinite one
 
     // A null/non-object range fails as a module error, not a foreign TypeError.
     for (const bad of [null, undefined, 42]) {
@@ -527,6 +549,21 @@ describe('fitness vector — synthetic coverage', () => {
     expect(Object.is(decoded.individuals[0].fitness, -0)).toBe(true);
     // -0 and +0 are DISTINCT streams: a normalizing codec would erase this.
     expect(bytesEqual(bytes, serializeFitnessVector(synth([[2, 0, true]])))).toBe(false);
+    expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
+  });
+
+  test('a tampered individuals iterator cannot desynchronize the count from the records', () => {
+    // The same systemic class as the terrain ranges: the u32 count comes from
+    // individuals.length, so writing the records by iteration would leave a
+    // zero-filled tail. The writer is index-based, so the true records are
+    // encoded and the tampering is ignored.
+    const evaluation = synth([[1, 1.5, true], [2, 2.5, true], [3, 0, false]]);
+    evaluation.individuals[Symbol.iterator] = function* short() { yield evaluation.individuals[0]; };
+    const bytes = serializeFitnessVector(evaluation);
+    expect(bytes.length).toBe(22 + 3 * 14);
+    const decoded = deserializeFitnessVector(bytes);
+    expect(decoded.individuals.map((m) => m.individualId)).toEqual([1, 2, 3]);
+    expect(decoded.individuals[1].fitness).toBe(2.5);
     expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 

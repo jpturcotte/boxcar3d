@@ -336,23 +336,34 @@ export function serializeEvaluationSpec(resolvedSpec) {
 
   // Size pass, then write pass (explicit, no push-buffers).
   //
-  // Ranges are MATERIALIZED here, once, and BOTH passes consume that snapshot —
-  // the count byte, the allocation, and the written values all come from one
-  // source. Sizing from a declared `.length` while writing by iteration would
-  // let an iterable whose cardinality disagrees with its length emit a
-  // wire-inconsistent stream: under-yielding leaves a zero-filled hole that
-  // shifts every later field (a correctly-SIZED but semantically wrong
-  // stream — the worst failure mode), and over-yielding overruns the DataView
-  // with a foreign RangeError. `Array.isArray` is NOT a defence here: a
-  // genuine Array can carry an overridden Symbol.iterator.
+  // Ranges are MATERIALIZED here, once, BY INDEX, and BOTH passes consume that
+  // snapshot — the count byte, the allocation, and the written values all come
+  // from one source that cannot disagree with itself.
+  //
+  // INDICES ARE THE TRUTH, and that is the whole ruling. Terrain generation
+  // consumes every range by index (`cfg.craterRadiusRange[0]`,
+  // `cfg.craterRadiusRange[1]` — terrain.js), so a range's indexed content is
+  // what the described run actually executes on. Reading the values any other
+  // way lets the spec digest attest a terrain that never existed: an
+  // overridden Symbol.iterator on a GENUINE Array (Array.isArray stays true —
+  // it is no defence) yields whatever it likes while the indices terrain.js
+  // reads say something else, and the resulting stream is well-formed, decodes
+  // cleanly, and re-encodes byte-identically. Iterating also let a declared
+  // length and an iterable's cardinality disagree — under-yielding left a
+  // zero-filled hole that shifted every later field (a correctly-SIZED but
+  // semantically wrong stream, the worst failure mode), over-yielding overran
+  // the DataView with a foreign RangeError, and an INFINITE generator hung.
+  // An indexed read is immune to all four by construction: `declared` values
+  // come from `declared` slots, and a slot that is not a finite number fails
+  // loud at the f64 gate below.
   //
   // Order is load-bearing. The u8 bound is checked BEFORE materializing and
-  // before the buffer exists, because both the size pass and Array.from scale
-  // with the declared length: validating later let a pathological length size
-  // the allocation first — measured, ~17 GB reserved at length 2^31 and a
-  // generic `RangeError: Array buffer allocation failed` at 2^40, instead of
-  // this module's diagnosis. The axle-count and populationSize guards are the
-  // same ruling.
+  // before the buffer exists, because both the size pass and the
+  // materialization scale with the declared length: validating later let a
+  // pathological length size the allocation first — measured, ~17 GB reserved
+  // at length 2^31 and a generic `RangeError: Array buffer allocation failed`
+  // at 2^40, instead of this module's diagnosis. The axle-count and
+  // populationSize guards are the same ruling.
   const ranges = new Map();
   let size = 2 + 1 + 1 + 4 + 8 * 5 + 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
@@ -365,10 +376,8 @@ export function serializeEvaluationSpec(resolvedSpec) {
       if (!Number.isInteger(declared) || declared < 0 || declared > 0xff) {
         fail(`terrain.${key}.length`, `${declared} exceeds the u8 wire bound (255)`);
       }
-      const values = Array.from(range);
-      if (values.length !== declared) {
-        fail(`terrain.${key}.length`, `${declared} disagrees with iterable cardinality ${values.length}`);
-      }
+      const values = [];
+      for (let i = 0; i < declared; i += 1) values.push(range[i]);
       ranges.set(key, values);
       size += 1 + values.length * 8;
     } else size += 1 + WEIGHT_KEYS.length * (1 + 8);
@@ -406,10 +415,11 @@ export function serializeEvaluationSpec(resolvedSpec) {
       f64(v, `terrain.${key}`);
     } else if (kind === 'range') {
       // The MATERIALIZED values from the size pass — count and payload cannot
-      // disagree, because they are the same array.
+      // disagree, because they are the same array. Indexed here too: this
+      // module never reads a length from one place and content from another.
       const values = ranges.get(key);
       view.setUint8(o, values.length); o += 1;
-      for (const e of values) f64(e, `terrain.${key}[]`);
+      for (let i = 0; i < values.length; i += 1) f64(values[i], `terrain.${key}[]`);
     } else { // weights
       const keys = Object.keys(v);
       if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {
@@ -639,6 +649,17 @@ function resolveSpecDigestState(evaluation) {
   return declared;
 }
 
+// The fixed wire geometry, named once so the encoder's allocation and the
+// decoder's exact-length identity cannot drift apart (the genotypeByteLength
+// precedent — GENOTYPE_BASE_BYTES / GENOTYPE_AXLE_STRIDE in assembly.js).
+const FITNESS_VECTOR_HEADER_BYTES = 2 + 2 + 2 + 2 + 4 + 2 + 4 + 4; // 22
+const FITNESS_VECTOR_MEMBER_BYTES = 4 + 1 + 1 + 8; // 14
+
+/** Exact byte length of a canonical fitness vector carrying `count` members. */
+function fitnessVectorByteLength(count) {
+  return FITNESS_VECTOR_HEADER_BYTES + FITNESS_VECTOR_MEMBER_BYTES * count;
+}
+
 /** Serialize the fitness vector of an evaluation (see the encoding walk). */
 export function serializeFitnessVector(evaluation) {
   if (typeof evaluation !== 'object' || evaluation === null) fail('evaluation', evaluation);
@@ -654,7 +675,7 @@ export function serializeFitnessVector(evaluation) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
     }
   }
-  const view = new DataView(new ArrayBuffer(2 + 2 + 2 + 2 + 4 + 2 + 4 + 4 + individuals.length * (4 + 1 + 1 + 8)));
+  const view = new DataView(new ArrayBuffer(fitnessVectorByteLength(individuals.length)));
   let o = 0;
   view.setUint16(o, FITNESS_VECTOR_VERSION, true); o += 2;
   view.setUint16(o, FITNESS_POLICY_VERSION, true); o += 2;
@@ -664,7 +685,12 @@ export function serializeFitnessVector(evaluation) {
   view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
   view.setUint32(o, specState, true); o += 4;
   view.setUint32(o, individuals.length, true); o += 4;
-  for (const ind of individuals) {
+  // INDEXED, never for...of: the count byte above came from individuals.length,
+  // so iterating would let an overridden Symbol.iterator write fewer records
+  // than the header promises and leave a zero-filled tail (the ascending-id
+  // check above is index-based and would not catch it).
+  for (let i = 0; i < individuals.length; i += 1) {
+    const ind = individuals[i];
     if (!Number.isInteger(ind.individualId) || ind.individualId < 0 || ind.individualId > 0xffffffff) {
       fail('individualId', ind.individualId);
     }
@@ -733,7 +759,7 @@ export function deserializeFitnessVector(bytes) {
   // The record stride is fixed, so the total length is an exact identity —
   // checked before the member loop so a lying count reports as a length
   // mismatch rather than a truncation deep inside a member.
-  const expected = 22 + count * 14;
+  const expected = fitnessVectorByteLength(count);
   if (bytes.byteLength !== expected) {
     vectorDecodeFail('byteLength', `${bytes.byteLength} (expected ${expected} for count ${count})`);
   }

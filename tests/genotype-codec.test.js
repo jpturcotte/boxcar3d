@@ -20,6 +20,7 @@ import {
   NODE_SLOTS,
   SUSPENSION_TYPES,
   deserializeGenotype,
+  forEachGenotypeField,
   genotypeByteLength,
   randomGenotype,
   repairGenotype,
@@ -217,10 +218,69 @@ describe('hand-built genotypes round-trip exactly', () => {
     expect(serializeGenotype(genotypeWith(7)).length).toBe(genotypeByteLength(7));
   });
 
+  test('a tampered array iterator cannot desynchronize the count from the payload', () => {
+    // Systemic class: the header counts come from `.length`, so writing the
+    // payload by iteration would let an overridden Symbol.iterator emit fewer
+    // values than promised and leave a zero-filled hole. This was the WORST
+    // instance found — the unwritten axle's 128 zero bytes are all legal [0,1]
+    // genes, so the short stream DECODED CLEANLY into a different genotype.
+    // The writers are index-based, so the tampering is simply ignored and the
+    // true indexed contents are encoded.
+    const g = genotypeWith(2);
+    g.axles[Symbol.iterator] = function* short() { yield g.axles[0]; };
+    const bytes = serializeGenotype(g);
+    expect(bytes.length).toBe(genotypeByteLength(2));
+    const decoded = deserializeGenotype(bytes);
+    expect(decoded.axles).toHaveLength(2);
+    // The second axle is the REAL one, not a zero-filled ghost.
+    expect(decoded.axles[1].posX01).toBe(g.axles[1].posX01);
+    expect(decoded.axles[1].radius).toBe(0.33);
+    // Rebuild the expectation BY INDEX — spreading would consume the very
+    // iterator under test and silently expect the truncated form.
+    const expectedAxles = [];
+    for (let i = 0; i < g.axles.length; i += 1) expectedAxles.push({ ...g.axles[i] });
+    assertBitEqual(decoded, { ...g, axles: expectedAxles }, 'tampered-axles');
+
+    // Same for the fixed-size node array.
+    const h = genotypeWith(1);
+    const seg = h.frame.segments[0];
+    seg.nodes[Symbol.iterator] = function* short() { yield seg.nodes[0]; };
+    const hb = serializeGenotype(h);
+    const hd = deserializeGenotype(hb);
+    expect(hd.frame.segments[0].nodes[5].thickness).toBe(seg.nodes[5].thickness);
+    expect(hd.frame.segments[0].nodes[5].thickness).not.toBe(0);
+  });
+
   test('the u8 axle-count wire bound fails loud instead of wrapping', () => {
     const g = genotypeWith(0);
     g.axles = Array.from({ length: 256 }, () => genotypeWith(1).axles[0]);
     expect(() => serializeGenotype(g)).toThrow(/assembly: invalid genotype at axles\.length \(256 exceeds the u8 wire bound/);
+  });
+
+  test('a SPARSE axles or nodes array is refused in this module dialect', () => {
+    // validateGenotype used Array.prototype.forEach, which SKIPS HOLES, while
+    // the serializer and the schema walk read by index. A hole therefore
+    // passed validation with its genes unchecked and then surfaced as a
+    // FOREIGN TypeError ("Cannot read properties of undefined") from inside
+    // serializeGenotype — the exact shape a structural operator produces by
+    // growing `axles.length`. Validation must cover the slots the serializer
+    // writes, and the diagnosis must stay in this module's dialect.
+    const sparseAxles = genotypeWith(1);
+    sparseAxles.axles.length = 2; // index 1 is now a hole
+    let thrown;
+    try { serializeGenotype(sparseAxles); } catch (err) { thrown = err; }
+    expect(thrown).toBeDefined();
+    expect(thrown, `threw a foreign ${thrown && thrown.constructor.name}`).not.toBeInstanceOf(TypeError);
+    expect(thrown.message).toMatch(/assembly: invalid genotype at axles\[1\] \(undefined\)/);
+
+    const sparseNodes = genotypeWith(1);
+    delete sparseNodes.frame.segments[0].nodes[3]; // a hole mid-array
+    expect(() => serializeGenotype(sparseNodes))
+      .toThrow(/assembly: invalid genotype at nodes\[3\] \(undefined\)/);
+
+    // The same domain applies to the metadata walk, which reads by index too.
+    expect(() => forEachGenotypeField(sparseAxles, () => {}))
+      .toThrow(/assembly: invalid genotype at axles\[1\] \(undefined\)/);
   });
 });
 

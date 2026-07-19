@@ -243,10 +243,16 @@ export function validateGenotype(genotype) {
   if (!Array.isArray(seg.nodes) || seg.nodes.length !== NODE_SLOTS) {
     fail('frame.segments[0].nodes.length', Array.isArray(seg.nodes) ? seg.nodes.length : seg.nodes);
   }
-  seg.nodes.forEach((n, i) => {
+  // Indexed, never forEach: forEach SKIPS HOLES, so a sparse array (`nodes`
+  // grown by a length assignment, the shape a structural operator produces)
+  // would pass validation with its holes unchecked and then die inside
+  // serializeGenotype as a foreign TypeError reading a gene off undefined.
+  // Validation must cover exactly the slots the serializer writes.
+  for (let i = 0; i < seg.nodes.length; i += 1) {
+    const n = seg.nodes[i];
     if (typeof n !== 'object' || n === null) fail(`nodes[${i}]`, n);
     for (const k of NODE_GENES) checkGene(n[k], `nodes[${i}].${k}`);
-  });
+  }
   const fam = seg.fam;
   if (typeof fam !== 'object' || fam === null) fail('fam', fam);
   // Explicit object checks per block: a falsy-but-valid-gene value
@@ -261,12 +267,13 @@ export function validateGenotype(genotype) {
   checkGene(fam.ladder.crossFrac, 'fam.ladder.crossFrac');
   checkGene(fam.hull.bulge, 'fam.hull.bulge');
   if (!Array.isArray(genotype.axles)) fail('axles', genotype.axles);
-  genotype.axles.forEach((a, i) => {
+  for (let i = 0; i < genotype.axles.length; i += 1) { // indexed: see nodes above
+    const a = genotype.axles[i];
     if (typeof a !== 'object' || a === null) fail(`axles[${i}]`, a);
     for (const k of AXLE_GENES) checkGene(a[k], `axles[${i}].${k}`);
     if (typeof a.asym !== 'object' || a.asym === null) fail(`axles[${i}].asym`, a.asym);
     for (const k of ASYM_GENES) checkGene(a.asym[k], `axles[${i}].asym.${k}`);
-  });
+  }
 }
 
 function validateOptions(cfg) {
@@ -734,9 +741,15 @@ export function serializeGenotype(genotype) {
   // payload — malformed bytes produced silently. No reachable input hits this
   // (repair and the initializer both cap at 6) and no valid stream changes;
   // this only converts a silent corruption into a loud failure.
+  //
+  // The guard keeps its own diagnostic (it names the FIELD a caller controls,
+  // which `axleCount` would not), but the ALLOCATION comes from
+  // genotypeByteLength — the same function deserializeGenotype checks an
+  // incoming length against. One geometry, so the encoder's buffer and the
+  // decoder's exact-length identity cannot drift apart; they agreed as two
+  // independent literals, and agreeing by construction is the point.
   if (n > 0xff) fail('axles.length', `${n} exceeds the u8 wire bound (255)`);
-  const bytes = 2 + 4 * 8 + 8 + 1 + 8 + NODE_SLOTS * 4 * 8 + 3 * 8 + 1 + n * 16 * 8;
-  const view = new DataView(new ArrayBuffer(bytes));
+  const view = new DataView(new ArrayBuffer(genotypeByteLength(n)));
   let o = 0;
   const u8 = (v) => { view.setUint8(o, v); o += 1; };
   const u16 = (v) => { view.setUint16(o, v, true); o += 2; };
@@ -749,7 +762,15 @@ export function serializeGenotype(genotype) {
   f64(genotype.frame.family);
   u8(genotype.frame.segments.length);
   f64(seg.nodeCount);
-  for (const node of seg.nodes) {
+  // INDEXED, never for...of: the byte count above is derived from NODE_SLOTS
+  // and `n`, so iterating instead would let an array with an overridden
+  // Symbol.iterator write fewer values than the header promises and leave a
+  // zero-filled hole — a stream that stays the right SIZE, decodes cleanly,
+  // and means something else (measured: an under-yielding `axles` decoded to a
+  // genotype whose extra axle was all-zero genes, which are legal values).
+  // validateGenotype's own checks are index-based, so they do not catch it.
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    const node = seg.nodes[i];
     f64(node.gap);
     f64(node.height);
     f64(node.halfWidth);
@@ -759,7 +780,8 @@ export function serializeGenotype(genotype) {
   f64(seg.fam.ladder.crossFrac);
   f64(seg.fam.hull.bulge);
   u8(n);
-  for (const a of genotype.axles) {
+  for (let i = 0; i < n; i += 1) {
+    const a = genotype.axles[i];
     for (const k of AXLE_GENES) f64(a[k]);
     for (const k of ASYM_GENES) f64(a.asym[k]);
   }
@@ -812,11 +834,18 @@ export function serializeGenotype(genotype) {
 const GENOTYPE_BASE_BYTES = 268; // the fixed prefix: version .. axleCount
 const GENOTYPE_AXLE_STRIDE = 128; // 16 f64 per axle (AXLE_GENES + ASYM_GENES)
 
-/** Exact byte length of the canonical stream for `axleCount` axles. */
-export function genotypeByteLength(axleCount) {
+// The WIRE domain for an axle count: the u8 the canonical stream writes.
+// Deliberately narrower than validateGenotype's, which stays uncapped for
+// in-memory genotypes (maxAxles is repair POLICY, not a schema bound).
+function assertWireAxleCount(axleCount) {
   if (!Number.isInteger(axleCount) || axleCount < 0 || axleCount > 0xff) {
     fail('axleCount', axleCount);
   }
+}
+
+/** Exact byte length of the canonical stream for `axleCount` axles. */
+export function genotypeByteLength(axleCount) {
+  assertWireAxleCount(axleCount);
   return GENOTYPE_BASE_BYTES + GENOTYPE_AXLE_STRIDE * axleCount;
 }
 
@@ -879,7 +908,7 @@ function genotypeEntries(g, axleCount) {
  * 36 fixed-prefix entries + 16 per axle; offsets tile [0, genotypeByteLength).
  */
 export function genotypeFieldWalk(axleCount) {
-  genotypeByteLength(axleCount); // domain check, single-sourced
+  assertWireAxleCount(axleCount);
   return genotypeEntries(null, axleCount);
 }
 
@@ -890,11 +919,10 @@ export function genotypeFieldWalk(axleCount) {
 export function forEachGenotypeField(genotype, visit) {
   validateGenotype(genotype);
   // The walk describes the CANONICAL SERIALIZATION order, so its domain is the
-  // wire's, not validateGenotype's (which deliberately stays uncapped for
-  // in-memory genotypes). Without this, this function would happily emit
-  // byteOffsets for a genotype serializeGenotype refuses — metadata describing
-  // a stream that cannot exist. Same bound as genotypeFieldWalk.
-  genotypeByteLength(genotype.axles.length);
+  // wire's, not validateGenotype's. Without this, this function would happily
+  // emit byteOffsets for a genotype serializeGenotype refuses — metadata
+  // describing a stream that cannot exist.
+  assertWireAxleCount(genotype.axles.length);
   if (typeof visit !== 'function') fail('visit', visit);
   for (const entry of genotypeEntries(genotype, genotype.axles.length)) visit(entry);
 }
@@ -912,6 +940,17 @@ export function forEachGenotypeField(genotype, visit) {
 // either misread bytes or re-encode under a different version and break the
 // serialize(deserialize(bytes)) === bytes identity. Reading historical
 // versions, if ever needed, is separate append-only work.
+//
+// WHY THIS ONE READS ITS OWN DataView while the other four decoders share
+// bytes.js's createByteReader: the genotype is the only FIXED-LAYOUT format
+// here, and its length identity is out of order. The axle count sits at byte
+// 267, and reading it up front is what lets `byteLength === expected` reject
+// truncation AND trailing bytes in a single check before a single gene is
+// read. A sequential cursor would have to consume the preceding 265 bytes to
+// reach it, so the same malformed stream would surface as a truncation from
+// somewhere inside the node block instead. The exemption is recorded in
+// bytes.js's header too, where a reader looking for the shared discipline
+// will hit it first.
 
 function decodeFail(path, value) {
   throw new Error(`assembly: invalid encoded genotype at ${path} (${String(value)})`);

@@ -265,6 +265,36 @@ export function createInitialPopulation(config, options = {}) {
   };
 }
 
+// Where the encoded snapshot digest state comes from. The production path
+// carries the population itself and folds its snapshot — unchanged, statement
+// for statement. The ADDITIVE path exists because the digest is a one-way
+// attestation: a decoded manifest holds the state but can never reconstruct
+// the population from it, so without this a manifest could not be re-encoded
+// from its own decoded form (the codec's round-trip contract). Both present
+// must AGREE; neither present fails loud. The fitness vector's
+// resolveSpecDigestState (population-evaluation.js) is the same ruling in the
+// same shape — extracted here too so the two read as one policy rather than
+// one policy and one inline special case.
+function resolvePopulationDigestState(initialization, cfg) {
+  const declared = initialization.populationSnapshotDigestState;
+  if (initialization.population !== undefined) {
+    const snapshotBytes = serializePopulationSnapshot(initialization.population);
+    if (initialization.population.individuals.length !== cfg.populationSize) {
+      fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+    }
+    const state = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
+    if (declared !== undefined && declared !== state) {
+      fail('initialization.populationSnapshotDigestState',
+        `${declared} disagrees with the population's computed state ${state}`);
+    }
+    return state;
+  }
+  if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
+    fail('initialization.populationSnapshotDigestState', declared);
+  }
+  return declared;
+}
+
 /** Serialize the provenance manifest (see the encoding walk above). */
 export function serializePopulationInitialization(initialization) {
   if (typeof initialization !== 'object' || initialization === null) fail('initialization', initialization);
@@ -288,34 +318,23 @@ export function serializePopulationInitialization(initialization) {
   if (cfg.populationSize > 0xffffffff) {
     fail('populationSize', `${cfg.populationSize} exceeds the u32 wire bound (4294967295)`);
   }
-  // Where the encoded snapshot digest state comes from. The production path
-  // carries the population itself and folds its snapshot — unchanged,
-  // statement for statement. The ADDITIVE path exists because the digest is a
-  // one-way attestation: a decoded manifest holds the state but can never
-  // reconstruct the population from it, so without this a manifest could not
-  // be re-encoded from its own decoded form (the codec's round-trip contract).
-  // Both present must AGREE; neither present fails loud.
-  let snapshotState;
-  if (initialization.population !== undefined) {
-    const snapshotBytes = serializePopulationSnapshot(initialization.population);
-    if (initialization.population.individuals.length !== cfg.populationSize) {
-      fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
-    }
-    snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
-    if (initialization.populationSnapshotDigestState !== undefined
-      && initialization.populationSnapshotDigestState !== snapshotState) {
-      fail('initialization.populationSnapshotDigestState',
-        `${initialization.populationSnapshotDigestState} disagrees with the population's computed state ${snapshotState}`);
-    }
-  } else {
-    const declared = initialization.populationSnapshotDigestState;
-    if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
-      fail('initialization.populationSnapshotDigestState', declared);
-    }
-    snapshotState = declared;
-  }
+  const snapshotState = resolvePopulationDigestState(initialization, cfg);
   const cats = cfg.initialSuspensionTypes;
-  const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + cats.length + 4));
+  // Read the count ONCE and resolve every category to its wire index BEFORE
+  // allocating, so the count byte, the buffer, and the payload come from one
+  // indexed reading. Resolving here also makes an unknown category fail loud:
+  // `indexOf` returns -1 for a hole (resolvePolicy's own validation walk skips
+  // holes, so a sparse `['S0'] with length 2` reaches this point), and
+  // setUint8(-1) writes 255 silently — a manifest that encodes, folds into the
+  // digest, and only fails much later at the decoder.
+  const catCount = cats.length;
+  const catIndices = [];
+  for (let i = 0; i < catCount; i += 1) {
+    const index = SUSPENSION_TYPES.indexOf(cats[i]);
+    if (index === -1) fail(`initialSuspensionTypes[${i}]`, cats[i]);
+    catIndices.push(index);
+  }
+  const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + catCount + 4));
   let o = 0;
   view.setUint16(o, POPULATION_INITIALIZER_VERSION, true); o += 2;
   view.setUint16(o, GENOTYPE_VERSION, true); o += 2;
@@ -325,8 +344,10 @@ export function serializePopulationInitialization(initialization) {
   view.setUint8(o, cfg.maxAxles); o += 1;
   view.setFloat64(o, cfg.symmetricProbability, true); o += 8;
   view.setFloat64(o, cfg.minInitialPowerGene, true); o += 8;
-  view.setUint8(o, cats.length); o += 1;
-  for (const c of cats) { view.setUint8(o, SUSPENSION_TYPES.indexOf(c)); o += 1; }
+  view.setUint8(o, catCount); o += 1;
+  // The resolved indices from above — count, allocation and payload are the
+  // same indexed reading (the one-source-of-truth ruling, serializeEvaluationSpec).
+  for (let i = 0; i < catIndices.length; i += 1) { view.setUint8(o, catIndices[i]); o += 1; }
   view.setUint32(o, snapshotState, true); o += 4;
   return new Uint8Array(view.buffer);
 }

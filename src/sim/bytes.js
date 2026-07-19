@@ -7,7 +7,19 @@
 // little-endian walk into an exact-size DataView. Their inverses need the
 // mirror-image read discipline, and getting truncation / trailing-byte
 // handling subtly different per module is exactly how a "lossless" codec
-// silently stops being lossless. One reader, four call sites.
+// silently stops being lossless. One reader, four of the five decoders.
+//
+// THE ONE EXEMPTION, stated here so nobody has to discover it: assembly.js's
+// deserializeGenotype reads its own DataView. Not an oversight and not a
+// zero-imports nicety — that format alone is FIXED-LAYOUT with an
+// out-of-order length identity. It must read the version at byte 0, the
+// segment count at 42, and the axle count at 267 BEFORE walking anything, so
+// that `byteLength === genotypeByteLength(axleCount)` can reject truncation
+// and trailing bytes in a single check up front. A sequential cursor cannot
+// peek byte 267 without consuming the 265 before it, which would turn one
+// clean length identity into a truncation reported from deep inside a gene.
+// Every other format is a sequential walk and uses this reader. A new decoder
+// belongs here unless it has the same fixed-layout reason.
 //
 // THE READER CONTRACT
 //   - Every read is little-endian and bounds-checked BEFORE it happens; a
@@ -111,7 +123,14 @@ function hexFail(what, value) {
 /** Bytes -> the canonical lowercase-hex JSON-safe representation. */
 export function bytesToHex(bytes) {
   if (!(bytes instanceof Uint8Array)) hexFail('bytes (Uint8Array required)', bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  // Indexed, like every other length-driven read in the codec family. A
+  // TypedArray's iterator is not user-overridable per instance the way a plain
+  // Array's is, so this is consistency rather than a fix — but a reader who
+  // finds an Array.from here has to work that out, and the file's own ruling
+  // says indices are the truth.
+  const out = [];
+  for (let i = 0; i < bytes.length; i += 1) out.push(bytes[i].toString(16).padStart(2, '0'));
+  return out.join('');
 }
 
 /** The exact inverse of bytesToHex. Malformed text fails loud, never repairs. */

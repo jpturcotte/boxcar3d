@@ -178,9 +178,11 @@ accepts the `termination` key it derives, so a resolved spec re-enters the
 resolver and re-encodes byte-identically. Two encoders gained an additive
 digest-state input so a decoded record can be re-encoded from itself; three
 silent wire-overflow holes (u8 axle count, u8 range length, u32 initialization
-`populationSize`) now fail loud without changing any valid stream; and the
-spec encoder materializes each range once, so a count byte, its allocation,
-and its payload can no longer disagree. No evolutionary behaviour is
+`populationSize`) now fail loud without changing any valid stream; and every
+variable-length wire field is read by index — the same reading its consumer
+performs — so a count byte, its allocation, and its payload can no longer
+disagree with each other or with what the run executes. No evolutionary
+behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

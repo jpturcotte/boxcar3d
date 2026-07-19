@@ -136,6 +136,18 @@ function decodeFail(path, value) {
  * validatePopulation gate — including the repair-identity canonicality
  * tooth, so a hand-crafted snapshot carrying a raw draw cannot re-enter the
  * population layer as heredity through the decode side door.
+ *
+ * Returned UNFROZEN, deliberately, and this is the one decoder that is. The
+ * spec, fitness-vector and manifest decoders freeze, because those records are
+ * attestations — a digest has already been folded over their bytes, so letting
+ * a caller mutate one after the fact would let it disagree with what it
+ * attests. A population is not an attestation but a live working object:
+ * createInitialPopulation returns exactly this shape unfrozen (its
+ * `population` field), and Phase 1B replaces individuals generation over
+ * generation. Freezing here would make a decoded population a different kind
+ * of thing from a produced one, which is the drift this codec exists to
+ * prevent. Canonicality is enforced at the seams (validatePopulation on the
+ * way in, serializePopulationSnapshot on the way out), never by immutability.
  */
 export function deserializePopulationSnapshot(bytes) {
   const r = createByteReader(bytes, decodeFail);

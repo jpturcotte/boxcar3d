@@ -343,6 +343,23 @@ describe('initialization manifest — round trips', () => {
       .toThrow(/populationSnapshotDigestState.*disagrees with the population's computed state/);
   });
 
+  test('a tampered category iterator cannot desynchronize the count from the payload', () => {
+    // Same systemic class as the spec's ranges: the u8 categoryCount and the
+    // encoded categories both come from resolving cats BY INDEX before
+    // allocation, so an overridden Symbol.iterator is irrelevant — the real
+    // categories are encoded regardless of what the iterator would yield.
+    const init = createInitialPopulation({ seed: 123456, populationSize: 2 });
+    const cats = ['S0', 'S1'];
+    cats[Symbol.iterator] = function* short() { yield 'S0'; };
+    const bytes = serializePopulationInitialization({
+      ...init,
+      config: { ...init.config, initialSuspensionTypes: cats },
+    });
+    const decoded = deserializePopulationInitialization(bytes);
+    expect([...decoded.config.initialSuspensionTypes]).toEqual(['S0', 'S1']);
+    expect(bytesEqual(serializePopulationInitialization(decoded), bytes)).toBe(true);
+  });
+
   test('a populationSize beyond the u32 wire bound fails loud on the digest-only path', () => {
     // The population path bounds this implicitly (no array can match such a
     // length), but the digest-only path has no population to compare against:

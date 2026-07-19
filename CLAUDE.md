@@ -1295,19 +1295,57 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   passes the new field ⇒ the production branch is bit-for-bit unchanged
   (`a6d04f75` / `7acb271d` stand; the population-determinism gate is the
   tripwire).
-- **ONE SOURCE OF TRUTH per variable-length field (the review-round ruling):**
-  `serializeEvaluationSpec` MATERIALIZES each terrain range once and both the
-  size pass and the write pass consume that snapshot. Sizing/counting from a
-  declared `.length` while writing by `for...of` let an iterable whose
-  cardinality disagreed with its length emit a correctly-SIZED but
-  semantically wrong stream (under-yield ⇒ a zero-filled hole shifting every
-  later field — the worst failure mode, since the stream looks well-formed)
-  or overrun the DataView with a FOREIGN RangeError (over-yield). Measured
-  both ways. `Array.isArray` is NOT a defence — a genuine Array can carry an
-  overridden `Symbol.iterator`, verified. The u8 bound is still checked
-  BEFORE materializing (both the size pass and `Array.from` scale with the
-  declared length). Any future variable-length wire field must follow this
-  rule: count, allocation, and payload from ONE materialized value.
+- **ONE SOURCE OF TRUTH per variable-length field — and INDICES ARE THE TRUTH
+  (the ruling, settled over three review rounds):** every canonical encoder
+  reads a variable-length field BY INDEX, the same reading its consumer
+  performs. `serializeEvaluationSpec` materializes each terrain range by index
+  once and both the size pass and the write pass consume that snapshot.
+  Sizing/counting from a declared `.length` while writing by `for...of` let an
+  iterable whose cardinality disagreed with its length emit a correctly-SIZED
+  but semantically wrong stream (under-yield ⇒ a zero-filled hole shifting
+  every later field — the worst failure mode, since the stream looks
+  well-formed) or overrun the DataView with a FOREIGN RangeError (over-yield);
+  measured both ways. **The class was SYSTEMIC** — a sweep of every encoder
+  found it in three more places, each reproduced: `serializeGenotype`
+  (`axles`/`nodes` — the WORST case: the unwritten axle's 128 zero bytes are
+  all legal [0,1] genes, so the short stream DECODED CLEANLY into a different
+  genotype), `serializeFitnessVector` (`individuals`), and
+  `serializePopulationInitialization` (categories). A fourth round found it
+  one layer UP, in the gate the snapshot encoder depends on:
+  `validatePopulation` checked members BY INDEX and returned `[...individuals]`
+  — an ITERATOR read — so a population whose indices held repaired genotypes
+  and whose iterator yielded a RAW draw passed validation (canonicality tooth
+  included) and then SERIALIZED the raw draw, defeating the one bug class that
+  seam exists to stop, and producing a stream the codec's own decoder refuses.
+  **The rule is therefore not about encoders: any function that validates one
+  reading of a caller's collection and returns another has this defect.**
+  Two related shapes closed with it — `validateGenotype` used
+  `Array.prototype.forEach`, which SKIPS HOLES, so a sparse `axles`/`nodes`
+  (exactly what a structural operator produces by growing `.length`) passed
+  validation with its genes unchecked and died as a FOREIGN TypeError inside
+  the serializer; and a hole in `initialSuspensionTypes` made
+  `indexOf(undefined)` = −1 wrap to byte 255, encoding and folding into the
+  digest before the decoder caught it. **Two intermediate fixes
+  looked complete and were not, and both are recorded because the class is
+  subtle:** materializing with an unbounded `Array.from` let an INFINITE
+  generator declaring `length: 2` exhaust memory instead of failing loud
+  (measured 47 MB for 2,000,000 values); bounding it fixed the hang but still
+  took the VALUES from the iterator, so a genuine Array carrying an overridden
+  `Symbol.iterator` (`Array.isArray` stays true — it was never the
+  discriminator; the READ is) encoded `[9, 9]` while `terrain.js`, which reads
+  `cfg.craterRadiusRange[0]/[1]`, would have used `[2, 5]` — decoding cleanly
+  and re-encoding byte-identically, a digest attesting a terrain that never
+  existed. The indexed read closes both by construction: nothing can
+  under-yield, over-yield, or fail to terminate when nothing is iterated, and
+  a slot that is not a finite number fails loud at the existing f64 gate. The
+  u8 bound is still checked BEFORE materializing. Reachability, honestly:
+  `ownTerrain`'s `.slice()` is index-based, so the `evaluatePopulation →
+  resolveSpec` production path was never exposed — the exposure is direct
+  calls to the public encoders, i.e. exactly the replay and import tooling
+  whose byte-exactness this PR exists to guarantee. Any future
+  variable-length wire field must follow this rule: count, allocation, and
+  payload from ONE INDEXED reading, never from an iterator when indices are
+  what execution consumes.
 - **Three wire-representability guards (fail loud; NO valid bytes change):**
   `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
   no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
@@ -1357,7 +1395,7 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   because `vitest.browser.config.js` collects only `tests/browser/**`, so
   without it no codec line would ever run in Chromium. No new lock anywhere;
   no `*-locks.js` file touched.
-- Full suite green (48 files, 926 tests), determinism gate green, pinned
+- Full suite green (48 files, 932 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

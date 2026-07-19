@@ -209,17 +209,93 @@ make disagree:
   `RangeError: Offset is outside the bounds of the DataView` — contradicting the
   guarantee asserted one section above.
 
-`Array.isArray` is no defence: a genuine `Array` can carry an overridden
-`Symbol.iterator`, verified. So the encoder now **materializes each range once**
-(`Array.from`, after the u8 bound check, since both the size pass and
-`Array.from` scale with the declared length) and requires its cardinality to
-equal the declared length; both passes then consume that one array, so the
-count, the allocation, and the payload cannot disagree. An honest array-like
-still encodes, byte-identically to the equivalent real array.
+A cardinality check alone does not settle it either, and a third review round
+showed why. Requiring the iterable's cardinality to match the declared length
+makes the *count* single-sourced but leaves the *values* sourced from the
+iterator — so a genuine `Array` carrying an overridden `Symbol.iterator` (and
+`Array.isArray` stays true, so an isArray check was never the discriminator)
+encodes whatever the iterator yields while its indices say something else.
+Measured: `craterRadiusRange = [2, 5]` with an iterator yielding `9, 9` encoded
+as `[9, 9]`, decoded cleanly, and re-encoded byte-identically, while terrain
+generation would have used `2, 5`.
+
+**The ruling: indices are the truth.** Terrain generation consumes every range
+by index (`cfg.craterRadiusRange[0]`, `cfg.craterRadiusRange[1]` — `terrain.js`),
+so a range's indexed content is what the described run actually executes on.
+The encoder therefore **materializes each range by index** — `declared` values
+read from `declared` slots, after the u8 bound check — and both passes consume
+that one array. An overridden iterator becomes irrelevant rather than a special
+case to detect, and the earlier failure modes vanish by construction: nothing
+can under-yield, over-yield, or fail to terminate when nothing is iterated. A
+slot holding anything but a finite number fails loud at the existing f64 gate,
+so an iterable with no indices is refused rather than silently encoded. An
+honest array-like still encodes, byte-identically to the equivalent real array.
+
+**The class was systemic, not local to the spec encoder.** A sweep of every
+canonical encoder found the same split — a count taken from `.length`, a payload
+written by `for...of` — in three more places, each reproduced:
+
+| encoder | field | pre-fix behaviour on an under-yielding iterator |
+|---|---|---|
+| `serializeEvaluationSpec` | terrain ranges | at an **early** range the decoder catches the shift; at the **last** range (`logLengthRange`) the stream decodes cleanly and re-encodes byte-identically — `[3, 0]` where `[3, 7]` was meant |
+| `serializeGenotype` | `axles`, `nodes` | **worst case**: the unwritten axle's 128 zero bytes are all legal `[0,1]` genes, so the short stream **decoded cleanly into a different genotype** |
+| `serializeFitnessVector` | `individuals` | zero-filled tail; caught downstream by the ascending-id check |
+| `serializePopulationInitialization` | suspension categories | zero-filled byte, decoding as `'S0'` |
+| `validatePopulation` | `individuals` | **validated one set of members, returned another** — see below |
+
+A fourth review round found the same split one layer up, in the gate the
+snapshot encoder depends on. `validatePopulation` checks members **by index**
+and then returned `[...individuals]`, an **iterator** read. Reproduced: a
+population whose indices hold repaired genotypes and whose iterator yields a
+RAW draw passes validation — canonicality tooth and all — and
+`serializePopulationSnapshot` then encodes the raw draw:
+
+```
+validatePopulation             = PASSED (validated the INDEXED members)
+serializePopulationSnapshot    = SUCCEEDED, 1328 bytes
+member 0 == the RAW draw       = true
+member 0 == what was validated = false
+```
+
+That defeats this module's whole reason for existing — "a raw draw surviving as
+a hereditary record is exactly the bug class this seam exists to stop" — and
+produces a stream the codec's own decoder then refuses, because
+`deserializePopulationSnapshot` re-runs the gate on an index-built array. A
+producible, undecodable snapshot. The copy is now built by index.
+
+The lesson generalizes past encoders: **any function that validates one reading
+of a caller's collection and returns another has the same defect**, whether or
+not bytes are involved.
+
+The genotype and last-range spec cases are the load-bearing ones: they show a
+downstream decoder cannot be the backstop, because a hole at the end of a stream
+leaves nothing to run short. Over-yield leaked a foreign `RangeError` in every
+case.
+
+Every one of them now reads **by index**, which is immune to a tampered
+`Symbol.iterator` and cannot desynchronize from the count. The spec's ranges are
+array-*likes* rather than guaranteed arrays, so those are materialized into a
+local array first — but by index, on the same ruling, not by iteration.
+
+Two intermediate fixes are worth recording, because each looked complete and
+was not. Materializing with an unbounded `Array.from` let an infinite generator
+declaring `length: 2` exhaust memory instead of failing loud (measured at 47 MB
+for 2,000,000 values). Bounding the materialization fixed the hang but still
+read *values* from the iterator, which is the divergence above. Only the indexed
+read closes both.
+
+**Reachability, stated honestly.** The production path sanitizes this:
+`ownTerrain` copies arrays with `.slice()`, which is index-based and drops an
+overridden iterator, so `evaluatePopulation → resolveSpec → ownTerrain` was never
+exposed. The exposure is via direct calls to the public encoders — which is
+exactly what the codec tests, the browser smoke, and any future replay or import
+tooling do, and those are precisely the callers whose byte-exactness this PR
+exists to guarantee.
 
 **The rule for any future variable-length wire field:** count, allocation, and
-payload must come from one materialized value, never from two readings of a
-caller-supplied object.
+payload must all come from one INDEXED reading of the caller's value — the same
+reading the consumer of that field performs — never from two readings, and
+never from an iterator when indices are what execution consumes.
 
 ## Binary identity vs the JSON envelope
 
@@ -278,7 +354,7 @@ hidden extra touchpoint.
 
 ```
 npm run lint
-npm test                      # 48 files, 926 tests — the zero-lock-movement proof
+npm test                      # 48 files, 932 tests — the zero-lock-movement proof
 npm run test:determinism      # the narrow 4-file fresh-module gate
 npm run build
 npm run test:browser          # pinned Chromium 149.0.7827.55, incl. the new codec smoke

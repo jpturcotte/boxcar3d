@@ -35,7 +35,8 @@
 //     u8[] serializeGenotype bytes (the locked assembly walk)
 // Changing this walk is a deliberate POPULATION_SNAPSHOT_VERSION bump.
 
-import { GENOTYPE_VERSION, repairGenotype, serializeGenotype } from './assembly.js';
+import { GENOTYPE_VERSION, deserializeGenotype, repairGenotype, serializeGenotype } from './assembly.js';
+import { createByteReader } from './bytes.js';
 
 export const POPULATION_SNAPSHOT_VERSION = 1;
 
@@ -105,4 +106,47 @@ export function serializePopulationSnapshot(population) {
     out.set(genotypeBytes[i], o); o += genotypeBytes[i].length;
   }
   return out;
+}
+
+function decodeFail(path, value) {
+  throw new Error(`population: invalid encoded population at ${path} (${String(value)})`);
+}
+
+/**
+ * Decode serializePopulationSnapshot's bytes back into canonical population
+ * content. Exact inverse across the encoder's output domain (ruling R-C):
+ * besides re-running validatePopulation (dup ids, canonical-uint32 ids, the
+ * repair-identity canonicality tooth — a hand-crafted snapshot carrying a
+ * raw draw must not re-enter as heredity through the decode side door), the
+ * decoder enforces STRICTLY ASCENDING individualIds in the STREAM — the
+ * canonical bytes are ascending by construction, validatePopulation sorts a
+ * copy and cannot see stream order, and an unsorted stream would re-
+ * serialize sorted, breaking byte identity. Nested genotype failures
+ * propagate the assembly module's own decode idiom deliberately.
+ */
+export function deserializePopulationSnapshot(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const snapshotVersion = r.u16('snapshotVersion');
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) decodeFail('snapshotVersion', snapshotVersion);
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  const count = r.u32('individualCount');
+  if (count < 1) decodeFail('individualCount', count);
+  const individuals = [];
+  let prevId = -1;
+  for (let i = 0; i < count; i += 1) {
+    const individualId = r.u32(`individuals[${i}].individualId`);
+    if (individualId <= prevId) {
+      decodeFail(`individuals[${i}].individualId`, `${individualId} not strictly ascending (previous ${prevId})`);
+    }
+    prevId = individualId;
+    const genotypeByteLength = r.u32(`individuals[${i}].genotypeByteLength`);
+    // deserializeGenotype's own exact-length check catches a lying prefix.
+    const genotype = deserializeGenotype(r.bytes(genotypeByteLength, `individuals[${i}].genotype`));
+    individuals.push({ individualId, genotype });
+  }
+  r.expectEnd('bytes');
+  const population = { snapshotVersion: POPULATION_SNAPSHOT_VERSION, individuals };
+  validatePopulation(population);
+  return population;
 }

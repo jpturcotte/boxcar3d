@@ -88,6 +88,7 @@ import {
 } from './assembly.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
+import { createByteReader } from './bytes.js';
 
 export const POPULATION_INITIALIZER_VERSION = 1;
 
@@ -277,11 +278,33 @@ export function serializePopulationInitialization(initialization) {
     fail('initialization.seed', `${initialization.seed} disagrees with config.seed ${initialization.config.seed}`);
   }
   const cfg = resolveConfig({ ...initialization.config, seed: initialization.seed });
-  const snapshotBytes = serializePopulationSnapshot(initialization.population);
-  if (initialization.population.individuals.length !== cfg.populationSize) {
-    fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+  // Ruling R-E (additive digest-state input): the manifest's digest-state
+  // bytes do not carry the population itself, so the literal inverse
+  // invariant needs a population-free path. When initialization.population
+  // is present the original statements run VERBATIM (and a simultaneously
+  // declared state must AGREE, else fail loud); when absent, a declared
+  // canonical-uint32 initialization.populationSnapshotDigestState is bound.
+  // No existing caller passes the new field, so the production branch
+  // executes identical statements in identical order and the locked
+  // a6d04f75-class manifest digests stand.
+  let snapshotState;
+  if (initialization.population !== undefined) {
+    const snapshotBytes = serializePopulationSnapshot(initialization.population);
+    if (initialization.population.individuals.length !== cfg.populationSize) {
+      fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+    }
+    snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
+    if (initialization.populationSnapshotDigestState !== undefined
+      && initialization.populationSnapshotDigestState !== snapshotState) {
+      fail('initialization.populationSnapshotDigestState',
+        `${initialization.populationSnapshotDigestState} disagrees with the digest of initialization.population (${snapshotState})`);
+    }
+  } else {
+    snapshotState = initialization.populationSnapshotDigestState;
+    if (!Number.isInteger(snapshotState) || snapshotState < 0 || snapshotState > 0xffffffff) {
+      fail('initialization.populationSnapshotDigestState', snapshotState);
+    }
   }
-  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
   const cats = cfg.initialSuspensionTypes;
   const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + cats.length + 4));
   let o = 0;
@@ -297,4 +320,54 @@ export function serializePopulationInitialization(initialization) {
   for (const c of cats) { view.setUint8(o, SUSPENSION_TYPES.indexOf(c)); o += 1; }
   view.setUint32(o, snapshotState, true); o += 4;
   return new Uint8Array(view.buffer);
+}
+
+function decodeFail(path, value) {
+  throw new Error(`population-initializer: invalid encoded initialization at ${path} (${String(value)})`);
+}
+
+/**
+ * Decode serializePopulationInitialization's bytes back into the provenance
+ * manifest SHAPE (population-free — the bytes close over the content by
+ * digest state only). Exact inverse across the encoder's output domain
+ * (ruling R-C): the decoder re-runs resolveConfig on the decoded fields —
+ * EXACTLY the validation the encoder runs — so the S2 mask, duplicate
+ * categories, and every domain violation reject identically. Category stream
+ * order is preserved (config order is the wire order). The returned frozen
+ * `{ initializerVersion, genotypeVersion, seed, config,
+ * populationSnapshotDigestState }` feeds serializePopulationInitialization
+ * LITERALLY via the R-E population-absent path and reproduces the bytes.
+ */
+export function deserializePopulationInitialization(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const initializerVersion = r.u16('initializerVersion');
+  if (initializerVersion !== POPULATION_INITIALIZER_VERSION) decodeFail('initializerVersion', initializerVersion);
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  const seed = r.u32('seed');
+  const populationSize = r.u32('populationSize');
+  const minAxles = r.u8('minAxles');
+  const maxAxles = r.u8('maxAxles');
+  const symmetricProbability = r.finiteF64('symmetricProbability');
+  const minInitialPowerGene = r.finiteF64('minInitialPowerGene');
+  const categoryCount = r.u8('categoryCount');
+  const initialSuspensionTypes = [];
+  for (let i = 0; i < categoryCount; i += 1) {
+    const index = r.u8(`initialSuspensionTypes[${i}]`);
+    if (index >= SUSPENSION_TYPES.length) decodeFail(`initialSuspensionTypes[${i}]`, index);
+    initialSuspensionTypes.push(SUSPENSION_TYPES[index]);
+  }
+  const populationSnapshotDigestState = r.u32('populationSnapshotDigestState');
+  r.expectEnd('bytes');
+  const config = resolveConfig({
+    seed, populationSize, minAxles, maxAxles,
+    symmetricProbability, minInitialPowerGene, initialSuspensionTypes,
+  });
+  return Object.freeze({
+    initializerVersion,
+    genotypeVersion,
+    seed,
+    config: Object.freeze({ ...config }),
+    populationSnapshotDigestState,
+  });
 }

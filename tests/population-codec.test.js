@@ -352,6 +352,14 @@ describe('initialization manifest — round trips', () => {
     // that the binding is sufficient: re-running the initializer from the
     // decoded config alone reproduces the exact population, and its snapshot
     // digest state matches the attestation.
+    //
+    // THE HONEST-PRODUCER HALF OF A PAIR. This body only ever exercises
+    // manifests createInitialPopulation itself produced, so on its own it
+    // reads as a universal property of the FORMAT when it is a property of
+    // one PRODUCER. The dishonest-producer half — a manifest whose population
+    // came from a different seed than its config declares — lives in
+    // "initialization manifest — the provenance claim is UNVERIFIED" below,
+    // and shows the format accepts it.
     const original = createInitialPopulation({ seed: 123456, populationSize: 4 });
     const bytes = serializePopulationInitialization(original);
     const decoded = deserializePopulationInitialization(bytes);
@@ -563,5 +571,89 @@ describe('initialization manifest — malformed streams fail loud', () => {
     expect(Object.isFrozen(decoded)).toBe(true);
     expect(Object.isFrozen(decoded.config)).toBe(true);
     expect(bytesEqual(bytes, before)).toBe(true);
+  });
+});
+
+describe('initialization manifest — the provenance claim is UNVERIFIED (the deliberate boundary)', () => {
+  // The dishonest-producer half of the pair whose other half is
+  // "SELF-CONTAINED HISTORY: the decoded config reproduces the population it
+  // attests to". That test only ever feeds itself manifests
+  // createInitialPopulation produced, and anything named as a proof and never
+  // attacked is decoration — so this block attacks it.
+  //
+  // MEASURED ON HEAD, and this is the finding: a manifest whose `population`
+  // came from seed A while its `seed`/`config.seed` say B encodes, decodes,
+  // and re-encodes byte-identically. The encoder's ONLY content check is
+  // resolvePopulationDigestState's LENGTH cross-check (size, never identity),
+  // so the record is an UNVERIFIED PROVENANCE CLAIM (seed + config) sitting
+  // beside a VERIFIED CONTENT DIGEST (the snapshot state). The digest attests
+  // exactly WHICH population existed; nothing attests that the declared seed
+  // is what produced it.
+  //
+  // Pinned deliberately as the boundary, not as a defect. If a later PR adds
+  // an encoder-side cross-check (rebuild from cfg, fold, compare), THIS TEST
+  // FAILS and tells you to move the assertion — instead of the alternative,
+  // where the honest-producer test alone stays green for an entirely
+  // different reason and the change in contract goes unrecorded.
+
+  const SEED_A = 123456; // the population's TRUE seed (the file's declared literal)
+  const SEED_B = 654321; // the seed the forged manifest CLAIMS
+
+  const snapshotState = (population) => fnv1aFold(
+    FNV_OFFSET_BASIS, serializePopulationSnapshot(population),
+  );
+
+  test('a manifest whose population came from a DIFFERENT seed than its config encodes and round-trips', () => {
+    const fromA = createInitialPopulation({ seed: SEED_A, populationSize: 3 });
+    const fromB = createInitialPopulation({ seed: SEED_B, populationSize: 3 });
+    const stateA = snapshotState(fromA.population);
+    const stateB = snapshotState(fromB.population);
+    // The premise: the two seeds really do produce different populations, so
+    // the mismatch below is detectable and this is not a vacuous pass.
+    expect(stateA).not.toBe(stateB);
+
+    const forged = {
+      initializerVersion: fromA.initializerVersion,
+      seed: SEED_B,
+      config: { ...fromA.config, seed: SEED_B },
+      population: fromA.population, // seed-A CONTENT under a seed-B claim
+    };
+    // No complaint anywhere on the codec path.
+    const bytes = serializePopulationInitialization(forged);
+    const decoded = deserializePopulationInitialization(bytes);
+    expect(decoded.seed).toBe(SEED_B);
+    expect(decoded.populationSnapshotDigestState).toBe(stateA);
+    expect(bytesEqual(serializePopulationInitialization(decoded), bytes)).toBe(true);
+
+    // The self-contained-history property FAILS on these bytes, and THAT is
+    // the boundary: rebuilding from the decoded config reproduces seed B's
+    // population, whose digest state is not the one the manifest carries.
+    const rebuilt = createInitialPopulation({ ...decoded.config, seed: decoded.seed });
+    expect(snapshotState(rebuilt.population)).not.toBe(decoded.populationSnapshotDigestState);
+    expect(snapshotState(rebuilt.population)).toBe(stateB); // it rebuilt seed B, exactly as asked
+  });
+
+  test('the honest producer still reproduces its population (the two legs side by side)', () => {
+    const honest = createInitialPopulation({ seed: SEED_B, populationSize: 3 });
+    const decoded = deserializePopulationInitialization(serializePopulationInitialization(honest));
+    expect(decoded.seed).toBe(SEED_B);
+    const rebuilt = createInitialPopulation({ ...decoded.config, seed: decoded.seed });
+    expect(snapshotState(rebuilt.population)).toBe(decoded.populationSnapshotDigestState);
+  });
+
+  test('the ONE content check the manifest does make: a population/populationSize disagreement is refused', () => {
+    // The boundary is not "no checks at all" — resolvePopulationDigestState
+    // cross-checks the supplied population's SIZE against config.populationSize.
+    // That is the whole of it, and naming it here keeps the asymmetry legible:
+    // size is verified, identity is not.
+    const fromA = createInitialPopulation({ seed: SEED_A, populationSize: 3 });
+    const forged = {
+      initializerVersion: fromA.initializerVersion,
+      seed: SEED_A,
+      config: { ...fromA.config, populationSize: 4 },
+      population: fromA.population,
+    };
+    expect(() => serializePopulationInitialization(forged))
+      .toThrow(/population\.individuals\.length \(3 !== populationSize 4/);
   });
 });

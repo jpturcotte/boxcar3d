@@ -61,4 +61,63 @@ export default [
       ],
     },
   },
+  {
+    // THE OWNERSHIP BOUNDARY, as a build failure rather than a paragraph.
+    //
+    // Why this block exists: the canonical codec modules declared their
+    // ownership rules in prose, fixed each defect at the site where it was
+    // found, and never swept the class — so the rules held wherever someone
+    // had looked and nowhere else. Measured twice: deleting the cached
+    // intrinsic getters from deserializeGenotype left the whole suite green,
+    // and `bytesEqual` reported deadbeef equal to dead0000 for two review
+    // rounds while the design memo listed it as "loud on first use".
+    //
+    // Scope is the byte-handling family: modules that accept a Uint8Array or a
+    // collection from a caller and attest something about it.
+    files: [
+      'src/sim/bytes.js', 'src/sim/assembly.js', 'src/sim/population.js',
+      'src/sim/population-initializer.js', 'src/sim/population-evaluation.js',
+      'src/sim/trace.js', 'src/sim/fnv1a.js',
+    ],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          // `length`/`byteLength`/`byteOffset`/`buffer` are INHERITED ACCESSORS
+          // on %TypedArray%.prototype, so an own data property on a genuine
+          // Uint8Array shadows them with ordinary defineProperty — no Proxy
+          // needed. Legal reads go through a cached prototype getter
+          // (`TA_BYTE_LENGTH.call(x)`), which is a CallExpression and does not
+          // match this selector.
+          selector: 'MemberExpression[computed=false][property.name=/^(byteLength|byteOffset|buffer)$/]',
+          message: 'Byte geometry must come from a cached %TypedArray%.prototype getter (TA_BYTE_LENGTH.call(x) / typedArrayByteLength(x)), never a property read — an own data property on a genuine Uint8Array shadows the inherited accessor. If the receiver is provably module-owned, disable this line with a comment NAMING the receiver.',
+        },
+        {
+          // `subarray` is banned OUTRIGHT in this family, with no
+          // module-owned exception, because it is unsafe even when borrowed
+          // from the prototype: %TypedArray%.prototype.subarray performs
+          // species dispatch, reading the receiver's `constructor` and
+          // `constructor[Symbol.species]` and CONSTRUCTING the result. The
+          // previous round replaced `bytes.subarray(...)` with
+          // `TA_SUBARRAY.call(bytes, ...)` believing the intrinsic made it
+          // safe; it did not, and the snapshot decoder returned a genotype
+          // that was never in the stream. Use
+          // `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)`.
+          selector: 'MemberExpression[computed=false][property.name="subarray"]',
+          message: 'subarray is banned here: it is SPECIES-AWARE, so it runs caller code and can return a foreign array even when called as TA_SUBARRAY.call(x). Build the window with new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + offset, n).',
+        },
+        // DELIBERATELY NOT LINTED, recorded so the gap reads as a decision:
+        // the broader "never invoke caller-owned code" rule (.map/.forEach/
+        // .indexOf/.slice/iterators on caller values). A selector wide enough
+        // to catch it flags ~50 sites in these files, essentially all of them
+        // module-owned constants (WEIGHT_KEYS.every, SUSPENSION_TYPES.indexOf,
+        // ASSEMBLY_OPTION_KEYS.join), and a wall of disable comments obscures
+        // the audit trail it is meant to create. That rule is enforced
+        // BEHAVIOURALLY instead, in tests/ownership-boundary.test.js, which
+        // feeds hostile-but-plain data to every public export and asserts the
+        // RESULT — a stronger check than a shape ban, since it caught the
+        // species defect that a `.subarray` shape ban alone would have missed.
+      ],
+    },
+  },
 ];

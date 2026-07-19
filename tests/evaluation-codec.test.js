@@ -17,7 +17,9 @@
 // duplicates no digest literal.
 //
 // Seeds: 20260722 (fixture-A terrain), 20260723 (the declared flat terrain,
-// copy-declared from tests/population-evaluation.test.js).
+// copy-declared from tests/population-evaluation.test.js), 123456 (the small
+// declared manifest seed, copy-declared from tests/population-codec.test.js,
+// used only by the digest-state cross-check tooth at the end).
 
 import { describe, test, expect } from 'vitest';
 import {
@@ -26,6 +28,9 @@ import {
   serializeEvaluationSpec, serializeFitnessVector,
 } from '../src/sim/population-evaluation.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from '../src/sim/population.js';
+import {
+  createInitialPopulation, serializePopulationInitialization,
+} from '../src/sim/population-initializer.js';
 import { INTEGRITY_POLICY_VERSION, INTEGRITY_STATUS } from '../src/sim/integrity.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from '../src/sim/fnv1a.js';
@@ -777,5 +782,82 @@ describe('fitness vector — malformed streams fail loud', () => {
     parent.set(bytes, 8);
     const decoded = deserializeFitnessVector(parent.subarray(8, 8 + bytes.length));
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([3, 9]);
+  });
+});
+
+describe('fitness vector — the population/spec binding is UNVERIFIED (the deliberate boundary)', () => {
+  // The same gap as the initialization manifest's, one module over, and until
+  // now nobody had stated it: a fitness vector binds a population SNAPSHOT
+  // digest state and an evaluation SPEC digest state alongside a list of
+  // fitness numbers, and NOTHING in the encoding proves those numbers came
+  // from running that spec on that population. The digests attest WHICH
+  // population and WHICH spec existed; the rows beside them are an
+  // unverified claim about what happened when they met.
+  //
+  // MEASURED ON HEAD: rows whose ids exist in NO member of the attested
+  // population encode, decode, and re-encode byte-identically, at a member
+  // count unrelated to the population's. Pinned deliberately as the boundary,
+  // not as a defect — evaluatePopulation is what actually produces coherent
+  // vectors, and the codec is its inverse, not its auditor. If a later PR adds
+  // an encoder-side membership cross-check, THIS TEST FAILS and tells you to
+  // move the assertion rather than going quietly green for a different reason.
+  //
+  // The contrast tooth below pins the one coherence check these records DO
+  // make, so the asymmetry reads as a decision rather than an oversight.
+
+  test('a vector whose member ids are DISJOINT from the attested population still round-trips', () => {
+    const { population } = populationEvaluationInputsFor(POPULATION_FIXTURE_A);
+    const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population));
+    const populationIds = population.individuals.map((i) => i.individualId);
+    // The premise: these ids belong to no member of the population the
+    // snapshot state attests to, so acceptance below is a real gap and not a
+    // coincidental overlap.
+    const alienIds = [1000, 1001, 1002];
+    for (const id of alienIds) expect(populationIds, `id ${id}`).not.toContain(id);
+    expect(populationIds).toHaveLength(20);
+
+    const evaluation = {
+      spec: resolvedFixtureA(),
+      populationSnapshotDigestState: snapshotState,
+      individuals: alienIds.map((individualId, i) => ({
+        individualId, valid: true, integrityStatus: 'ok', fitness: i + 0.5,
+      })),
+    };
+    const bytes = serializeFitnessVector(evaluation); // no complaint
+    const decoded = deserializeFitnessVector(bytes);
+    // Even the COUNT is free: 3 rows attesting a 20-member population.
+    expect(decoded.individuals).toHaveLength(3);
+    expect(decoded.populationSnapshotDigestState).toBe(snapshotState);
+    expect(decoded.individuals.map((m) => m.individualId)).toEqual(alienIds);
+    expect(Object.is(decoded.individuals[1].fitness, 1.5)).toBe(true);
+    expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
+  });
+
+  test('the ONE coherence check these records DO make: a declared digest state that disagrees is refused', () => {
+    // resolveSpecDigestState (population-evaluation.js) and the manifest's
+    // resolvePopulationDigestState (population-initializer.js) are the same
+    // additive path in the same shape — take the object OR a pre-computed
+    // canonical uint32, and when BOTH are present they must AGREE. Asserted
+    // together, next to the check neither of them makes: a record can never
+    // attest to a spec or a population it CONTRADICTS, but nothing proves the
+    // numbers beside the digests were produced by running one on the other.
+    const evaluation = { ...synth([[0, 1, true]]), spec: resolvedFixtureA() };
+    const specState = fnv1aFold(FNV_OFFSET_BASIS, serializeEvaluationSpec(resolvedFixtureA()));
+    expect(bytesEqual(
+      serializeFitnessVector({ ...evaluation, evaluationSpecDigestState: specState }),
+      serializeFitnessVector(evaluation),
+    )).toBe(true);
+    expect(() => serializeFitnessVector({ ...evaluation, evaluationSpecDigestState: (specState ^ 1) >>> 0 }))
+      .toThrow(/evaluationSpecDigestState.*disagrees with the spec's computed state/);
+
+    // The manifest's twin, asserted here so the two paths sit side by side.
+    const init = createInitialPopulation({ seed: 123456, populationSize: 2 });
+    const popState = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(init.population));
+    expect(bytesEqual(
+      serializePopulationInitialization({ ...init, populationSnapshotDigestState: popState }),
+      serializePopulationInitialization(init),
+    )).toBe(true);
+    expect(() => serializePopulationInitialization({ ...init, populationSnapshotDigestState: (popState ^ 1) >>> 0 }))
+      .toThrow(/populationSnapshotDigestState.*disagrees with the population's computed state/);
   });
 });

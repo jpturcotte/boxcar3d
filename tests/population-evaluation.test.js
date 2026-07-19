@@ -750,3 +750,232 @@ describe('caller-trust boundary — the pure policy exports', () => {
     }
   });
 });
+
+// --- The unvalidated-field sweep ---------------------------------------------
+
+describe('unvalidated-field sweep — the four seams that used to propagate garbage silently', () => {
+  // MEASURED BEFORE THE FIX: every value in the tables below passed SILENTLY
+  // through every seam here. The module validated everything about a result
+  // except the NUMBER it returned — requireIntegrity, the three structural
+  // guards and the `=== true` comparisons all passed while maxForwardDistance
+  // was handed onward raw, and both champion selectors ordered `>` against
+  // whatever came out. The sweep is table-driven ACROSS the seams on purpose:
+  // the defect was one class in four places, and per-seam tests written one at
+  // a time are exactly how the fourth gets missed. Nothing here asserts a fix
+  // site; each row asserts that this module's own dialect refuses the value.
+  const GARBAGE = Object.freeze([
+    ['NaN', NaN],
+    ['Infinity', Infinity],
+    ['-Infinity', -Infinity],
+    ['the string "12"', '12'], // Number.isFinite('12') is false, but the old shape never ran it
+    ['undefined', undefined],
+    ['null', null],
+    ['a plain object', {}],
+  ]);
+  // Ids carry four more: they are canonical uint32s, and `-0` is the one that
+  // matters most — setUint32 erases the sign bit, so a -0 id encoded as +0 and
+  // broke Object.is round-tripping while comparing equal to every other 0.
+  const ID_GARBAGE = Object.freeze([
+    ...GARBAGE,
+    ['a negative integer', -1],
+    ['a non-integer', 1.5],
+    ['-0', -0],
+    ['2**32 (one past the u32 ceiling)', 2 ** 32],
+  ]);
+
+  // Copy-declared selectable result (the fitness-policy block's `vr` shape).
+  const selectableResult = (over = {}) => ({
+    finite: true,
+    bodies: { count: 5, allValid: true, sleepingAtEnd: 0 },
+    joints: { count: 4, allValid: true },
+    maxForwardDistance: 12.5,
+    integrity: {
+      policyVersion: INTEGRITY_POLICY_VERSION,
+      status: 'ok',
+      firstFailureStep: null,
+      reasons: [],
+      observations: {
+        peakBodySpeed: 3.2,
+        peakSpeedDelta: 0.5,
+        peakStepDisplacement: 0.05,
+        firstAlertStep: null,
+        firstCatastrophicStep: null,
+      },
+    },
+    ...over,
+  });
+  const okRow = (over = {}) => ({
+    individualId: 0, fitness: 1, valid: true, integrityStatus: 'ok', ...over,
+  });
+  // A real compiled IR, then one leaf poked: the production path only ever
+  // hands spawnPoseOnFlatStart compileAssembly output, so the guards being
+  // swept are exactly the ones a direct caller (replay/import tooling) reaches.
+  const irWith = (mutate) => {
+    const ir = compileAssembly(s0PlainGenotype());
+    mutate(ir);
+    return ir;
+  };
+
+  const SEAMS = Object.freeze([
+    {
+      name: 'vehicleResult.maxForwardDistance -> fitnessFromVehicleResult',
+      values: GARBAGE,
+      path: /vehicleResult\.maxForwardDistance/,
+      run: (bad) => fitnessFromVehicleResult(selectableResult({ maxForwardDistance: bad })),
+    },
+    {
+      name: 'individual.fitness -> championFromEvaluation',
+      values: GARBAGE,
+      path: /individual 0 fitness/,
+      run: (bad) => championFromEvaluation({ individuals: [okRow({ fitness: bad })] }),
+    },
+    {
+      name: 'individual.fitness -> selectableChampionFromEvaluation',
+      values: GARBAGE,
+      path: /individual 0 fitness/,
+      run: (bad) => selectableChampionFromEvaluation({ individuals: [okRow({ fitness: bad })] }),
+    },
+    {
+      name: 'individual.individualId -> championFromEvaluation',
+      values: ID_GARBAGE,
+      path: /evaluation\.individuals\[0\]\.individualId/,
+      run: (bad) => championFromEvaluation({ individuals: [okRow({ individualId: bad })] }),
+    },
+    {
+      name: 'individual.individualId -> selectableChampionFromEvaluation',
+      values: ID_GARBAGE,
+      path: /evaluation\.individuals\[0\]\.individualId/,
+      run: (bad) => selectableChampionFromEvaluation({ individuals: [okRow({ individualId: bad })] }),
+    },
+    {
+      name: 'ir.chassis.aabb.min.y -> spawnPoseOnFlatStart',
+      values: GARBAGE,
+      path: /ir\.chassis\.aabb\.min\.y/,
+      run: (bad) => spawnPoseOnFlatStart(
+        irWith((ir) => { ir.chassis.aabb.min.y = bad; }), { x: 0, z: 0 },
+      ),
+    },
+    {
+      name: 'wheel.radius -> spawnPoseOnFlatStart',
+      values: GARBAGE,
+      path: /ir\.axles\[0\]\.wheels\[0\]\.radius/,
+      run: (bad) => spawnPoseOnFlatStart(
+        irWith((ir) => { ir.axles[0].wheels[0].radius = bad; }), { x: 0, z: 0 },
+      ),
+    },
+  ]);
+
+  for (const seam of SEAMS) {
+    test(`${seam.name} refuses every out-of-domain value in the module dialect`, () => {
+      for (const [label, bad] of seam.values) {
+        let thrown;
+        let returned;
+        try { returned = seam.run(bad); } catch (err) { thrown = err; }
+        expect(thrown, `${seam.name}: ${label} was ACCEPTED (returned ${JSON.stringify(returned) ?? String(returned)})`)
+          .toBeDefined();
+        // A foreign TypeError off a dereference is not a diagnosis: replay and
+        // import tooling cannot act on it, and it means the guard is absent and
+        // something downstream happened to blow up instead.
+        expect(thrown, `${seam.name}: ${label} threw a foreign ${thrown.constructor.name}`)
+          .not.toBeInstanceOf(TypeError);
+        expect(thrown.message, `${seam.name}: ${label}`)
+          .toMatch(/^population-evaluation: invalid evaluation spec at /);
+        expect(thrown.message, `${seam.name}: ${label} named the wrong field`).toMatch(seam.path);
+      }
+    });
+  }
+
+  test('the sweep\'s premise: the same seams accept their in-domain values', () => {
+    // Without this control every row above would also pass if a seam simply
+    // rejected everything — the guard would be indistinguishable from a bug.
+    expect(fitnessFromVehicleResult(selectableResult())).toBe(12.5);
+    expect(championFromEvaluation({ individuals: [okRow()] }).individualId).toBe(0);
+    expect(selectableChampionFromEvaluation({ individuals: [okRow()] }).individualId).toBe(0);
+    // -0 is a LEGAL fitness (setFloat64 preserves the sign bit) — the
+    // asymmetry with individualId above is deliberate, not an oversight.
+    expect(Object.is(championFromEvaluation({ individuals: [okRow({ fitness: -0 })] }).fitness, -0)).toBe(true);
+    expect(spawnPoseOnFlatStart(compileAssembly(s0PlainGenotype()), { x: 0, z: 0 }).position.y)
+      .toBeGreaterThan(0);
+  });
+});
+
+// --- Permutation invariance (the BEHAVIOURAL tooth) --------------------------
+
+describe('champion selection is invariant under input permutation', () => {
+  // THE CLAIM UNDER TEST is championFromEvaluation's own docblock: "Total order
+  // robust to input arrangement". A per-field guard cannot establish it — the
+  // property is about the COMPARATOR, not about any one value. It was false
+  // for exactly one input class: `>` and `!==` are both false against NaN, so a
+  // single NaN row made the ordering neither antisymmetric nor total, the first
+  // eligible row won permanently, and the answer depended on array position.
+  // This asserts the STATED property over every permutation instead of
+  // enumerating the inputs that break it.
+  function permutations(rows) {
+    if (rows.length <= 1) return [rows];
+    const out = [];
+    for (let i = 0; i < rows.length; i += 1) {
+      const rest = [...rows.slice(0, i), ...rows.slice(i + 1)];
+      for (const p of permutations(rest)) out.push([rows[i], ...p]);
+    }
+    return out;
+  }
+
+  // A declared set exercising every rule both selectors use: a strict fitness
+  // maximum that is UNSELECTABLE, an exact fitness tie broken by lowest id, a
+  // valid-vs-invalid tie at that same fitness, and a zero-fitness member.
+  const ROWS = Object.freeze([
+    { individualId: 7, fitness: 3, valid: true, integrityStatus: 'ok' },
+    { individualId: 2, fitness: 3, valid: true, integrityStatus: 'ok' },
+    { individualId: 5, fitness: 9, valid: true, integrityStatus: 'numericalDivergence' },
+    { individualId: 9, fitness: 3, valid: false, integrityStatus: 'ok' },
+    { individualId: 4, fitness: 0, valid: true, integrityStatus: 'ok' },
+  ]);
+
+  test('all 120 permutations of the declared rows give ONE answer per selector', () => {
+    const perms = permutations([...ROWS]);
+    expect(perms).toHaveLength(120);
+    for (const individuals of perms) {
+      const order = individuals.map((r) => r.individualId).join(',');
+      // Diagnostic: the best OBSERVED row — id 5, despite being unselectable.
+      expect(championFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(5);
+      // Selection: id 5 is filtered (integrity), id 9 is filtered (invalid),
+      // the 3.0 tie between 7 and 2 resolves to the lowest id.
+      expect(selectableChampionFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(2);
+    }
+  });
+
+  test('all 720 permutations INCLUDING a NaN-fitness row are REFUSED, never answered', () => {
+    // Pre-fix this was the position-dependent case: with the NaN row first,
+    // nothing could displace it; with it last, it never won. Either answer is
+    // wrong — a non-total comparator has no correct winner, so the only
+    // invariant answer is a loud refusal, in every arrangement.
+    const perms = permutations([...ROWS, { individualId: 1, fitness: NaN, valid: true, integrityStatus: 'ok' }]);
+    expect(perms).toHaveLength(720);
+    for (const individuals of perms) {
+      const order = individuals.map((r) => r.individualId).join(',');
+      for (const fn of [championFromEvaluation, selectableChampionFromEvaluation]) {
+        let thrown;
+        try { fn({ individuals }); } catch (err) { thrown = err; }
+        expect(thrown, `${fn.name} answered instead of refusing (order ${order})`).toBeDefined();
+        expect(thrown.message, `${fn.name} order ${order}`).toMatch(/individual 1 fitness \(NaN\)/);
+      }
+    }
+  });
+
+  test('an all-unselectable population yields null in every permutation', () => {
+    // The explicit-null contract is itself order-sensitive if the filter and
+    // the comparator are entangled: a "least-bad" fallback would return
+    // whichever row happened to be seen first.
+    const unselectable = [
+      { individualId: 3, fitness: 0, valid: true, integrityStatus: 'numericalDivergence' },
+      { individualId: 8, fitness: 0, valid: false, integrityStatus: 'ok' },
+      { individualId: 1, fitness: 0, valid: false, integrityStatus: 'nonFinite' },
+    ];
+    for (const individuals of permutations(unselectable)) {
+      const order = individuals.map((r) => r.individualId).join(',');
+      expect(selectableChampionFromEvaluation({ individuals }), `order ${order}`).toBeNull();
+      // The diagnostic selector still answers, and answers invariantly.
+      expect(championFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(3);
+    }
+  });
+});

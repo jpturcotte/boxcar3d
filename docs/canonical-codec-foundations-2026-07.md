@@ -357,7 +357,18 @@ buffer whose content is `deadbeef`.
   the very bytes the canonicality tooth checked (one validation walk returns
   `{individual, bytes}` pairs; the encoder re-reads nothing), and
   `serializeFitnessVector` writes from its preflight's module-owned rows.
-  Nothing is re-read from the caller after it was checked.
+  Nothing is re-read from the caller after it was checked. `validatedMembers`
+  captures each member's `individualId` and `genotype` ONCE and every later
+  consumer — sort, encoder, attestation, error text — uses the capture: an own
+  accessor walking `0,0,0,7,9` had one member VALIDATED as id 0, ENCODED as id
+  7, and RETURNED by `attestPopulation` as id 9, three identities from one
+  member. **Owning the judgement is not the same as owning the return value.**
+  Both champion selectors capture every compared field once and compare only
+  the captures, but they still hand back the caller's winning row, because
+  production rows carry a `diagnostics` block the diagnostic selector exists to
+  report — narrowing that to a four-field summary would be an API change
+  wearing a hardening costume. They also enforce the fitness-vector row domain,
+  so a row that could not be serialized cannot be ranked.
 - **Read byte-boundary geometry through intrinsics.** `bytes.js` caches
   `length`/`buffer`/`byteOffset`/`byteLength`; `deserializeGenotype`,
   `trace.js` and `fnv1a.js` cache the subset each needs (module-local, because

@@ -982,15 +982,29 @@ export function deserializeFitnessVector(bytes) {
  * check matters for the same reason one level down: it is the tie-breaker, so
  * a non-canonical id makes ties resolve by an uncomparable value.
  *
- * It returns a MODULE-OWNED snapshot rather than the caller's row, and the
- * comparators below read only these. Validating a field and then re-reading it
- * to compare is the same defect `serializeFitnessVector`'s indexed preflight
+ * Each field is captured ONCE into a module-owned candidate and the
+ * comparators read only those captures — validating a field and then re-reading
+ * it to compare is the defect `serializeFitnessVector`'s indexed preflight
  * exists to prevent, applied at the encoder and skipped at the two SELECTION
- * entry points — which is precisely where a comparator that sees a different
- * value than the validator did would matter. An own accessor on a plain object
- * is ordinary JavaScript, not a Proxy.
+ * entry points, which is precisely where a comparator seeing a different value
+ * than its validator decides which genome breeds. An own accessor on a plain
+ * object is ordinary JavaScript, not a Proxy.
+ *
+ * `source` is the caller's original row, and the selectors RETURN it: these
+ * helpers have always handed back the winning evaluation row, production rows
+ * carry a full `diagnostics` block, and the diagnostic selector exists to serve
+ * reports — so returning a four-field summary would silently narrow a working
+ * API under cover of hardening. Owned values decide; the caller's row is what
+ * comes back.
+ *
+ * The domain is the fitness vector encoder's, so a row that could not be
+ * SERIALIZED cannot be RANKED either: canonical id, strict boolean validity,
+ * KNOWN integrity status, finite non-negative fitness, and the policy-v2
+ * coherence rule that an unselectable member carries fitness 0. (The diagnostic
+ * selector may still surface an unselectable row at a zero-fitness tie — that
+ * is its documented job — but never an internally contradictory one.)
  */
-function championRow(ind, i) {
+function championCandidate(ind, i) {
   if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
   const individualId = ind.individualId;
   if (!isCanonicalUint32(individualId)) {
@@ -998,10 +1012,17 @@ function championRow(ind, i) {
   }
   const valid = ind.valid;
   if (typeof valid !== 'boolean') fail(`individual ${individualId} valid`, valid);
+  const integrityStatus = ind.integrityStatus;
+  if (!INTEGRITY_STATUS.includes(integrityStatus)) {
+    fail(`individual ${individualId} integrityStatus`, integrityStatus);
+  }
   const fitness = ind.fitness;
   if (!isCanonicalFitness(fitness)) fail(`individual ${individualId} fitness`, fitness);
-  const integrityStatus = ind.integrityStatus;
-  return { individualId, valid, fitness, integrityStatus };
+  if ((!valid || integrityStatus !== 'ok') && fitness !== 0) {
+    fail(`individual ${individualId} fitness`,
+      `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
+  }
+  return { source: ind, individualId, valid, fitness, integrityStatus };
 }
 
 /**
@@ -1032,10 +1053,12 @@ export function championFromEvaluation(evaluation) {
   const individuals = evaluation.individuals;
   let champion = null;
   for (let i = 0; i < individuals.length; i += 1) {
-    const row = championRow(individuals[i], i);
+    const row = championCandidate(individuals[i], i);
     if (champion === null || better(row, champion)) champion = row;
   }
-  return champion;
+  // The caller's original row — complete with diagnostics — chosen by
+  // module-owned values.
+  return champion.source;
 }
 
 /**
@@ -1059,10 +1082,7 @@ export function selectableChampionFromEvaluation(evaluation) {
   const individuals = evaluation.individuals;
   let champion = null;
   for (let i = 0; i < individuals.length; i += 1) {
-    const row = championRow(individuals[i], i);
-    if (!INTEGRITY_STATUS.includes(row.integrityStatus)) {
-      fail(`individual ${row.individualId} integrityStatus`, row.integrityStatus);
-    }
+    const row = championCandidate(individuals[i], i);
     if (!(row.valid && row.integrityStatus === 'ok')) continue;
     if (champion === null
       || row.fitness > champion.fitness
@@ -1070,5 +1090,7 @@ export function selectableChampionFromEvaluation(evaluation) {
       champion = row;
     }
   }
-  return champion;
+  // null when no selectable individual exists (the explicit Phase-1B
+  // condition); otherwise the caller's own winning row.
+  return champion === null ? null : champion.source;
 }

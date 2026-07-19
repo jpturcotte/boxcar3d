@@ -106,22 +106,38 @@ function validatedMembers(population) {
   for (let i = 0; i < individuals.length; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`individuals[${i}]`, ind);
-    if (!isCanonicalUint32(ind.individualId)) fail(`individuals[${i}].individualId`, ind.individualId);
-    if (seen.has(ind.individualId)) fail(`individuals[${i}].individualId`, `duplicate ${ind.individualId}`);
-    seen.add(ind.individualId);
+    // CAPTURE ONCE, then never touch the caller's property again. `ind` is a
+    // caller object and `individualId` may be an own ACCESSOR — ordinary
+    // JavaScript, not a Proxy — so every extra read is an independent chance to
+    // return a different value. The earlier shape read it five times (validate,
+    // duplicate-check, Set insert, error text, sort) and both consumers read it
+    // a sixth and seventh time off the stored `individual`. Measured: one member
+    // whose getter walked 0,0,0,7,9 was VALIDATED as id 0, ENCODED as id 7, and
+    // RETURNED by attestPopulation as id 9 — three identities for one member,
+    // defeating precisely the attestation this walk exists to provide.
+    const individualId = ind.individualId;
+    const genotype = ind.genotype;
+    if (!isCanonicalUint32(individualId)) fail(`individuals[${i}].individualId`, individualId);
+    if (seen.has(individualId)) fail(`individuals[${i}].individualId`, `duplicate ${individualId}`);
+    seen.add(individualId);
     // serializeGenotype runs validateGenotype (structure + gene domains);
     // byte-comparing against the repaired form is the canonicality tooth.
     // Default assembly options define the canonical form (the whole Phase 1A
-    // pipeline compiles with defaults).
-    const bytes = serializeGenotype(ind.genotype);
-    const repairedBytes = serializeGenotype(repairGenotype(ind.genotype));
+    // pipeline compiles with defaults). Both sides read the SAME captured
+    // reference, so the tooth cannot compare one genotype against the repair
+    // of a different one.
+    const bytes = serializeGenotype(genotype);
+    const repairedBytes = serializeGenotype(repairGenotype(genotype));
     if (!bytesEqual(bytes, repairedBytes)) {
-      throw new Error(`population: individuals[${i}] (individualId ${ind.individualId}) is not canonical — `
+      throw new Error(`population: individuals[${i}] (individualId ${individualId}) is not canonical — `
         + 'repair moved it; populations must carry repaired genotypes (compileAssembly(...).genotype)');
     }
-    members.push({ individual: ind, bytes });
+    members.push({ individual: ind, individualId, bytes });
   }
-  return members.sort((a, b) => a.individual.individualId - b.individual.individualId);
+  // Sorting, encoding, attestation and every later diagnostic use the CAPTURED
+  // scalar. `individual` is retained only so validatePopulation can hand the
+  // caller's own records back; nothing downstream reads an id through it.
+  return members.sort((a, b) => a.individualId - b.individualId);
 }
 
 /**
@@ -159,7 +175,7 @@ function encodeMembers(members) {
   view.setUint16(o, GENOTYPE_VERSION, true); o += 2;
   view.setUint32(o, members.length, true); o += 4;
   for (let i = 0; i < members.length; i += 1) {
-    view.setUint32(o, members[i].individual.individualId, true); o += 4;
+    view.setUint32(o, members[i].individualId, true); o += 4;
     view.setUint32(o, members[i].bytes.length, true); o += 4;
     out.set(members[i].bytes, o); o += members[i].bytes.length;
   }
@@ -197,7 +213,7 @@ export function attestPopulation(population) {
   const individuals = [];
   for (let i = 0; i < members.length; i += 1) {
     individuals.push({
-      individualId: members[i].individual.individualId,
+      individualId: members[i].individualId,
       genotype: deserializeGenotype(members[i].bytes),
     });
   }

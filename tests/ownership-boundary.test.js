@@ -858,6 +858,25 @@ const VERDICTS = Object.freeze([
   'ownedCopy', 'freshBytes', 'scalar', 'sharedWindow', 'callerElements', 'notExercised',
 ]);
 
+// Every `callerElements` verdict, each a predicate that DEMONSTRATES the
+// exception by identity. Keyed by export name and asserted set-equal to the
+// declared verdicts, so a new exception cannot be declared without being shown.
+function callerElementsCases() {
+  const population = twoMemberPopulation();
+  const evaluation = {
+    individuals: [
+      { individualId: 0, fitness: 1.5, valid: true, integrityStatus: 'ok' },
+      { individualId: 3, fitness: 9.5, valid: true, integrityStatus: 'ok' },
+    ],
+  };
+  return {
+    validatePopulation: () => validatePopulation(population)[0] === population.individuals[0],
+    championFromEvaluation: () => championFromEvaluation(evaluation) === evaluation.individuals[1],
+    selectableChampionFromEvaluation:
+      () => selectableChampionFromEvaluation(evaluation) === evaluation.individuals[1],
+  };
+}
+
 // The `ownedCopy` cases, each a real call with plain data.
 function ownedCopyCases() {
   const g = canonicalGenotype();
@@ -929,6 +948,22 @@ describe('(4) copy-on-intake — the module owns what it hands back', () => {
     expect(freshBytesCases().map((c) => c.name).sort()).toEqual(declared('freshBytes'));
   });
 
+  test('every callerElements verdict is EXERCISED, not just spelled legally', () => {
+    // The gap this closes was real and in this file: the table declared both
+    // champion selectors `callerElements` while a test below asserted they
+    // returned a module-owned row — the opposite — and the suite stayed green,
+    // because the only generic check was `VERDICTS.toContain(verdict)`, i.e.
+    // that the LABEL is a legal string. A verdict nothing exercises is a
+    // comment with a colon in it. Every `callerElements` entry must have a case
+    // here that actually demonstrates the exception.
+    const declared = Object.entries(OWNERSHIP_VERDICTS)
+      .filter(([, v]) => v === 'callerElements').map(([name]) => name).sort();
+    expect(Object.keys(callerElementsCases()).sort()).toEqual(declared);
+    for (const [name, demonstrate] of Object.entries(callerElementsCases())) {
+      expect(demonstrate(), `${name} does not return the caller's own object`).toBe(true);
+    }
+  });
+
   for (const c of ownedCopyCases()) {
     test(`${c.name}: no caller-owned object survives into the result`, () => {
       assertNoReferenceEscape(c.result, c.roots, c.name);
@@ -943,6 +978,38 @@ describe('(4) copy-on-intake — the module owns what it hands back', () => {
       assertNoReferenceEscape({ bytes: c.result }, c.roots, c.name);
     });
   }
+
+  test('the attestation reads each member scalar EXACTLY ONCE', () => {
+    // The blocker this pins: `validatedMembers` read `ind.individualId` five
+    // times (validate, duplicate-check, Set insert, error text, sort) and both
+    // consumers read it again off the stored member. With an own accessor —
+    // ordinary JavaScript, no Proxy — one member was VALIDATED as id 0,
+    // ENCODED as id 7, and RETURNED by attestPopulation as id 9. Three
+    // identities for one member, which defeats the whole point of an
+    // attestation: evaluatePopulation hashes the bytes and compiles the
+    // returned members, and its comment claims those are one object.
+    const genotype = canonicalGenotype();
+    let idReads = 0;
+    let genotypeReads = 0;
+    const walk = [0, 0, 0, 7, 9, 9, 9, 9];
+    const population = {
+      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
+      individuals: [{
+        get individualId() { idReads += 1; return walk[idReads - 1] ?? 9; },
+        get genotype() { genotypeReads += 1; return genotype; },
+      }],
+    };
+
+    const attested = attestPopulation(population);
+    expect(idReads, 'individualId read more than once').toBe(1);
+    expect(genotypeReads, 'genotype read more than once').toBe(1);
+
+    // The three identities that used to disagree must now be the same one.
+    const decoded = deserializePopulationSnapshot(attested.bytes);
+    expect(attested.individuals[0].individualId).toBe(0);
+    expect(decoded.individuals[0].individualId).toBe(0);
+    expect(decoded.individuals).toHaveLength(attested.individuals.length);
+  });
 
   test('attestPopulation decodes each genotype from the bytes it attests', () => {
     // The strongest form of the rule: not merely "a copy", but a copy produced
@@ -981,34 +1048,48 @@ describe('(4) copy-on-intake — the module owns what it hands back', () => {
     expect(sorted[0].genotype).toBe(population.individuals[0].genotype);
   });
 
-  test('both champion selectors return a MODULE-OWNED row, judged on owned values', () => {
-    // NOT an exception — the rule. `championRow` validates each field and
-    // returns a module-owned snapshot; the comparators read only that snapshot,
-    // so the values ordered are provably the values validated. The earlier
-    // shape validated the row and then re-read `a.fitness` / `a.valid` inside
-    // the comparator, which is the defect `serializeFitnessVector`'s indexed
-    // preflight exists to prevent — applied at the encoder and skipped at the
-    // two SELECTION entry points, i.e. exactly where a comparator disagreeing
-    // with its validator decides which genome breeds. An own accessor on a
-    // plain object is ordinary JavaScript, not a Proxy.
+  test('DELIBERATE EXCEPTION — champion selectors return the caller\'s WINNING row', () => {
+    // The verdict table says `callerElements`, and this asserts exactly that,
+    // because these helpers have always handed back the winning evaluation row
+    // and production rows carry a full `diagnostics` block that the diagnostic
+    // selector exists to report. Returning a compact four-field summary would
+    // silently narrow a working API under cover of hardening.
     //
-    // Phase 1B stores the champion as heredity, so an owned record is also the
-    // right shape for elitism to inherit.
+    // What IS owned is the JUDGEMENT: championCandidate captures every compared
+    // field once and the comparators read only those captures, so an own
+    // accessor cannot show the validator one value and the comparator another.
+    // Owned values decide; the caller's row comes back.
     const evaluation = {
       individuals: [
-        { individualId: 0, fitness: 1.5, valid: true, integrityStatus: 'ok' },
-        { individualId: 3, fitness: 9.5, valid: true, integrityStatus: 'ok' },
+        { individualId: 0, fitness: 1.5, valid: true, integrityStatus: 'ok', diagnostics: { note: 'a' } },
+        { individualId: 3, fitness: 9.5, valid: true, integrityStatus: 'ok', diagnostics: { note: 'b' } },
       ],
     };
     for (const champion of [
       championFromEvaluation(evaluation),
       selectableChampionFromEvaluation(evaluation),
     ]) {
-      expect(champion).not.toBe(evaluation.individuals[1]); // module-owned
-      expect(champion.individualId).toBe(3);
-      assertBitEqual(champion.fitness, 9.5, 'champion.fitness');
-      expect(champion.valid).toBe(true);
-      expect(champion.integrityStatus).toBe('ok');
+      expect(champion).toBe(evaluation.individuals[1]); // the caller's row itself
+      expect(champion.diagnostics.note).toBe('b'); // diagnostics survive
+    }
+  });
+
+  test('champion selectors read each compared field EXACTLY ONCE', () => {
+    // The poisoning route this closes: an own accessor that answers the
+    // validator with an in-domain value and the comparator with another. Read
+    // counts are the direct evidence; the permutation-invariance tooth in
+    // population-evaluation.test.js is the behavioural half.
+    const counts = { individualId: 0, fitness: 0, valid: 0, integrityStatus: 0 };
+    const row = (id, fit) => ({
+      get individualId() { counts.individualId += 1; return id; },
+      get fitness() { counts.fitness += 1; return fit; },
+      get valid() { counts.valid += 1; return true; },
+      get integrityStatus() { counts.integrityStatus += 1; return 'ok'; },
+    });
+    const evaluation = { individuals: [row(0, 1.5), row(3, 9.5)] };
+    championFromEvaluation(evaluation);
+    for (const [field, n] of Object.entries(counts)) {
+      expect(n, `${field} was read ${n} times across 2 rows`).toBe(2);
     }
   });
 

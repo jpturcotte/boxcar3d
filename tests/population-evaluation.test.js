@@ -200,7 +200,15 @@ describe('fitness policy (v2 — the numerical-integrity gate)', () => {
 // --- Champion selection (pure) -----------------------------------------------
 
 describe('championFromEvaluation', () => {
-  const ev = (entries) => ({ individuals: entries.map(([individualId, fitness, valid = true]) => ({ individualId, fitness, valid })) });
+  // Rows carry `integrityStatus` because the selectors now enforce the fitness
+  // vector's row domain — a row that could not be SERIALIZED must not be
+  // RANKED either. Production rows have always carried it (evaluatePopulation
+  // emits it per member); these fixtures predate policy v2 and were simply
+  // omitting it.
+  const ev = (entries) => ({
+    individuals: entries.map(([individualId, fitness, valid = true, integrityStatus = 'ok']) => (
+      { individualId, fitness, valid, integrityStatus })),
+  });
 
   test('strictly greater fitness wins', () => {
     expect(championFromEvaluation(ev([[0, 1], [1, 3], [2, 2]])).individualId).toBe(1);
@@ -226,9 +234,17 @@ describe('championFromEvaluation', () => {
     expect(championFromEvaluation(ev([[1, 0, true], [0, 0, false]])).individualId).toBe(1);
     // Among several valid zero-fitness ties, the lowest id still wins.
     expect(championFromEvaluation(ev([[5, 0, false], [3, 0, true], [7, 0, true]])).individualId).toBe(3);
-    // Greater fitness still beats validity: an invalid higher score is champion
-    // (fitness is the primary key; validity only breaks an EXACT tie).
-    expect(championFromEvaluation(ev([[0, 9, false], [1, 4, true]])).individualId).toBe(0);
+    // This test used to end by asserting that an INVALID row with fitness 9
+    // outranks a valid row with fitness 4, on the reasoning that fitness is the
+    // primary key and validity only breaks an exact tie. That ordering rule is
+    // unchanged — but the row it was demonstrated with is now REFUSED, because
+    // fitness policy v2 makes an unselectable individual's fitness 0 by
+    // construction, so an invalid row carrying 9 is internally contradictory and
+    // the fitness vector encoder already rejects it. Ranking a row that cannot
+    // be serialized was the gap. Asserting the refusal is strictly stronger
+    // than asserting an ordering over a state the policy forbids.
+    expect(() => championFromEvaluation(ev([[0, 9, false], [1, 4, true]])))
+      .toThrow(/unselectable individual \(valid false, integrity ok\) must have fitness 0, got 9/);
   });
 
   test('a near-tie one ulp apart is NOT a tie', () => {
@@ -268,11 +284,20 @@ describe('selectableChampionFromEvaluation (the SELECTION eligibility contract)'
     expect(selectableChampionFromEvaluation(e).individualId).toBe(5);
   });
 
-  test('defensive: a contradictory unselectable-with-big-fitness row is filtered before comparison', () => {
-    // The encoder refuses such rows; the selector independently never ranks
-    // them (defense in depth — no single seam is load-bearing).
+  test('defensive: a contradictory unselectable-with-big-fitness row is REFUSED, not merely filtered', () => {
+    // Formerly this asserted the row was silently skipped and id 1 won. Being
+    // filtered is weaker than being refused: the encoder rejects such a row, so
+    // a selector that quietly tolerates it lets a contradictory record travel
+    // further into Phase 1B than it could ever be serialized. Both seams now
+    // enforce the same row domain, and neither is load-bearing alone.
     const e = ev([[0, 99, true, 'numericalDivergence'], [1, 1, true, 'ok']]);
-    expect(selectableChampionFromEvaluation(e).individualId).toBe(1);
+    expect(() => selectableChampionFromEvaluation(e))
+      .toThrow(/unselectable individual \(valid true, integrity numericalDivergence\) must have fitness 0, got 99/);
+    // The legal form of the same intent — an unselectable row at fitness 0 —
+    // is still filtered, and id 1 still wins.
+    expect(selectableChampionFromEvaluation(
+      ev([[0, 0, true, 'numericalDivergence'], [1, 1, true, 'ok']]),
+    ).individualId).toBe(1);
   });
 
   test('NO selectable individual ⇒ an explicit null, never a least-bad member', () => {
@@ -920,15 +945,28 @@ describe('champion selection is invariant under input permutation', () => {
     return out;
   }
 
-  // A declared set exercising every rule both selectors use: a strict fitness
-  // maximum that is UNSELECTABLE, an exact fitness tie broken by lowest id, a
-  // valid-vs-invalid tie at that same fitness, and a zero-fitness member.
+  // A declared set exercising every rule both selectors use, and — the point —
+  // one where the two selectors DISAGREE, so a permutation that entangled the
+  // filter with the comparator would show up as a changed answer rather than as
+  // a coincidence.
+  //
+  // Every row is legal under the fitness-vector row domain the selectors now
+  // enforce, which constrains the fixture in an informative way: policy v2
+  // makes an unselectable individual's fitness 0 BY CONSTRUCTION, so "an
+  // unselectable strict fitness maximum" is not a state that can exist, and an
+  // earlier version of this fixture asserted an ordering over exactly that
+  // impossible row. The realistic case where the selectors part company is the
+  // all-zero generation (nothing moved, or everything diverged): the diagnostic
+  // reports the lowest-id VALID row even though it is integrity-failed, while
+  // selection filters it and answers with the lowest-id CLEAN row. That is the
+  // Phase-1B condition worth pinning. Fitness-magnitude ordering is covered by
+  // the championFromEvaluation describe above.
   const ROWS = Object.freeze([
-    { individualId: 7, fitness: 3, valid: true, integrityStatus: 'ok' },
-    { individualId: 2, fitness: 3, valid: true, integrityStatus: 'ok' },
-    { individualId: 5, fitness: 9, valid: true, integrityStatus: 'numericalDivergence' },
-    { individualId: 9, fitness: 3, valid: false, integrityStatus: 'ok' },
-    { individualId: 4, fitness: 0, valid: true, integrityStatus: 'ok' },
+    { individualId: 1, fitness: 0, valid: true, integrityStatus: 'numericalDivergence' },
+    { individualId: 3, fitness: 0, valid: true, integrityStatus: 'ok' },
+    { individualId: 5, fitness: 0, valid: true, integrityStatus: 'ok' },
+    { individualId: 9, fitness: 0, valid: false, integrityStatus: 'ok' },
+    { individualId: 4, fitness: 0, valid: true, integrityStatus: 'nonFinite' },
   ]);
 
   test('all 120 permutations of the declared rows give ONE answer per selector', () => {
@@ -936,11 +974,13 @@ describe('champion selection is invariant under input permutation', () => {
     expect(perms).toHaveLength(120);
     for (const individuals of perms) {
       const order = individuals.map((r) => r.individualId).join(',');
-      // Diagnostic: the best OBSERVED row — id 5, despite being unselectable.
-      expect(championFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(5);
-      // Selection: id 5 is filtered (integrity), id 9 is filtered (invalid),
-      // the 3.0 tie between 7 and 2 resolves to the lowest id.
-      expect(selectableChampionFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(2);
+      // Diagnostic: all fitness 0, so VALID outranks invalid (id 9 loses) and
+      // the lowest valid id wins — id 1, integrity-failed and all. Exactly the
+      // documented reason this selector is diagnostic and never selective.
+      expect(championFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(1);
+      // Selection: ids 1 and 4 are filtered (integrity), id 9 is filtered
+      // (invalid), and the zero-fitness tie between 3 and 5 takes the lowest.
+      expect(selectableChampionFromEvaluation({ individuals }).individualId, `order ${order}`).toBe(3);
     }
   });
 
@@ -949,7 +989,7 @@ describe('champion selection is invariant under input permutation', () => {
     // nothing could displace it; with it last, it never won. Either answer is
     // wrong — a non-total comparator has no correct winner, so the only
     // invariant answer is a loud refusal, in every arrangement.
-    const perms = permutations([...ROWS, { individualId: 1, fitness: NaN, valid: true, integrityStatus: 'ok' }]);
+    const perms = permutations([...ROWS, { individualId: 6, fitness: NaN, valid: true, integrityStatus: 'ok' }]);
     expect(perms).toHaveLength(720);
     for (const individuals of perms) {
       const order = individuals.map((r) => r.individualId).join(',');
@@ -957,7 +997,7 @@ describe('champion selection is invariant under input permutation', () => {
         let thrown;
         try { fn({ individuals }); } catch (err) { thrown = err; }
         expect(thrown, `${fn.name} answered instead of refusing (order ${order})`).toBeDefined();
-        expect(thrown.message, `${fn.name} order ${order}`).toMatch(/individual 1 fitness \(NaN\)/);
+        expect(thrown.message, `${fn.name} order ${order}`).toMatch(/individual 6 fitness \(NaN\)/);
       }
     }
   });

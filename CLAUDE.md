@@ -1484,7 +1484,13 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   `fitnessFromVehicleResult` returned NaN/Infinity/-5/the STRING '12' unchecked
   — the PRODUCER behind the champion-poisoning hole, where `>` and `!==` against
   NaN are both false so the first eligible row wins permanently; both champion
-  selectors now judge a MODULE-OWNED row from one validated read. Adjacent
+  selectors now judge MODULE-OWNED VALUES captured in one read while still
+  RETURNING the caller's winning row (production rows carry a full diagnostics
+  block the diagnostic selector exists to report; a compact summary would have
+  silently narrowed a working API under cover of hardening), and both enforce
+  the fitness vector's row domain — a row that cannot be SERIALIZED must not be
+  RANKED, so an unknown integrity status or an unselectable row carrying
+  non-zero fitness is refused rather than quietly filtered. Adjacent
   modules fixed in the same class: `trace.js` geometry + its diagnostic byte
   windows (a divergence reporter printing bytes not in the stream),
   `trace-forensics.js` and `evaluation.js` caller-iterator/hole walks.

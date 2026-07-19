@@ -31,8 +31,14 @@
 //     buffer reads its own window — the trace.js decodeTraceRecord precedent.
 //   - Errors are raised through the CALLING module's `fail(path, value)`
 //     callback, so a snapshot failure reads `population: ...` and a spec
-//     failure reads `population-evaluation: ...`. The reader never invents its
-//     own error vocabulary; a decoder's diagnostics stay in one dialect.
+//     failure reads `population-evaluation: ...`. The caller's dialect is what
+//     a decoder's diagnostics speak in every reachable case. The reader has
+//     exactly ONE error string of its own, and it is unreachable for a
+//     well-behaved caller: if `fail` RETURNS instead of throwing, `raise`
+//     throws a `bytes: reader aborted at ...` backstop, because every path
+//     below assumes a rejection stops the walk. Reaching that message means
+//     the caller's fail idiom is broken, which is worth saying in this
+//     module's own voice rather than corrupting the read.
 //   - `expectEnd` is how a decoder rejects trailing bytes. No encoder here
 //     emits padding or framing, so "consumed exactly to the end" is part of
 //     every format's identity, not a nicety.
@@ -72,7 +78,27 @@ const TA_LENGTH = taGetter('length');
 const TA_BUFFER = taGetter('buffer');
 const TA_BYTE_OFFSET = taGetter('byteOffset');
 const TA_BYTE_LENGTH = taGetter('byteLength');
-const TA_SUBARRAY = TA_PROTO.subarray;
+
+// NO TA_SUBARRAY, and the omission is the ruling. An earlier round replaced
+// `bytes.subarray(...)` with `TA_SUBARRAY.call(bytes, ...)` on the theory that
+// a module-owned intrinsic cannot run caller code. That is true of the four
+// GETTERS above (they are side-effect-free by spec) and FALSE of subarray:
+// %TypedArray%.prototype.subarray performs TypedArraySpeciesCreate, which
+// reads `bytes.constructor`, then `constructor[Symbol.species]`, and CONSTRUCTS
+// whatever it finds — so the returned "sub-view" is whatever caller code chose
+// to return. `constructor` is inherited, so a plain Object.defineProperty on a
+// GENUINE Uint8Array reaches it: no Proxy, no lying prototype. Measured on the
+// snapshot decoder — a 1052-byte stream containing genotype A decoded to
+// genotype B and re-encoded to 796 different bytes, i.e.
+// serialize(deserialize(x)) !== x, with every bounds check and expectEnd still
+// passing (they track the cursor, not the returned view). The replacement below
+// constructs the view from the module's OWN %Uint8Array% constructor over the
+// intrinsic buffer/offset, which consults nothing on the caller.
+//
+// THE GENERAL RULE, since "use the intrinsic" is now proven insufficient: a
+// %TypedArray%.prototype METHOD may be species-aware or otherwise observable;
+// only the geometry ACCESSORS are safe to borrow. Reach for a constructor, not
+// a method.
 
 /**
  * A strict little-endian cursor over `bytes`. `fail(path, value)` is the
@@ -112,6 +138,12 @@ export function createByteReader(bytes, fail) {
   return Object.freeze({
     get offset() { return o; },
     get remaining() { return byteLength - o; },
+    // The INTRINSIC length, captured once above. Exposed because a decoder
+    // with a fixed record stride wants an exact total-length identity, and the
+    // only other way to get one is `bytes.byteLength` — the caller-shadowable
+    // accessor this reader exists to stop reading. deserializeFitnessVector
+    // did exactly that and falsely REJECTED byte-identical valid streams.
+    get byteLength() { return byteLength; },
     u8,
     u16,
     u32,
@@ -128,13 +160,17 @@ export function createByteReader(bytes, fail) {
       if (v !== 0 && v !== 1) raise(path, v);
       return v === 1;
     },
-    /** A sub-view of n bytes (no copy; the caller must not retain it mutably). */
+    /**
+     * A sub-view of n bytes (no copy; the caller must not retain it mutably).
+     * Built with the module's own %Uint8Array% over the intrinsic
+     * buffer/offset — never `subarray`, which is species-aware (see the
+     * module-load block). The returned view is therefore a genuine Uint8Array
+     * over the real window no matter what the caller's array claims.
+     */
     bytes: (n, path) => {
       if (!Number.isInteger(n) || n < 0) raise(path, n);
       need(n, path);
-      // Intrinsic subarray: an own `subarray` property on the caller's array
-      // would be caller code, and this module invokes none.
-      const v = TA_SUBARRAY.call(bytes, o, o + n);
+      const v = new Uint8Array(TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes) + o, n);
       o += n;
       return v;
     },
@@ -152,13 +188,28 @@ export function createByteReader(bytes, fail) {
 // lowercase BY RULING — never silently normalized), and any non-hex character.
 const HEX_PAIRS = /^(?:[0-9a-f]{2})*$/;
 
-function hexFail(what, value) {
+function bytesFail(what, value) {
   throw new Error(`bytes: invalid ${what} (${String(value)})`);
+}
+
+/**
+ * The INTRINSIC byte length of a Uint8Array — the geometry the runtime holds,
+ * not the `length`/`byteLength` accessors a caller can shadow with an own data
+ * property. Exported because two modules outside this one compare or fold raw
+ * byte buffers and must not read the caller's claim: population.js's
+ * `bytesEqual` reported deadbeef equal to dead0000 under an own `length: 2`,
+ * and any digest folded over a shadowed buffer attests a PREFIX. Callers that
+ * already hold module-owned bytes do not need this; callers that accept bytes
+ * from outside do.
+ */
+export function typedArrayByteLength(bytes) {
+  if (!(bytes instanceof Uint8Array)) bytesFail('bytes (Uint8Array required)', bytes);
+  return TA_BYTE_LENGTH.call(bytes);
 }
 
 /** Bytes -> the canonical lowercase-hex JSON-safe representation. */
 export function bytesToHex(bytes) {
-  if (!(bytes instanceof Uint8Array)) hexFail('bytes (Uint8Array required)', bytes);
+  if (!(bytes instanceof Uint8Array)) bytesFail('bytes (Uint8Array required)', bytes);
   // Indexed reads with the length from the INTRINSIC getter. `length` is an
   // inherited accessor, so an own data property on a genuine Uint8Array
   // shadows it: measured, a 4-byte array claiming `length: 2` hex-encoded as
@@ -172,8 +223,8 @@ export function bytesToHex(bytes) {
 
 /** The exact inverse of bytesToHex. Malformed text fails loud, never repairs. */
 export function hexToBytes(hex) {
-  if (typeof hex !== 'string') hexFail('hex (string required)', hex);
-  if (!HEX_PAIRS.test(hex)) hexFail('hex (canonical lowercase byte pairs required)', hex);
+  if (typeof hex !== 'string') bytesFail('hex (string required)', hex);
+  if (!HEX_PAIRS.test(hex)) bytesFail('hex (canonical lowercase byte pairs required)', hex);
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i += 1) {
     out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);

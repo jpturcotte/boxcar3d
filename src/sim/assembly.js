@@ -141,7 +141,20 @@ const fusedClamp = (g, lo, hi) => Math.min(hi, Math.max(g, Math.min(lo, hi)));
 // two sites cannot silently diverge if the formula is ever revised — and the
 // realizer's guard still catches a tampered `mass` field, since only the
 // stored value (not the recomputed one) is corrupted there.
-export const wheelMass = (radius, width, density) => Math.PI * radius * radius * width * density;
+// Arguments are validated because this is a PUBLIC export, and an unguarded
+// product is the silent-invalid-output class: `wheelMass(NaN, 1, 1)` returned
+// NaN, `wheelMass(-2, 1, 1)` returned a POSITIVE mass (radius is squared, so
+// the sign launders away), and a numeric string coerced through `*`. The
+// internal callers always pass repaired genes; this guards the exported
+// formula, which the adapter's tamper check also consumes.
+export const wheelMass = (radius, width, density) => {
+  for (const [name, v] of [['radius', radius], ['width', width], ['density', density]]) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`assembly: invalid wheelMass ${name} (${String(v)})`);
+    }
+  }
+  return Math.PI * radius * radius * width * density;
+};
 
 // --- S1 hub policy (single-sourced, the wheelMass pattern) ------------------
 // The S1 topology interposes a hub body between the chassis prismatic and the
@@ -193,12 +206,30 @@ export function hubMassProperties(wheel) {
   const halfWidth = (HUB_LENGTH_FRACTION * wheel.width) / 2;
   const length = 2 * halfWidth;
   const transverse = (mass * (3 * radius * radius + length * length)) / 12;
+  const density = mass / (Math.PI * radius * radius * length); // kg/m³ — realizes the mass through the collider
+  const axial = mass * radius * radius * 0.5;
+  // Validate the DERIVED record too, not only the three inputs. Guarding the
+  // inputs made `hubMassProperties({})` loud but left the arithmetic's own
+  // failure modes silent: finite in-domain magnitudes can still underflow
+  // radius² to 0 (density Infinity, zero principal inertia) or overflow it
+  // (inertia Infinity), and a physically impossible hub record then flows
+  // into ir.mass and on to the realizer's readback cross-check, where it
+  // reads as an engine disagreement rather than as bad input. A function that
+  // validates what it consumes and not what it returns has only moved the
+  // silence one step downstream.
+  for (const [name, v] of [['mass', mass], ['radius', radius], ['halfWidth', halfWidth],
+    ['density', density], ['principalInertia.transverse', transverse], ['principalInertia.axial', axial]]) {
+    if (!Number.isFinite(v) || v <= 0) {
+      throw new Error(`assembly: hub record for wheel (mass ${wheel.mass}, radius ${wheel.radius}, `
+        + `width ${wheel.width}) derives a non-physical ${name} (${String(v)})`);
+    }
+  }
   return {
     mass, // kg
     radius, // m — hub cylinder radius
     halfWidth, // m — hub cylinder half-length along the axle
-    density: mass / (Math.PI * radius * radius * length), // kg/m³ — realizes the mass through the collider
-    principalInertia: Object.freeze({ x: transverse, y: transverse, z: mass * radius * radius * 0.5 }), // kg·m², body frame (axle = z)
+    density,
+    principalInertia: Object.freeze({ x: transverse, y: transverse, z: axial }), // kg·m², body frame (axle = z)
   };
 }
 
@@ -305,6 +336,14 @@ function validateOptions(cfg) {
 // than the caller believes it configured).
 const ASSEMBLY_OPTION_KEYS = Object.freeze(Object.keys(ASSEMBLY_DEFAULTS));
 function checkOptionKeys(options) {
+  // Structural check FIRST: an explicit `options: null` on repairGenotype /
+  // compileAssembly reached Object.keys(null) and leaked a foreign TypeError,
+  // so the "explicit null fails where absent defaults" ruling was enforced at
+  // createInitialPopulation and skipped at the two assembly entry points that
+  // share the idiom.
+  if (typeof options !== 'object' || options === null) {
+    throw new Error(`assembly: invalid options (${String(options)})`);
+  }
   for (const k of Object.keys(options)) {
     if (!ASSEMBLY_OPTION_KEYS.includes(k)) {
       throw new Error(`assembly: unknown option key '${k}' (known: ${ASSEMBLY_OPTION_KEYS.join(', ')})`);
@@ -834,6 +873,8 @@ export function serializeGenotype(genotype) {
     for (const k of AXLE_GENES) f64(a[k]);
     for (const k of ASYM_GENES) f64(a.asym[k]);
   }
+  // receiver `view` is the module-owned DataView allocated above, not caller data.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
 }
 

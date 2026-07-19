@@ -38,7 +38,7 @@
 import {
   GENOTYPE_VERSION, deserializeGenotype, repairGenotype, serializeGenotype,
 } from './assembly.js';
-import { createByteReader } from './bytes.js';
+import { createByteReader, typedArrayByteLength } from './bytes.js';
 
 export const POPULATION_SNAPSHOT_VERSION = 1;
 
@@ -46,13 +46,33 @@ function fail(path, value) {
   throw new Error(`population: invalid population at ${path} (${String(value)})`);
 }
 
-function isCanonicalUint32(v) {
-  return Number.isInteger(v) && v >= 0 && v <= 0xffffffff;
+// The canonical uint32 predicate, shared by every wire field in this family.
+// `-0` is REJECTED: Number.isInteger(-0) is true and -0 >= 0 is true, so the
+// naive form admitted it, and setUint32 then erased the sign bit — which made
+// `deserialize(serialize(x))` NOT leaf-equal under Object.is on that field,
+// contradicting the codec's stated round-trip invariant. No producer in this
+// repo emits -0 for a count, an id, a seed, or a digest state, so no valid
+// stream changes; a hand-built -0 now fails loud instead of silently
+// normalizing. (f64 GENE leaves are a different contract: there -0 is a legal
+// value, preserved bit-exactly, and must NOT be rejected.)
+export function isCanonicalUint32(v) {
+  return Number.isInteger(v) && v >= 0 && v <= 0xffffffff && !Object.is(v, -0);
 }
 
+/**
+ * Byte equality over the INTRINSIC geometry. Both the length compare and the
+ * loop bound formerly read `a.length` / `b.length` — an inherited accessor on
+ * %TypedArray%.prototype that an own data property shadows on a genuine
+ * Uint8Array — so two arrays whose real content differs compared EQUAL and
+ * this module's canonicality tooth would have accepted a non-canonical
+ * genotype. Silent, from the one comparison the population layer exists to
+ * make. Measured: deadbeef vs dead0000 under an own `length: 2` returned true.
+ */
 export function bytesEqual(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  const aLen = typedArrayByteLength(a);
+  const bLen = typedArrayByteLength(b);
+  if (aLen !== bLen) return false;
+  for (let i = 0; i < aLen; i += 1) if (a[i] !== b[i]) return false;
   return true;
 }
 
@@ -104,6 +124,19 @@ function validatedMembers(population) {
   return members.sort((a, b) => a.individual.individualId - b.individual.individualId);
 }
 
+/**
+ * Validate and canonically order a population.
+ *
+ * OWNERSHIP, stated because it is a deliberate exception: the returned array
+ * is this module's, but the INDIVIDUALS in it are the caller's own objects,
+ * not copies. That is correct for a gate — callers legitimately want their own
+ * records back in canonical order, and deep-copying every genotype on every
+ * validation would be pure cost. It also means this function attests NOTHING:
+ * a second read of `ind.genotype` afterwards is a second read of caller data.
+ * Anything that must bind what it validated calls `attestPopulation` below,
+ * which hands back module-owned genotypes decoded from the very bytes it
+ * attested. Gate vs attestation is the distinction; do not blur it.
+ */
 export function validatePopulation(population) {
   const members = validatedMembers(population);
   const sorted = [];
@@ -111,14 +144,15 @@ export function validatePopulation(population) {
   return sorted;
 }
 
-/** Serialize canonical population content (see the encoding walk above). */
-export function serializePopulationSnapshot(population) {
-  // The encoder consumes the tooth-checked bytes from the validation walk —
-  // it never re-reads `ind.genotype` after validation, so no code running
-  // between (or during) the two can substitute a member the tooth approved.
-  const members = validatedMembers(population);
-  const total = 2 + 2 + 4 + members.reduce((s, m) => s + 4 + 4 + m.bytes.length, 0);
-  const view = new DataView(new ArrayBuffer(total));
+// The byte walk, over members the validation pass already approved. Split out
+// so the snapshot encoder and the attestation below emit the SAME bytes from
+// the SAME walk rather than two calls that could read the caller twice.
+function encodeMembers(members) {
+  let payload = 0;
+  for (let i = 0; i < members.length; i += 1) payload += 4 + 4 + members[i].bytes.length;
+  const view = new DataView(new ArrayBuffer(2 + 2 + 4 + payload));
+  // receiver `view` is the module-owned DataView allocated above, not caller data.
+  // eslint-disable-next-line no-restricted-syntax
   const out = new Uint8Array(view.buffer);
   let o = 0;
   view.setUint16(o, POPULATION_SNAPSHOT_VERSION, true); o += 2;
@@ -130,6 +164,44 @@ export function serializePopulationSnapshot(population) {
     out.set(members[i].bytes, o); o += members[i].bytes.length;
   }
   return out;
+}
+
+/** Serialize canonical population content (see the encoding walk above). */
+export function serializePopulationSnapshot(population) {
+  // The encoder consumes the tooth-checked bytes from the validation walk —
+  // it never re-reads `ind.genotype` after validation, so no code running
+  // between (or during) the two can substitute a member the tooth approved.
+  return encodeMembers(validatedMembers(population));
+}
+
+/**
+ * ONE walk that produces the canonical bytes AND the members those bytes
+ * describe, with every genotype MODULE-OWNED: each is decoded from the exact
+ * stream the canonicality tooth approved, so "what was compiled" and "what was
+ * attested" are the same object by construction rather than by two reads
+ * happening to agree.
+ *
+ * The evaluator used to call `validatePopulation(population)`, compile from
+ * `ind.genotype`, and then call `serializePopulationSnapshot(population)` —
+ * four independent reads of the caller's records for one attestation. Nothing
+ * ran between them, so plain data could not diverge; but the fitness vector's
+ * digest claimed to bind the population that was EVALUATED, and what it
+ * actually bound was whatever the last read returned. Decoding from the
+ * attested bytes closes it at the source instead of arguing about which reads
+ * are adjacent, and makes the codec's exact-inverse property load-bearing in
+ * production rather than only in its own tests.
+ */
+export function attestPopulation(population) {
+  const members = validatedMembers(population);
+  const bytes = encodeMembers(members);
+  const individuals = [];
+  for (let i = 0; i < members.length; i += 1) {
+    individuals.push({
+      individualId: members[i].individual.individualId,
+      genotype: deserializeGenotype(members[i].bytes),
+    });
+  }
+  return { individuals, bytes };
 }
 
 function decodeFail(path, value) {
@@ -148,7 +220,10 @@ function decodeFail(path, value) {
  * tooth, so a hand-crafted snapshot carrying a raw draw cannot re-enter the
  * population layer as heredity through the decode side door.
  *
- * Returned UNFROZEN, deliberately, and this is the one decoder that is. The
+ * Returned UNFROZEN, deliberately. So is `deserializeGenotype`'s record — the
+ * two WORKING-OBJECT decoders. (An earlier draft of this comment claimed this
+ * was "the one decoder that is", which was simply a miscount; the genotype
+ * decoder's behaviour is correct and was never the thing in question.) The
  * spec, fitness-vector and manifest decoders freeze, because those records are
  * attestations — a digest has already been folded over their bytes, so letting
  * a caller mutate one after the fact would let it disagree with what it

@@ -23,11 +23,23 @@ function fail(what, value) {
  * Fold bytes into a running FNV-1a 32 state. Returns the new uint32 state.
  * Chained folds over chunks equal one fold over the concatenation.
  */
+// The intrinsic length getter, cached at module load (the bytes.js idiom,
+// duplicated locally to keep this module import-free — it is the lock hash).
+// `length` is an inherited ACCESSOR on %TypedArray%.prototype, so an own data
+// property on a GENUINE Uint8Array shadows it with ordinary defineProperty.
+// The fold's loop bound used to read it: a 4-byte buffer claiming `length: 2`
+// produced the digest of a PREFIX, silently — a digest that attests less than
+// the bytes it was handed is the one failure this module must not have.
+const U8_LENGTH = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0))), 'length',
+).get;
+
 export function fnv1aFold(state, bytes) {
   if (!Number.isInteger(state) || state < 0 || state > 0xffffffff) fail('state', state);
   if (!(bytes instanceof Uint8Array)) fail('bytes (Uint8Array required)', bytes);
   let h = state;
-  for (let i = 0; i < bytes.length; i += 1) {
+  const n = U8_LENGTH.call(bytes);
+  for (let i = 0; i < n; i += 1) {
     h ^= bytes[i];
     h = Math.imul(h, FNV_PRIME);
   }

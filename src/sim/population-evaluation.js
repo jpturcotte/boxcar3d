@@ -86,7 +86,9 @@ import {
 import {
   MOTOR_TARGET_WHEEL_SURFACE_SPEED, WHEEL_FRICTION, vehicleWheelTransforms,
 } from './physics/adapter.js';
-import { POPULATION_SNAPSHOT_VERSION, serializePopulationSnapshot, validatePopulation } from './population.js';
+import {
+  POPULATION_SNAPSHOT_VERSION, attestPopulation, isCanonicalUint32,
+} from './population.js';
 import { createByteReader } from './bytes.js';
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
 import { INTEGRITY_POLICY_VERSION, INTEGRITY_STATUS } from './integrity.js';
@@ -161,8 +163,43 @@ export function isVehicleResultSelectable(vehicleResult) {
   return isVehicleResultValid(vehicleResult) && integrity.status === 'ok';
 }
 
+/**
+ * THE FITNESS DOMAIN, declared once and enforced everywhere a fitness value
+ * crosses a seam: a finite, non-negative, non-`-0` number.
+ *
+ * This exists because the previous shape validated everything about a result
+ * EXCEPT the number it returned. `requireIntegrity`, `isVehicleResultValid`'s
+ * three structural guards and its `=== true` comparisons all passed while
+ * `maxForwardDistance` was handed onward raw — measured returning NaN,
+ * Infinity, -5, the STRING '12', undefined, and {}. Downstream, both champion
+ * selectors order with `>`, so a NaN fitness makes the comparator neither
+ * antisymmetric nor total: the first eligible row wins permanently and no
+ * finite candidate can ever displace it, contradicting the "total order"
+ * claim in championFromEvaluation's own docblock. The encoder already
+ * enforced this domain; the producer and the selectors did not, so the one
+ * seam that checked was the last one, by which point selection had already
+ * happened on a poisoned value.
+ *
+ * `-0` is ACCEPTED here, unlike in isCanonicalUint32, and the asymmetry is
+ * deliberate rather than an oversight: setUint32 ERASES a sign bit (so a -0
+ * id silently became +0 and broke Object.is round-tripping), while setFloat64
+ * PRESERVES it exactly. A -0 fitness therefore survives encode/decode
+ * bit-for-bit, the decoder's `!== 0` coherence tooth already accepts it on an
+ * unselectable member, and rejecting it here would make this encoder refuse
+ * bytes its own decoder produces — an exact-inverse break in the direction
+ * that is hardest to notice. The `typeof` gate is the load-bearing addition:
+ * `Number.isFinite('12')` is false, but the old `!Number.isFinite(v) || v < 0`
+ * shape was never applied to the producer at all.
+ */
+function isCanonicalFitness(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
 export function fitnessFromVehicleResult(vehicleResult) {
-  return isVehicleResultSelectable(vehicleResult) ? vehicleResult.maxForwardDistance : 0;
+  if (!isVehicleResultSelectable(vehicleResult)) return 0;
+  const raw = vehicleResult.maxForwardDistance;
+  if (!isCanonicalFitness(raw)) fail('vehicleResult.maxForwardDistance', raw);
+  return raw;
 }
 
 // --- Spawn placement (pure) --------------------------------------------------
@@ -176,7 +213,16 @@ export function fitnessFromVehicleResult(vehicleResult) {
  * whenever they exist. y = drop + clearance puts the lowest support exactly
  * `clearance` above the pad — the fixtures' (0, 0.05] coherence band.
  */
-export function spawnPoseOnFlatStart(ir, { x, z, clearance = SPAWN_CLEARANCE } = {}) {
+export function spawnPoseOnFlatStart(ir, options) {
+  // Options are destructured INSIDE, not in the parameter list: an explicit
+  // `null` hit the `= {}` default only for `undefined` and then threw a
+  // foreign TypeError out of destructuring, before this module could say
+  // anything. Same ruling as createInitialPopulation's keepRaw — explicit null
+  // fails loud in the module's own dialect, absent defaults.
+  const opts = options === undefined ? {} : options;
+  if (typeof opts !== 'object' || opts === null) fail('spawn', options);
+  const { x, z } = opts;
+  const clearance = Object.hasOwn(opts, 'clearance') ? opts.clearance : SPAWN_CLEARANCE;
   if (!ir || ir.version !== ASSEMBLY_IR_VERSION) fail('ir.version', ir && ir.version);
   if (!Number.isFinite(x)) fail('spawn.x', x);
   if (!Number.isFinite(z)) fail('spawn.z', z);
@@ -191,11 +237,30 @@ export function spawnPoseOnFlatStart(ir, { x, z, clearance = SPAWN_CLEARANCE } =
     fail('ir.chassis', ir.chassis);
   }
   if (!Array.isArray(ir.axles)) fail('ir.axles', ir.axles);
-  let drop = -ir.chassis.aabb.min.y; // sled fallback: belly bottom
+  // Validate the NUMBERS, not only the shapes that hold them. The structural
+  // guards above were added because `{version: 2}` leaked a foreign TypeError
+  // off `.aabb.min.y`; they made the loud failure loud, and left the SILENT
+  // one — a well-shaped `{aabb: {min: {}}}` returned position.y === NaN, and a
+  // string min.y was coerced through unary minus. A NaN spawn height is the
+  // worst possible output here: it realizes a vehicle at an undefined pose and
+  // every downstream metric inherits it. This is the same class the hub-record
+  // guards closed one module over; it is enforced here on every scalar this
+  // function actually combines, including the ones reached through the
+  // adapter's transform records.
+  const minY = ir.chassis.aabb.min.y;
+  if (!Number.isFinite(minY)) fail('ir.chassis.aabb.min.y', minY);
+  let drop = -minY; // sled fallback: belly bottom
   for (const t of vehicleWheelTransforms(ir, {})) {
     const wheel = ir.axles[t.axleIndex].wheels[t.wheelIndex];
+    if (!Number.isFinite(wheel.radius)) {
+      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}].radius`, wheel.radius);
+    }
+    if (!Number.isFinite(t.local.y)) {
+      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}] local.y`, t.local.y);
+    }
     drop = Math.max(drop, wheel.radius - t.local.y);
   }
+  if (!Number.isFinite(drop)) fail('ir (derived spawn drop)', drop);
   return { position: { x, y: drop + clearance, z } };
 }
 
@@ -471,7 +536,10 @@ export function serializeEvaluationSpec(resolvedSpec) {
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
     const v = terrain[key];
     if (kind === 'uint32') {
-      if (!Number.isInteger(v) || v < 0 || v > 0xffffffff) fail(`terrain.${key}`, v);
+      // isCanonicalUint32 rejects -0: setUint32 erases the sign bit, so a -0
+      // seed encoded as +0 and decoded back as +0 — a silent normalization
+      // that breaks the Object.is leaf-equality the round trip claims.
+      if (!isCanonicalUint32(v)) fail(`terrain.${key}`, v);
       view.setUint32(o, v, true); o += 4;
     } else if (kind === 'f64') {
       f64(v, `terrain.${key}`);
@@ -497,6 +565,8 @@ export function serializeEvaluationSpec(resolvedSpec) {
       });
     }
   }
+  // receiver `view` is the module-owned DataView this encoder allocated.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
 }
 
@@ -587,7 +657,14 @@ export function deserializeEvaluationSpec(bytes) {
  * profiler samples (batch cost is the characterization script's job).
  */
 export async function evaluatePopulation(population, evaluationSpec) {
-  const sorted = validatePopulation(population);
+  // ONE walk of the caller's population produces both the canonical bytes and
+  // the module-owned genotypes those bytes describe (each decoded from the
+  // stream the canonicality tooth approved). The former shape validated,
+  // compiled from `ind.genotype`, and then serialized the caller's population
+  // again — four independent reads backing one attestation, so the digest
+  // bound whatever the LAST read returned rather than what was evaluated.
+  const { individuals: sorted, bytes: snapshotBytes } = attestPopulation(population);
+  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
   const resolved = resolveSpec(evaluationSpec);
   const { onIndividual } = resolved;
 
@@ -615,15 +692,13 @@ export async function evaluatePopulation(population, evaluationSpec) {
     terrain: resolved.terrain, // already deep-copied + deep-frozen by ownTerrain — the evaluator owns it
   });
 
-  // Capture the population snapshot bytes SYNCHRONOUSLY, before the first hook
-  // or await. A hook (onIndividual) — or any caller retaining the input — can
-  // mutate a genotype after it was compiled to an IR; the simulations run the
-  // captured IR, so the returned fitness vector must bind the population that
-  // was actually evaluated, not a later mutation. Hashing here freezes that
-  // identity into bytes the loop cannot disturb.
-  const snapshotBytes = serializePopulationSnapshot(population);
-  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
-
+  // (The snapshot bytes and their digest state were captured by
+  // attestPopulation at the very top, before anything else touched the input:
+  // a hook — or any caller retaining the input — can mutate a genotype after
+  // it was compiled, and the simulations run the compiled IR, so the returned
+  // fitness vector must bind the population that was actually evaluated. The
+  // IRs below are compiled from those same attested bytes, so "what ran" and
+  // "what was hashed" are one object rather than two agreeing reads.)
   const individuals = [];
   let effectiveDt = null;
   for (let i = 0; i < compiled.length; i += 1) {
@@ -708,7 +783,7 @@ function resolveSpecDigestState(evaluation) {
     }
     return state;
   }
-  if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
+  if (!isCanonicalUint32(declared)) {
     fail('evaluation.evaluationSpecDigestState', declared);
   }
   return declared;
@@ -739,8 +814,7 @@ export function serializeFitnessVector(evaluation) {
   // guard here would be unreachable by the language spec rather than merely
   // unreachable today, i.e. dead code defending a shape JavaScript cannot
   // construct.
-  if (!Number.isInteger(populationSnapshotDigestState)
-    || populationSnapshotDigestState < 0 || populationSnapshotDigestState > 0xffffffff) {
+  if (!isCanonicalUint32(populationSnapshotDigestState)) {
     fail('evaluation.populationSnapshotDigestState', populationSnapshotDigestState);
   }
   const specState = resolveSpecDigestState(evaluation);
@@ -759,9 +833,7 @@ export function serializeFitnessVector(evaluation) {
   for (let i = 0; i < individuals.length; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
-    if (!Number.isInteger(ind.individualId) || ind.individualId < 0 || ind.individualId > 0xffffffff) {
-      fail('individualId', ind.individualId);
-    }
+    if (!isCanonicalUint32(ind.individualId)) fail('individualId', ind.individualId);
     if (i > 0 && !(ind.individualId > rows[i - 1].individualId)) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
     }
@@ -774,7 +846,7 @@ export function serializeFitnessVector(evaluation) {
     // policy (maxForwardDistance ≥ 0, unselectable ⇒ 0). Reject an internally
     // contradictory vector rather than faithfully serialize it: fitness must
     // be 0 unless the member is BOTH valid and integrity-clean (policy v2).
-    if (!Number.isFinite(ind.fitness) || ind.fitness < 0) fail(`individual ${ind.individualId} fitness`, ind.fitness);
+    if (!isCanonicalFitness(ind.fitness)) fail(`individual ${ind.individualId} fitness`, ind.fitness);
     if ((!ind.valid || ind.integrityStatus !== 'ok') && ind.fitness !== 0) {
       fail(`individual ${ind.individualId} fitness`,
         `unselectable individual (valid ${ind.valid}, integrity ${ind.integrityStatus}) must have fitness 0, got ${ind.fitness}`);
@@ -797,6 +869,8 @@ export function serializeFitnessVector(evaluation) {
     view.setUint8(o, rows[i].statusIndex); o += 1;
     view.setFloat64(o, rows[i].fitness, true); o += 8;
   }
+  // receiver `view` is the module-owned DataView this encoder allocated.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
 }
 
@@ -843,9 +917,18 @@ export function deserializeFitnessVector(bytes) {
   // The record stride is fixed, so the total length is an exact identity —
   // checked before the member loop so a lying count reports as a length
   // mismatch rather than a truncation deep inside a member.
+  // r.byteLength is the INTRINSIC geometry the reader captured. Reading
+  // `bytes.byteLength` here read the caller-shadowable accessor instead, so an
+  // own data property made this identity reject a byte-identical, perfectly
+  // valid canonical vector — a decoder stricter than its own encoder, which is
+  // the exact-inverse claim failing in the direction nobody tests for.
   const expected = fitnessVectorByteLength(count);
-  if (bytes.byteLength !== expected) {
-    vectorDecodeFail('byteLength', `${bytes.byteLength} (expected ${expected} for count ${count})`);
+  // receiver `r` is the module-owned reader; this getter IS the captured
+  // intrinsic length.
+  // eslint-disable-next-line no-restricted-syntax
+  const actualLength = r.byteLength;
+  if (actualLength !== expected) {
+    vectorDecodeFail('byteLength', `${actualLength} (expected ${expected} for count ${count})`);
   }
   const individuals = [];
   let prevId = -1;
@@ -887,6 +970,41 @@ export function deserializeFitnessVector(bytes) {
 }
 
 /**
+ * The row contract BOTH champion selectors order by, checked once here so the
+ * two cannot drift and so every field a comparator touches is validated before
+ * any comparison happens.
+ *
+ * Why the fitness check is not optional: `>` and `!==` against NaN are both
+ * false, so a single NaN row makes the ordering non-total and POSITION
+ * DEPENDENT — whichever row is seen first wins and nothing can displace it.
+ * Both selectors document a total order robust to input arrangement; without
+ * this, that documentation was false for one input value. The individualId
+ * check matters for the same reason one level down: it is the tie-breaker, so
+ * a non-canonical id makes ties resolve by an uncomparable value.
+ *
+ * It returns a MODULE-OWNED snapshot rather than the caller's row, and the
+ * comparators below read only these. Validating a field and then re-reading it
+ * to compare is the same defect `serializeFitnessVector`'s indexed preflight
+ * exists to prevent, applied at the encoder and skipped at the two SELECTION
+ * entry points — which is precisely where a comparator that sees a different
+ * value than the validator did would matter. An own accessor on a plain object
+ * is ordinary JavaScript, not a Proxy.
+ */
+function championRow(ind, i) {
+  if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
+  const individualId = ind.individualId;
+  if (!isCanonicalUint32(individualId)) {
+    fail(`evaluation.individuals[${i}].individualId`, individualId);
+  }
+  const valid = ind.valid;
+  if (typeof valid !== 'boolean') fail(`individual ${individualId} valid`, valid);
+  const fitness = ind.fitness;
+  if (!isCanonicalFitness(fitness)) fail(`individual ${individualId} fitness`, fitness);
+  const integrityStatus = ind.integrityStatus;
+  return { individualId, valid, fitness, integrityStatus };
+}
+
+/**
  * DIAGNOSTIC best-observed individual (reports and instrumentation ONLY —
  * selection and elitism must consume selectableChampionFromEvaluation below).
  * Total order robust to input arrangement:
@@ -914,9 +1032,8 @@ export function championFromEvaluation(evaluation) {
   const individuals = evaluation.individuals;
   let champion = null;
   for (let i = 0; i < individuals.length; i += 1) {
-    const ind = individuals[i];
-    if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
-    if (champion === null || better(ind, champion)) champion = ind;
+    const row = championRow(individuals[i], i);
+    if (champion === null || better(row, champion)) champion = row;
   }
   return champion;
 }
@@ -942,17 +1059,15 @@ export function selectableChampionFromEvaluation(evaluation) {
   const individuals = evaluation.individuals;
   let champion = null;
   for (let i = 0; i < individuals.length; i += 1) {
-    const ind = individuals[i];
-    if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
-    if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
-    if (!INTEGRITY_STATUS.includes(ind.integrityStatus)) {
-      fail(`individual ${ind.individualId} integrityStatus`, ind.integrityStatus);
+    const row = championRow(individuals[i], i);
+    if (!INTEGRITY_STATUS.includes(row.integrityStatus)) {
+      fail(`individual ${row.individualId} integrityStatus`, row.integrityStatus);
     }
-    if (!(ind.valid && ind.integrityStatus === 'ok')) continue;
+    if (!(row.valid && row.integrityStatus === 'ok')) continue;
     if (champion === null
-      || ind.fitness > champion.fitness
-      || (ind.fitness === champion.fitness && ind.individualId < champion.individualId)) {
-      champion = ind;
+      || row.fitness > champion.fitness
+      || (row.fitness === champion.fitness && row.individualId < champion.individualId)) {
+      champion = row;
     }
   }
   return champion;

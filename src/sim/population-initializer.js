@@ -86,7 +86,9 @@ import {
   ASSEMBLY_DEFAULTS, GENOTYPE_VERSION, NODE_SLOTS, SUSPENSION_TYPES,
   compileAssembly, serializeGenotype,
 } from './assembly.js';
-import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from './population.js';
+import {
+  POPULATION_SNAPSHOT_VERSION, bytesEqual, isCanonicalUint32, serializePopulationSnapshot,
+} from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import { createByteReader } from './bytes.js';
 
@@ -172,7 +174,7 @@ function resolveConfig(config) {
   const cfg = resolvePolicy(config);
   // Seeds are canonical uint32 BY RULING (the terrain-seed precedent): -1,
   // 1.5, 2^32, NaN must fail loud, never alias another population.
-  if (!Number.isInteger(cfg.seed) || cfg.seed < 0 || cfg.seed > 0xffffffff) fail('seed', cfg.seed);
+  if (!isCanonicalUint32(cfg.seed)) fail('seed', cfg.seed);
   if (!Number.isInteger(cfg.populationSize) || cfg.populationSize < 1) fail('populationSize', cfg.populationSize);
   return cfg;
 }
@@ -318,7 +320,7 @@ function resolvePopulationDigestState(initialization, cfg) {
     }
     return state;
   }
-  if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
+  if (!isCanonicalUint32(declared)) {
     fail('initialization.populationSnapshotDigestState', declared);
   }
   return declared;
@@ -352,17 +354,21 @@ export function serializePopulationInitialization(initialization) {
   // Read the count ONCE and resolve every category to its wire index BEFORE
   // allocating, so the count byte, the buffer, and the payload come from one
   // indexed reading. Resolving here also makes an unknown category fail loud:
-  // `indexOf` returns -1 for a hole (resolvePolicy's own validation walk skips
-  // holes, so a sparse `['S0'] with length 2` reaches this point), and
+  // `indexOf` returns -1 for anything outside SUSPENSION_TYPES and
   // setUint8(-1) writes 255 silently — a manifest that encodes, folds into the
-  // digest, and only fails much later at the decoder.
+  // digest, and only fails much later at the decoder. (This guard was
+  // originally justified by a sparse `['S0']` with length 2 reaching here,
+  // because resolvePolicy walked with `forEach` and skipped holes. That walk
+  // is now indexed and the hole fails the mask first, so the stated premise is
+  // dead. The guard stays — it is the last check before a byte is written —
+  // but the reason is now depth, not reachability. A comment asserting a false
+  // premise is how a guard gets deleted later for the wrong reason.)
   // NO u8 guard on catCount, deliberately. resolveConfig ran above, and
-  // resolvePolicy validates this list against INITIAL_SUSPENSION_MASK with
-  // duplicate rejection, so the count is structurally at most the number of
-  // legal suspension types — never within three orders of magnitude of 255.
-  // Unlike the axle-count / range-length / populationSize guards, which each
-  // close a reachable gap and each carry a test that triggers it, a guard here
-  // could not be triggered by any input.
+  // resolvePolicy validates this list against INITIAL_SUSPENSION_MASK
+  // (['S0','S1']) with duplicate rejection, so the count is structurally at
+  // most 2 against a bound of 255. Unlike the axle-count / range-length /
+  // populationSize guards, which each close a reachable gap and each carry a
+  // test that triggers it, a guard here could not be triggered by any input.
   const catCount = cats.length;
   const catIndices = [];
   for (let i = 0; i < catCount; i += 1) {
@@ -385,6 +391,8 @@ export function serializePopulationInitialization(initialization) {
   // same indexed reading (the one-source-of-truth ruling, serializeEvaluationSpec).
   for (let i = 0; i < catIndices.length; i += 1) { view.setUint8(o, catIndices[i]); o += 1; }
   view.setUint32(o, snapshotState, true); o += 4;
+  // receiver `view` is the module-owned DataView allocated above, not caller data.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
 }
 

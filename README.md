@@ -28,10 +28,12 @@ position — a new `maxForwardDistance` result field on the canonical runner
 from the same per-step chassis read the trace already consumes, so the
 existing A–D golden digests are byte-identical with no re-lock. This is a
 **deterministic, reproducible baseline score contract** — exact and
-cross-environment-locked — **not yet a selection-ready fitness policy** for
-rough composite terrain (see the explosion-tail finding below); Phase 1B
-must produce a policy v2 or constrain its training terrain before building
-selection on it. The
+cross-environment-locked. It was *not* selection-ready as first written,
+because of the explosion-tail finding below; the numerical-integrity PR
+answered that with **fitness policy v2**, which ships today
+(`FITNESS_POLICY_VERSION = 2`): an integrity-failed individual is
+unselectable and scores 0, and `selectableChampionFromEvaluation` returns an
+explicit `null` when a generation has no selectable member. The
 mandatory empirical question — does an individual's exact result change
 because unrelated ghost vehicles share its world or the cohort is permuted?
 — was measured before the evaluator was built, and the answer is **no
@@ -185,8 +187,15 @@ consumer performs), no caller-owned method is ever invoked, encoders attest
 exactly the bytes their validation checked, byte geometry comes from intrinsic
 TypedArray getters, and no attested record retains a caller reference — so a
 count byte, its allocation, its payload, and the record a digest attests can
-no longer disagree with each other or with what the run executes. No
-evolutionary behaviour is
+no longer disagree with each other or with what the run executes. **Those rules
+are now enforced by the build rather than by prose** — a lint ban on
+caller-visible byte geometry (and on `subarray`, which is species-aware and ran
+caller code even when borrowed from the prototype), plus an ownership-boundary
+suite that feeds shadowed geometry to every function accepting caller bytes and
+asserts the *result* is identical to the un-shadowed call, a seeded
+boundary-value round-trip harness, and a permutation-invariance check on the
+champion selectors. Each tooth was mutation-verified: revert the fix, watch it
+fail. No evolutionary behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

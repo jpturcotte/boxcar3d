@@ -1339,7 +1339,10 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   under-yield, over-yield, or fail to terminate when nothing is iterated, and
   a slot that is not a finite number fails loud at the existing f64 gate. The
   u8 bound is still checked BEFORE materializing. Reachability, honestly:
-  `ownTerrain`'s `.slice()` is index-based, so the `evaluatePopulation →
+  `ownTerrain` copies each range by an indexed loop (it used `.slice()` when
+  this was written; `.slice` is itself a caller-looked-up method and was
+  replaced under the ownership boundary — the conclusion stands, the mechanism
+  changed), so the `evaluatePopulation →
   resolveSpec` production path was never exposed — the exposure is direct
   calls to the public encoders, i.e. exactly the replay and import tooling
   whose byte-exactness this PR exists to guarantee. Any future
@@ -1443,7 +1446,69 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   because `vitest.browser.config.js` collects only `tests/browser/**`, so
   without it no codec line would ever run in Chromium. No new lock anywhere;
   no `*-locks.js` file touched.
-- Full suite green (48 files, 957 tests), determinism gate green, pinned
+- **THE ENFORCEMENT RULING (review round 8 — the correction that matters most
+  for future work):** every ruling above had been written as PROSE with nothing
+  binding it to the code. That was the actual defect, and it had already
+  repeated three review rounds: a defect is found, the SITE is fixed, a RULE is
+  written, the class is never swept — so the rule holds wherever someone looked
+  and nowhere else. Two measurements settled it: deleting the three cached
+  intrinsic getters from `deserializeGenotype` left the WHOLE SUITE GREEN, and
+  the committed tooth "an own `subarray` property is never invoked by r.bytes"
+  asserted a strictly WEAKER proposition than the rule it claimed to enforce —
+  **the test had been written to the fix, not to the rule.** A 5-dimension
+  whole-surface sweep (39 candidates, **35 CONFIRMED by reproduction, 0
+  refuted**) then found what instance-fixing had left, including two that broke
+  the PR's headline claim: (1) **`TA_SUBARRAY.call` still runs caller code** —
+  `%TypedArray%.prototype.subarray` is SPECIES-AWARE (it reads the receiver's
+  `constructor[Symbol.species]` and CONSTRUCTS the result), so an own
+  `constructor` data property on a genuine Uint8Array made the snapshot decoder
+  return genotype B from a 1052-byte stream containing genotype A and re-encode
+  to 796 different bytes, with every bounds check and `expectEnd` passing.
+  **Borrowing the intrinsic is only safe for the geometry ACCESSORS; a
+  prototype METHOD may be species-aware — reach for a constructor, not a
+  method.** Byte windows are now
+  `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)` and
+  `subarray` is lint-banned outright in the family. (2) **`bytesEqual` returned
+  true for deadbeef vs dead0000 and `fnv1aFold` digested a PREFIX** — both read
+  the shadowable `length`, and both were listed in the memo under "documented,
+  deliberately not fixed — each loud-on-first-use, none silent", a claim that
+  was false for both; a not-fixed register is only honest if each entry's
+  FAILURE MODE was checked, not just its reachability. Also closed: `-0` passed
+  every uint32 gate while setUint32 erased the sign (silent normalization
+  breaking the Object.is round-trip claim — `isCanonicalUint32` now rejects it,
+  and f64 gene leaves deliberately still accept it since setFloat64 preserves
+  the bit); `evaluatePopulation` read the caller's population FOUR times to back
+  ONE attestation (now `attestPopulation` — one walk returning the bytes plus
+  genotypes DECODED FROM THOSE BYTES, which makes the codec's exact-inverse
+  property load-bearing in production, not only in its own tests);
+  `fitnessFromVehicleResult` returned NaN/Infinity/-5/the STRING '12' unchecked
+  — the PRODUCER behind the champion-poisoning hole, where `>` and `!==` against
+  NaN are both false so the first eligible row wins permanently; both champion
+  selectors now judge a MODULE-OWNED row from one validated read. Adjacent
+  modules fixed in the same class: `trace.js` geometry + its diagnostic byte
+  windows (a divergence reporter printing bytes not in the stream),
+  `trace-forensics.js` and `evaluation.js` caller-iterator/hole walks.
+  **The rules now fail a build:** `eslint.config.js` bans caller-visible byte
+  geometry in the seven byte-handling modules (legal module-owned receivers
+  carry a disable comment NAMING the receiver — that comment IS the audit
+  trail) and bans `subarray` with no exception; `tests/ownership-boundary.test.js`
+  pins each module's export list as a copy-declared literal plus a per-export
+  classification table (a new export cannot ship unclassified — that is how an
+  `export const` arrow and a function 16 lines above a read window each survived
+  a full round unguarded), runs the shadowed-geometry battery asserting the
+  RESULT is identical to the un-shadowed call rather than merely "it throws"
+  (which scored `deserializeFitnessVector` green while it FALSELY REJECTED valid
+  vectors), and asserts copy-on-intake/freeze/no-retained-reference;
+  `tests/codec-roundtrip-property.test.js` (seed **20260733**, 200 samples ×
+  5 pairs) generates boundary-value encoder outputs and asserts byte-identical
+  re-encode + Object.is leaf equality with the failing PATH, carrying its own
+  coverage teeth and broken-codec self-checks; a table-driven unvalidated-field
+  sweep plus a permutation-invariance check pin the "total order" claim the
+  selectors' own docblock makes. **Every tooth was mutation-verified — revert
+  the fix, watch it fail, restore.** Generalizable rule, since this cost three
+  rounds: *a test written to reproduce the bug you found is not enforcement of
+  the rule you wrote about it.*
+- Full suite green (50 files, 1046 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

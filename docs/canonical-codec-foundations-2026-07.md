@@ -285,9 +285,13 @@ read *values* from the iterator, which is the divergence above. Only the indexed
 read closes both.
 
 **Reachability, stated honestly.** The production path sanitizes this:
-`ownTerrain` copies arrays with `.slice()`, which is index-based and drops an
+`ownTerrain` copies each range by an explicit indexed loop, which cannot see an
 overridden iterator, so `evaluatePopulation → resolveSpec → ownTerrain` was never
-exposed. The exposure is via direct calls to the public encoders — which is
+exposed. (That copy used `.slice()` when this section was first written, and the
+argument was stated in those terms; `.slice` is itself a method looked up on the
+caller's array, so it was later replaced by the indexed loop under the rule
+below. The reachability conclusion is unchanged — the mechanism is not.) The
+exposure is via direct calls to the public encoders — which is
 exactly what the codec tests, the browser smoke, and any future replay or import
 tooling do, and those are precisely the callers whose byte-exactness this PR
 exists to guarantee.
@@ -328,25 +332,47 @@ buffer whose content is `deadbeef`.
 **The boundary, corrected — the module owns what it attests:**
 
 - **Copy on intake, by index.** Ownership boundaries (`cloneGenotype`,
-  `ownTerrain`, the fitness-vector row preflight, `validatePopulation`'s copy)
-  build module-owned structures from indexed reads before anything is trusted.
+  `ownTerrain`, the fitness-vector row preflight, `attestPopulation`) build
+  module-owned structures from indexed reads before anything is trusted.
+  `validatePopulation` is the deliberate exception and says so: it is a *gate*,
+  not an attestation, and returns the caller's own individual objects in
+  canonical order. Anything that must bind what it validated calls
+  `attestPopulation`, which decodes each genotype from the very bytes it
+  attests — so "what was compiled" and "what was hashed" are one object rather
+  than two reads that happen to agree.
 - **Never invoke caller-owned code.** No method looked up on a caller-supplied
-  object is ever called — no `.map`, `.forEach`, `.indexOf`, `.slice`,
-  `.subarray`, no iteration protocols. Own properties shadow prototype methods
-  on plain objects and arrays; the module's loops and the module's `Set`s do
-  the work instead.
+  object is ever called — no `.map`, `.forEach`, `.indexOf`, `.slice`, no
+  iteration protocols. **And borrowing the intrinsic is not always enough**:
+  `%TypedArray%.prototype.subarray` performs species dispatch, reading the
+  receiver's `constructor` and `constructor[Symbol.species]` and *constructing*
+  the result, so `TA_SUBARRAY.call(bytes, …)` ran caller code and returned
+  whatever that code chose. Measured on the snapshot decoder: a 1052-byte
+  stream containing genotype A decoded to genotype B and re-encoded to 796
+  different bytes, with every bounds check and `expectEnd` still passing. Byte
+  windows are now built as `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)`
+  and `subarray` is banned outright by lint in this family. The general rule:
+  the geometry *accessors* are safe to borrow; a prototype *method* may be
+  species-aware or otherwise observable — reach for a constructor, not a method.
 - **Attest exactly what was validated.** `serializePopulationSnapshot` emits
   the very bytes the canonicality tooth checked (one validation walk returns
   `{individual, bytes}` pairs; the encoder re-reads nothing), and
   `serializeFitnessVector` writes from its preflight's module-owned rows.
   Nothing is re-read from the caller after it was checked.
-- **Read byte-boundary geometry through intrinsics.** `bytes.js` and
-  `deserializeGenotype` fetch `length`/`buffer`/`byteOffset`/`byteLength`
-  through the cached `%TypedArray%.prototype` getters, which report the
-  runtime's real window regardless of own properties. The reader also wraps
-  the caller's `fail` callback with an unconditional abort, so a
-  log-and-continue callback can no longer resume the walk after a rejection
-  (measured: a negative count *rewound* the cursor).
+- **Read byte-boundary geometry through intrinsics.** `bytes.js` caches
+  `length`/`buffer`/`byteOffset`/`byteLength`; `deserializeGenotype`,
+  `trace.js` and `fnv1a.js` cache the subset each needs (module-local, because
+  `assembly.js` and `fnv1a.js` are deliberately import-free). The reader
+  exposes the captured length as a frozen `byteLength` getter, so a decoder
+  needing an exact total-length identity has a safe source —
+  `deserializeFitnessVector` read `bytes.byteLength` instead and *falsely
+  rejected* byte-identical valid vectors, the exact-inverse claim failing in
+  the direction no test looks for. `bytesEqual` and `fnv1aFold` bound their
+  loops on the intrinsic too: both formerly read the shadowable `length`, so
+  `deadbeef` compared equal to `dead0000` and a digest could attest a *prefix*
+  of the bytes it was handed. The reader also wraps the caller's `fail`
+  callback with an unconditional abort, so a log-and-continue callback can no
+  longer resume the walk after a rejection (measured: a negative count
+  *rewound* the cursor).
 - **No retained caller references in attested records.** `resolvePolicy`
   returns an owned frozen category list; the IR shares no structure with the
   input genotype; a caller mutating their original objects after the call
@@ -374,14 +400,27 @@ runs caller code and never re-reads caller data after validating it, but it
 does assume that a plain data read returns what the runtime holds.
 
 **Documented, deliberately not fixed** (each loud-on-first-use, none silent):
-`bytesEqual` compares whatever byte-likes it is given (every attesting caller
-passes module-produced arrays); `randomGenotype`/`sampleInitialGenotype` trust
-their injected `rng`'s capability and range (the documented injection
-contract — a missing method is immediately loud, and out-of-range draws are
-contained by downstream domain validation); `fnv1a.js` is the locked house
-hash and stays byte-for-byte untouched; the physics adapter trusts
-compiler-owned IRs (which, after the `cloneGenotype` fix, share nothing with
-any caller).
+`randomGenotype`/`sampleInitialGenotype` trust their injected `rng`'s
+capability and range (the documented injection contract — a missing method is
+immediately loud, and out-of-range draws are contained by downstream domain
+validation); the physics adapter trusts compiler-owned IRs (which, after the
+`cloneGenotype` fix, share nothing with any caller), and the numbers it would
+otherwise silently propagate are validated at the owning seam —
+`spawnPoseOnFlatStart` now checks every scalar it combines, including the ones
+reached through the adapter's transform records.
+
+*Two items were removed from this list because the claim attached to it —
+"each loud-on-first-use, none silent" — was false for them.* `bytesEqual` was
+listed as trusting "whatever byte-likes it is given", on the reasoning that
+every attesting caller passes module-produced arrays; but it read the
+shadowable `length` and returned `true` for buffers whose real content
+differed, silently, from the module that owns the canonicality comparison.
+`fnv1a.js` was listed as "the locked house hash, byte-for-byte untouched" —
+true of its constants and fold order, which are unchanged and still reproduce
+every locked fingerprint, and irrelevant to its loop bound, which had the same
+defect. Both are now fixed. The lesson is about the list, not the two entries:
+a "documented, not fixed" register is only honest if each entry's *failure
+mode* has been checked, not just its reachability argument.
 
 **Two guards were considered and deliberately rejected**, which is worth
 recording because the symmetry argument for them looks stronger than it is. The
@@ -398,6 +437,41 @@ the language spec or by an earlier validator, not merely unreachable today —
 dead code defending a shape that cannot be constructed. Both sites carry a
 comment saying so, so the asymmetry reads as a decision rather than an
 oversight.
+
+## Why the rules are now executable
+
+Everything above was, until this round, **prose with no build behind it**. That
+turned out to be the actual defect, and it is worth stating plainly because the
+same failure had already repeated three times: a defect was found, the *site*
+where it was found was fixed, a *rule* was written here, and nothing bound the
+two. The rule then held wherever someone had happened to look and nowhere else.
+
+Two measurements settled it. Deleting the three cached intrinsic getters from
+`deserializeGenotype` and reverting it to plain property reads left the entire
+suite **green** — the hardening was a comment. And `tests/bytes.test.js`'s
+tooth *"an own `subarray` property is never invoked by `r.bytes`"* asserted a
+strictly weaker proposition than the rule it claimed to enforce: it checked
+that an own `subarray` property was not called, which the intrinsic
+`TA_SUBARRAY.call` satisfied while violating the rule outright via species
+dispatch. **The test had been written to the fix, not to the rule.**
+
+So each rule now has something that fails a build:
+
+| rule | enforcement |
+|---|---|
+| intrinsic byte geometry | `no-restricted-syntax` on `.byteLength`/`.byteOffset`/`.buffer` member reads in the seven byte-handling modules; legal module-owned receivers carry a disable comment *naming the receiver*, so an edit that moves one onto caller data leaves a comment that is now false |
+| never borrow a species-aware method | `.subarray` banned outright in those modules, with **no** module-owned exception |
+| shadowed geometry is inert | `tests/ownership-boundary.test.js` feeds an own `length`/`byteLength`/`byteOffset`/`buffer` to every function in the repo that accepts caller bytes, and asserts the result is **identical to the un-shadowed call** or a rejection in that module's own dialect — never merely "it throws", which is what scored `deserializeFitnessVector` green while it was falsely rejecting valid vectors |
+| the export surface is classified | the same file pins each module's exports as a copy-declared literal plus a per-export table of the caller collections and caller numbers it touches; a new export cannot ship unclassified, which is how an `export const` arrow (`wheelMass`) and a function just above a read window (`fitnessFromVehicleResult`) each survived a full round with no guard |
+| copy on intake / no retained references | identity assertions driven by that table, including the explicit pinning of `validatePopulation`'s deliberate exception |
+| exact inverse over the output domain | `tests/codec-roundtrip-property.test.js` — seeded boundary-value generation per pair, asserting byte-identical re-encode and `Object.is` leaf equality with the failing **path** reported |
+| no silent invalid numbers | a table-driven sweep feeding well-shaped garbage to every seam that returns or embeds a number, plus a **permutation-invariance** check on both champion selectors — the literal "total order" claim in their own docblock, which a per-field guard would not have caught |
+| provenance claims | negative legs beside the honest-producer tests, pinning what these records verify and what they only claim |
+
+The generalizable lesson, since this is the third round it has cost: **a test
+written to reproduce the bug you found is not enforcement of the rule you wrote
+about it.** Assert the rule, on values, over the whole surface it claims — and
+prove the assertion bites by reverting the fix and watching it fail.
 
 ## Binary identity vs the JSON envelope
 

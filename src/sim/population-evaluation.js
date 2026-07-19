@@ -87,6 +87,7 @@ import {
   MOTOR_TARGET_WHEEL_SURFACE_SPEED, WHEEL_FRICTION, vehicleWheelTransforms,
 } from './physics/adapter.js';
 import { POPULATION_SNAPSHOT_VERSION, serializePopulationSnapshot, validatePopulation } from './population.js';
+import { createByteReader } from './bytes.js';
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
 import { INTEGRITY_POLICY_VERSION, INTEGRITY_STATUS } from './integrity.js';
 
@@ -364,6 +365,13 @@ export function serializeEvaluationSpec(resolvedSpec) {
     } else if (kind === 'f64') {
       f64(v, `terrain.${key}`);
     } else if (kind === 'range') {
+      // Wire representability: a range length is a u8. The size pass above
+      // used the TRUE length, so a >255-element range would emit a wrapped
+      // count byte disagreeing with the payload that follows — malformed
+      // bytes produced silently. No terrain knob is remotely this long; this
+      // converts a silent corruption into a loud failure and changes no valid
+      // stream (the axle-count guard in assembly.js is the same ruling).
+      if (v.length > 0xff) fail(`terrain.${key}.length`, `${v.length} exceeds the u8 wire bound (255)`);
       view.setUint8(o, v.length); o += 1;
       for (const e of v) f64(e, `terrain.${key}[]`);
     } else { // weights
@@ -379,6 +387,80 @@ export function serializeEvaluationSpec(resolvedSpec) {
     }
   }
   return new Uint8Array(view.buffer);
+}
+
+function specDecodeFail(path, value) {
+  throw new Error(`population-evaluation: invalid encoded evaluation spec at ${path} (${String(value)})`);
+}
+
+/**
+ * The exact inverse of serializeEvaluationSpec.
+ *
+ * Validation depth is deliberate: this mirrors the SERIALIZER's checks — wire
+ * shape, enum/flag ranges, u32 domains, f64 finiteness — and nothing more. It
+ * does NOT run resolveSpec, which additionally enforces EXECUTION constraints
+ * the encoder never applies (the spawn-clearance band, the flat-pad guard, a
+ * non-negative wheelFriction). Calling it here would reject byte streams the
+ * public encoder legally produces, i.e. this would stop being an inverse.
+ * Execution validation stays where it already is: evaluatePopulation resolves
+ * every spec it runs.
+ *
+ * Values are returned exactly as encoded — never re-resolved against current
+ * runtime defaults. All 33 terrain knobs are explicit on the wire, so the
+ * decoder never injects a default and a future change to TERRAIN_DEFAULTS
+ * cannot silently rewrite an old spec's meaning.
+ */
+export function deserializeEvaluationSpec(bytes) {
+  const r = createByteReader(bytes, specDecodeFail);
+  const specVersion = r.u16('specVersion');
+  if (specVersion !== EVALUATION_SPEC_VERSION) specDecodeFail('specVersion', specVersion);
+  const deterministic = r.flag('deterministic');
+  const terminationIndex = r.u8('termination');
+  if (terminationIndex >= TERMINATIONS.length) specDecodeFail('termination', terminationIndex);
+  const maxSteps = r.u32('maxSteps');
+  if (maxSteps < 1) specDecodeFail('maxSteps', maxSteps);
+  const spawnX = r.finiteF64('spawn.x');
+  const spawnZ = r.finiteF64('spawn.z');
+  const clearance = r.finiteF64('spawn.clearance');
+  const targetWheelSurfaceSpeed = r.finiteF64('targetWheelSurfaceSpeed');
+  const wheelFriction = r.finiteF64('wheelFriction');
+  const terrainKeyCount = r.u8('terrainKeyCount');
+  if (terrainKeyCount !== TERRAIN_SPEC_WALK.length) specDecodeFail('terrainKeyCount', terrainKeyCount);
+  const terrain = {};
+  for (const [key, kind] of TERRAIN_SPEC_WALK) {
+    if (kind === 'uint32') {
+      terrain[key] = r.u32(`terrain.${key}`);
+    } else if (kind === 'f64') {
+      terrain[key] = r.finiteF64(`terrain.${key}`);
+    } else if (kind === 'range') {
+      const length = r.u8(`terrain.${key}.length`);
+      const range = [];
+      for (let i = 0; i < length; i += 1) range.push(r.finiteF64(`terrain.${key}[${i}]`));
+      terrain[key] = range;
+    } else { // weights
+      const count = r.u8(`terrain.${key}.count`);
+      if (count !== WEIGHT_KEYS.length) specDecodeFail(`terrain.${key}.count`, count);
+      const weights = {};
+      WEIGHT_KEYS.forEach((k, i) => {
+        const declaredIndex = r.u8(`terrain.${key}.${k}.declaredIndex`);
+        if (declaredIndex !== i) specDecodeFail(`terrain.${key}.${k}.declaredIndex`, declaredIndex);
+        weights[k] = r.finiteF64(`terrain.${key}.${k}`);
+      });
+      terrain[key] = weights;
+    }
+  }
+  r.expectEnd('evaluationSpec');
+  // Same ownership discipline as a resolved spec: deep-frozen, so a decoded
+  // spec cannot be mutated out from under a digest that already attested it.
+  return Object.freeze({
+    deterministic,
+    termination: TERMINATIONS[terminationIndex],
+    maxSteps,
+    spawn: Object.freeze({ x: spawnX, z: spawnZ, clearance }),
+    targetWheelSurfaceSpeed,
+    wheelFriction,
+    terrain: ownTerrain(terrain),
+  });
 }
 
 // --- The evaluator -----------------------------------------------------------
@@ -496,6 +578,31 @@ export async function evaluatePopulation(population, evaluationSpec) {
   return evaluation;
 }
 
+// Where the encoded evaluationSpecDigestState comes from. The production path
+// carries the resolved `spec` itself and computes the state from it —
+// unchanged, statement for statement. The ADDITIVE path exists because the
+// spec digest is a one-way attestation: a decoded fitness vector holds the
+// state but can never reconstruct the spec, so without this an encoded vector
+// could not be re-encoded from its own decoded form (the codec's round-trip
+// contract). Both present must AGREE — a vector can never attest to a spec it
+// disagrees with; neither present fails loud.
+function resolveSpecDigestState(evaluation) {
+  const declared = evaluation.evaluationSpecDigestState;
+  if (evaluation.spec !== undefined) {
+    const specBytes = serializeEvaluationSpec(evaluation.spec);
+    const state = fnv1aFold(FNV_OFFSET_BASIS, specBytes);
+    if (declared !== undefined && declared !== state) {
+      fail('evaluation.evaluationSpecDigestState',
+        `${declared} disagrees with the spec's computed state ${state}`);
+    }
+    return state;
+  }
+  if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
+    fail('evaluation.evaluationSpecDigestState', declared);
+  }
+  return declared;
+}
+
 /** Serialize the fitness vector of an evaluation (see the encoding walk). */
 export function serializeFitnessVector(evaluation) {
   if (typeof evaluation !== 'object' || evaluation === null) fail('evaluation', evaluation);
@@ -505,8 +612,7 @@ export function serializeFitnessVector(evaluation) {
     || populationSnapshotDigestState < 0 || populationSnapshotDigestState > 0xffffffff) {
     fail('evaluation.populationSnapshotDigestState', populationSnapshotDigestState);
   }
-  const specBytes = serializeEvaluationSpec(evaluation.spec);
-  const specState = fnv1aFold(FNV_OFFSET_BASIS, specBytes);
+  const specState = resolveSpecDigestState(evaluation);
   for (let i = 1; i < individuals.length; i += 1) {
     if (!(individuals[i].individualId > individuals[i - 1].individualId)) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
@@ -546,6 +652,92 @@ export function serializeFitnessVector(evaluation) {
     view.setFloat64(o, ind.fitness, true); o += 8;
   }
   return new Uint8Array(view.buffer);
+}
+
+function vectorDecodeFail(path, value) {
+  throw new Error(`population-evaluation: invalid encoded fitness vector at ${path} (${String(value)})`);
+}
+
+/**
+ * The exact inverse of serializeFitnessVector. Mirrors the encoder's checks
+ * verbatim, including the coherence tooth that an unselectable member (invalid
+ * OR integrity-failed) must carry fitness 0 — a contradictory stream is
+ * malformed and rejected, never silently normalized to 0.
+ *
+ * The result feeds serializeFitnessVector directly: it carries
+ * evaluationSpecDigestState (no `spec`), which the encoder's additive input
+ * path consumes.
+ */
+export function deserializeFitnessVector(bytes) {
+  const r = createByteReader(bytes, vectorDecodeFail);
+  const fitnessVectorVersion = r.u16('fitnessVectorVersion');
+  if (fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
+    vectorDecodeFail('fitnessVectorVersion', fitnessVectorVersion);
+  }
+  const fitnessPolicyVersion = r.u16('fitnessPolicyVersion');
+  if (fitnessPolicyVersion !== FITNESS_POLICY_VERSION) {
+    vectorDecodeFail('fitnessPolicyVersion', fitnessPolicyVersion);
+  }
+  const integrityPolicyVersion = r.u16('integrityPolicyVersion');
+  if (integrityPolicyVersion !== INTEGRITY_POLICY_VERSION) {
+    vectorDecodeFail('integrityPolicyVersion', integrityPolicyVersion);
+  }
+  const snapshotVersion = r.u16('snapshotVersion');
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) {
+    vectorDecodeFail('snapshotVersion', snapshotVersion);
+  }
+  const populationSnapshotDigestState = r.u32('populationSnapshotDigestState');
+  const evaluationSpecVersion = r.u16('evaluationSpecVersion');
+  if (evaluationSpecVersion !== EVALUATION_SPEC_VERSION) {
+    vectorDecodeFail('evaluationSpecVersion', evaluationSpecVersion);
+  }
+  const evaluationSpecDigestState = r.u32('evaluationSpecDigestState');
+  const count = r.u32('count');
+  if (count < 1) vectorDecodeFail('count', count);
+  // The record stride is fixed, so the total length is an exact identity —
+  // checked before the member loop so a lying count reports as a length
+  // mismatch rather than a truncation deep inside a member.
+  const expected = 22 + count * 14;
+  if (bytes.byteLength !== expected) {
+    vectorDecodeFail('byteLength', `${bytes.byteLength} (expected ${expected} for count ${count})`);
+  }
+  const individuals = [];
+  let prevId = -1;
+  for (let i = 0; i < count; i += 1) {
+    const individualId = r.u32(`individuals[${i}].individualId`);
+    if (individualId <= prevId) {
+      vectorDecodeFail(`individuals[${i}].individualId`,
+        `${individualId} must be strictly ascending (previous ${prevId})`);
+    }
+    prevId = individualId;
+    const valid = r.flag(`individuals[${i}].valid`);
+    const statusIndex = r.u8(`individuals[${i}].integrityStatus`);
+    if (statusIndex >= INTEGRITY_STATUS.length) {
+      vectorDecodeFail(`individuals[${i}].integrityStatus`, statusIndex);
+    }
+    const integrityStatus = INTEGRITY_STATUS[statusIndex];
+    const fitness = r.f64(`individuals[${i}].fitness`);
+    if (!Number.isFinite(fitness) || fitness < 0) vectorDecodeFail(`individuals[${i}].fitness`, fitness);
+    // The encoder's own comparison, verbatim: `!== 0` (not Object.is), so a
+    // legally-encoded -0 on an unselectable member decodes rather than being
+    // rejected by a stricter-than-the-encoder rule.
+    if ((!valid || integrityStatus !== 'ok') && fitness !== 0) {
+      vectorDecodeFail(`individuals[${i}].fitness`,
+        `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
+    }
+    individuals.push(Object.freeze({ individualId, valid, integrityStatus, fitness }));
+  }
+  r.expectEnd('fitnessVector');
+  return Object.freeze({
+    fitnessVectorVersion,
+    fitnessPolicyVersion,
+    integrityPolicyVersion,
+    snapshotVersion,
+    populationSnapshotDigestState,
+    evaluationSpecVersion,
+    evaluationSpecDigestState,
+    individuals: Object.freeze(individuals),
+  });
 }
 
 /**

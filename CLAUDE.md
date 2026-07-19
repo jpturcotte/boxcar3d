@@ -79,11 +79,17 @@ evidence notes. Reference only; never import from `legacy/`.
 - `src/sim/` — deterministic core: `prng.js`, `noise.js`, `terrain.js` (pure
   composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
   support samples), `assembly.js` (the genome contract: genotype schema +
-  compiler + repair v0 + the S1 hub policy), `physics/adapter.js` (the only
+  compiler + repair v0 + the S1 hub policy + the authoritative serializer, its
+  validated schema WALK, and the genotype decoder), `physics/adapter.js` (the only
   Rapier seam: realization, seating, collision groups, chassis, the S0
   wheel/joint/motor kernel, and the S1 prismatic/hub suspension behind
   `realizeVehicle`'s explicit dispatch), `fnv1a.js` (the extracted house lock
-  hash — streaming state-passing fold), `trace.js` (the versioned per-step
+  hash — streaming state-passing fold), `bytes.js` (the shared strict
+  little-endian byte READER — bounds-checked, subarray-safe, trailing-byte
+  refusing, errors routed through the calling module's fail idiom — plus
+  `bytesToHex`/`hexToBytes`, the canonical-lowercase JSON-safe byte
+  representation; bytes are the identity, JSON is only an envelope),
+  `trace.js` (the versioned per-step
   trace: 128-byte records, TraceWriter, checkpoint + divergence diagnostics),
   `evaluation.js` (the ONE canonical headless runner — `runEvaluation` — plus
   `runRealizedEvaluationLoop`, the extracted simulate/capture/collect loop it
@@ -171,8 +177,18 @@ evidence notes. Reference only; never import from `legacy/`.
   classify/invariants/timing/compare over pure JSON fixtures with verbatim
   determinism-test titles/messages, bound to the committed expected-red
   inventory — no physics, no Rapier),
+  `genotype-schema.test.js` (the schema-walk drift triangle: copy-declared
+  literal walk, stride/tiling derivation, perturb-one-leaf byte exclusivity
+  against the real serializer, classification teeth, and the path-multiset
+  cross-check against probe-integrity's independent walk),
+  `genotype-codec.test.js` + `population-codec.test.js` +
+  `evaluation-codec.test.js` (the five decoders: round trips both
+  directions, the locked-corpus inversion, the self-contained-history proof,
+  the committed fitness vector reconstructed without physics, and every
+  malformed-stream rejection), `bytes.test.js` (the reader + hex codec),
   and `tests/browser/evaluation-determinism.test.js` +
-  `tests/browser/population-determinism.test.js` (the Chromium gates, own
+  `tests/browser/population-determinism.test.js` +
+  `tests/browser/codec-smoke.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
   committed instruments `s1-calibration-probe.js` (`npm run probe:s1`) —
   NOT tests.
@@ -1211,6 +1227,105 @@ stable 0.19.3. Full evidence: `docs/numerical-integrity-policy-2026-07.md`:**
   digest literal in any signature — sync-tooth-enforced;
   `tests/integrity-probe-schema.test.js` joins the expected candidate reds,
   Node totals 11→12; the July 2026 C5 evidence stays historical/untouched).
+
+**Canonical schema + codec foundations landed (Phase-1B prep PR 1) — the
+genotype schema walk and lossless decoders for all five canonical byte
+encodings. NO evolutionary behavior (no mutation/selection/elitism/evolution
+RNG/replacement/lineage/generation stepping/evolution formats or locks/
+crossover), ZERO change to any valid canonical stream, ZERO lock movement.
+Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
+- **Roles, stated once:** `serializeGenotype` stays the canonical
+  byte-layout AUTHORITY (unrestructured — hard rule 4, the `24cd0dd5` lock);
+  the new `genotypeFieldWalk(axleCount)` / `forEachGenotypeField(genotype,
+  visit)` (assembly.js) is a validated METADATA MIRROR. 36 fixed-prefix
+  entries + 16 per axle (68 at 2 axles), `{path, key, type, kind, byteOffset,
+  byteLength}`; `kind` ∈ version/structural/discrete/continuous, with
+  `discrete` single-sourced from `DISCRETE_GENE_KEYS`.
+  `tests/genotype-schema.test.js` binds mirror to authority with three legs —
+  a copy-declared literal walk, the stride-128/tiling derivation identities,
+  and perturb-one-leaf byte EXCLUSIVITY against the real serializer — plus a
+  path-MULTISET cross-check against `probe-integrity.js`'s independent
+  reflection walk (multiset, not key set: keys repeat across node slots and
+  axles). Refactoring serialization onto the walk is a deliberate later PR.
+- **Latent genes are PROSE, not metadata (ruling):** node slots past the
+  active prefix, `nodes[0].gap`, the two idle `fam` blocks, and the
+  symmetry-gated `asym` block are always serialized, never erased by repair,
+  and freely perturbable by parametric mutation (heritable neutral
+  variation). Encoding expression would create a second semantic contract
+  drifting independently of the byte layout and make the walk a function of
+  gene VALUES rather than axle count. Expression is a `buildIR` question; if
+  a consumer ever needs it, it gets its own derived helper.
+- **Five decoders, each beside its encoder:** `deserializeGenotype`
+  (assembly.js), `deserializePopulationSnapshot` (population.js),
+  `deserializePopulationInitialization` (population-initializer.js),
+  `deserializeEvaluationSpec` + `deserializeFitnessVector`
+  (population-evaluation.js). Fail-loud, NEVER repairing (truncation,
+  trailing bytes, unknown versions, out-of-range enum/flag bytes, lying
+  length prefixes, out-of-domain values, contradictory records). Round-trip
+  invariants committed both directions: `serialize(deserialize(bytes))`
+  byte-identical, `deserialize(serialize(x))` leaf-equal under `Object.is`
+  (−0 sign bit and denormals preserved; nothing `Math.fround`-ed).
+- **THE VALIDATION-DEPTH RULING — mirror the encoder exactly, no more, no
+  less** (this is what makes each decoder a true inverse across its
+  encoder's whole output domain): genotype re-runs `validateGenotype`;
+  snapshot re-runs `validatePopulation` (incl. the repair-identity
+  canonicality tooth — no raw-draw side door) PLUS strict-ascending STREAM
+  order (validatePopulation sorts a copy and cannot see stream order; a
+  decoder that re-sorted would accept non-canonical bytes and break
+  re-encode identity); manifest re-runs `resolveConfig`. The evaluation spec
+  is the load-bearing asymmetry: its encoder does NOT run `resolveSpec`, so
+  the decoder must not either — `resolveSpec` enforces EXECUTION constraints
+  (clearance band, flat-pad guard, non-negative friction) the encoder never
+  applies, and calling it would reject encoder-producible bytes. Execution
+  validation stays `evaluatePopulation`'s job; a committed positive test
+  asserts such streams decode cleanly. Only CURRENT-version streams decode
+  (encoders write current constants unconditionally — that ruling is what
+  makes re-encode reproduce the bytes).
+- **Two ADDITIVE digest-state input paths** (`serializeFitnessVector`,
+  `serializePopulationInitialization`): a digest is one-way, so a decoded
+  record cannot reconstruct the `spec` / `population` its encoder folds.
+  Both encoders now accept EITHER the original object (production path,
+  statements verbatim and in original order) OR a pre-computed canonical
+  uint32; both present must AGREE, neither fails loud. No existing caller
+  passes the new field ⇒ the production branch is bit-for-bit unchanged
+  (`a6d04f75` / `7acb271d` stand; the population-determinism gate is the
+  tripwire).
+- **Two wire-representability guards (fail loud; NO valid bytes change):**
+  `serializeGenotype` capped `axles.length` at the u8 bound (validateGenotype
+  has no axle cap — `maxAxles` is repair POLICY) and `serializeEvaluationSpec`
+  capped each range length, whose size pass used the TRUE length so a >255
+  range emitted a wire-inconsistent stream. Unreachable today (repair and the
+  initializer cap at 6); this converts silent corruption into a loud error and
+  is what makes the exact-inverse claim honest rather than scoped.
+- **`src/sim/bytes.js`** (new, pure) — `createByteReader(bytes, fail)`
+  (little-endian, bounds-checked before every read, `byteOffset` folded in so
+  a subarray reads its own window, cursor state as GETTERS on a frozen
+  object, failures routed through the CALLING module's fail idiom,
+  `expectEnd` for trailing-byte refusal) + `bytesToHex`/`hexToBytes`, the
+  lossless canonical-LOWERCASE JSON-safe representation (odd length,
+  uppercase, and non-hex rejected — never normalized). **Binary identity vs
+  JSON envelope:** the bytes ARE the identity, digests are folded over them
+  and never over JSON; JSON carries hex inside a `boxcar3d.<name>/<v>`
+  envelope. No base64. `trace.js hexBytes` / `characterize-population.js
+  bytesToHex` stay put (recorded duplication — locked module / out-of-ban
+  script).
+- **Tests:** `tests/genotype-schema.test.js`, `genotype-codec.test.js`
+  (incl. the seed-20260710 corpus inverted per member — binding the decoder
+  to the `24cd0dd5` corpus with NO duplicated digest literal — and the NEW
+  seed **20260732** boundary-value sprinkle corpus), `population-codec.test.js`
+  (incl. the SELF-CONTAINED HISTORY proof: decoded config →
+  `createInitialPopulation` → byte-identical manifest + matching snapshot
+  digest state), `evaluation-codec.test.js` (the committed `a6d04f75` vector
+  reconstructed WITHOUT physics from the fixture builder + the imported lock),
+  `bytes.test.js`, and `tests/browser/codec-smoke.test.js` — the last exists
+  because `vitest.browser.config.js` collects only `tests/browser/**`, so
+  without it no codec line would ever run in Chromium. No new lock anywhere;
+  no `*-locks.js` file touched.
+- Full suite green (48 files, 915 tests), determinism gate green, pinned
+  Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
+  fingerprint, the A–D evaluation digests, all four population digests, the
+  per-member fitness literals, the champion trace, and every version constant
+  byte-identical.
 
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a

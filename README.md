@@ -158,6 +158,28 @@ adjudication time — instead of a copied digest literal that staled on
 re-lock. Full contract in
 [`docs/numerical-integrity-policy-2026-07.md`](docs/numerical-integrity-policy-2026-07.md);
 no physics changed and the A–D evaluation golden digests are byte-identical.
+The first Phase-1B preparatory PR then landed the **canonical schema and codec
+foundations**: one validated schema walk over the genotype
+(`genotypeFieldWalk` / `forEachGenotypeField`, classifying every field as
+version, structural, discrete, or continuous) plus lossless decoders for all
+five canonical byte encodings — genotype, population snapshot, initialization
+manifest, evaluation spec, and fitness vector — behind a shared strict
+little-endian reader and a canonical lowercase-hex representation for JSON
+envelopes. `serializeGenotype` stays the byte-layout authority and is
+unrestructured; the schema is a mirror bound to it by a copy-declared literal
+walk, tiling identities, and perturb-one-leaf byte exclusivity against the real
+serializer. Each decoder mirrors exactly the validation its encoder performs —
+which is why the evaluation-spec decoder deliberately does not run
+`resolveSpec` (that would reject streams the encoder legally produces;
+execution validation stays with `evaluatePopulation`) — and every decoder fails
+loud on truncation, trailing bytes, unknown versions, and malformed data rather
+than repairing it. Two encoders gained an additive digest-state input so a
+decoded record can be re-encoded from itself, and two silent wire-overflow
+holes (u8 axle count, u8 range length) now fail loud without changing any valid
+stream. No evolutionary behaviour is implemented, and every committed
+lock — terrain, noise, assembly, evaluation A–D, and all four population
+digests — is byte-identical. Full contract in
+[`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).
 Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement), now unblocked — elitism
 consumes `selectableChampionFromEvaluation`; the multibody binding-extension

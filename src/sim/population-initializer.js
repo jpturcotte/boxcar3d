@@ -88,6 +88,7 @@ import {
 } from './assembly.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
+import { createByteReader } from './bytes.js';
 
 export const POPULATION_INITIALIZER_VERSION = 1;
 
@@ -277,11 +278,32 @@ export function serializePopulationInitialization(initialization) {
     fail('initialization.seed', `${initialization.seed} disagrees with config.seed ${initialization.config.seed}`);
   }
   const cfg = resolveConfig({ ...initialization.config, seed: initialization.seed });
-  const snapshotBytes = serializePopulationSnapshot(initialization.population);
-  if (initialization.population.individuals.length !== cfg.populationSize) {
-    fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+  // Where the encoded snapshot digest state comes from. The production path
+  // carries the population itself and folds its snapshot — unchanged,
+  // statement for statement. The ADDITIVE path exists because the digest is a
+  // one-way attestation: a decoded manifest holds the state but can never
+  // reconstruct the population from it, so without this a manifest could not
+  // be re-encoded from its own decoded form (the codec's round-trip contract).
+  // Both present must AGREE; neither present fails loud.
+  let snapshotState;
+  if (initialization.population !== undefined) {
+    const snapshotBytes = serializePopulationSnapshot(initialization.population);
+    if (initialization.population.individuals.length !== cfg.populationSize) {
+      fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+    }
+    snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
+    if (initialization.populationSnapshotDigestState !== undefined
+      && initialization.populationSnapshotDigestState !== snapshotState) {
+      fail('initialization.populationSnapshotDigestState',
+        `${initialization.populationSnapshotDigestState} disagrees with the population's computed state ${snapshotState}`);
+    }
+  } else {
+    const declared = initialization.populationSnapshotDigestState;
+    if (!Number.isInteger(declared) || declared < 0 || declared > 0xffffffff) {
+      fail('initialization.populationSnapshotDigestState', declared);
+    }
+    snapshotState = declared;
   }
-  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
   const cats = cfg.initialSuspensionTypes;
   const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + cats.length + 4));
   let o = 0;
@@ -297,4 +319,62 @@ export function serializePopulationInitialization(initialization) {
   for (const c of cats) { view.setUint8(o, SUSPENSION_TYPES.indexOf(c)); o += 1; }
   view.setUint32(o, snapshotState, true); o += 4;
   return new Uint8Array(view.buffer);
+}
+
+function decodeFail(path, value) {
+  throw new Error(`population-initializer: invalid encoded initialization at ${path} (${String(value)})`);
+}
+
+/**
+ * The exact inverse of serializePopulationInitialization. Returns the
+ * provenance record — versions, seed, the resolved config, and the snapshot
+ * digest state it attests to. The population itself is NOT recoverable from
+ * these bytes (the manifest binds content by digest, by design); re-running
+ * createInitialPopulation with the decoded config reproduces it, and the
+ * digest state is what proves the reproduction matched.
+ *
+ * The decoded config re-runs resolveConfig — the same gate the encoder applies
+ * — so an S2 or duplicate category index, an out-of-band axle bound, or a
+ * non-probability field is rejected loud rather than decoded into a config
+ * the initializer would refuse.
+ */
+export function deserializePopulationInitialization(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const initializerVersion = r.u16('initializerVersion');
+  if (initializerVersion !== POPULATION_INITIALIZER_VERSION) {
+    decodeFail('initializerVersion', initializerVersion);
+  }
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  const seed = r.u32('seed');
+  const populationSize = r.u32('populationSize');
+  const minAxles = r.u8('minAxles');
+  const maxAxles = r.u8('maxAxles');
+  const symmetricProbability = r.finiteF64('symmetricProbability');
+  const minInitialPowerGene = r.finiteF64('minInitialPowerGene');
+  const categoryCount = r.u8('categoryCount');
+  const initialSuspensionTypes = [];
+  for (let i = 0; i < categoryCount; i += 1) {
+    const index = r.u8(`initialSuspensionTypes[${i}]`);
+    if (index >= SUSPENSION_TYPES.length) decodeFail(`initialSuspensionTypes[${i}]`, index);
+    initialSuspensionTypes.push(SUSPENSION_TYPES[index]);
+  }
+  const populationSnapshotDigestState = r.u32('populationSnapshotDigestState');
+  r.expectEnd('initialization');
+  const config = resolveConfig({
+    seed,
+    populationSize,
+    minAxles,
+    maxAxles,
+    symmetricProbability,
+    minInitialPowerGene,
+    initialSuspensionTypes,
+  });
+  return Object.freeze({
+    initializerVersion,
+    genotypeVersion,
+    seed,
+    config: Object.freeze({ ...config, initialSuspensionTypes: Object.freeze([...config.initialSuspensionTypes]) }),
+    populationSnapshotDigestState,
+  });
 }

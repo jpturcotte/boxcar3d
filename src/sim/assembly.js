@@ -728,6 +728,13 @@ export function serializeGenotype(genotype) {
   validateGenotype(genotype);
   const seg = genotype.frame.segments[0];
   const n = genotype.axles.length;
+  // Wire representability: the axle count is a u8. validateGenotype imposes no
+  // axle cap (repair's maxAxles is policy, not domain), so without this guard a
+  // 256+-axle genotype would emit a WRAPPED count byte disagreeing with its own
+  // payload — malformed bytes produced silently. No reachable input hits this
+  // (repair and the initializer both cap at 6) and no valid stream changes;
+  // this only converts a silent corruption into a loud failure.
+  if (n > 0xff) fail('axles.length', `${n} exceeds the u8 wire bound (255)`);
   const bytes = 2 + 4 * 8 + 8 + 1 + 8 + NODE_SLOTS * 4 * 8 + 3 * 8 + 1 + n * 16 * 8;
   const view = new DataView(new ArrayBuffer(bytes));
   let o = 0;
@@ -757,6 +764,217 @@ export function serializeGenotype(genotype) {
     for (const k of ASYM_GENES) f64(a.asym[k]);
   }
   return new Uint8Array(view.buffer);
+}
+
+// --- The schema walk: a validated MIRROR of the serializer ------------------
+//
+// ROLES, stated once so they cannot blur: `serializeGenotype` above is the
+// CANONICAL BYTE-LAYOUT AUTHORITY — it alone produces the stream the 24cd0dd5
+// corpus fingerprint hashes, and it stays hand-written. What follows is a
+// validated METADATA MIRROR of that walk: the same fields, in the same order,
+// at the same offsets, annotated with the classification a future parametric
+// mutation operator needs. tests/genotype-schema.test.js proves the two agree
+// exactly (a copy-declared literal walk, byte-offset exclusivity under
+// single-leaf perturbation, and the tiling identity), so the mirror cannot
+// drift silently. Refactoring serialization ONTO this walk is a deliberate
+// later PR, never an accident of this one.
+//
+// SERIALIZATION ORDER ONLY. This walk describes the byte layout. It is NOT the
+// draw order of any sampler: randomGenotype happens to draw in serialization
+// order (a convenience for auditable re-locks) and the live initializer's draw
+// table (population-initializer.js) deliberately does NOT — it is its own
+// versioned contract with extra interleaved draws.
+//
+// CLASSIFICATION (`kind`):
+//   'version'    — the u16 schema version.
+//   'structural' — an array LENGTH written on the wire (segment count, axle
+//                  count). Not a [0,1] gene; a mutation operator changes these
+//                  only through a structural operator, never by jitter.
+//   'discrete'   — a gene whose DECODE crosses a threshold: enum band
+//                  (family, suspType), boolean (symmetric, paired, driven), or
+//                  slot count (nodeCount). Single-sourced from
+//                  DISCRETE_GENE_KEYS; a PARAMETRIC operator must preserve
+//                  these verbatim (see that constant's ruling).
+//   'continuous' — every other gene leaf: a magnitude a parametric operator
+//                  may jitter freely inside [0,1].
+//
+// LATENT GENES (documented in prose, deliberately NOT schema metadata). Some
+// leaves do not reach the compiled phenotype for a given genotype: node slots
+// beyond the active `nodeCount` prefix, `nodes[0].gap` (cumulative spacing
+// starts at 0), the two inactive `fam` blocks, and the `asym` block under
+// symmetry gating. Every one of them is ALWAYS serialized and repair never
+// erases them, so they are ordinary continuous genes for both the codec and
+// for mutation — latent drift is heritable neutral variation, and the schema
+// stays a pure function of axle count. Whether a leaf is EXPRESSED is a
+// compile-time question about buildIR, not a property of the byte layout; if a
+// consumer ever needs it, it belongs in its own derived helper.
+
+const GENOTYPE_BASE_BYTES = 268; // the fixed prefix: version .. axleCount
+const GENOTYPE_AXLE_STRIDE = 128; // 16 f64 per axle (AXLE_GENES + ASYM_GENES)
+
+/** Exact byte length of the canonical stream for `axleCount` axles. */
+export function genotypeByteLength(axleCount) {
+  if (!Number.isInteger(axleCount) || axleCount < 0 || axleCount > 0xff) {
+    fail('axleCount', axleCount);
+  }
+  return GENOTYPE_BASE_BYTES + GENOTYPE_AXLE_STRIDE * axleCount;
+}
+
+// The one walk builder. Statement-for-statement the serializer's order; the
+// only data-driven loops are over the declared field lists the serializer
+// itself walks (NODE_GENES / AXLE_GENES / ASYM_GENES) — never object key order.
+// `g === null` yields the static layout (no `value` fields).
+function genotypeEntries(g, axleCount) {
+  const entries = [];
+  let o = 0;
+  const push = (path, key, type, kind, value) => {
+    const byteLength = type === 'u16' ? 2 : (type === 'u8' ? 1 : 8);
+    const entry = { path, key, type, kind, byteOffset: o, byteLength };
+    if (g !== null) entry.value = value;
+    entries.push(Object.freeze(entry));
+    o += byteLength;
+  };
+  const gene = (path, key, value) => {
+    push(path, key, 'f64', DISCRETE_GENE_KEYS.includes(key) ? 'discrete' : 'continuous', value);
+  };
+  const seg = g === null ? null : g.frame.segments[0];
+
+  push('version', 'version', 'u16', 'version', g === null ? undefined : g.version);
+  gene('hue', 'hue', g === null ? undefined : g.hue);
+  gene('symmetric', 'symmetric', g === null ? undefined : g.symmetric);
+  gene('power', 'power', g === null ? undefined : g.power);
+  gene('frameDensity', 'frameDensity', g === null ? undefined : g.frameDensity);
+  gene('frame.family', 'family', g === null ? undefined : g.frame.family);
+  push('frame.segments.length', 'segmentCount', 'u8', 'structural',
+    g === null ? undefined : g.frame.segments.length);
+  gene('frame.segments[0].nodeCount', 'nodeCount', seg === null ? undefined : seg.nodeCount);
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    const node = seg === null ? null : seg.nodes[i];
+    for (const k of NODE_GENES) {
+      gene(`frame.segments[0].nodes[${i}].${k}`, k, node === null ? undefined : node[k]);
+    }
+  }
+  gene('frame.segments[0].fam.spine.beamWidthFrac', 'beamWidthFrac',
+    seg === null ? undefined : seg.fam.spine.beamWidthFrac);
+  gene('frame.segments[0].fam.ladder.crossFrac', 'crossFrac',
+    seg === null ? undefined : seg.fam.ladder.crossFrac);
+  gene('frame.segments[0].fam.hull.bulge', 'bulge',
+    seg === null ? undefined : seg.fam.hull.bulge);
+  push('axles.length', 'axleCount', 'u8', 'structural', g === null ? undefined : g.axles.length);
+  for (let a = 0; a < axleCount; a += 1) {
+    const axle = g === null ? null : g.axles[a];
+    for (const k of AXLE_GENES) {
+      gene(`axles[${a}].${k}`, k, axle === null ? undefined : axle[k]);
+    }
+    for (const k of ASYM_GENES) {
+      gene(`axles[${a}].asym.${k}`, k, axle === null ? undefined : axle.asym[k]);
+    }
+  }
+  return Object.freeze(entries);
+}
+
+/**
+ * The STATIC field walk for a given axle count — ordered metadata with no
+ * genotype instance (documentation, mutation-rate tables, conformance tests).
+ * 36 fixed-prefix entries + 16 per axle; offsets tile [0, genotypeByteLength).
+ */
+export function genotypeFieldWalk(axleCount) {
+  genotypeByteLength(axleCount); // domain check, single-sourced
+  return genotypeEntries(null, axleCount);
+}
+
+/**
+ * Visit every field of `genotype` in canonical serialization order, with its
+ * raw stored value. Validates first, so a visitor always sees in-domain genes.
+ */
+export function forEachGenotypeField(genotype, visit) {
+  validateGenotype(genotype);
+  if (typeof visit !== 'function') fail('visit', visit);
+  for (const entry of genotypeEntries(genotype, genotype.axles.length)) visit(entry);
+}
+
+// --- Canonical flat DECODING -------------------------------------------------
+//
+// The exact inverse of serializeGenotype. Fail-loud, never repairing: a
+// malformed stream is an error, not something to normalize into the nearest
+// legal genotype (that would let a raw or corrupt draw re-enter the population
+// layer wearing a canonical face). Raw [0,1] genes are returned bit-exact,
+// signed zero included.
+//
+// Only streams at the CURRENT version decode. The serializer writes
+// GENOTYPE_VERSION unconditionally, so accepting an older version would
+// either misread bytes or re-encode under a different version and break the
+// serialize(deserialize(bytes)) === bytes identity. Reading historical
+// versions, if ever needed, is separate append-only work.
+
+function decodeFail(path, value) {
+  throw new Error(`assembly: invalid encoded genotype at ${path} (${String(value)})`);
+}
+
+/** Canonical bytes -> genotype. The exact inverse of serializeGenotype. */
+export function deserializeGenotype(bytes) {
+  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
+  if (bytes.byteLength < GENOTYPE_BASE_BYTES) decodeFail('byteLength', bytes.byteLength);
+  // byteOffset folded in: a subarray of a larger buffer reads its own window.
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const version = view.getUint16(0, true);
+  if (version !== GENOTYPE_VERSION) decodeFail('version', version);
+  const segmentCount = view.getUint8(42);
+  if (segmentCount !== 1) decodeFail('frame.segments.length', segmentCount);
+  const axleCount = view.getUint8(267);
+  // ONE exact-length identity rejects truncation AND trailing bytes: the
+  // stream is exactly its content, so any other length is malformed.
+  const expected = genotypeByteLength(axleCount);
+  if (bytes.byteLength !== expected) {
+    decodeFail('byteLength', `${bytes.byteLength} (expected ${expected} for axleCount ${axleCount})`);
+  }
+  let o = 2; // version consumed
+  const f64 = () => { const v = view.getFloat64(o, true); o += 8; return v; };
+  const hue = f64();
+  const symmetric = f64();
+  const power = f64();
+  const frameDensity = f64();
+  const family = f64();
+  o += 1; // segmentCount consumed (read and checked above)
+  const nodeCount = f64();
+  const nodes = [];
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    nodes.push({ gap: f64(), height: f64(), halfWidth: f64(), thickness: f64() });
+  }
+  const beamWidthFrac = f64();
+  const crossFrac = f64();
+  const bulge = f64();
+  o += 1; // axleCount consumed (read and checked above)
+  const axles = [];
+  for (let a = 0; a < axleCount; a += 1) {
+    const axle = {};
+    for (const k of AXLE_GENES) axle[k] = f64();
+    const asym = {};
+    for (const k of ASYM_GENES) asym[k] = f64();
+    axle.asym = asym;
+    axles.push(axle);
+  }
+  const genotype = {
+    version,
+    hue,
+    symmetric,
+    power,
+    frameDensity,
+    frame: {
+      family,
+      segments: [{
+        nodeCount,
+        nodes,
+        fam: { spine: { beamWidthFrac }, ladder: { crossFrac }, hull: { bulge } },
+      }],
+    },
+    axles,
+  };
+  // A decoded stream must satisfy the same rules as encoder input (the
+  // decodeTraceRecord precedent): this is where a NaN / out-of-[0,1] f64
+  // patched into the bytes is caught. No repair — validation only.
+  validateGenotype(genotype);
+  return genotype;
 }
 
 // --- Random genotype (test corpus / dev scene) -------------------------------

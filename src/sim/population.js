@@ -96,9 +96,12 @@ export function bytesEqual(a, b) {
 // encoder's serialization work — the tooth had already produced these bytes.)
 function validatedMembers(population) {
   if (typeof population !== 'object' || population === null) fail('population', population);
-  if (population.snapshotVersion !== POPULATION_SNAPSHOT_VERSION) {
-    fail('snapshotVersion', population.snapshotVersion);
-  }
+  // The diagnostic prints the value that was REJECTED. Re-reading the caller
+  // inside the message let a version accessor be rejected as 7 and reported as
+  // 4242 — a report naming a value no check ever saw. Cheap, and it is the
+  // standard this repo already states for resolveSpec's error text.
+  const snapshotVersion = population.snapshotVersion;
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) fail('snapshotVersion', snapshotVersion);
   const individuals = population.individuals;
   if (!Array.isArray(individuals) || individuals.length === 0) fail('individuals', individuals);
   // CAPTURE THE BOUND before the walk: the body calls serializeGenotype on a

@@ -762,6 +762,23 @@ describe('evaluatePopulation (deterministic flavor)', () => {
       .rejects.toThrow(/terrain.*non-enumerable/);
   });
 
+  test('a caller-declared terrain range length cannot allocate before it is bounded', async () => {
+    // `ownTerrain` densified a range up to the caller's DECLARED length before
+    // any value validation — measured 58 MB at 2e6 and an uncatchable
+    // `FATAL ERROR: heap limit` V8 abort at 2^26, on the production
+    // evaluatePopulation path. The identical guard already existed one
+    // function away, in serializeEvaluationSpec, with its own committed test.
+    // A sparse Array costs the caller nothing, so this is checked BEFORE the
+    // copy loop, not after.
+    const spec = baseSpec();
+    const huge = [];
+    huge.length = 67108864; // 2^26 declared, zero elements stored
+    await expect(evaluatePopulation(
+      popOf(member(5, s0PlainGenotype())),
+      { ...spec, terrain: { ...spec.terrain, craterRadiusRange: huge } },
+    )).rejects.toThrow(/craterRadiusRange\.length.*u8 wire bound/);
+  });
+
   test('a zero-axle sled imported into a population evaluates as a valid ~0-fitness individual', { timeout: 240000 }, async () => {
     const ev = await evaluatePopulation(popOf(member(2, sledGenotype())), baseSpec());
     const sled = ev.individuals[0];

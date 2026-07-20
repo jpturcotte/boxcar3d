@@ -325,8 +325,19 @@ export function spawnPoseOnFlatStart(ir, options) {
   const opts = options === undefined ? {} : options;
   if (typeof opts !== 'object' || opts === null) fail('spawn', options);
   const { x, z } = opts;
-  const clearance = Object.hasOwn(opts, 'clearance') ? opts.clearance : SPAWN_CLEARANCE;
-  if (!ir || ir.version !== ASSEMBLY_IR_VERSION) fail('ir.version', ir && ir.version);
+  // ABSENT — and an explicit `undefined`, which is what `{clearance:
+  // opts.clearance}` forwarding produces — defaults; an explicit `null` fails
+  // like any other non-number (the `??` shape silently substituted the default
+  // for null; the `Object.hasOwn` shape over-corrected and rejected undefined,
+  // which no sibling optional key does and which broke callers that ran on
+  // main). One read, then one comparison.
+  const rawClearance = opts.clearance;
+  const clearance = rawClearance === undefined ? SPAWN_CLEARANCE : rawClearance;
+  // One reading, reported verbatim: `ir.version` was read twice, so a version
+  // accessor rejected at 77 was PRINTED as 2 — the currently-valid version, a
+  // diagnostic that contradicts the rejection it explains.
+  const irVersion = ir ? ir.version : undefined;
+  if (!ir || irVersion !== ASSEMBLY_IR_VERSION) fail('ir.version', ir && irVersion);
   if (!Number.isFinite(x)) fail('spawn.x', x);
   if (!Number.isFinite(z)) fail('spawn.z', z);
   if (!Number.isFinite(clearance) || clearance <= 0 || clearance > 0.05) fail('spawn.clearance', clearance);
@@ -508,9 +519,12 @@ function resolveSpec(spec) {
   for (const k of Object.keys(spawn)) {
     if (!SPAWN_SPEC_KEYS.includes(k)) fail(`spawn.${k}`, 'unknown key');
   }
-  // Absent defaults; an EXPLICIT null fails like any other non-number (the
-  // `??` shape silently substituted the default for null — the keepRaw class).
-  const clearance = Object.hasOwn(spawn, 'clearance') ? spawn.clearance : SPAWN_CLEARANCE;
+  // Absent (or explicitly `undefined`) defaults; an EXPLICIT null fails like
+  // any other non-number — the `??` shape silently substituted the default for
+  // null, and the `Object.hasOwn` shape additionally rejected `undefined`,
+  // which the five sibling optional keys here accept via destructuring.
+  const rawClearance = spawn.clearance;
+  const clearance = rawClearance === undefined ? SPAWN_CLEARANCE : rawClearance;
   // Capture every spawn scalar ONCE. The guard, the flat-pad comparison, the
   // error text, and the returned resolved spec must all be the same reading:
   // measured (round-10), an `x` accessor answering -44 for the first three
@@ -579,8 +593,20 @@ function ownTerrain(terrain) {
       // ownership boundary and its return value would BECOME the owned copy —
       // the cloneGenotype class. The whole point of this function is that
       // nothing caller-controlled survives into the result.
+      // BOUND BEFORE ALLOCATE — the same ordering ruling serializeEvaluationSpec
+      // states for its own u8 check, applied here because THIS is the
+      // production `evaluatePopulation -> resolveSpec` path and it runs FIRST.
+      // Measured (round-11): a sparse genuine Array declaring length 2^26 costs
+      // the caller nothing and densifies here into a `FATAL ERROR: heap limit`
+      // V8 abort — uncatchable, before any value is validated. Every terrain
+      // range is a 2-element pair (validateConfig refuses anything else), so
+      // the wire bound rejects only inputs already doomed downstream.
+      const declared = v.length;
+      if (!Number.isInteger(declared) || declared < 0 || declared > 0xff) {
+        fail(`terrain.${k}.length`, `${declared} exceeds the u8 wire bound (255)`);
+      }
       const copy = [];
-      for (let i = 0; i < v.length; i += 1) copy.push(v[i]);
+      for (let i = 0; i < declared; i += 1) copy.push(v[i]);
       out[k] = Object.freeze(copy);
     } else if (v !== null && typeof v === 'object') {
       out[k] = Object.freeze({ ...v });

@@ -270,11 +270,13 @@ export function createInitialPopulation(config, options = {}) {
   for (const k of Object.keys(options)) {
     if (k !== 'keepRaw') fail(`options.${k}`, 'unknown key');
   }
-  // Absent defaults to false; an EXPLICIT null fails like every other
-  // non-boolean. The former `options.keepRaw ?? false` silently coerced null
-  // past the typeof gate — the one value class that slipped the module's
-  // fail-loud idiom.
-  const keepRaw = Object.hasOwn(options, 'keepRaw') ? options.keepRaw : false;
+  // Absent (or explicitly `undefined`) defaults to false; an EXPLICIT null
+  // fails like every other non-boolean. The former `options.keepRaw ?? false`
+  // silently coerced null past the typeof gate — the one value class that
+  // slipped the module's fail-loud idiom — and the `Object.hasOwn` shape that
+  // replaced it went one step too far, rejecting `undefined` as well.
+  const rawKeepRaw = options.keepRaw;
+  const keepRaw = rawKeepRaw === undefined ? false : rawKeepRaw;
   if (typeof keepRaw !== 'boolean') fail('options.keepRaw', keepRaw);
 
   const root = new Rng(cfg.seed);

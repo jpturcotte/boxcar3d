@@ -621,6 +621,48 @@ describe('loop bounds captured before caller code runs (round-11)', () => {
   });
 });
 
+// --- The rejection paths (round-11) -----------------------------------------
+//
+// Every CASES row asserts the call SUCCEEDS (`if (threw) throw threw`), so no
+// error branch in the repo was instrumented — and a diagnostic that re-reads
+// the caller inside its own message is invisible to a success-only table. Two
+// were measured: a `snapshotVersion` rejected at 7 and PRINTED as 4242, and an
+// `ir.version` rejected at 77 and printed as 2 — the currently-VALID version,
+// a report that contradicts the rejection it explains.
+//
+// Each row: a two-faced accessor whose first read is the rejected value. The
+// message must name THAT value, never the later one.
+
+const twoFaced = (first, later) => {
+  let n = 0;
+  return { get value() { n += 1; return n === 1 ? first : later; } };
+};
+
+const REJECTION_CASES = [
+  ['population.validatePopulation (snapshotVersion)',
+    () => {
+      const p = smallPopulation();
+      const v = twoFaced(7, 4242);
+      return [{ get snapshotVersion() { return v.value; }, individuals: p.individuals }];
+    },
+    (p) => validatePopulation(p),
+    /snapshotVersion \(7\)/],
+  ['population-evaluation.spawnPoseOnFlatStart (ir.version)',
+    () => {
+      const ir = compileAssembly(realizableGenotype());
+      const v = twoFaced(77, 2);
+      return [{ ...ir, get version() { return v.value; } }, { x: -44, z: 0 }];
+    },
+    (ir, opts) => spawnPoseOnFlatStart(ir, opts),
+    /ir\.version \(77\)/],
+];
+
+describe('rejection paths name the value that was rejected (round-11)', () => {
+  test.each(REJECTION_CASES)('%s', (name, build, call, re) => {
+    expect(() => call(...build())).toThrow(re);
+  });
+});
+
 // --- Structural guards on caller collections (round-11) ---------------------
 //
 // Ordinary malformed data must leave a public seam in the OWNING module's
@@ -780,6 +822,29 @@ describe('ownPlainData copies with fidelity or refuses (round-11)', () => {
     }
     expect(message).toMatch(MODULE_DIALECT);
     expect(message).not.toMatch(/call stack/);
+  });
+});
+
+// --- Optional-key defaulting (round-11) -------------------------------------
+
+describe('absent and explicit-undefined default; explicit null is loud', () => {
+  test('spawnPoseOnFlatStart clearance: undefined defaults, null fails', () => {
+    const ir = compileAssembly(realizableGenotype());
+    const control = spawnPoseOnFlatStart(ir, { x: -44, z: 0 });
+    // `{clearance: opts.clearance}` forwarding produces exactly this shape, and
+    // the round-10 `Object.hasOwn` guard rejected it where main ran.
+    expect(spawnPoseOnFlatStart(ir, { x: -44, z: 0, clearance: undefined })).toEqual(control);
+    expect(() => spawnPoseOnFlatStart(ir, { x: -44, z: 0, clearance: null }))
+      .toThrow(/spawn\.clearance/);
+  });
+
+  test('createInitialPopulation keepRaw: undefined defaults, null fails', () => {
+    const cfg = { seed: 20260721, populationSize: 2 };
+    const control = createInitialPopulation(cfg);
+    const got = createInitialPopulation(cfg, { keepRaw: undefined });
+    expect(got.population.individuals).toHaveLength(control.population.individuals.length);
+    expect(got.population.individuals[0].rawGenotype).toBeUndefined();
+    expect(() => createInitialPopulation(cfg, { keepRaw: null })).toThrow(/keepRaw/);
   });
 });
 

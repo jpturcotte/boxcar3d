@@ -58,6 +58,35 @@ export default [
         'error',
         { name: 'performance', message: 'Sim time counts physics steps, never wall clock (red-team F3).' },
         { name: 'Date', message: 'Sim time counts physics steps, never wall clock (red-team F3).' },
+        // Round-11: `crypto.getRandomValues` is ambient randomness by any other
+        // name, and `self`/`globalThis` are the qualified back doors below.
+        { name: 'crypto', message: DETERMINISM_MESSAGE },
+        { name: 'self', message: 'Reach nothing through the global object in src/sim (rulings D7/F3).' },
+      ],
+      // The two rules above match a BARE `Math` object or a bare identifier
+      // only. Measured (round-11): `globalThis.Math.random()`, `G.Math.sin(1)`,
+      // `const M = Math; M.random()`, `globalThis.Date.now()`,
+      // `new globalThis.Date()`, `globalThis.performance.now()` and
+      // `globalThis.crypto.getRandomValues(...)` ALL linted clean in
+      // src/sim/** and src/workers/**, so both hard rules claimed
+      // "(ESLint-enforced)" for a ban with an open spelling. No live violation
+      // existed; these close the spelling, not a defect.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'MemberExpression[object.name="globalThis"]',
+          message: 'Reach nothing through globalThis in src/sim: it re-exposes Math/Date/performance/crypto past the D7/F3 bans.',
+        },
+        {
+          // `const M = Math` / `const { random } = Math` — aliasing the object
+          // moves every later call out of no-restricted-properties' sight.
+          selector: 'VariableDeclarator[init.name=/^(Math|Date|performance|crypto)$/]',
+          message: 'Do not alias Math/Date/performance/crypto in src/sim: the D7/F3 property bans only see direct access.',
+        },
+        {
+          selector: ':matches(BinaryExpression, AssignmentExpression)[operator=/^\\*\\*=?$/]',
+          message: 'The ** operator is Number::exponentiate — implementation-approximated exactly like the banned Math.pow (ruling D7). Use repeated multiplication, which IEEE 754 requires to be exact.',
+        },
       ],
     },
   },
@@ -91,6 +120,26 @@ export default [
           // match this selector.
           selector: 'MemberExpression[computed=false][property.name=/^(byteLength|byteOffset|buffer)$/]',
           message: 'Byte geometry must come from a cached %TypedArray%.prototype getter (TA_BYTE_LENGTH.call(x) / typedArrayByteLength(x)), never a property read — an own data property on a genuine Uint8Array shadows the inherited accessor. If the receiver is provably module-owned, disable this line with a comment NAMING the receiver.',
+        },
+        {
+          // Round-11: `MemberExpression[computed=false]` sees NEITHER computed
+          // access NOR destructuring, both measured clean against the previous
+          // selector — and `const { byteLength } = bytes` is the IDIOMATIC way
+          // the shadowable read comes back. A computed access through a
+          // variable key is not statically visible; that residue is recorded,
+          // not claimed closed.
+          selector: 'MemberExpression[computed=true][property.value=/^(byteLength|byteOffset|buffer|subarray)$/]',
+          message: 'Computed access is the same read: byte geometry must come from a cached %TypedArray%.prototype getter, and subarray is banned outright.',
+        },
+        {
+          selector: 'ObjectPattern > Property[key.name=/^(byteLength|byteOffset|buffer|subarray)$/]',
+          message: 'Destructuring performs the same shadowable property read. Use the cached %TypedArray%.prototype getters.',
+        },
+        {
+          // Reflect.get(bytes, 'byteLength') is a third spelling of the same
+          // read and has no legitimate use in this family.
+          selector: 'MemberExpression[object.name="Reflect"]',
+          message: 'Reflect.* is banned in the byte family: it reaches caller-shadowable properties past the geometry rules.',
         },
         {
           // `subarray` is banned OUTRIGHT in this family, with no

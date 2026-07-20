@@ -277,9 +277,18 @@ function generateFeatures(cfg, terrain, featureRng) {
   const count = Math.round((cfg.featureDensity * (length - startFlatLength - startBlendLength) * width) / 100);
   const weights = FEATURE_TYPES.map((type) => cfg.featureTypeWeights[type] || 0);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
+  // `x * x`, not `x ** 2`: the exponentiation OPERATOR is
+  // Number::exponentiate, which the spec leaves implementation-approximated
+  // exactly like Math.pow (already banned by ruling D7) — and this value feeds
+  // `maxHalf.ramp`, which bounds every ramp's placement draw, so a one-ulp
+  // difference would move a feature's drawn z and change the seed's world.
+  // Multiplication is IEEE-exact by definition. Byte-identity of the five
+  // terrain fingerprints was verified across this change.
+  const rampHalfLength = cfg.rampLengthRange[1] / 2;
+  const rampHalfWidth = cfg.rampWidthRange[1] / 2;
   const maxHalf = {
     boulder: cfg.boulderRadiusRange[1],
-    ramp: Math.sqrt((cfg.rampLengthRange[1] / 2) ** 2 + (cfg.rampWidthRange[1] / 2) ** 2),
+    ramp: Math.sqrt(rampHalfLength * rampHalfLength + rampHalfWidth * rampHalfWidth),
     log: cfg.logLengthRange[1] / 2 + cfg.logRadiusRange[1],
   };
   const features = [];

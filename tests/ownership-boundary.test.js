@@ -42,11 +42,21 @@ import * as AssemblyNS from '../src/sim/assembly.js';
 import * as PopulationNS from '../src/sim/population.js';
 import * as InitializerNS from '../src/sim/population-initializer.js';
 import * as EvaluationNS from '../src/sim/population-evaluation.js';
+import * as IntegrityNS from '../src/sim/integrity.js';
+import * as TraceNS from '../src/sim/trace.js';
+import * as ForensicsNS from '../src/sim/trace-forensics.js';
+import * as RunnerNS from '../src/sim/evaluation.js';
+import * as Fnv1aNS from '../src/sim/fnv1a.js';
 
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHex } from '../src/sim/fnv1a.js';
 import {
-  EVALUATION_TRACE_VERSION, RECORD_BYTES, compareTraces, decodeTraceRecord, encodeTraceRecord,
+  EVALUATION_TRACE_VERSION, RECORD_BYTES, compareCheckpoints, compareTraces,
+  decodeTraceRecord, encodeTraceRecord,
 } from '../src/sim/trace.js';
+import { createIntegrityState, foldIntegrity } from '../src/sim/integrity.js';
+import {
+  analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView,
+} from '../src/sim/trace-forensics.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import { Rng } from '../src/sim/prng.js';
 
@@ -261,6 +271,45 @@ const EXPECTED_EXPORTS = Object.freeze({
     'isVehicleResultValid', 'selectableChampionFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
+  // Round 11: these five were UNPINNED while tests/single-read.test.js:250-252
+  // cited this file as the backstop that forces a new export into its table
+  // ("an unlisted export fails there first"). For 47 exports across five
+  // modules — four of which this PR rewrote under the ownership rulings, and
+  // three of which carry single-read CASES rows — that backstop did not exist.
+  // A claim of universal-by-construction enforcement is only true of FIELDS if
+  // the MODULE list is itself enumerated by hand and incomplete.
+  'integrity.js': Object.freeze([
+    'INTEGRITY_POLICY_VERSION', 'INTEGRITY_REASONS', 'INTEGRITY_REFERENCE_CAPTURE_DT',
+    'INTEGRITY_STATUS', 'INTEGRITY_THRESHOLDS', 'createIntegrityState', 'dist3',
+    'finalizeIntegrity', 'foldIntegrity', 'norm3', 'norm3xyz',
+  ]),
+  'trace.js': Object.freeze([
+    'BODY_ROLES', 'EVALUATION_TRACE_VERSION', 'JOINT_STATES', 'MAX_AXLE_INDEX',
+    'MAX_STEP_INDEX', 'MAX_VEHICLE_INDEX', 'MAX_WHEEL_INDEX', 'NO_INDEX',
+    'RECORD_BYTES', 'TERMINATION_REASONS', 'TRACE_FIELDS', 'TRACE_MODES',
+    'TraceWriter', 'compareCheckpoints', 'compareTraces', 'decodeTraceRecord',
+    'encodeTraceRecord',
+  ]),
+  'trace-forensics.js': Object.freeze([
+    'FORENSIC_THRESHOLD_DEFAULTS', 'REFERENCE_CAPTURE_DT', 'TRACE_FORENSICS_SCHEMA',
+    'analyzeTrace', 'bodyReachMetadataForIR', 'offlineIntegrityView', 'scaledThresholds',
+  ]),
+  'evaluation.js': Object.freeze([
+    'EVALUATION_TRACE_VERSION', 'RUN_TERMINATION', 'TERMINATION_REASONS',
+    'createProgressState', 'foldProgress', 'readBodyState', 'runEvaluation',
+    'runRealizedEvaluationLoop',
+  ]),
+  'fnv1a.js': Object.freeze([
+    'FNV_OFFSET_BASIS', 'FNV_PRIME', 'fnv1aFold', 'fnv1aHex', 'fnv1aHexOf',
+  ]),
+});
+
+// Names that appear in a module's namespace but are BINDINGS OWNED ELSEWHERE.
+// Declared, because the ownership verdicts are keyed by bare name and would
+// otherwise collide — and asserted reference-identical below, so this cannot
+// become cover for two modules exporting different values under one name.
+const RE_EXPORTS = Object.freeze({
+  'evaluation.js': Object.freeze(['EVALUATION_TRACE_VERSION', 'TERMINATION_REASONS']),
 });
 
 const NAMESPACES = Object.freeze({
@@ -269,6 +318,13 @@ const NAMESPACES = Object.freeze({
   'population.js': PopulationNS,
   'population-initializer.js': InitializerNS,
   'population-evaluation.js': EvaluationNS,
+  'integrity.js': IntegrityNS,
+  'trace.js': TraceNS,
+  'trace-forensics.js': ForensicsNS,
+  // evaluation.js imports the adapter, whose Rapier load is INSIDE
+  // createPhysics (a dynamic import) — so this stays a pure module-graph read.
+  'evaluation.js': RunnerNS,
+  'fnv1a.js': Fnv1aNS,
 });
 
 // The five kinds the brief declares, plus ONE: `evaluatePopulation` orchestrates
@@ -425,6 +481,135 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'championFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
     { name: 'selectableChampionFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
   ]),
+  'integrity.js': Object.freeze([
+    { name: 'INTEGRITY_POLICY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'INTEGRITY_THRESHOLDS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'INTEGRITY_STATUS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'INTEGRITY_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'INTEGRITY_REFERENCE_CAPTURE_DT', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'norm3', kind: 'pure', callerCollections: [], callerNumbers: ['v.x', 'v.y', 'v.z'] },
+    { name: 'norm3xyz', kind: 'pure', callerCollections: [], callerNumbers: ['x', 'y', 'z'] },
+    { name: 'dist3', kind: 'pure', callerCollections: [], callerNumbers: ['a.*', 'b.*'] },
+    { name: 'createIntegrityState', kind: 'pure', callerCollections: [], callerNumbers: ['bodyCount', 'captureDt'] },
+    {
+      name: 'foldIntegrity',
+      kind: 'pure',
+      callerCollections: ['reads'],
+      callerNumbers: ['read.linvel.*', 'read.translation.*'],
+    },
+    { name: 'finalizeIntegrity', kind: 'pure', callerCollections: [], callerNumbers: [] },
+  ]),
+  'trace.js': Object.freeze([
+    { name: 'EVALUATION_TRACE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'RECORD_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TRACE_FIELDS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TRACE_MODES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'BODY_ROLES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'JOINT_STATES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TERMINATION_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'NO_INDEX', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_STEP_INDEX', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_VEHICLE_INDEX', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_AXLE_INDEX', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_WHEEL_INDEX', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'encodeTraceRecord', kind: 'encoder', callerCollections: [], callerNumbers: ['record.translation.*', 'record.rotation.*', 'record.linvel.*', 'record.angvel.*'] },
+    { name: 'decodeTraceRecord', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'TraceWriter', kind: 'encoder', callerCollections: [], callerNumbers: ['record.*'] },
+    { name: 'compareTraces', kind: 'pure', callerCollections: ['expected.records', 'actual.records'], callerNumbers: [] },
+    { name: 'compareCheckpoints', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: ['stepIndex', 'recordCount', 'byteCount', 'state'] },
+  ]),
+  'trace-forensics.js': Object.freeze([
+    { name: 'TRACE_FORENSICS_SCHEMA', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'FORENSIC_THRESHOLD_DEFAULTS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'REFERENCE_CAPTURE_DT', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'scaledThresholds', kind: 'pure', callerCollections: [], callerNumbers: ['dtScale', 'thresholds.*'] },
+    { name: 'bodyReachMetadataForIR', kind: 'pure', callerCollections: ['ir.axles'], callerNumbers: ['wheel.radius', 'wheel.width', 'hub.radius', 'hub.halfWidth', 'chassis.supports.reach'] },
+    { name: 'analyzeTrace', kind: 'pure', callerCollections: ['traceResult.records', 'options.bodies'], callerNumbers: ['captureDt', 'thresholds.*'] },
+    { name: 'offlineIntegrityView', kind: 'pure', callerCollections: ['analysis.perBody'], callerNumbers: [] },
+  ]),
+  'evaluation.js': Object.freeze([
+    { name: 'EVALUATION_TRACE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TERMINATION_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'RUN_TERMINATION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'createProgressState', kind: 'pure', callerCollections: [], callerNumbers: [] },
+    { name: 'foldProgress', kind: 'pure', callerCollections: [], callerNumbers: ['translation.x'] },
+    // The engine seam: `body` is a Rapier handle, not caller data.
+    { name: 'readBodyState', kind: 'pure', callerCollections: [], callerNumbers: [] },
+    {
+      name: 'runEvaluation',
+      kind: 'orchestrator',
+      callerCollections: ['options.vehicles', 'options.terrain.<range>'],
+      callerNumbers: ['maxSteps', 'spawn.position.*', 'targetWheelSurfaceSpeed', 'wheelFriction'],
+    },
+    // Takes ALREADY-REALIZED bodies and a module-owned option object from
+    // runEvaluation; the investigation seam passes its own literals.
+    { name: 'runRealizedEvaluationLoop', kind: 'orchestrator', callerCollections: [], callerNumbers: ['requestedDt', 'maxSteps'] },
+  ]),
+  'fnv1a.js': Object.freeze([
+    { name: 'FNV_OFFSET_BASIS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'FNV_PRIME', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'fnv1aFold', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'fnv1aHex', kind: 'pure', callerCollections: [], callerNumbers: [] },
+    { name: 'fnv1aHexOf', kind: 'pure', callerCollections: [], callerNumbers: [] },
+  ]),
+});
+
+// ============================================================================
+// (0) THE ENFORCEMENT SCOPE ITSELF
+// ============================================================================
+//
+// Round 11: the byte-family lint block scopes itself with a HARD-CODED
+// seven-file list, and nothing pinned it. The same probe file placed elsewhere
+// in src/sim produced zero diagnostics, so a future byte module (Phase 1B's
+// operator streams, lineage encoding) would start with no enforcement at all
+// and nobody would be told. No test in this repo enumerated a directory, so
+// both this list and the export tables above were enumerations a new module
+// joins only if someone remembers.
+//
+// This reads the real config and the real directory, and forces every src/sim
+// module into exactly one of two buckets: linted by the byte family, or
+// EXEMPT WITH A STATED REASON. A new file fails here until it is classified.
+
+const BYTE_FAMILY_EXEMPT = Object.freeze({
+  'src/sim/prng.js': 'the PRNG itself: uint32 arithmetic, no caller byte buffers',
+  'src/sim/noise.js': 'pure hash-based field sampling over module-owned scalars',
+  'src/sim/terrain.js': 'generates module-owned typed arrays from a config; takes no caller bytes',
+  'src/sim/features.js': 'pure descriptor -> geometry over module-owned arrays',
+  'src/sim/integrity.js': 'reads caller RECORD objects, not byte buffers (single-read table covers it)',
+  'src/sim/trace-forensics.js': 'consumes decoded records via trace.js; holds no byte geometry of its own',
+  'src/sim/evaluation.js': 'orchestrates physics; the trace bytes it holds come from TraceWriter',
+  'src/sim/evaluation-fixtures.js': 'declared fixture literals',
+  'src/sim/evaluation-locks.js': 'golden literals only, zero imports',
+  'src/sim/population-fixtures.js': 'declared fixture literals',
+  'src/sim/population-locks.js': 'golden literals only, zero imports',
+  'src/sim/lock-markers.js': 'message-format constants',
+  'src/sim/physics/adapter.js': 'the Rapier seam; trusts compiler-owned IRs by standing ruling',
+});
+
+describe('(0) the byte-family lint scope covers every src/sim module', () => {
+  test('each module is either linted by the byte family or exempt with a reason', async () => {
+    const { readdirSync } = await import('node:fs');
+    const { default: config } = await import('../eslint.config.js');
+    const byteBlock = config.find((b) => Array.isArray(b.files)
+      && b.files.includes('src/sim/bytes.js'));
+    expect(byteBlock, 'the byte-family lint block must exist').toBeTruthy();
+
+    const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (
+      e.isDirectory() ? walk(`${dir}/${e.name}`) : (e.name.endsWith('.js') ? [`${dir}/${e.name}`] : [])
+    ));
+    const modules = walk('src/sim').sort();
+    expect(modules.length).toBeGreaterThan(15); // the enumeration is not vacuous
+
+    const linted = new Set(byteBlock.files);
+    const exempt = new Set(Object.keys(BYTE_FAMILY_EXEMPT));
+    const unclassified = modules.filter((m) => !linted.has(m) && !exempt.has(m));
+    expect(unclassified, 'classify these in BYTE_FAMILY_EXEMPT or add them to the lint block').toEqual([]);
+    // No stale entries on either side, so the table cannot drift into fiction.
+    expect([...linted].filter((f) => !modules.includes(f))).toEqual([]);
+    expect([...exempt].filter((f) => !modules.includes(f))).toEqual([]);
+    // And the two buckets are disjoint: an exemption must be a real exemption.
+    expect([...exempt].filter((f) => linted.has(f))).toEqual([]);
+  });
 });
 
 describe('(1) export-surface conformance — nothing ships unclassified', () => {
@@ -446,11 +631,27 @@ describe('(1) export-surface conformance — nothing ships unclassified', () => 
     });
   }
 
-  test('the declared surface is a set, not a multiset, across all five modules', () => {
-    const all = Object.values(EXPECTED_EXPORTS).flatMap((names) => [...names]);
-    // Names are globally unique in this family, which is what lets the
-    // ownership verdicts below be keyed by bare name.
+  test('the declared surface is a set, not a multiset, across the family', () => {
+    const reexported = new Set(Object.values(RE_EXPORTS).flat());
+    const all = Object.entries(EXPECTED_EXPORTS)
+      .flatMap(([module, names]) => [...names]
+        .filter((n) => !(RE_EXPORTS[module] ?? []).includes(n)));
+    // Names are unique once the declared RE-EXPORTS are excluded, which is what
+    // lets the ownership verdicts below be keyed by bare name.
     expect(new Set(all).size).toBe(all.length);
+    expect(reexported.size).toBeGreaterThan(0); // the exclusion is not vacuous
+  });
+
+  test('every declared re-export is the SAME BINDING, not a divergent copy', () => {
+    // `evaluation.js` re-exports two trace constants as "one import point for
+    // consumers". That is only safe if they are identical — a second module
+    // exporting its own EVALUATION_TRACE_VERSION would be a silently forkable
+    // contract, so the exclusion above is paid for with an identity check.
+    for (const [module, names] of Object.entries(RE_EXPORTS)) {
+      for (const name of names) {
+        expect(NAMESPACES[module][name], `${module}:${name}`).toBe(TraceNS[name]);
+      }
+    }
   });
 });
 
@@ -852,6 +1053,20 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   deserializeFitnessVector: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
+  // integrity.js
+  foldIntegrity: 'callerElements', // returns the caller's own state object, by contract (chaining)
+  // trace.js
+  decodeTraceRecord: 'ownedCopy',
+  compareTraces: 'ownedCopy',
+  compareCheckpoints: 'ownedCopy',
+  // trace-forensics.js
+  bodyReachMetadataForIR: 'ownedCopy',
+  analyzeTrace: 'ownedCopy',
+  offlineIntegrityView: 'ownedCopy',
+  // evaluation.js — physics; its behaviour is owned by tests/evaluation.test.js
+  runEvaluation: 'notExercised',
+  // fnv1a.js
+  fnv1aFold: 'scalar',
 });
 
 const VERDICTS = Object.freeze([
@@ -874,6 +1089,14 @@ function callerElementsCases() {
     championFromEvaluation: () => championFromEvaluation(evaluation) === evaluation.individuals[1],
     selectableChampionFromEvaluation:
       () => selectableChampionFromEvaluation(evaluation) === evaluation.individuals[1],
+    // foldIntegrity returns the caller's own state object — the documented
+    // chaining convention (`return state`, the foldProgress precedent), not an
+    // accident. Its `reads` are never retained.
+    foldIntegrity: () => {
+      const state = createIntegrityState(1, 1 / 60);
+      const reads = [{ finite: true, translation: { x: 0, y: 1, z: 0 }, linvel: { x: 1, y: 0, z: 0 } }];
+      return foldIntegrity(state, 0, reads) === state;
+    },
   };
 }
 
@@ -912,8 +1135,54 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    // Round-11 additions: the diagnostic/forensic family, previously unpinned.
+    ...(() => {
+      const recBytes = encodeTraceRecord(baseTraceRecord());
+      const exp = forensicTrace();
+      const act = forensicTrace();
+      // Divergent, so the REPORT path is what is inspected for retained refs.
+      act.records[1] = encodeTraceRecord(forensicRecord(1, { linvel: { x: 99, y: 0, z: 0 } }));
+      const cpA = forensicCheckpoints();
+      const cpB = forensicCheckpoints();
+      cpB[1].state = 4242;
+      const fir = compileAssembly(canonicalGenotype());
+      const traceIn = forensicTrace();
+      const analysis = analyzeTrace(traceIn, { captureDt: 1 / 60 });
+      return [
+        { name: 'decodeTraceRecord', result: decodeTraceRecord(recBytes), roots: [recBytes] },
+        { name: 'compareTraces', result: compareTraces(exp, act), roots: [exp, act] },
+        { name: 'compareCheckpoints', result: compareCheckpoints(cpA, cpB), roots: [cpA, cpB] },
+        { name: 'bodyReachMetadataForIR', result: bodyReachMetadataForIR(fir), roots: [fir] },
+        { name: 'analyzeTrace', result: analysis, roots: [traceIn] },
+        { name: 'offlineIntegrityView', result: offlineIntegrityView(analysis), roots: [analysis] },
+      ];
+    })(),
   ];
 }
+
+// A three-capture single-chassis full trace and its checkpoints — the smallest
+// input that exercises the forensic walks and both comparators' report paths.
+const forensicRecord = (stepIndex, overrides = {}) => ({
+  ...baseTraceRecord(),
+  stepIndex,
+  bodyRole: 'chassis',
+  axleIndex: null,
+  wheelIndex: null,
+  jointState: 'notApplicable',
+  ...overrides,
+});
+
+const forensicTrace = () => ({
+  version: EVALUATION_TRACE_VERSION,
+  mode: 'full',
+  recordBytes: RECORD_BYTES,
+  records: [0, 1, 2].map((k) => encodeTraceRecord(forensicRecord(k))),
+});
+
+const forensicCheckpoints = () => [
+  { stepIndex: 0, recordCount: 1, byteCount: RECORD_BYTES, state: 111 },
+  { stepIndex: 1, recordCount: 2, byteCount: 2 * RECORD_BYTES, state: 222 },
+];
 
 function freshBytesCases() {
   const g = canonicalGenotype();

@@ -274,6 +274,7 @@ export function fitnessFromVehicleResult(vehicleResult) {
  *    needed. Compiled IRs measure depth 6.
  */
 const OWN_PLAIN_MAX_DEPTH = 64;
+const OWN_PLAIN_MAX_ARRAY = 1000000;
 
 function ownPlainData(value, path = 'ir', depth = 0) {
   if (depth > OWN_PLAIN_MAX_DEPTH) {
@@ -283,6 +284,14 @@ function ownPlainData(value, path = 'ir', depth = 0) {
     // Bound captured: element reads below are caller code and `length` is
     // writable (the round-11 loop-bound class).
     const count = value.length;
+    // …and bounded BEFORE the copy loop allocates it (I8): round 11 captured
+    // the length but still densified it, so a caller-declared `axles.length` of
+    // 2^30 drove spawnPoseOnFlatStart to an uncatchable heap abort. An IR array
+    // is tiny (axles ≤ 12, hull points ≲ hundreds); this only rejects a
+    // pathological length.
+    if (count > OWN_PLAIN_MAX_ARRAY) {
+      fail(path, `array length ${count} exceeds OWN_PLAIN_MAX_ARRAY (${OWN_PLAIN_MAX_ARRAY})`);
+    }
     const out = [];
     for (let i = 0; i < count; i += 1) out.push(ownPlainData(value[i], `${path}[${i}]`, depth + 1));
     return out;

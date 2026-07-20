@@ -94,6 +94,12 @@ import { createByteReader } from './bytes.js';
 
 export const POPULATION_INITIALIZER_VERSION = 1;
 
+// Practical ceiling for createInitialPopulation, which materializes every
+// member in memory (F6). Far above any real GA population (default 20); only a
+// pathological size that would abort the process is rejected. NOT the u32 wire
+// bound — the digest-only encoder allows up to u32 because it builds no members.
+export const MAX_POPULATION_SIZE = 1000000;
+
 // Categories the INITIAL population may draw — initializer POLICY, distinct
 // from the evaluator's REALIZABLE_SUSPENSION_TYPES (engine capability). They
 // coincide today; the policy list is what a config may narrow.
@@ -266,6 +272,14 @@ export function sampleInitialGenotype(rng, config = {}) {
  */
 export function createInitialPopulation(config, options = {}) {
   const cfg = resolveConfig(config);
+  // A practical ceiling BEFORE the build loop (F6): resolveConfig bounds
+  // populationSize below (>= 1) and the digest-only encoder bounds it at the u32
+  // wire max, but this function BUILDS every member in memory, so a populationSize
+  // of 2^30 — well under u32 — is an uncatchable heap abort. The GA default is
+  // 20; this only rejects a population too large to materialize.
+  if (cfg.populationSize > MAX_POPULATION_SIZE) {
+    fail('populationSize', `${cfg.populationSize} exceeds MAX_POPULATION_SIZE (${MAX_POPULATION_SIZE}) — createInitialPopulation builds every member in memory`);
+  }
   if (typeof options !== 'object' || options === null) fail('options', options);
   for (const k of Object.keys(options)) {
     if (k !== 'keepRaw') fail(`options.${k}`, 'unknown key');

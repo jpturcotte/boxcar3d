@@ -708,5 +708,16 @@ describe('corridor terrain generator (pure, deterministic)', () => {
       // One more cell of length tips the vertex count past the ceiling.
       expect(() => generateCorridorTerrain({ seed: 1, width: 1, cellSize: 1, length: colsAt + 1 })).toThrow(/MAX_TERRAIN_VERTICES/);
     });
+
+    // C10/F3: the crater/feature COUNT is density × area / 100 — a quantity
+    // MAX_TERRAIN_VERTICES does not bound (it guards the grid). A finite,
+    // per-knob-validated density drove the generation loop to an uncatchable
+    // heap abort before any descriptor was built.
+    test('rejects a finite density whose derived descriptor count exceeds MAX_TERRAIN_DESCRIPTORS', () => {
+      expect(() => generateCorridorTerrain({ seed: 1, craterDensity: 1e9 })).toThrow(/MAX_TERRAIN_DESCRIPTORS/);
+      expect(() => generateCorridorTerrain({ seed: 1, featureDensity: 1e9 })).toThrow(/MAX_TERRAIN_DESCRIPTORS/);
+      // The default densities are far under the ceiling — no false rejection.
+      expect(() => generateCorridorTerrain({ seed: 1 })).not.toThrow();
+    });
   });
 });

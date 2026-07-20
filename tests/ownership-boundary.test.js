@@ -259,7 +259,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'serializePopulationSnapshot', 'validatePopulation',
   ]),
   'population-initializer.js': Object.freeze([
-    'INITIAL_POPULATION_DEFAULTS', 'POPULATION_INITIALIZER_VERSION',
+    'INITIAL_POPULATION_DEFAULTS', 'MAX_POPULATION_SIZE', 'POPULATION_INITIALIZER_VERSION',
     'createInitialPopulation', 'deserializePopulationInitialization',
     'sampleInitialGenotype', 'serializePopulationInitialization',
   ]),
@@ -422,6 +422,7 @@ const EXPORT_ROLES = Object.freeze({
   'population-initializer.js': Object.freeze([
     { name: 'POPULATION_INITIALIZER_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'INITIAL_POPULATION_DEFAULTS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_POPULATION_SIZE', kind: 'policy', callerCollections: [], callerNumbers: [] },
     {
       name: 'sampleInitialGenotype',
       kind: 'pure',

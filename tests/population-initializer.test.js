@@ -196,6 +196,16 @@ describe('config validation (fail-loud matrix)', () => {
     expect(() => createInitialPopulation({ ...base, initialSuspensionTypes: ['S2'] }))
       .toThrow(/S2 lands with its realization PR/);
   });
+
+  // C10/F6: createInitialPopulation BUILDS every member, so a populationSize
+  // under the u32 wire bound (2^30) but too large to materialize was an
+  // uncatchable heap abort. The digest-only encoder legitimately allows up to
+  // u32 (it builds no members) — that path is covered in population-codec.
+  test('rejects a populationSize too large to materialize, before the build loop', () => {
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 2 ** 30 }))
+      .toThrow(/MAX_POPULATION_SIZE/);
+    expect(() => createInitialPopulation({ seed: 1, populationSize: 20 })).not.toThrow();
+  });
 });
 
 describe('initialization manifest encoding v1', () => {

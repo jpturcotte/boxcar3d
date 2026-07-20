@@ -810,6 +810,17 @@ describe('evaluatePopulation (deterministic flavor)', () => {
     )).rejects.toThrow(/craterRadiusRange\.length.*u8 wire bound/);
   });
 
+  test('spawnPoseOnFlatStart bounds a caller-declared ir.axles length before densifying (I8)', () => {
+    // ownPlainData captured the length (round-11) but still densified it — a
+    // sparse `axles.length` of 2^30 was an uncatchable heap abort. Pure seam, so
+    // no physics; the bound rejects before the copy loop.
+    const ir = compileAssembly(s0PlainGenotype());
+    const axles = [];
+    axles.length = 2 ** 30; // declared, zero elements stored
+    expect(() => spawnPoseOnFlatStart({ ...ir, axles }, { x: -44, z: 0 }))
+      .toThrow(/OWN_PLAIN_MAX_ARRAY/);
+  });
+
   test('a zero-axle sled imported into a population evaluates as a valid ~0-fitness individual', { timeout: 240000 }, async () => {
     const ev = await evaluatePopulation(popOf(member(2, sledGenotype())), baseSpec());
     const sled = ev.individuals[0];

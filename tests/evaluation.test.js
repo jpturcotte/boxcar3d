@@ -129,6 +129,9 @@ describe('runEvaluation options validation', () => {
       // Traced runs cannot exceed the u32 stepIndex field — rejected pre-world,
       // not mid-run at the final capture's encode.
       [(o) => { o.trace = { mode: 'digest' }; o.maxSteps = 0x100000000; }, /MAX_STEP_INDEX/],
+      // C10/F7: even UNTRACED, maxSteps bounds the profile buffer and per-step
+      // allocations. 2^30 reserved multiple GB / threw a foreign RangeError.
+      [(o) => { o.trace = { mode: 'none' }; o.profile = true; o.maxSteps = 2 ** 30; }, /MAX_EVALUATION_STEPS/],
     ];
     for (const [mutate, re] of cases) {
       const opts = base();

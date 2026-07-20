@@ -55,6 +55,10 @@ const VEHICLE_KEYS = Object.freeze(['ir', 'spawn', 'targetWheelSurfaceSpeed', 'w
 const SPAWN_KEYS = Object.freeze(['position', 'rotation', 'linvel']);
 const TRACE_KEYS = Object.freeze(['mode', 'checkpointInterval']);
 const HOOK_KEYS = Object.freeze(['onPhase']);
+// Practical maxSteps ceiling for every trace mode (F7): bounds the
+// `Float64Array(maxSteps)` profile buffer and per-step allocations. Far above
+// any real evaluation (largest committed fixture: 900 steps).
+const MAX_EVALUATION_STEPS = 10000000;
 
 function checkUnknownKeys(obj, allowed, path) {
   for (const k of Object.keys(obj)) {
@@ -240,6 +244,14 @@ function validateOptions(options) {
     ownedVehicles.push(record);
   }
   if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
+  // A practical ceiling for EVERY mode (F7). The traced path's MAX_STEP_INDEX
+  // guard below bounds the trace stepIndex field width (~u32), not memory: under
+  // `profile:true` the runner allocates `new Float64Array(maxSteps)`, so an
+  // untraced run with maxSteps 2^30 reserved multiple GB / threw a foreign
+  // RangeError after all setup. The largest committed fixture is 900 steps; this
+  // only rejects an unrunnable step count. Checked AFTER the trace-mode
+  // MAX_STEP_INDEX guard below, so a traced overflow still reports the FORMAT
+  // constraint (u32 stepIndex) rather than the resource ceiling.
   if (termination !== 'maxSteps') fail('termination', termination);
   if (typeof trace !== 'object' || trace === null) fail('trace', trace);
   checkUnknownKeys(trace, TRACE_KEYS, 'trace');
@@ -253,6 +265,9 @@ function validateOptions(options) {
   // traced run needs maxSteps <= MAX_STEP_INDEX — reject the overflow pre-world
   // rather than letting the encoder throw at the final capture mid-run.
   if (traceMode !== 'none' && maxSteps > MAX_STEP_INDEX) fail('maxSteps', `${maxSteps} > MAX_STEP_INDEX ${MAX_STEP_INDEX} (trace stepIndex is u32)`);
+  if (maxSteps > MAX_EVALUATION_STEPS) {
+    fail('maxSteps', `${maxSteps} exceeds MAX_EVALUATION_STEPS (${MAX_EVALUATION_STEPS})`);
+  }
   if (checkpointIntervalIn !== undefined
     && (!Number.isInteger(checkpointIntervalIn) || checkpointIntervalIn < 1)) {
     fail('trace.checkpointInterval', checkpointIntervalIn);

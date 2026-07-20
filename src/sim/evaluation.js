@@ -63,20 +63,32 @@ function checkUnknownKeys(obj, allowed, path) {
 }
 
 // One walk over the caller's terrain that captures what it validates, so the
-// terrain that is GENERATED is the terrain that was guarded — not a second
-// reading of the caller's object taken after a hook ran.
+// terrain that is GENERATED is the terrain that was guarded. The enumeration
+// is `Object.keys` — deliberately the SAME enumeration
+// generateCorridorTerrain's `{ ...TERRAIN_DEFAULTS, ...terrain }` performs.
+// The presence gate used `hasOwnProperty`, which ALSO sees non-enumerable own
+// properties, so an ordinary `Object.defineProperty(t, 'seed', { value })` —
+// plain data, no Proxy — passed the "must never bind the default seed" guard
+// and then vanished from the spread: measured, the run generated and digested
+// the seed-0 DEFAULT terrain with no error. A guard that decides presence must
+// use the same property enumeration its consumer reads with.
 const TERRAIN_RANGE_MAX = 0xff;
 
 function ownTerrainOptions(terrain) {
   const allowed = Object.keys(TERRAIN_DEFAULTS);
   const keys = Object.keys(terrain);
-  if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
-    fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
+  // Nothing may hide outside the enumeration the spread reads: a non-enumerable
+  // known knob would otherwise revert to its default silently while the digest
+  // attested the reverted value.
+  if (Object.getOwnPropertyNames(terrain).length !== keys.length) {
+    fail('terrain', 'carries non-enumerable own properties (the generated terrain reads own enumerable keys only)');
   }
   const out = {};
+  let sawSeed = false;
   for (let i = 0; i < keys.length; i += 1) {
     const k = keys[i];
     if (!allowed.includes(k)) fail(`terrain.${k}`, 'unknown key');
+    if (k === 'seed') sawSeed = true;
     const v = terrain[k];
     if (Array.isArray(v)) {
       // Bound before allocate (the encoders' ruling), then an indexed copy —
@@ -96,6 +108,9 @@ function ownTerrainOptions(terrain) {
     } else {
       out[k] = v;
     }
+  }
+  if (!sawSeed) {
+    fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
   }
   return out;
 }

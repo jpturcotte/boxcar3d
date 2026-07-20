@@ -783,6 +783,30 @@ describe('ownPlainData copies with fidelity or refuses (round-11)', () => {
   });
 });
 
+// --- Non-enumerable own properties (round-11) -------------------------------
+//
+// The counting instrument copies own ENUMERABLE properties, so this axis was
+// invisible to it. The class: a guard that decides PRESENCE with
+// `hasOwnProperty` (which sees non-enumerable own properties) while the
+// consumer reads with a SPREAD (which does not). Ordinary data — one
+// `Object.defineProperty` call, no Proxy.
+//
+// The two production seams are execution paths behind Rapier, so their
+// regressions live with the physics harness (tests/evaluation.test.js and
+// tests/population-evaluation.test.js). What is pinned here is the language
+// fact the guards must respect, so the rule is stated where the invariant is.
+
+describe('presence gates and their consumers use one enumeration (round-11)', () => {
+  test('hasOwnProperty sees what a spread drops — the split that hid a seed', () => {
+    const t = { length: 120 };
+    Object.defineProperty(t, 'seed', { value: 20260722, enumerable: false });
+    expect(Object.prototype.hasOwnProperty.call(t, 'seed')).toBe(true);
+    expect(Object.keys(t).includes('seed')).toBe(false);
+    expect({ seed: 0, ...t }.seed).toBe(0); // the default survives the "present" key
+    expect(Object.getOwnPropertyNames(t).length).not.toBe(Object.keys(t).length);
+  });
+});
+
 // --- The round-10 named regressions (poison getters) ------------------------
 //
 // Each reproduces the concrete reviewer finding: first read valid, second

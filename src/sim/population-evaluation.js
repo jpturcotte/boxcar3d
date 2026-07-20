@@ -474,11 +474,33 @@ function resolveSpec(spec) {
   } = spec;
   if (!TERMINATIONS.includes(termination)) fail('termination', termination);
   if (typeof terrain !== 'object' || terrain === null) fail('terrain', terrain);
-  if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
-    fail('terrain.seed', 'missing (a fitness vector must never bind the default seed by accident)');
+  // ONE enumeration, and it is the one the consumer reads with. The presence
+  // gate used `hasOwnProperty`, which ALSO sees non-enumerable own properties,
+  // while the terrain that actually runs comes from `{ ...TERRAIN_DEFAULTS,
+  // ...terrain }` — own ENUMERABLE only. Measured (round-11), with an ordinary
+  // `Object.defineProperty(t, 'seed', { value: 20260722 })` and no Proxy: this
+  // guard passed, the spread dropped the property, and `evaluatePopulation`
+  // resolved `spec.terrain.seed = 0` — running and digesting the DEFAULT
+  // terrain, byte-identical to an explicit seed-0 run. The same shape reverted
+  // any non-enumerable known knob (featureDensity 0 silently became 0.4).
+  // The general rule: a guard that decides presence must use the same property
+  // enumeration its consumer reads with.
+  const terrainKeys = Object.keys(terrain);
+  // …and nothing may hide OUTSIDE that enumeration. Without this, a
+  // non-enumerable known knob (`featureDensity`) still reverted to its default
+  // silently while the spec digest attested the reverted value — the same
+  // silently-wrong-terrain class, one knob over from `seed`.
+  if (Object.getOwnPropertyNames(terrain).length !== terrainKeys.length) {
+    fail('terrain', 'carries non-enumerable own properties (the resolved terrain reads own enumerable keys only)');
   }
-  for (const k of Object.keys(terrain)) {
+  let sawSeed = false;
+  for (let i = 0; i < terrainKeys.length; i += 1) {
+    const k = terrainKeys[i];
     if (!Object.prototype.hasOwnProperty.call(TERRAIN_DEFAULTS, k)) fail(`terrain.${k}`, 'unknown key');
+    if (k === 'seed') sawSeed = true;
+  }
+  if (!sawSeed) {
+    fail('terrain.seed', 'missing (a fitness vector must never bind the default seed by accident)');
   }
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 0xffffffff) fail('maxSteps', maxSteps);
   if (typeof deterministic !== 'boolean') fail('deterministic', deterministic);

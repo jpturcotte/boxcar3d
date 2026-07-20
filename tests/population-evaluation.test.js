@@ -744,6 +744,24 @@ describe('evaluatePopulation (deterministic flavor)', () => {
     expect(ev.fitnessVector.digest).toBe(control.fitnessVector.digest);
   });
 
+  // Round-11: the second half of the same class. `resolveSpec` decided the
+  // seed was PRESENT with `hasOwnProperty` (which sees non-enumerable own
+  // properties) while the terrain that actually ran came from
+  // `{ ...TERRAIN_DEFAULTS, ...terrain }` — own ENUMERABLE only. Measured:
+  // this evaluated and attested the seed-0 DEFAULT world, byte-identical to an
+  // explicit seed-0 run, with the guard whose message says exactly that must
+  // never happen reporting nothing.
+  test('a non-enumerable terrain.seed is refused, never silently defaulted', { timeout: 240000 }, async () => {
+    const spec = baseSpec();
+    const terrain = { ...spec.terrain };
+    const seed = terrain.seed;
+    delete terrain.seed;
+    Object.defineProperty(terrain, 'seed', { value: seed, enumerable: false });
+    expect(Object.prototype.hasOwnProperty.call(terrain, 'seed')).toBe(true); // the premise
+    await expect(evaluatePopulation(popOf(member(5, s0PlainGenotype())), { ...spec, terrain }))
+      .rejects.toThrow(/terrain.*non-enumerable/);
+  });
+
   test('a zero-axle sled imported into a population evaluates as a valid ~0-fitness individual', { timeout: 240000 }, async () => {
     const ev = await evaluatePopulation(popOf(member(2, sledGenotype())), baseSpec());
     const sled = ev.individuals[0];

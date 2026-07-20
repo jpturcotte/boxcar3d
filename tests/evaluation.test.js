@@ -162,6 +162,17 @@ describe('runEvaluation options validation', () => {
     expect(r.trace.digest).toBe(control.trace.digest);
   });
 
+  test('a non-enumerable own terrain.seed is refused, never silently defaulted', async () => {
+    // `hasOwnProperty` sees it; `{ ...TERRAIN_DEFAULTS, ...terrain }` does not.
+    // Measured: this ran and digested the seed-0 DEFAULT terrain, with the
+    // guard whose message says that must never happen reporting nothing.
+    const opts = base();
+    const seed = opts.terrain.seed;
+    delete opts.terrain.seed;
+    Object.defineProperty(opts.terrain, 'seed', { value: seed, enumerable: false });
+    await expect(runEvaluation(opts)).rejects.toThrow(/terrain.*non-enumerable/);
+  });
+
   test('a two-faced trace.mode cannot make a run capture what it was not asked to', async () => {
     const opts = base();
     let reads = 0;

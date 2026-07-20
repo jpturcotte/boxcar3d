@@ -449,3 +449,19 @@ describe('decoder hygiene', () => {
     expect(decoded.axles[0].radius).toBe(0.33);
   });
 });
+
+describe('storage-lifetime intake (round 13) — deserializeGenotype rejects fancy backing stores', () => {
+  test('detached / shared / resizable streams fail loud in the assembly dialect, before any length check', () => {
+    const bytes = serializeGenotype(repairGenotype(randomGenotype(new Rng(20260710).fork(0))));
+    const det = new Uint8Array(bytes); // fresh copy, then detach it
+    det.buffer.transfer();
+    expect(() => deserializeGenotype(det)).toThrow(/assembly: invalid encoded genotype/);
+    expect(() => deserializeGenotype(det)).toThrow(/detached ArrayBuffer/);
+    const sab = new Uint8Array(new SharedArrayBuffer(bytes.length));
+    sab.set(bytes); // byte-identical CONTENT — the storage axis alone rejects
+    expect(() => deserializeGenotype(sab)).toThrow(/SharedArrayBuffer/);
+    const rz = new Uint8Array(new ArrayBuffer(bytes.length, { maxByteLength: bytes.length * 2 }));
+    rz.set(bytes);
+    expect(() => deserializeGenotype(rz)).toThrow(/resizable ArrayBuffer/);
+  });
+});

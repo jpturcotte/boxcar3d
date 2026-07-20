@@ -67,10 +67,16 @@ export function isCanonicalUint32(v) {
  * this module's canonicality tooth would have accepted a non-canonical
  * genotype. Silent, from the one comparison the population layer exists to
  * make. Measured: deadbeef vs dead0000 under an own `length: 2` returned true.
+ *
+ * ORDINARY STORAGE ONLY (round 13): the geometry fix left the storage axis
+ * open — measured at head, a DETACHED [1,2,3] compared EQUAL to a fresh empty
+ * array (both intrinsic lengths read 0), and equal to a detached [9,9]. Both
+ * sides now reject fancy storage loud through the gated
+ * `typedArrayByteLength` before any content read.
  */
 export function bytesEqual(a, b) {
-  const aLen = typedArrayByteLength(a);
-  const bLen = typedArrayByteLength(b);
+  const aLen = typedArrayByteLength(a); // gates a: ordinary storage or throw
+  const bLen = typedArrayByteLength(b); // gates b likewise
   if (aLen !== bLen) return false;
   for (let i = 0; i < aLen; i += 1) if (a[i] !== b[i]) return false;
   return true;

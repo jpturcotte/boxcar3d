@@ -103,9 +103,10 @@ const TA_BYTE_LENGTH = taGetter('byteLength');
 // STORAGE-LIFETIME intake (JP's ruling, break-it sweep I7). The intrinsic
 // getters above defeat a caller that LIES about geometry, but not a genuine
 // Uint8Array whose BACKING STORE is transient or foreign — an axis the round-8
-// property boundary never named. A detached buffer reads as empty (bytesToHex
-// → "", fnv1aFold leaves its state unchanged, the reader's DataView throws a
-// foreign TypeError); a SharedArrayBuffer can be scrambled by another thread
+// property boundary never named. Ungated, a detached buffer reads as empty
+// (bytesToHex → "", fnv1aFold's state unchanged — both measured before their
+// gates landed; fnv1aFold's is inline in fnv1a.js, round 13), a
+// SharedArrayBuffer can be scrambled by another thread
 // mid-fold, digesting a state that never existed; a resizable buffer can shrink
 // under a live reader. The ruling: canonical bytes must be ORDINARY — a genuine
 // same-realm Uint8Array over a fixed-size, non-shared, non-detached
@@ -122,8 +123,14 @@ const SAB = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : null;
  * Reject any byte input that is not an ordinary same-realm Uint8Array over a
  * fixed-size, non-shared, non-detached ArrayBuffer. Returns `bytes` on success.
  * `fail(path, value)` is the calling module's fail-loud helper. Called at every
- * public seam where caller bytes ENTER the codec (the reader, the hex encoder,
- * the fixed-layout decoders).
+ * public seam where caller bytes ENTER the byte family: the reader (behind the
+ * four sequential decoders), the hex encoder, the geometry helper below, the
+ * fixed-layout decoders (deserializeGenotype inline, decodeTraceRecord), the
+ * trace record encode `out` and compare entries, and — duplicated inline to
+ * keep the lock hash import-free — fnv1aFold. The surface is PINNED, not
+ * prose: tests/ownership-boundary.test.js derives the byte-family exports and
+ * requires every function classified, with a fancy-storage battery per gated
+ * seam.
  */
 export function requireOrdinaryBytes(bytes, fail) {
   if (typeof fail !== 'function') throw new Error(`bytes: invalid fail callback (${String(fail)})`);
@@ -245,9 +252,15 @@ function bytesFail(what, value) {
  * and any digest folded over a shadowed buffer attests a PREFIX. Callers that
  * already hold module-owned bytes do not need this; callers that accept bytes
  * from outside do.
+ *
+ * ORDINARY STORAGE ONLY (round 13): a detached buffer's intrinsic geometry is
+ * 0, which is a LIE about a formerly-nonempty array in every use this repo
+ * has — measured at head, `bytesEqual(detached [1,2,3], empty)` returned true
+ * through this helper. A geometry read on fancy storage has no honest answer,
+ * so the gate lives here, not only in the consumers.
  */
 export function typedArrayByteLength(bytes) {
-  if (!(bytes instanceof Uint8Array)) bytesFail('bytes (Uint8Array required)', bytes);
+  requireOrdinaryBytes(bytes, bytesFail);
   return TA_BYTE_LENGTH.call(bytes);
 }
 

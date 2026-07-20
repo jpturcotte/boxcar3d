@@ -158,3 +158,30 @@ describe('snapshot encoding v1', () => {
     expect(bytes.length).toBe(8 + (8 + 268) + (8 + 524));
   });
 });
+
+describe('storage-lifetime intake (round 13) — bytesEqual rejects fancy backing stores', () => {
+  const detached = (...vals) => {
+    const u = Uint8Array.from(vals);
+    u.buffer.transfer();
+    return u;
+  };
+
+  test('detached inputs are rejected, never compared as empty', () => {
+    // Measured pre-gate: detached [1,2,3] compared EQUAL to a fresh empty
+    // array AND to a detached [9,9] (all intrinsic lengths read 0) — silent
+    // wrong answers from the one comparison the population layer exists to
+    // make.
+    expect(() => bytesEqual(detached(1, 2, 3), new Uint8Array(0))).toThrow(/detached ArrayBuffer/);
+    expect(() => bytesEqual(new Uint8Array(0), detached(9, 9))).toThrow(/detached ArrayBuffer/); // b gated too
+  });
+
+  test('shared and resizable backing stores are rejected on either side', () => {
+    expect(() => bytesEqual(new Uint8Array(new SharedArrayBuffer(2)), Uint8Array.of(0, 0)))
+      .toThrow(/SharedArrayBuffer/);
+    expect(() => bytesEqual(Uint8Array.of(0), new Uint8Array(new ArrayBuffer(1, { maxByteLength: 4 }))))
+      .toThrow(/resizable ArrayBuffer/);
+    // Ordinary bytes still compare by content.
+    expect(bytesEqual(Uint8Array.of(5, 6), Uint8Array.of(5, 6))).toBe(true);
+    expect(bytesEqual(Uint8Array.of(5, 6), Uint8Array.of(5, 7))).toBe(false);
+  });
+});

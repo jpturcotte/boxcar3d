@@ -68,3 +68,38 @@ describe('fnv1a (the house lock hash, extracted)', () => {
     expect(() => fnv1aHexOf(-1)).toThrow(/fnv1a: invalid state/);
   });
 });
+
+describe('storage-lifetime intake (round 13) — the fold rejects fancy backing stores', () => {
+  const detached = () => {
+    const u = Uint8Array.from([0xde, 0xad, 0xbe, 0xef]);
+    u.buffer.transfer();
+    return u;
+  };
+
+  test('a detached buffer is rejected in this dialect, never folded as zero bytes', () => {
+    // Measured pre-gate: the fold returned its input state UNCHANGED for a
+    // detached buffer — a digest attesting zero bytes it was never handed,
+    // the exact failure the module header names. The rejection must be this
+    // module's dialect, not a foreign join/TypeError from stringifying the
+    // detached array.
+    expect(() => fnv1aFold(FNV_OFFSET_BASIS, detached())).toThrow(/fnv1a: invalid bytes \(detached ArrayBuffer/);
+    expect(() => fnv1aHex(detached())).toThrow(/detached ArrayBuffer/); // transitively gated
+  });
+
+  test('a SharedArrayBuffer-backed view is rejected (mid-fold mutation)', () => {
+    expect(() => fnv1aFold(FNV_OFFSET_BASIS, new Uint8Array(new SharedArrayBuffer(4))))
+      .toThrow(/fnv1a: invalid bytes \(SharedArrayBuffer-backed/);
+  });
+
+  test('a resizable ArrayBuffer is rejected (can shrink under the loop)', () => {
+    expect(() => fnv1aFold(FNV_OFFSET_BASIS, new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 }))))
+      .toThrow(/fnv1a: invalid bytes \(resizable ArrayBuffer/);
+  });
+
+  test('ordinary bytes still fold identically; empty CONTENT stays legal', () => {
+    expect(fnv1aHex(Uint8Array.of(0xde, 0xad, 0xbe, 0xef))).toBe('045d4bb3');
+    // A genuinely empty array is a legal zero-byte fold (state in = state
+    // out BY CONTENT); emptiness via detachment is what the gate rejects.
+    expect(fnv1aFold(FNV_OFFSET_BASIS, new Uint8Array(0))).toBe(FNV_OFFSET_BASIS);
+  });
+});

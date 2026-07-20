@@ -634,6 +634,159 @@ describe('(0) the byte-family lint scope covers every src/sim module', () => {
   });
 });
 
+// ============================================================================
+// (0b) THE BYTE-STORAGE INTAKE SURFACE (round 13)
+// ============================================================================
+//
+// Round 12 wrote "requireOrdinaryBytes enforces it at every intake seam" and
+// gated TWO seams. An external review then executed fnv1aFold over a detached
+// buffer (state returned UNCHANGED — a digest attesting zero bytes it was
+// never handed) and bytesEqual over two detached arrays of different former
+// content (EQUAL) — the recurring failure shape, again: a rule declared
+// universal, enforced at the discovered sites, closed nowhere. This is the
+// derived closure. The module SET comes from the byte-family lint block (the
+// (0) derivation — the same list, so a file cannot be byte-family for lint
+// and invisible here), the export set from the real namespaces, and every
+// FUNCTION export must be classified exactly one way:
+//
+//   'gated'          — accepts caller byte buffers; the storage gate must
+//                      fire. The invoke thunk is run against all three fancy
+//                      stores (detached / SharedArrayBuffer / resizable) and
+//                      must THROW each time.
+//   'no-byte-intake' — accepts no raw caller byte buffer (it may RETURN
+//                      module-owned bytes); `why` states the reason.
+//
+// A new export in any byte-family module fails the coverage tooth until it is
+// classified, and a byte-accepting helper cannot ship ungated without a
+// visibly false 'no-byte-intake' row.
+
+const BYTE_FAMILY_NAMESPACES = Object.freeze({
+  'src/sim/bytes.js': BytesNS,
+  'src/sim/fnv1a.js': Fnv1aNS,
+  'src/sim/trace.js': TraceNS,
+  'src/sim/assembly.js': AssemblyNS,
+  'src/sim/population.js': PopulationNS,
+  'src/sim/population-initializer.js': InitializerNS,
+  'src/sim/population-evaluation.js': EvaluationNS,
+});
+
+const storageProbeFail = (path, value) => {
+  throw new Error(`storage-probe: invalid at ${path} (${String(value)})`);
+};
+const storageEnvelope = (records) => ({
+  version: EVALUATION_TRACE_VERSION, recordBytes: RECORD_BYTES, records,
+});
+
+// Every gate runs BEFORE any length/shape check (verified per module), so one
+// 128-byte fancy input reaches all of them regardless of the format it fails.
+const BYTE_STORAGE_INTAKE = Object.freeze({
+  'src/sim/bytes.js': {
+    requireOrdinaryBytes: { intake: 'gated', invoke: (u) => requireOrdinaryBytes(u, storageProbeFail) },
+    createByteReader: { intake: 'gated', invoke: (u) => createByteReader(u, storageProbeFail) },
+    bytesToHex: { intake: 'gated', invoke: (u) => bytesToHex(u) },
+    typedArrayByteLength: { intake: 'gated', invoke: (u) => typedArrayByteLength(u) },
+    hexToBytes: { intake: 'no-byte-intake', why: 'string in; returns fresh module-owned bytes' },
+  },
+  'src/sim/fnv1a.js': {
+    fnv1aFold: { intake: 'gated', invoke: (u) => fnv1aFold(FNV_OFFSET_BASIS, u) },
+    fnv1aHex: { intake: 'gated', invoke: (u) => fnv1aHex(u) },
+    fnv1aHexOf: { intake: 'no-byte-intake', why: 'uint32 state in, hex string out' },
+  },
+  'src/sim/trace.js': {
+    decodeTraceRecord: { intake: 'gated', invoke: (u) => decodeTraceRecord(u) },
+    // The out-gate runs before record validation, so no valid record needed.
+    encodeTraceRecord: { intake: 'gated', invoke: (u) => encodeTraceRecord({}, u) },
+    compareTraces: { intake: 'gated', invoke: (u) => compareTraces(storageEnvelope([u]), storageEnvelope([u])) },
+    compareCheckpoints: { intake: 'no-byte-intake', why: 'checkpoint rows are numbers (uint32 states), no byte buffers' },
+    TraceWriter: { intake: 'no-byte-intake', why: 'record() takes plain records; emits module-owned bytes only (finish() output mutability: the DEFERRED round-13 ruling, see the codec doc)' },
+  },
+  'src/sim/assembly.js': {
+    deserializeGenotype: { intake: 'gated', invoke: (u) => deserializeGenotype(u) },
+    compileAssembly: { intake: 'no-byte-intake', why: 'genotype object in, IR out' },
+    forEachGenotypeField: { intake: 'no-byte-intake', why: 'genotype object + visitor in' },
+    genotypeByteLength: { intake: 'no-byte-intake', why: 'axle count in, number out' },
+    genotypeFieldWalk: { intake: 'no-byte-intake', why: 'axle count in, metadata out' },
+    hubMassProperties: { intake: 'no-byte-intake', why: 'wheel record in, plain record out' },
+    randomGenotype: { intake: 'no-byte-intake', why: 'rng in, genotype out' },
+    repairGenotype: { intake: 'no-byte-intake', why: 'genotype object in/out' },
+    serializeGenotype: { intake: 'no-byte-intake', why: 'genotype object in; returns fresh module-owned bytes' },
+    validateGenotype: { intake: 'no-byte-intake', why: 'genotype object in' },
+    wheelMass: { intake: 'no-byte-intake', why: 'wheel record in, number out' },
+  },
+  'src/sim/population.js': {
+    // Arg `a` probed here; the b-side battery lives in tests/population.test.js.
+    bytesEqual: { intake: 'gated', invoke: (u) => bytesEqual(u, Uint8Array.of(1)) },
+    deserializePopulationSnapshot: { intake: 'gated', invoke: (u) => deserializePopulationSnapshot(u) },
+    attestPopulation: { intake: 'no-byte-intake', why: 'population object in; returns module-owned bytes + decoded genotypes' },
+    isCanonicalUint32: { intake: 'no-byte-intake', why: 'number in, boolean out' },
+    serializePopulationSnapshot: { intake: 'no-byte-intake', why: 'population object in; returns fresh module-owned bytes' },
+    validatePopulation: { intake: 'no-byte-intake', why: 'population object in' },
+  },
+  'src/sim/population-initializer.js': {
+    deserializePopulationInitialization: { intake: 'gated', invoke: (u) => deserializePopulationInitialization(u) },
+    createInitialPopulation: { intake: 'no-byte-intake', why: 'config in, population out' },
+    sampleInitialGenotype: { intake: 'no-byte-intake', why: 'rng + config in, genotype out' },
+    serializePopulationInitialization: { intake: 'no-byte-intake', why: 'initialization object in; returns fresh module-owned bytes' },
+  },
+  'src/sim/population-evaluation.js': {
+    deserializeEvaluationSpec: { intake: 'gated', invoke: (u) => deserializeEvaluationSpec(u) },
+    deserializeFitnessVector: { intake: 'gated', invoke: (u) => deserializeFitnessVector(u) },
+    championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
+    evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
+    fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
+    isVehicleResultSelectable: { intake: 'no-byte-intake', why: 'vehicle result record in' },
+    isVehicleResultValid: { intake: 'no-byte-intake', why: 'vehicle result record in' },
+    selectableChampionFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
+    serializeEvaluationSpec: { intake: 'no-byte-intake', why: 'spec object in; returns fresh module-owned bytes' },
+    serializeFitnessVector: { intake: 'no-byte-intake', why: 'evaluation object in; returns fresh module-owned bytes' },
+    spawnPoseOnFlatStart: { intake: 'no-byte-intake', why: 'IR + options in, pose out' },
+  },
+});
+
+describe('(0b) the byte-storage intake surface is derived and closed', () => {
+  test('the classified module set IS the byte-family lint set, and every function export is classified', async () => {
+    const { default: config } = await import('../eslint.config.js');
+    const byteBlock = config.find((b) => Array.isArray(b.files)
+      && b.files.includes('src/sim/bytes.js'));
+    const families = [...byteBlock.files].sort();
+    // A file added to the lint block must join BOTH maps here — the storage
+    // surface cannot lag the lint surface.
+    expect(Object.keys(BYTE_FAMILY_NAMESPACES).sort()).toEqual(families);
+    expect(Object.keys(BYTE_STORAGE_INTAKE).sort()).toEqual(families);
+    for (const file of families) {
+      const ns = BYTE_FAMILY_NAMESPACES[file];
+      const fns = Object.keys(ns).filter((k) => typeof ns[k] === 'function').sort();
+      const rows = BYTE_STORAGE_INTAKE[file];
+      expect(Object.keys(rows).sort(), `${file}: classify every function export`).toEqual(fns);
+      for (const [name, row] of Object.entries(rows)) {
+        if (row.intake === 'gated') {
+          expect(typeof row.invoke, `${file}#${name}: a gated seam needs an invoke thunk`).toBe('function');
+        } else {
+          expect(row.intake, `${file}#${name}: unknown intake class`).toBe('no-byte-intake');
+          expect(typeof row.why, `${file}#${name}: an exemption needs a stated reason`).toBe('string');
+        }
+      }
+    }
+  });
+
+  const FANCY_STORES = [
+    ['detached', () => { const u = new Uint8Array(RECORD_BYTES); u.buffer.transfer(); return u; }, /detached/],
+    ['SharedArrayBuffer-backed', () => new Uint8Array(new SharedArrayBuffer(RECORD_BYTES)), /SharedArrayBuffer/],
+    ['resizable', () => new Uint8Array(new ArrayBuffer(RECORD_BYTES, { maxByteLength: RECORD_BYTES * 2 })), /resizable/],
+  ];
+
+  test('every gated seam rejects all three fancy stores loud', () => {
+    for (const [file, rows] of Object.entries(BYTE_STORAGE_INTAKE)) {
+      for (const [name, row] of Object.entries(rows)) {
+        if (row.intake !== 'gated') continue;
+        for (const [axis, make, pattern] of FANCY_STORES) {
+          expect(() => row.invoke(make()), `${file}#${name} must reject ${axis}`).toThrow(pattern);
+        }
+      }
+    }
+  });
+});
+
 describe('(1) export-surface conformance — nothing ships unclassified', () => {
   for (const [module, expected] of Object.entries(EXPECTED_EXPORTS)) {
     test(`${module} exports exactly the declared surface`, () => {

@@ -237,6 +237,14 @@ function writeF64(view, offset, v) {
  * fully; `out` must be exactly RECORD_BYTES. Returns `out`.
  */
 export function encodeTraceRecord(rec, out = new Uint8Array(RECORD_BYTES)) {
+  // Ordinary storage for the caller-supplied output (round 13): a resizable
+  // `out` can shrink mid-write (a foreign TypeError from deep in the walk) and
+  // a SharedArrayBuffer-backed one lets another thread read a TORN record; a
+  // detached one already failed the RECORD_BYTES identity below, but only
+  // incidentally. Rejected loud here instead. The TraceWriter hot path never
+  // enters: record() writes into its module-owned #scratch via
+  // writeValidatedRecord directly.
+  requireOrdinaryBytes(out, (path, value) => fail('out', value));
   // `r` is the module-owned snapshot; the caller's `rec` is never read again.
   return writeValidatedRecord(validateRecord(rec), out);
 }
@@ -571,6 +579,14 @@ export function compareTraces(expected, actual) {
   }
   const toBytes = (entry, index, label) => {
     if (entry instanceof Uint8Array) {
+      // Ordinary storage only (round 13): fancy backing is invalid INPUT, not
+      // a trace divergence, so it THROWS rather than reporting. Ungated, a
+      // resizable entry could shrink between the RECORD_BYTES identity below
+      // and the copy (`.set` then reads length 0 and leaves `copy` all zeros —
+      // comparing bytes that never existed, silently) and a
+      // SharedArrayBuffer entry can tear mid-copy; a detached one failed the
+      // identity already, but only incidentally.
+      requireOrdinaryBytes(entry, (path, value) => fail(`${label} record ${index} bytes`, value));
       const n = taByteLength(entry);
       if (n !== RECORD_BYTES) {
         return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: n } };

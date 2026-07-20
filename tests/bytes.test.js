@@ -7,7 +7,7 @@
 // lowercased is the class of bug that makes two "identical" artifacts differ).
 
 import { describe, test, expect } from 'vitest';
-import { bytesToHex, createByteReader, hexToBytes } from '../src/sim/bytes.js';
+import { bytesToHex, createByteReader, hexToBytes, typedArrayByteLength } from '../src/sim/bytes.js';
 
 const fail = (path, value) => {
   throw new Error(`probe: invalid at ${path} (${String(value)})`);
@@ -260,6 +260,16 @@ describe('storage-lifetime intake — fancy backing stores are rejected at the d
   test('a resizable ArrayBuffer is rejected (can shift under a reader)', () => {
     const u = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 }));
     expect(() => bytesToHex(u)).toThrow(/resizable ArrayBuffer/);
+  });
+
+  test('typedArrayByteLength rejects fancy storage — detached geometry is a lie (round 13)', () => {
+    // Measured pre-gate: bytesEqual(detached [1,2,3], empty) returned TRUE
+    // through this helper (both intrinsic lengths honestly read 0 — the
+    // geometry is true and still a lie about a formerly-nonempty array).
+    expect(() => typedArrayByteLength(detach(Uint8Array.from([1, 2, 3])))).toThrow(/detached ArrayBuffer/);
+    expect(() => typedArrayByteLength(new Uint8Array(new SharedArrayBuffer(4)))).toThrow(/SharedArrayBuffer/);
+    expect(() => typedArrayByteLength(new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 })))).toThrow(/resizable ArrayBuffer/);
+    expect(typedArrayByteLength(Uint8Array.of(1, 2, 3))).toBe(3);
   });
 
   test('an ordinary fixed Uint8Array still works', () => {

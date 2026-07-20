@@ -36,7 +36,7 @@ import {
 } from '../src/sim/population-initializer.js';
 import { serializeGenotype, compileAssembly, repairGenotype } from '../src/sim/assembly.js';
 import {
-  evaluatePopulation, championFromEvaluation, spawnPoseOnFlatStart, fitnessFromVehicleResult,
+  evaluatePopulation, championFromEvaluation, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
 
@@ -221,7 +221,11 @@ function breakdown(rows, keyFn) {
       valid: g.filter((r) => r.valid).length,
       medianFitness: quantile(g.map((r) => r.fitness).sort((a, b) => a - b), 0.5),
       zeroFitness: g.filter((r) => r.fitness < 0.01).length,
-      explosions: g.filter((r) => r.fitness > EXPLOSION_THRESHOLD).length,
+      // Explosion count reads the RAW maxForwardDistance, never `fitness`
+      // (break-it sweep F4): under policy-v2 `fitness` is integrity-gated to 0
+      // for exactly the exploding individuals, so `fitness > EXPLOSION_THRESHOLD`
+      // reported ZERO on a population holding the 8.17e6 m witness.
+      explosions: g.filter((r) => r.maxForwardDistance > EXPLOSION_THRESHOLD).length,
     }));
 }
 
@@ -237,6 +241,10 @@ async function viabilityPass(seeds, size) {
       const ir = compileAssembly(g);
       return {
         fitness: i.fitness,
+        // The RAW un-gated metric, for the explosion statistic (F4); `fitness`
+        // is the policy-v2 integrity-GATED selectable score.
+        maxForwardDistance: i.diagnostics.maxForwardDistance,
+        integrityStatus: i.integrityStatus,
         valid: i.valid,
         finalDistance: i.diagnostics.forwardDistance,
         rollback: i.diagnostics.maxForwardDistance - i.diagnostics.forwardDistance,
@@ -254,7 +262,9 @@ async function viabilityPass(seeds, size) {
       size,
       valid: rows.filter((r) => r.valid).length,
       zeroFitness: rows.filter((r) => r.fitness < 0.01).length,
-      explosions: rows.filter((r) => r.fitness > EXPLOSION_THRESHOLD).length,
+      // Raw maxForwardDistance, not the integrity-gated fitness (F4).
+      explosions: rows.filter((r) => r.maxForwardDistance > EXPLOSION_THRESHOLD).length,
+      integrityFailed: rows.filter((r) => r.integrityStatus !== 'ok').length,
       atLeast1m: level(1),
       atLeast5m: level(5),
       atLeast10m: level(10),
@@ -324,7 +334,15 @@ async function passiveMaxForward(genotype) {
     maxSteps: VIABILITY_SPEC.maxSteps,
     trace: { mode: 'none' },
   });
-  return { passiveMaxForward: fitnessFromVehicleResult(r.vehicles[0]), passiveFinal: r.vehicles[0].forwardDistance };
+  // The RAW max-forward, not fitnessFromVehicleResult (break-it sweep F1): the
+  // gated fold returned 0.00 for an exploding passive twin whose forwardDistance
+  // was 209.5 m — a self-contradictory row that silently invalidated the
+  // committed report's §3.3 "passive moves further than driven" conclusion.
+  return {
+    passiveMaxForward: r.vehicles[0].maxForwardDistance,
+    passiveFinal: r.vehicles[0].forwardDistance,
+    passiveIntegrity: r.vehicles[0].integrity.status,
+  };
 }
 
 async function undrivenPass(seeds, size) {

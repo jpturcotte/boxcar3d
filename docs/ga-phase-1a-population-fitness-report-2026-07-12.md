@@ -167,6 +167,21 @@ driven) — decisive evidence that the tail is a terrain-launch solver artifact,
 not locomotion. The median individuals coast a fraction of their driven
 progress (0.17–1.28×10² m), the ordinary solver-pump/transient contribution.
 
+> **Two corrections (2026-07, break-it sweep F1 + physics-integrity PR).**
+> **(1) The instrument, not the numbers.** The `passive max-fwd` column above is
+> the RAW `maxForwardDistance`. When policy-v2 landed (integrity-gated fitness),
+> `characterize-population.js` was reading `fitnessFromVehicleResult`, which
+> zeroes exactly these explosion rows — so re-running the probe printed
+> `passive max-fwd 0.00` beside a `passive final` of 2×10² m, a self-contradiction
+> that made this table non-reproducible. The instrument now reads the raw
+> `diagnostics.maxForwardDistance` (and reports integrity status alongside), so
+> the values above regenerate. **(2) The conclusion is superseded.** "Terrain-
+> launch solver artifact" was overtaken by the Physics-Integrity PR: the onset is
+> identical on fully FLAT ground, before any feature contact, so the tail is
+> Rapier constraint-solver divergence on ill-conditioned multi-module joint
+> islands, not a terrain launch. Treat §3.3 as a passive-motion measurement, not
+> as evidence for the mechanism.
+
 ### 3.4 Cohort cost (WALL-CLOCK, machine-specific)
 
 | population size | total ms | ms/step | ms/individual |

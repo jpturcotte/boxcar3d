@@ -112,19 +112,49 @@ function fail(path, value) {
 
 // --- Fitness policy (pure) ---------------------------------------------------
 
-export function isVehicleResultValid(vehicleResult) {
+/**
+ * THE ONE CAPTURE of a vehicle result. Every field the fitness policy
+ * consumes is read exactly once, into module-owned locals, and all three
+ * public predicates below derive from this single reading.
+ *
+ * Previously each predicate read the caller independently — and
+ * `fitnessFromVehicleResult` called `isVehicleResultSelectable`, which called
+ * `isVehicleResultValid`, so one fitness decision took six reads of `bodies`
+ * alone. A result whose `integrity.status` getter answered 'ok' once and
+ * 'numericalDivergence' once could therefore be recorded selectable and
+ * scored on its raw distance, which is exactly the divergence the integrity
+ * gate exists to make non-selectable. The `typeof x !== 'object' || x === null`
+ * guard shape was itself two reads before anything used the value.
+ */
+function captureVehicleResult(vehicleResult) {
   // Structural refusal in this module's dialect (the requireIntegrity
   // precedent): a malformed result must fail LOUD here, never leak a foreign
   // TypeError off `.bodies.allValid` — and never silently return false, which
   // would score a malformed record as an ordinary invalid vehicle.
-  if (typeof vehicleResult !== 'object' || vehicleResult === null
-    || typeof vehicleResult.bodies !== 'object' || vehicleResult.bodies === null
-    || typeof vehicleResult.joints !== 'object' || vehicleResult.joints === null) {
+  if (typeof vehicleResult !== 'object' || vehicleResult === null) {
     fail('vehicleResult', vehicleResult);
   }
-  return vehicleResult.finite === true
-    && vehicleResult.bodies.allValid === true
-    && vehicleResult.joints.allValid === true;
+  const bodies = vehicleResult.bodies;
+  const joints = vehicleResult.joints;
+  if (typeof bodies !== 'object' || bodies === null
+    || typeof joints !== 'object' || joints === null) {
+    fail('vehicleResult', vehicleResult);
+  }
+  const valid = vehicleResult.finite === true
+    && bodies.allValid === true
+    && joints.allValid === true;
+  // Integrity is captured unconditionally, including for invalid results —
+  // see isVehicleResultSelectable's ruling on validation order.
+  const block = vehicleResult.integrity;
+  const policyVersion = typeof block === 'object' && block !== null ? block.policyVersion : undefined;
+  const status = typeof block === 'object' && block !== null ? block.status : undefined;
+  return {
+    valid, block, policyVersion, status, maxForwardDistance: vehicleResult.maxForwardDistance,
+  };
+}
+
+export function isVehicleResultValid(vehicleResult) {
+  return captureVehicleResult(vehicleResult).valid;
 }
 
 // The integrity block is MANDATORY on every result the fitness policy
@@ -132,16 +162,19 @@ export function isVehicleResultValid(vehicleResult) {
 // core-loop diagnostic off-arm yields integrity: null, which this policy
 // refuses — a fitness computed while the detector was off would be a
 // different, unversioned policy).
-function requireIntegrity(vehicleResult) {
-  const block = vehicleResult.integrity;
+// Operates on the CAPTURE, so the status this validates is the status the
+// caller's decision is made from. Returning the caller's block (as this once
+// did) handed the next reader a fresh chance to be told something else.
+function requireIntegrity(captured) {
+  const { block, policyVersion, status } = captured;
   if (typeof block !== 'object' || block === null
-    || block.policyVersion !== INTEGRITY_POLICY_VERSION
-    || !INTEGRITY_STATUS.includes(block.status)) {
+    || policyVersion !== INTEGRITY_POLICY_VERSION
+    || !INTEGRITY_STATUS.includes(status)) {
     fail('vehicleResult.integrity', block === null || block === undefined
       ? `${String(block)} (fitness policy v${FITNESS_POLICY_VERSION} requires the integrity block — was the detector disabled?)`
-      : `policyVersion ${block.policyVersion}, status ${String(block.status)}`);
+      : `policyVersion ${policyVersion}, status ${String(status)}`);
   }
-  return block;
+  return status;
 }
 
 /**
@@ -159,8 +192,9 @@ function requireIntegrity(vehicleResult) {
  * results most likely to need diagnosis.
  */
 export function isVehicleResultSelectable(vehicleResult) {
-  const integrity = requireIntegrity(vehicleResult);
-  return isVehicleResultValid(vehicleResult) && integrity.status === 'ok';
+  const captured = captureVehicleResult(vehicleResult);
+  const status = requireIntegrity(captured);
+  return captured.valid && status === 'ok';
 }
 
 /**
@@ -196,13 +230,46 @@ function isCanonicalFitness(v) {
 }
 
 export function fitnessFromVehicleResult(vehicleResult) {
-  if (!isVehicleResultSelectable(vehicleResult)) return 0;
-  const raw = vehicleResult.maxForwardDistance;
+  // One capture backs BOTH the eligibility decision and the returned number.
+  // Deriving them from separate readings let a result be judged selectable on
+  // one reading and scored from another.
+  const captured = captureVehicleResult(vehicleResult);
+  const status = requireIntegrity(captured);
+  if (!(captured.valid && status === 'ok')) return 0;
+  const raw = captured.maxForwardDistance;
   if (!isCanonicalFitness(raw)) fail('vehicleResult.maxForwardDistance', raw);
   return raw;
 }
 
 // --- Spawn placement (pure) --------------------------------------------------
+
+/**
+ * Indexed deep copy of PLAIN DATA (arrays and plain objects), reading every
+ * property exactly once. Anything that is not a plain array/object — numbers,
+ * strings, null, and any exotic value — passes through by reference.
+ *
+ * Used when this module must hand caller-owned structure to code written under
+ * a different ownership ruling (the adapter's placement planner, which
+ * legitimately re-reads the compiler-owned IRs it was designed for). Copying
+ * first means the callee's repeated reads are reads of module-owned data, so
+ * this module's single-read guarantee holds at its own boundary without
+ * imposing the rule on the physics layer. Indexed and key-enumerated, never
+ * via caller-visible `.map`/iterators.
+ */
+function ownPlainData(value) {
+  if (Array.isArray(value)) {
+    const out = [];
+    for (let i = 0; i < value.length; i += 1) out.push(ownPlainData(value[i]));
+    return out;
+  }
+  if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+    const out = {};
+    const keys = Object.keys(value);
+    for (let i = 0; i < keys.length; i += 1) out[keys[i]] = ownPlainData(value[keys[i]]);
+    return out;
+  }
+  return value;
+}
 
 /**
  * Spawn pose for an IR dropped onto the EXACTLY-FLAT start pad (elevation 0
@@ -231,12 +298,20 @@ export function spawnPoseOnFlatStart(ir, options) {
   // gate let `{version: 2}` leak a foreign TypeError off `.aabb.min.y`. The
   // production path always passes compileAssembly output (module-owned), so
   // these guard direct callers with hand-built IRs.
-  if (typeof ir.chassis !== 'object' || ir.chassis === null
-    || typeof ir.chassis.aabb !== 'object' || ir.chassis.aabb === null
-    || typeof ir.chassis.aabb.min !== 'object' || ir.chassis.aabb.min === null) {
-    fail('ir.chassis', ir.chassis);
+  // Each link of the chain is captured as it is checked: the former shape read
+  // `ir.chassis` twice, `ir.chassis.aabb` twice and `.min` twice before
+  // reaching `.min.y`, so the object that passed the guard need not have been
+  // the object the height came from.
+  const chassis = ir.chassis;
+  const aabb = typeof chassis === 'object' && chassis !== null ? chassis.aabb : null;
+  const aabbMin = typeof aabb === 'object' && aabb !== null ? aabb.min : null;
+  if (typeof chassis !== 'object' || chassis === null
+    || typeof aabb !== 'object' || aabb === null
+    || typeof aabbMin !== 'object' || aabbMin === null) {
+    fail('ir.chassis', chassis);
   }
-  if (!Array.isArray(ir.axles)) fail('ir.axles', ir.axles);
+  const axles = ir.axles;
+  if (!Array.isArray(axles)) fail('ir.axles', axles);
   // Validate the NUMBERS, not only the shapes that hold them. The structural
   // guards above were added because `{version: 2}` leaked a foreign TypeError
   // off `.aabb.min.y`; they made the loud failure loud, and left the SILENT
@@ -247,18 +322,34 @@ export function spawnPoseOnFlatStart(ir, options) {
   // guards closed one module over; it is enforced here on every scalar this
   // function actually combines, including the ones reached through the
   // adapter's transform records.
-  const minY = ir.chassis.aabb.min.y;
+  const minY = aabbMin.y;
   if (!Number.isFinite(minY)) fail('ir.chassis.aabb.min.y', minY);
   let drop = -minY; // sled fallback: belly bottom
-  for (const t of vehicleWheelTransforms(ir, {})) {
-    const wheel = ir.axles[t.axleIndex].wheels[t.wheelIndex];
-    if (!Number.isFinite(wheel.radius)) {
-      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}].radius`, wheel.radius);
+  // The planner is handed a MODULE-OWNED deep copy of the captured axles, and
+  // the wheel records below are read from that same copy — so `t.local.y` and
+  // `wheel.radius` cannot come from two different readings.
+  //
+  // The copy is what makes this module's boundary honest without reaching into
+  // the adapter. `vehicleWheelTransforms` reads each axle's suspension, posX,
+  // mountY and wheel z several times (measured: `suspension` 4x per axle),
+  // which is CORRECT under the standing "the adapter trusts compiler-owned
+  // IRs" ruling — it is written for IRs the compiler owns. `spawnPoseOnFlatStart`
+  // is a public export that may be handed a caller's IR, so it owns what it
+  // passes on rather than extending the single-read rule into the realizer.
+  // A minimal `{ axles }` wrapper would NOT be enough: the planner would still
+  // be re-reading the caller's own axle objects through it.
+  const ownedAxles = ownPlainData(axles);
+  for (const t of vehicleWheelTransforms({ axles: ownedAxles }, {})) {
+    const wheel = ownedAxles[t.axleIndex].wheels[t.wheelIndex];
+    const radius = wheel.radius;
+    const localY = t.local.y;
+    if (!Number.isFinite(radius)) {
+      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}].radius`, radius);
     }
-    if (!Number.isFinite(t.local.y)) {
-      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}] local.y`, t.local.y);
+    if (!Number.isFinite(localY)) {
+      fail(`ir.axles[${t.axleIndex}].wheels[${t.wheelIndex}] local.y`, localY);
     }
-    drop = Math.max(drop, wheel.radius - t.local.y);
+    drop = Math.max(drop, radius - localY);
   }
   if (!Number.isFinite(drop)) fail('ir (derived spawn drop)', drop);
   return { position: { x, y: drop + clearance, z } };
@@ -347,8 +438,17 @@ function resolveSpec(spec) {
   // Absent defaults; an EXPLICIT null fails like any other non-number (the
   // `??` shape silently substituted the default for null — the keepRaw class).
   const clearance = Object.hasOwn(spawn, 'clearance') ? spawn.clearance : SPAWN_CLEARANCE;
-  if (!Number.isFinite(spawn.x)) fail('spawn.x', spawn.x);
-  if (!Number.isFinite(spawn.z)) fail('spawn.z', spawn.z);
+  // Capture every spawn scalar ONCE. The guard, the flat-pad comparison, the
+  // error text, and the returned resolved spec must all be the same reading:
+  // measured (round-10), an `x` accessor answering -44 for the first three
+  // reads and 100 afterwards passed the flat-pad guard and then EXECUTED the
+  // vehicle at x=100, off the pad, with the fitness vector's spec digest
+  // attesting the position that never ran. That is an execution-constraint
+  // bypass, not a codec asymmetry.
+  const spawnX = spawn.x;
+  const spawnZ = spawn.z;
+  if (!Number.isFinite(spawnX)) fail('spawn.x', spawnX);
+  if (!Number.isFinite(spawnZ)) fail('spawn.z', spawnZ);
   if (!Number.isFinite(clearance) || clearance <= 0 || clearance > 0.05) fail('spawn.clearance', clearance);
   if (!Number.isFinite(targetWheelSurfaceSpeed)) fail('targetWheelSurfaceSpeed', targetWheelSurfaceSpeed);
   if (!Number.isFinite(wheelFriction) || wheelFriction < 0) fail('wheelFriction', wheelFriction);
@@ -356,8 +456,9 @@ function resolveSpec(spec) {
   for (const k of Object.keys(hooks)) {
     if (!HOOK_KEYS.includes(k)) fail(`hooks.${k}`, 'unknown key');
   }
-  if (hooks.onIndividual !== undefined && typeof hooks.onIndividual !== 'function') {
-    fail('hooks.onIndividual', hooks.onIndividual);
+  const onIndividual = hooks.onIndividual;
+  if (onIndividual !== undefined && typeof onIndividual !== 'function') {
+    fail('hooks.onIndividual', onIndividual);
   }
   const resolvedTerrain = ownTerrain({ ...TERRAIN_DEFAULTS, ...terrain });
   // The two scalars the flat-pad guard computes with must be honest numbers
@@ -375,18 +476,18 @@ function resolveSpec(spec) {
   // The flat-pad guard: the whole vehicle must sit on exactly-flat ground.
   const padStart = -resolvedTerrain.length / 2;
   const padEnd = padStart + resolvedTerrain.startFlatLength;
-  if (spawn.x - SPAWN_PAD_MARGIN < padStart || spawn.x + SPAWN_PAD_MARGIN > padEnd) {
-    fail('spawn.x', `${spawn.x} must sit >= ${SPAWN_PAD_MARGIN} m inside the flat pad [${padStart}, ${padEnd}]`);
+  if (spawnX - SPAWN_PAD_MARGIN < padStart || spawnX + SPAWN_PAD_MARGIN > padEnd) {
+    fail('spawn.x', `${spawnX} must sit >= ${SPAWN_PAD_MARGIN} m inside the flat pad [${padStart}, ${padEnd}]`);
   }
   return {
     deterministic,
     termination, // validated against TERMINATIONS above; defaults to the only value
     maxSteps,
-    spawn: { x: spawn.x, z: spawn.z, clearance },
+    spawn: { x: spawnX, z: spawnZ, clearance },
     targetWheelSurfaceSpeed,
     wheelFriction,
     terrain: resolvedTerrain,
-    onIndividual: hooks.onIndividual ?? null,
+    onIndividual: onIndividual ?? null,
   };
 }
 
@@ -444,11 +545,20 @@ export function serializeEvaluationSpec(resolvedSpec) {
   if (terrainKeys.length !== walkKeys.length || !terrainKeys.every((k) => walkKeys.includes(k))) {
     throw new Error('population-evaluation: resolved terrain keys diverge from the declared walk');
   }
-  const term = TERMINATIONS.indexOf(s.termination);
-  if (term < 0) fail('termination', s.termination);
+  // EVERY spec scalar is captured once here and the write pass below consumes
+  // only these locals. Guarding one reading and writing another let a spec be
+  // validated as one run and encoded as a different one — and the digest folded
+  // over those bytes then attested the run that never happened.
+  const termination = s.termination;
+  const maxSteps = s.maxSteps;
+  const deterministic = s.deterministic;
+  const targetWheelSurfaceSpeed = s.targetWheelSurfaceSpeed;
+  const wheelFriction = s.wheelFriction;
+  const term = TERMINATIONS.indexOf(termination);
+  if (term < 0) fail('termination', termination);
   // maxSteps is a u32 on the wire — reject anything that would silently wrap
   // (a public export cannot assume it was routed through resolveSpec).
-  if (!Number.isInteger(s.maxSteps) || s.maxSteps < 1 || s.maxSteps > 0xffffffff) fail('maxSteps', s.maxSteps);
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 0xffffffff) fail('maxSteps', maxSteps);
   // deterministic selects the PHYSICS FLAVOR — a strict boolean, never
   // truthiness. The former `s.deterministic ? 1 : 0` silently flipped the
   // field's meaning for plausible wrong types: the string 'false' and a boxed
@@ -456,10 +566,15 @@ export function serializeEvaluationSpec(resolvedSpec) {
   // deserialize(serialize(spec)) was no longer semantically the input, and
   // the digest attested the wrong engine. resolveSpec already requires a
   // strict boolean; the public encoder must too.
-  if (typeof s.deterministic !== 'boolean') fail('deterministic', s.deterministic);
-  // spawn is dereferenced three times below — the same structural-guard
-  // ruling as `terrain` above (spawn: null leaked a foreign TypeError).
-  if (typeof s.spawn !== 'object' || s.spawn === null) fail('spawn', s.spawn);
+  if (typeof deterministic !== 'boolean') fail('deterministic', deterministic);
+  // spawn: structural guard (spawn: null leaked a foreign TypeError), then its
+  // three scalars captured once each — the write pass never dereferences the
+  // caller's spawn again.
+  const spawn = s.spawn;
+  if (typeof spawn !== 'object' || spawn === null) fail('spawn', spawn);
+  const spawnX = spawn.x;
+  const spawnZ = spawn.z;
+  const spawnClearance = spawn.clearance;
 
   // Size pass, then write pass (explicit, no push-buffers).
   //
@@ -491,23 +606,43 @@ export function serializeEvaluationSpec(resolvedSpec) {
   // at length 2^31 and a generic `RangeError: Array buffer allocation failed`
   // at 2^40, instead of this module's diagnosis. The axle-count and
   // populationSize guards are the same ruling.
-  const ranges = new Map();
+  // EVERY terrain value — not only the ranges — is materialized here, once,
+  // and the write pass reads exclusively from `captured`. The ranges were
+  // already snapshotted for the size/write agreement; the scalars were not, so
+  // `terrain[key]` was still read twice for every uint32 and f64 knob.
+  const captured = new Map();
   let size = 2 + 1 + 1 + 4 + 8 * 5 + 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
-    if (kind === 'uint32') size += 4;
-    else if (kind === 'f64') size += 8;
-    else if (kind === 'range') {
-      const range = terrain[key];
-      if (range === null || typeof range !== 'object') fail(`terrain.${key}`, range);
-      const declared = range.length;
+    const v = terrain[key];
+    if (kind === 'uint32') {
+      captured.set(key, v);
+      size += 4;
+    } else if (kind === 'f64') {
+      captured.set(key, v);
+      size += 8;
+    } else if (kind === 'range') {
+      if (v === null || typeof v !== 'object') fail(`terrain.${key}`, v);
+      const declared = v.length;
       if (!Number.isInteger(declared) || declared < 0 || declared > 0xff) {
         fail(`terrain.${key}.length`, `${declared} exceeds the u8 wire bound (255)`);
       }
       const values = [];
-      for (let i = 0; i < declared; i += 1) values.push(range[i]);
-      ranges.set(key, values);
+      for (let i = 0; i < declared; i += 1) values.push(v[i]);
+      captured.set(key, values);
       size += 1 + values.length * 8;
-    } else size += 1 + WEIGHT_KEYS.length * (1 + 8);
+    } else { // weights
+      // Structural guard before Object.keys — a null/scalar weights object
+      // leaked a foreign TypeError here (the spawn/terrain guard ruling).
+      if (typeof v !== 'object' || v === null) fail(`terrain.${key}`, v);
+      const keys = Object.keys(v);
+      if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {
+        fail(`terrain.${key}`, `keys [${keys}] must equal the declared [${WEIGHT_KEYS}]`);
+      }
+      const weights = [];
+      for (let i = 0; i < WEIGHT_KEYS.length; i += 1) weights.push(v[WEIGHT_KEYS[i]]);
+      captured.set(key, weights);
+      size += 1 + WEIGHT_KEYS.length * (1 + 8);
+    }
   }
   const view = new DataView(new ArrayBuffer(size));
   let o = 0;
@@ -524,17 +659,17 @@ export function serializeEvaluationSpec(resolvedSpec) {
     view.setFloat64(o, v, true); o += 8;
   };
   view.setUint16(o, EVALUATION_SPEC_VERSION, true); o += 2;
-  view.setUint8(o, s.deterministic ? 1 : 0); o += 1;
+  view.setUint8(o, deterministic ? 1 : 0); o += 1;
   view.setUint8(o, term); o += 1;
-  view.setUint32(o, s.maxSteps, true); o += 4;
-  f64(s.spawn.x, 'spawn.x');
-  f64(s.spawn.z, 'spawn.z');
-  f64(s.spawn.clearance, 'spawn.clearance');
-  f64(s.targetWheelSurfaceSpeed, 'targetWheelSurfaceSpeed');
-  f64(s.wheelFriction, 'wheelFriction');
+  view.setUint32(o, maxSteps, true); o += 4;
+  f64(spawnX, 'spawn.x');
+  f64(spawnZ, 'spawn.z');
+  f64(spawnClearance, 'spawn.clearance');
+  f64(targetWheelSurfaceSpeed, 'targetWheelSurfaceSpeed');
+  f64(wheelFriction, 'wheelFriction');
   view.setUint8(o, TERRAIN_SPEC_WALK.length); o += 1;
   for (const [key, kind] of TERRAIN_SPEC_WALK) {
-    const v = terrain[key];
+    const v = captured.get(key);
     if (kind === 'uint32') {
       // isCanonicalUint32 rejects -0: setUint32 erases the sign bit, so a -0
       // seed encoded as +0 and decoded back as +0 — a silent normalization
@@ -547,22 +682,16 @@ export function serializeEvaluationSpec(resolvedSpec) {
       // The MATERIALIZED values from the size pass — count and payload cannot
       // disagree, because they are the same array. Indexed here too: this
       // module never reads a length from one place and content from another.
-      const values = ranges.get(key);
-      view.setUint8(o, values.length); o += 1;
-      for (let i = 0; i < values.length; i += 1) f64(values[i], `terrain.${key}[]`);
+      view.setUint8(o, v.length); o += 1;
+      for (let i = 0; i < v.length; i += 1) f64(v[i], `terrain.${key}[]`);
     } else { // weights
-      // Structural guard before Object.keys — a null/scalar weights object
-      // leaked a foreign TypeError here (the spawn/terrain guard ruling).
-      if (typeof v !== 'object' || v === null) fail(`terrain.${key}`, v);
-      const keys = Object.keys(v);
-      if (keys.length !== WEIGHT_KEYS.length || !WEIGHT_KEYS.every((k) => keys.includes(k))) {
-        fail(`terrain.${key}`, `keys [${keys}] must equal the declared [${WEIGHT_KEYS}]`);
-      }
+      // Also materialized in the size pass (structure and key set validated
+      // there); these are module-owned values in declared order.
       view.setUint8(o, WEIGHT_KEYS.length); o += 1;
-      WEIGHT_KEYS.forEach((k, i) => {
+      for (let i = 0; i < WEIGHT_KEYS.length; i += 1) {
         view.setUint8(o, i); o += 1;
-        f64(v[k], `terrain.${key}.${k}`);
-      });
+        f64(v[i], `terrain.${key}.${WEIGHT_KEYS[i]}`);
+      }
     }
   }
   // receiver `view` is the module-owned DataView this encoder allocated.
@@ -830,28 +959,42 @@ export function serializeFitnessVector(evaluation) {
   // `[null]` or a sparse array leaked a foreign TypeError from a public
   // encoder.
   const rows = [];
-  for (let i = 0; i < individuals.length; i += 1) {
+  const count = individuals.length;
+  for (let i = 0; i < count; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
-    if (!isCanonicalUint32(ind.individualId)) fail('individualId', ind.individualId);
-    if (i > 0 && !(ind.individualId > rows[i - 1].individualId)) {
+    // ALL FOUR FIELDS CAPTURED BEFORE ANY CHECK. The former shape read each
+    // one two or three times — the guard, the coherence tooth, and then again
+    // when building the "module-owned" row — so the row could carry values no
+    // check had seen. Measured (round-10): a `valid` getter answering
+    // true, true, false was guarded as valid and ENCODED as invalid-carrying-
+    // fitness-1, a member combination the decoder correctly refuses; the
+    // encoder produced bytes its own inverse rejects.
+    const individualId = ind.individualId;
+    const valid = ind.valid;
+    const integrityStatus = ind.integrityStatus;
+    const fitness = ind.fitness;
+    if (!isCanonicalUint32(individualId)) fail('individualId', individualId);
+    if (i > 0 && !(individualId > rows[i - 1].individualId)) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
     }
-    if (typeof ind.valid !== 'boolean') fail(`individual ${ind.individualId} valid`, ind.valid);
-    const statusIndex = INTEGRITY_STATUS.indexOf(ind.integrityStatus);
-    if (statusIndex === -1) fail(`individual ${ind.individualId} integrityStatus`, ind.integrityStatus);
+    if (typeof valid !== 'boolean') fail(`individual ${individualId} valid`, valid);
+    const statusIndex = INTEGRITY_STATUS.indexOf(integrityStatus);
+    if (statusIndex === -1) fail(`individual ${individualId} integrityStatus`, integrityStatus);
     // The fitness contract is a non-negative finite score: NaN/Infinity would
     // emit implementation-defined bytes (the cross-engine hazard the codec
     // exists to prevent), and a negative fitness contradicts the max-progress
     // policy (maxForwardDistance ≥ 0, unselectable ⇒ 0). Reject an internally
     // contradictory vector rather than faithfully serialize it: fitness must
     // be 0 unless the member is BOTH valid and integrity-clean (policy v2).
-    if (!isCanonicalFitness(ind.fitness)) fail(`individual ${ind.individualId} fitness`, ind.fitness);
-    if ((!ind.valid || ind.integrityStatus !== 'ok') && ind.fitness !== 0) {
-      fail(`individual ${ind.individualId} fitness`,
-        `unselectable individual (valid ${ind.valid}, integrity ${ind.integrityStatus}) must have fitness 0, got ${ind.fitness}`);
+    if (!isCanonicalFitness(fitness)) fail(`individual ${individualId} fitness`, fitness);
+    if ((!valid || integrityStatus !== 'ok') && fitness !== 0) {
+      fail(`individual ${individualId} fitness`,
+        `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
     }
-    rows.push({ individualId: ind.individualId, valid: ind.valid, statusIndex, fitness: ind.fitness });
+    rows.push({
+      individualId, valid, statusIndex, fitness,
+    });
   }
   const view = new DataView(new ArrayBuffer(fitnessVectorByteLength(rows.length)));
   let o = 0;
@@ -1022,7 +1165,51 @@ function championCandidate(ind, i) {
     fail(`individual ${individualId} fitness`,
       `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
   }
-  return { source: ind, individualId, valid, fitness, integrityStatus };
+  return {
+    source: ind, individualId, valid, fitness, integrityStatus,
+  };
+}
+
+/**
+ * ONE capture of a caller's evaluation into module-owned candidate rows,
+ * shared by both selectors.
+ *
+ * `evaluation.individuals` is read exactly once — the guard and the loop used
+ * to read it separately, so the collection that was gated need not have been
+ * the collection that was ranked (an empty second read even produced the
+ * documented "no selectable individual" null for a population that had one).
+ * The cardinality is captured too: a row accessor that appends during the walk
+ * cannot extend a loop bound that was already fixed.
+ *
+ * IDs must be UNIQUE. Both comparators use `individualId` as the final
+ * tie-breaker, so two otherwise-equal rows sharing an id leave neither
+ * outranking the other and the FIRST one wins — making the result depend on
+ * input arrangement, contradicting both the documented total order and the
+ * permutation invariance these selectors claim. The fitness vector encoder
+ * already rejects duplicates through its strictly-ascending id rule, so this
+ * is the same domain: a collection that could not be SERIALIZED must not be
+ * RANKED.
+ */
+function championCandidates(evaluation) {
+  if (typeof evaluation !== 'object' || evaluation === null) {
+    fail('evaluation.individuals', evaluation);
+  }
+  const individuals = evaluation.individuals;
+  if (!Array.isArray(individuals) || individuals.length === 0) {
+    fail('evaluation.individuals', individuals);
+  }
+  const count = individuals.length;
+  const seen = new Set();
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const row = championCandidate(individuals[i], i);
+    if (seen.has(row.individualId)) {
+      fail(`evaluation.individuals[${i}].individualId`, `duplicate ${row.individualId}`);
+    }
+    seen.add(row.individualId);
+    rows.push(row);
+  }
+  return rows;
 }
 
 /**
@@ -1038,22 +1225,15 @@ function championCandidate(ind, i) {
  * is diagnostic, not selective.
  */
 export function championFromEvaluation(evaluation) {
-  if (typeof evaluation !== 'object' || evaluation === null
-    || !Array.isArray(evaluation.individuals) || evaluation.individuals.length === 0) {
-    fail('evaluation.individuals', evaluation && evaluation.individuals);
-  }
   const better = (a, b) => {
     if (a.fitness !== b.fitness) return a.fitness > b.fitness;
     if (a.valid !== b.valid) return a.valid; // valid outranks invalid on a fitness tie
     return a.individualId < b.individualId;
   };
-  // Indexed, with a per-row shape check: `for...of` read the caller's
-  // iterator (which can disagree with the indices every other consumer
-  // reads), and a null row leaked a foreign TypeError.
-  const individuals = evaluation.individuals;
+  const rows = championCandidates(evaluation);
   let champion = null;
-  for (let i = 0; i < individuals.length; i += 1) {
-    const row = championCandidate(individuals[i], i);
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
     if (champion === null || better(row, champion)) champion = row;
   }
   // The caller's original row — complete with diagnostics — chosen by
@@ -1072,17 +1252,12 @@ export function championFromEvaluation(evaluation) {
  * member is a condition Phase 1B must handle deliberately, not paper over.
  */
 export function selectableChampionFromEvaluation(evaluation) {
-  if (typeof evaluation !== 'object' || evaluation === null
-    || !Array.isArray(evaluation.individuals) || evaluation.individuals.length === 0) {
-    fail('evaluation.individuals', evaluation && evaluation.individuals);
-  }
-  // Indexed + per-row shape check (see championFromEvaluation): this is the
-  // SELECTION entry point, so the rows it judges must be the rows every other
-  // consumer reads — the indices — never a caller iterator's answers.
-  const individuals = evaluation.individuals;
+  // This is the SELECTION entry point, so the rows it judges must be the rows
+  // every other consumer reads — one capture, unique ids, indexed.
+  const rows = championCandidates(evaluation);
   let champion = null;
-  for (let i = 0; i < individuals.length; i += 1) {
-    const row = championCandidate(individuals[i], i);
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
     if (!(row.valid && row.integrityStatus === 'ok')) continue;
     if (champion === null
       || row.fitness > champion.fitness

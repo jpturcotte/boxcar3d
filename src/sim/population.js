@@ -123,16 +123,27 @@ function validatedMembers(population) {
     // serializeGenotype runs validateGenotype (structure + gene domains);
     // byte-comparing against the repaired form is the canonicality tooth.
     // Default assembly options define the canonical form (the whole Phase 1A
-    // pipeline compiles with defaults). Both sides read the SAME captured
-    // reference, so the tooth cannot compare one genotype against the repair
-    // of a different one.
+    // pipeline compiles with defaults).
+    //
+    // The caller's genotype is walked EXACTLY ONCE, by the first serialize.
+    // Everything after that — the repair, the comparison, the snapshot, the
+    // attestation — runs on `owned`, decoded from those very bytes. Passing
+    // the caller's object to BOTH serialize calls meant the tooth compared one
+    // reading against the repair of a SECOND reading, so a genotype whose
+    // leaves differed between walks could be judged canonical on evidence that
+    // never described a single genotype. Round-trip identity
+    // (serialize∘deserialize = identity) is what makes this substitution
+    // byte-neutral, so the codec's own contract is load-bearing here.
     const bytes = serializeGenotype(genotype);
-    const repairedBytes = serializeGenotype(repairGenotype(genotype));
+    const owned = deserializeGenotype(bytes);
+    const repairedBytes = serializeGenotype(repairGenotype(owned));
     if (!bytesEqual(bytes, repairedBytes)) {
       throw new Error(`population: individuals[${i}] (individualId ${individualId}) is not canonical — `
         + 'repair moved it; populations must carry repaired genotypes (compileAssembly(...).genotype)');
     }
-    members.push({ individual: ind, individualId, bytes });
+    members.push({
+      individual: ind, individualId, bytes, genotype: owned,
+    });
   }
   // Sorting, encoding, attestation and every later diagnostic use the CAPTURED
   // scalar. `individual` is retained only so validatePopulation can hand the
@@ -212,9 +223,11 @@ export function attestPopulation(population) {
   const bytes = encodeMembers(members);
   const individuals = [];
   for (let i = 0; i < members.length; i += 1) {
+    // The genotype decoded from the attested bytes during validation — the
+    // same object the canonicality tooth judged, not a fresh decode.
     individuals.push({
       individualId: members[i].individualId,
-      genotype: deserializeGenotype(members[i].bytes),
+      genotype: members[i].genotype,
     });
   }
   return { individuals, bytes };

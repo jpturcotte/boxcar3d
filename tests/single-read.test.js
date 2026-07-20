@@ -1,0 +1,424 @@
+// THE SINGLE-READ INVARIANT, enforced as a build failure — not as prose.
+//
+// The rule (round-10 external review, root cause of blockers across four
+// consecutive rounds):
+//
+//   Any caller-owned value used to VALIDATE, ORDER, ATTEST, ENCODE, or
+//   EXECUTE must be captured into a module-owned local exactly once, and
+//   every subsequent operation must use that capture.
+//
+// Rounds 7–9 each fixed the reported SITES and wrote enforcement scoped to
+// each round's MECHANISM (shadowed TypedArray geometry, then one champion
+// read-count tooth). This suite is different by construction, not by
+// enumeration: it deep-instruments every own enumerable property of a
+// caller input with a COUNTING ACCESSOR — an ordinary own accessor, the
+// exact in-scope exploit vehicle — and asserts no property is read more
+// than once during the call. A property read at most once cannot be lied
+// to: the invariant holds without this suite knowing anything about what
+// any function does with the value.
+//
+// What the instrument can and cannot see (declared, so exemptions are
+// decisions rather than gaps):
+//   - Plain objects and genuine Arrays: every own enumerable property
+//     (array elements included) becomes a counting accessor. Reads via
+//     destructuring, spread, and Object.values all count; typeof checks,
+//     Array.isArray, Object.keys, and hasOwn do NOT read values and are
+//     free, as in the real threat model.
+//   - A genuine Array's `length` is a non-configurable own data property:
+//     it CANNOT be made to lie by the in-scope threat (no accessor can be
+//     installed, and with no caller code running between reads it cannot
+//     change). Double reads of Array length are therefore harmless and are
+//     exempt BY THE LANGUAGE, not by choice.
+//   - TypedArrays pass through untouched (integer-indexed properties
+//     cannot be redefined). The byte decoders read caller bytes through
+//     cached intrinsics and a single reader cursor — audited separately in
+//     tests/ownership-boundary.test.js.
+//   - Functions (hooks) pass through: never invoked by the instrument.
+//
+// Each table case calls the export with a VALID canonical input and
+// asserts (a) it does not throw, and (b) no instrumented path was read
+// twice. The named regressions at the bottom are the round-10 reviewer's
+// required poison tests (valid first read, poison second) — strictly
+// weaker than the counting assertion, kept because they document the
+// concrete failure each finding demonstrated.
+
+import { describe, test, expect } from 'vitest';
+import { Rng } from '../src/sim/prng.js';
+import {
+  hubMassProperties, randomGenotype, repairGenotype, compileAssembly,
+  validateGenotype, serializeGenotype, deserializeGenotype, forEachGenotypeField,
+} from '../src/sim/assembly.js';
+import {
+  attestPopulation, serializePopulationSnapshot, validatePopulation,
+} from '../src/sim/population.js';
+import {
+  createInitialPopulation, sampleInitialGenotype, serializePopulationInitialization,
+} from '../src/sim/population-initializer.js';
+import {
+  championFromEvaluation, selectableChampionFromEvaluation,
+  deserializeFitnessVector, fitnessFromVehicleResult,
+  isVehicleResultSelectable, isVehicleResultValid,
+  serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
+} from '../src/sim/population-evaluation.js';
+import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
+import { INTEGRITY_POLICY_VERSION } from '../src/sim/integrity.js';
+import {
+  EVALUATION_TRACE_VERSION, RECORD_BYTES, TraceWriter,
+  compareCheckpoints, compareTraces, encodeTraceRecord,
+} from '../src/sim/trace.js';
+import {
+  analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView, scaledThresholds,
+} from '../src/sim/trace-forensics.js';
+
+// --- The instrument ---------------------------------------------------------
+
+const isPlainData = (v) => typeof v === 'object' && v !== null
+  && !ArrayBuffer.isView(v) && !(v instanceof ArrayBuffer);
+
+/**
+ * Deep copy `value` where every own enumerable property is a counting
+ * accessor returning the same (recursively instrumented) value on every
+ * read. Behavior-neutral for compliant code; every read is tallied in
+ * `counts` by path.
+ */
+function instrument(value, counts, path) {
+  if (!isPlainData(value)) return value;
+  const wrap = (target, key, child, childPath) => {
+    const v = instrument(child, counts, childPath);
+    Object.defineProperty(target, key, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        counts.set(childPath, (counts.get(childPath) ?? 0) + 1);
+        return v;
+      },
+    });
+  };
+  if (Array.isArray(value)) {
+    const out = [];
+    out.length = value.length; // genuine Array; length stays a data property
+    for (let i = 0; i < value.length; i += 1) wrap(out, i, value[i], `${path}[${i}]`);
+    return out;
+  }
+  const out = {};
+  for (const k of Object.keys(value)) wrap(out, k, value[k], `${path}.${k}`);
+  return out;
+}
+
+const multiReads = (counts) => [...counts.entries()]
+  .filter(([, n]) => n > 1)
+  .map(([p, n]) => `${p} read ${n}x`);
+
+/** Instrument args, run, and return {counts, threw, result}. */
+function run(build, call) {
+  const counts = new Map();
+  const args = build().map((a, i) => instrument(a, counts, `arg${i}`));
+  let threw = null;
+  let result;
+  try {
+    result = call(...args);
+  } catch (e) {
+    threw = e;
+  }
+  return { counts, threw, result };
+}
+
+// --- Instrument self-checks (the suite's own teeth) -------------------------
+
+describe('the instrument itself', () => {
+  test('counts every read by path and preserves values, -0 and NaN included', () => {
+    const counts = new Map();
+    const x = instrument({ a: 1, b: { c: -0 }, d: [NaN, 2] }, counts, 'x');
+    expect(Object.is(x.b.c, -0)).toBe(true);
+    expect(Number.isNaN(x.d[0])).toBe(true);
+    expect(x.a + x.a).toBe(2);
+    expect(counts.get('x.a')).toBe(2); // a leaf read twice is visible
+    expect(counts.get('x.b')).toBe(1); // container read once for the chain
+    expect(counts.get('x.b.c')).toBe(1);
+  });
+
+  test('a double-reading function is caught; a capturing one passes', () => {
+    const doubleRead = (o) => o.v + o.v;
+    const capture = (o) => { const v = o.v; return v + v; };
+    const c1 = new Map();
+    doubleRead(instrument({ v: 1 }, c1, 'o'));
+    expect(multiReads(c1)).toEqual(['o.v read 2x']);
+    const c2 = new Map();
+    capture(instrument({ v: 1 }, c2, 'o'));
+    expect(multiReads(c2)).toEqual([]);
+  });
+
+  test('spread and destructuring count as exactly one read per property', () => {
+    const counts = new Map();
+    const o = instrument({ a: 1, b: 2 }, counts, 'o');
+    const { a } = o;
+    const s = { ...o };
+    expect(a + s.b).toBe(3);
+    expect(counts.get('o.a')).toBe(2); // destructure + spread
+    expect(counts.get('o.b')).toBe(1); // spread only — s.b reads the module-owned copy, which is free
+  });
+});
+
+// --- Shared builders (plain canonical data, rebuilt per case) ---------------
+
+const genotype = (fork = 1) => repairGenotype(randomGenotype(new Rng(20260710).fork(fork)));
+
+// randomGenotype can draw the legal-but-unrealizable S2 suspension band, which
+// the adapter's placement planner rejects by design. Cases that must reach a
+// REALIZER path use an initializer-drawn genotype instead — the live
+// initializer masks suspension types to S0/S1 by construction.
+const realizableGenotype = () => createInitialPopulation(
+  { seed: 20260721, populationSize: 1 },
+).population.individuals[0].genotype;
+
+const smallPopulation = () => createInitialPopulation({ seed: 20260721, populationSize: 3 }).population;
+
+const initialization = () => createInitialPopulation({ seed: 20260721, populationSize: 2 });
+
+// A resolved evaluation spec in the exact shape serializeEvaluationSpec
+// consumes (the deserialize-return shape).
+const resolvedSpec = () => ({
+  deterministic: true,
+  termination: 'maxSteps',
+  maxSteps: 300,
+  spawn: { x: -44, z: 0, clearance: 0.02 },
+  targetWheelSurfaceSpeed: 5,
+  wheelFriction: 1,
+  terrain: { ...TERRAIN_DEFAULTS, seed: 20260722 },
+});
+
+const okVehicleResult = () => ({
+  finite: true,
+  bodies: { allValid: true },
+  joints: { allValid: true },
+  maxForwardDistance: 3.25,
+  integrity: { policyVersion: INTEGRITY_POLICY_VERSION, status: 'ok' },
+});
+
+const fitnessEvaluation = () => ({
+  populationSnapshotDigestState: 12345,
+  evaluationSpecDigestState: 67890,
+  individuals: [
+    { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5 },
+    { individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0 },
+    { individualId: 2, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+  ],
+});
+
+const championEvaluation = () => ({
+  individuals: [
+    { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5, diagnostics: { tag: 'a' } },
+    { individualId: 1, valid: true, integrityStatus: 'ok', fitness: 7.5, diagnostics: { tag: 'b' } },
+    { individualId: 2, valid: false, integrityStatus: 'ok', fitness: 0, diagnostics: { tag: 'c' } },
+  ],
+});
+
+const chassisRecord = (stepIndex = 0, overrides = {}) => ({
+  stepIndex,
+  vehicleIndex: 0,
+  bodyRole: 'chassis',
+  axleIndex: null,
+  wheelIndex: null,
+  bodyValid: true,
+  bodySleeping: false,
+  jointState: 'notApplicable',
+  terminated: false,
+  terminationReason: 'none',
+  finiteState: true,
+  translation: { x: 0, y: 0.5, z: 0 },
+  rotation: { x: 0, y: 0, z: 0, w: 1 },
+  linvel: { x: 1, y: 0, z: 0 },
+  angvel: { x: 0, y: 0, z: 0 },
+  ...overrides,
+});
+
+const fullTrace = () => ({
+  version: EVALUATION_TRACE_VERSION,
+  mode: 'full',
+  recordBytes: RECORD_BYTES,
+  records: [0, 1, 2].map((k) => encodeTraceRecord(chassisRecord(k))),
+});
+
+const checkpoints = () => [
+  { stepIndex: 0, recordCount: 1, byteCount: RECORD_BYTES, state: 111 },
+  { stepIndex: 1, recordCount: 2, byteCount: 2 * RECORD_BYTES, state: 222 },
+];
+
+// --- The table --------------------------------------------------------------
+//
+// Every case: valid canonical input, must succeed, and no instrumented
+// property may be read more than once. Add a row when a public export that
+// consumes caller data is added; tests/ownership-boundary.test.js pins the
+// export lists, so an unlisted export fails there first.
+
+const CASES = [
+  ['assembly.validateGenotype', () => [genotype()], (g) => validateGenotype(g)],
+  ['assembly.repairGenotype', () => [genotype()], (g) => repairGenotype(g)],
+  ['assembly.compileAssembly', () => [genotype()], (g) => compileAssembly(g)],
+  ['assembly.serializeGenotype', () => [genotype()], (g) => serializeGenotype(g)],
+  ['assembly.forEachGenotypeField', () => [genotype()],
+    (g) => forEachGenotypeField(g, () => {})],
+  ['assembly.hubMassProperties', () => [{ mass: 20, radius: 0.4, width: 0.3 }],
+    (w) => hubMassProperties(w)],
+  ['population.validatePopulation', () => [smallPopulation()], (p) => validatePopulation(p)],
+  ['population.serializePopulationSnapshot', () => [smallPopulation()],
+    (p) => serializePopulationSnapshot(p)],
+  ['population.attestPopulation', () => [smallPopulation()], (p) => attestPopulation(p)],
+  ['population-initializer.createInitialPopulation',
+    () => [{ seed: 20260721, populationSize: 2 }], (c) => createInitialPopulation(c)],
+  ['population-initializer.sampleInitialGenotype',
+    () => [{ seed: 1, populationSize: 2 }],
+    (c) => sampleInitialGenotype(new Rng(7), c)],
+  ['population-initializer.serializePopulationInitialization (production path)',
+    () => [initialization()], (i) => serializePopulationInitialization(i)],
+  ['population-initializer.serializePopulationInitialization (digest-state path)',
+    () => {
+      const init = initialization();
+      const rest = { ...init };
+      delete rest.population; // the digest-state branch: no population carried
+      return [{ ...rest, populationSnapshotDigestState: 42 }];
+    },
+    (i) => serializePopulationInitialization(i)],
+  ['population-evaluation.spawnPoseOnFlatStart',
+    () => [compileAssembly(realizableGenotype()), { x: -44, z: 0 }],
+    (ir, opts) => spawnPoseOnFlatStart(ir, opts)],
+  ['population-evaluation.serializeEvaluationSpec', () => [resolvedSpec()],
+    (s) => serializeEvaluationSpec(s)],
+  ['population-evaluation.serializeFitnessVector', () => [fitnessEvaluation()],
+    (e) => serializeFitnessVector(e)],
+  ['population-evaluation.isVehicleResultValid', () => [okVehicleResult()],
+    (v) => isVehicleResultValid(v)],
+  ['population-evaluation.isVehicleResultSelectable', () => [okVehicleResult()],
+    (v) => isVehicleResultSelectable(v)],
+  ['population-evaluation.fitnessFromVehicleResult', () => [okVehicleResult()],
+    (v) => fitnessFromVehicleResult(v)],
+  ['population-evaluation.championFromEvaluation', () => [championEvaluation()],
+    (e) => championFromEvaluation(e)],
+  ['population-evaluation.selectableChampionFromEvaluation', () => [championEvaluation()],
+    (e) => selectableChampionFromEvaluation(e)],
+  ['trace.encodeTraceRecord', () => [chassisRecord()], (r) => encodeTraceRecord(r)],
+  ['trace.TraceWriter.record', () => [chassisRecord()], (r) => {
+    const w = new TraceWriter({ mode: 'digest', checkpointInterval: 1 });
+    w.record(r);
+    w.endStep(0);
+    return w.finish();
+  }],
+  ['trace.compareTraces', () => [fullTrace(), fullTrace()],
+    (a, b) => compareTraces(a, b)],
+  ['trace.compareCheckpoints', () => [checkpoints(), checkpoints()],
+    (a, b) => compareCheckpoints(a, b)],
+  // The DIVERGENT cases matter as much as the agreeing ones: the reporting
+  // branches are where a re-read prints values that were never compared, and
+  // an all-identical fixture never reaches them (a mutation that reported from
+  // the caller went undetected until these were added).
+  ['trace.compareCheckpoints (divergent — exercises the report path)',
+    () => {
+      const b = checkpoints();
+      b[1].state = 999;
+      return [checkpoints(), b];
+    },
+    (a, b) => compareCheckpoints(a, b)],
+  ['trace.compareCheckpoints (length mismatch)',
+    () => [checkpoints(), [checkpoints()[0]]],
+    (a, b) => compareCheckpoints(a, b)],
+  ['trace.compareTraces (divergent — exercises the report path)',
+    () => {
+      const b = fullTrace();
+      b.records[1] = encodeTraceRecord(chassisRecord(1, { linvel: { x: 42, y: 0, z: 0 } }));
+      return [fullTrace(), b];
+    },
+    (a, b) => compareTraces(a, b)],
+  ['trace-forensics.scaledThresholds',
+    () => [2, { alertSpeed: 25, catastrophicSpeed: 1000 }],
+    (f, t) => scaledThresholds(f, t)],
+  ['trace-forensics.bodyReachMetadataForIR', () => [compileAssembly(realizableGenotype())],
+    (ir) => bodyReachMetadataForIR(ir)],
+  ['trace-forensics.analyzeTrace', () => [fullTrace(), { captureDt: 1 / 60 }],
+    (t, o) => analyzeTrace(t, o)],
+  ['trace-forensics.offlineIntegrityView',
+    () => [analyzeTrace(fullTrace())],
+    (a) => offlineIntegrityView(a)],
+];
+
+describe('single-read invariant over the public surface', () => {
+  test.each(CASES)('%s reads every caller property at most once', (name, build, call) => {
+    const { counts, threw } = run(build, call);
+    if (threw) throw threw; // valid input must succeed
+    expect(multiReads(counts)).toEqual([]);
+  });
+});
+
+// --- The round-10 named regressions (poison getters) ------------------------
+//
+// Each reproduces the concrete reviewer finding: first read valid, second
+// read poison. With the invariant holding these poisons are UNREACHABLE —
+// asserted directly on top of the counting proof above.
+
+describe('round-10 poison regressions', () => {
+  test('F1: a valid-then-NaN gene getter cannot reach the genotype wire', () => {
+    const g = genotype();
+    const base = g.hue;
+    let reads = 0;
+    Object.defineProperty(g, 'hue', {
+      configurable: true,
+      get() { reads += 1; return reads === 1 ? base : NaN; },
+    });
+    const bytes = serializeGenotype(g);
+    expect(reads).toBe(1); // exactly one read: the validated one is the encoded one
+    const decoded = deserializeGenotype(bytes); // the decoder must accept encoder output
+    expect(Object.is(decoded.hue, base)).toBe(true);
+    expect(serializeGenotype(decoded)).toEqual(bytes); // re-encode byte-identical
+  });
+
+  test('F2: a valid-true-true-false validity getter cannot emit a contradictory member', () => {
+    let validReads = 0;
+    const evaluation = {
+      populationSnapshotDigestState: 1,
+      evaluationSpecDigestState: 2,
+      individuals: [{
+        individualId: 0,
+        get valid() { validReads += 1; return validReads < 3; },
+        integrityStatus: 'ok',
+        fitness: 1,
+      }],
+    };
+    const bytes = serializeFitnessVector(evaluation);
+    expect(validReads).toBe(1);
+    const decoded = deserializeFitnessVector(bytes); // must not be rejected
+    expect(decoded.individuals[0].valid).toBe(true);
+    expect(decoded.individuals[0].fitness).toBe(1);
+  });
+
+  test('F3: a valid-then-off-pad spawn.x getter cannot move the resolved spawn', () => {
+    // The public pure seam for the resolved-spawn shape: the encoder. (The
+    // execution seam, resolveSpec via evaluatePopulation, is covered by the
+    // same capture — its regression lives in tests/population-evaluation.test.js
+    // where the physics harness already runs.)
+    let reads = 0;
+    const spec = resolvedSpec();
+    Object.defineProperty(spec.spawn, 'x', {
+      configurable: true,
+      get() { reads += 1; return reads === 1 ? -44 : 100; },
+    });
+    const bytes = serializeEvaluationSpec(spec);
+    expect(reads).toBe(1);
+    // The encoded spawn.x is the validated one.
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // spawn.x is the first f64 after u16 version + u8 flag + u8 termination + u32 maxSteps.
+    expect(view.getFloat64(8, true)).toBe(-44);
+  });
+
+  test('F4: duplicate individualIds are refused by both selectors, in every order', () => {
+    const row = (tag) => ({
+      individualId: 3, valid: true, integrityStatus: 'ok', fitness: 10, diagnostics: { tag },
+    });
+    const a = row('a');
+    const b = row('b');
+    for (const individuals of [[a, b], [b, a]]) {
+      expect(() => championFromEvaluation({ individuals }))
+        .toThrow(/population-evaluation: .*duplicate/);
+      expect(() => selectableChampionFromEvaluation({ individuals }))
+        .toThrow(/population-evaluation: .*duplicate/);
+    }
+  });
+});

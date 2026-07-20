@@ -194,8 +194,17 @@ caller code even when borrowed from the prototype), plus an ownership-boundary
 suite that feeds shadowed geometry to every function accepting caller bytes and
 asserts the *result* is identical to the un-shadowed call, a seeded
 boundary-value round-trip harness, and a permutation-invariance check on the
-champion selectors. Each tooth was mutation-verified: revert the fix, watch it
-fail. No evolutionary behaviour is
+champion selectors. On top of that sits the **single-read invariant**: any
+caller-owned value used to validate, order, attest, encode or execute is
+captured once and every later operation reads the capture, so a value cannot be
+checked on one reading and used on another — enforced by a suite that
+instruments every own property of a caller input with a counting accessor and
+asserts at most one read per path, universal by construction rather than by
+enumeration. That closed an execution-constraint bypass (a spawn position
+approved on the flat pad and then *run* off it, with the digest attesting the
+position that never executed) and made duplicate individual ids a loud refusal
+in both champion selectors. Each tooth was mutation-verified: revert the fix,
+watch it fail. No evolutionary behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

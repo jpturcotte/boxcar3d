@@ -1514,7 +1514,65 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   the fix, watch it fail, restore.** Generalizable rule, since this cost three
   rounds: *a test written to reproduce the bug you found is not enforcement of
   the rule you wrote about it.*
-- Full suite green (50 files, 1046 tests), determinism gate green, pinned
+- **THE SINGLE-READ INVARIANT (review round 10 — the rule rounds 7–9 kept
+  fixing one site at a time).** Stated once, now enforced:
+  *any caller-owned value used to VALIDATE, ORDER, ATTEST, ENCODE or EXECUTE
+  must be captured into a module-owned local exactly once, and every
+  subsequent operation must use that capture.* The exploit vehicle is an
+  ORDINARY own accessor on a plain object or genuine Array — squarely inside
+  the round-8 ownership boundary (CODE vs DATA), not the excluded exotic
+  class. Round 9 already had the exact instrument that finds these (a counting
+  accessor asserting one read) and applied it to ONE function, because that is
+  where the reported finding was; ~40 exports went unchecked. **Enforcement
+  scoped to a round's MECHANISM is still enforcement written to the fix** —
+  that is the generalization of round 8's lesson, one notch up, and it is why
+  this round exists.
+  A 6-area sweep with adversarial skeptic verification found **39 confirmed,
+  7 refuted**, closing the four reported blockers and 35 more. Fix shapes, all
+  one move: `assembly.js` — `captureGenotype` is now THE ONE WALK (validate and
+  copy in the same pass; `cloneGenotype` is deleted, and `repairGenotype` /
+  `serializeGenotype` / `forEachGenotypeField` / `compileAssembly` all consume
+  the capture, since `validate(x)`-then-`clone(x)` let a `hue` getter answering
+  0.5 then 1e6 produce a REPAIRED genotype outside `[0,1]`, an IR with a 300 km
+  chassis half-extent, and a NaN on the wire the module's own decoder rejects);
+  `population.js` — the canonicality tooth serializes ONCE and repairs the
+  decoded copy, so it can no longer compare one reading against the repair of
+  another; `population-evaluation.js` — `captureVehicleResult` backs all three
+  fitness predicates (six reads of `bodies` became one), `resolveSpec` and
+  `serializeEvaluationSpec` capture every scalar and materialize every terrain
+  value, the fitness-vector preflight captures all four row fields BEFORE any
+  check, and `championCandidates` is one shared capture that also **refuses
+  duplicate individualIds** (both comparators tie-break on id, so duplicates
+  made the documented total order position-dependent — and the vector encoder's
+  strictly-ascending rule already rejected them: *a row that cannot be
+  SERIALIZED must not be RANKED*); `trace.js` — `validateRecord` returns a
+  frozen module-owned snapshot that the writer encodes AND derives its ordering
+  key from; `trace-forensics.js` — copy-on-intake for `perBody` and `records`
+  (`maxOf` also evaluated `sel(b).value` twice, so the value that won the
+  comparison need not have been the one stored).
+  **The blocker was an EXECUTION gate, not a codec seam:** `resolveSpec` read
+  `spawn.x` five times, so an accessor passed the flat-pad guard at −44 and the
+  vehicle RAN at x=100, off-pad, with the spec digest attesting the position
+  that never executed.
+  **`tests/single-read.test.js` is the enforcement, universal by construction
+  rather than by enumeration:** it deep-instruments every own property of a
+  caller input with a counting accessor and asserts ≤1 read per path, table-
+  driven over the public surface — so a new export or a new field is covered
+  without anyone remembering to add it. A property read at most once cannot be
+  lied to, which is why the tooth needs no knowledge of what any function does.
+  Declared non-exemptions: a genuine Array's `length` is a non-configurable own
+  DATA property and cannot lie (exempt BY THE LANGUAGE, not by choice);
+  TypedArray byte geometry stays round-8's concern; and the adapter's placement
+  planner keeps its "trusts compiler-owned IRs" ruling — `spawnPoseOnFlatStart`
+  closes that at ITS OWN boundary via `ownPlainData` instead of pushing the rule
+  into the realizer. **All 14 mutations bite**, including two teeth added only
+  because a mutation was silent: `compareCheckpoints`/`compareTraces` needed
+  DIVERGENT fixtures (identical inputs never reach the reporting branch, where a
+  re-read prints values that were never compared), and `resolveSpec`'s
+  regression had to live in `tests/population-evaluation.test.js` because it is
+  private and reachable only through physics — *a fix no test can redden is not
+  a fix.*
+- Full suite green (51 files, 1089 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant

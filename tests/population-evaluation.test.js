@@ -710,6 +710,40 @@ describe('evaluatePopulation (deterministic flavor)', () => {
     expect(bytesEqual(dirty.fitnessVector.bytes, clean.fitnessVector.bytes)).toBe(true);
   });
 
+  // ROUND-10 BLOCKER REGRESSION (the single-read invariant at an EXECUTION
+  // gate, not a codec seam). resolveSpec read `spawn.x` five times — the
+  // finiteness guard, both flat-pad comparisons, the error template, and the
+  // resolved spec it returns. An ordinary own accessor answering the on-pad
+  // -45 for the first reads and 100 afterwards therefore PASSED the flat-pad
+  // guard and the evaluation then RAN at x=100, off the pad, with the fitness
+  // vector's spec digest attesting the position that never executed.
+  //
+  // The invariant makes the poison unreachable: exactly one read, so the
+  // executed spawn is the validated spawn. This lives here rather than in
+  // tests/single-read.test.js because resolveSpec is private and reachable
+  // only through the physics path — the pure suite could not have caught it,
+  // and a fix no test can redden is not a fix.
+  test('resolveSpec executes the spawn.x it validated, never a later reading', { timeout: 240000 }, async () => {
+    let reads = 0;
+    const spawn = {
+      get x() { reads += 1; return reads === 1 ? -45 : 100; },
+      z: 0,
+    };
+    const ev = await evaluatePopulation(
+      popOf(member(5, s0PlainGenotype())),
+      { ...baseSpec(), spawn },
+    );
+    expect(reads).toBe(1);
+    expect(ev.spec.spawn.x).toBe(-45);
+    // And the attestation binds the executed position: the same evaluation
+    // with a plain -45 spawn produces the identical spec digest.
+    const control = await evaluatePopulation(
+      popOf(member(5, s0PlainGenotype())),
+      { ...baseSpec(), spawn: { x: -45, z: 0 } },
+    );
+    expect(ev.fitnessVector.digest).toBe(control.fitnessVector.digest);
+  });
+
   test('a zero-axle sled imported into a population evaluates as a valid ~0-fitness individual', { timeout: 240000 }, async () => {
     const ev = await evaluatePopulation(popOf(member(2, sledGenotype())), baseSpec());
     const sled = ev.individuals[0];

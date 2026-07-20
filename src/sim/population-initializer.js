@@ -87,7 +87,7 @@ import {
   compileAssembly, serializeGenotype,
 } from './assembly.js';
 import {
-  POPULATION_SNAPSHOT_VERSION, bytesEqual, isCanonicalUint32, serializePopulationSnapshot,
+  POPULATION_SNAPSHOT_VERSION, attestPopulation, bytesEqual, isCanonicalUint32,
 } from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import { createByteReader } from './bytes.js';
@@ -306,12 +306,21 @@ export function createInitialPopulation(config, options = {}) {
 // resolveSpecDigestState (population-evaluation.js) is the same ruling in the
 // same shape — extracted here too so the two read as one policy rather than
 // one policy and one inline special case.
-function resolvePopulationDigestState(initialization, cfg) {
+// `population` is captured by the CALLER (serializePopulationInitialization)
+// and passed in, so the object whose presence selects this branch is the object
+// that is serialized and counted. It used to be read three times — the
+// undefined check, the snapshot call, and the size guard — with `.individuals`
+// read twice more inside the guard's own message.
+function resolvePopulationDigestState(initialization, cfg, population) {
   const declared = initialization.populationSnapshotDigestState;
-  if (initialization.population !== undefined) {
-    const snapshotBytes = serializePopulationSnapshot(initialization.population);
-    if (initialization.population.individuals.length !== cfg.populationSize) {
-      fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+  if (population !== undefined) {
+    // attestPopulation is the single-walk seam: one reading of the caller's
+    // population yields both the canonical bytes and the members they
+    // describe, so the count guarded below and the bytes folded into the
+    // digest cannot come from two different readings.
+    const { individuals, bytes: snapshotBytes } = attestPopulation(population);
+    if (individuals.length !== cfg.populationSize) {
+      fail('initialization.population.individuals.length', `${individuals.length} !== populationSize ${cfg.populationSize}`);
     }
     const state = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
     if (declared !== undefined && declared !== state) {
@@ -329,16 +338,32 @@ function resolvePopulationDigestState(initialization, cfg) {
 /** Serialize the provenance manifest (see the encoding walk above). */
 export function serializePopulationInitialization(initialization) {
   if (typeof initialization !== 'object' || initialization === null) fail('initialization', initialization);
-  if (initialization.initializerVersion !== POPULATION_INITIALIZER_VERSION) {
-    fail('initialization.initializerVersion', initialization.initializerVersion);
+  // Capture every consumed field once. `config`, `config.seed`, `seed` and
+  // `population` were each read two to five times across the version check,
+  // the agreement guard, its error message, the resolveConfig spread and the
+  // digest branch — so the manifest could be validated against one provenance
+  // and encoded from another.
+  const initializerVersion = initialization.initializerVersion;
+  if (initializerVersion !== POPULATION_INITIALIZER_VERSION) {
+    fail('initialization.initializerVersion', initializerVersion);
   }
-  if (initialization.config === null || typeof initialization.config !== 'object') {
-    fail('initialization.config', initialization.config);
+  const config = initialization.config;
+  if (config === null || typeof config !== 'object') {
+    fail('initialization.config', config);
   }
-  if (Object.hasOwn(initialization.config, 'seed') && initialization.config.seed !== initialization.seed) {
-    fail('initialization.seed', `${initialization.seed} disagrees with config.seed ${initialization.config.seed}`);
+  const seed = initialization.seed;
+  const population = initialization.population;
+  // ONE spread reads every config property once; the agreement check and the
+  // resolver both consume that module-owned copy. Reading `config.seed`
+  // explicitly AND spreading `config` was two readings of the same property —
+  // the manifest could agree with one seed and be built from another.
+  const configCopy = { ...config };
+  const hasConfigSeed = Object.hasOwn(config, 'seed');
+  const configSeed = configCopy.seed;
+  if (hasConfigSeed && configSeed !== seed) {
+    fail('initialization.seed', `${seed} disagrees with config.seed ${configSeed}`);
   }
-  const cfg = resolveConfig({ ...initialization.config, seed: initialization.seed });
+  const cfg = resolveConfig({ ...configCopy, seed });
   // Wire representability: populationSize is a u32. resolveConfig bounds it
   // below (>= 1) but not above, and the digest-only path below has no
   // population array whose length would implicitly bound it — so without this
@@ -349,7 +374,7 @@ export function serializePopulationInitialization(initialization) {
   if (cfg.populationSize > 0xffffffff) {
     fail('populationSize', `${cfg.populationSize} exceeds the u32 wire bound (4294967295)`);
   }
-  const snapshotState = resolvePopulationDigestState(initialization, cfg);
+  const snapshotState = resolvePopulationDigestState(initialization, cfg, population);
   const cats = cfg.initialSuspensionTypes;
   // Read the count ONCE and resolve every category to its wire index BEFORE
   // allocating, so the count byte, the buffer, and the payload come from one

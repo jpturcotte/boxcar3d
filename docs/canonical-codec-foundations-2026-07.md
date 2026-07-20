@@ -484,6 +484,73 @@ written to reproduce the bug you found is not enforcement of the rule you wrote
 about it.** Assert the rule, on values, over the whole surface it claims — and
 prove the assertion bites by reverting the fix and watching it fail.
 
+## The single-read invariant (round 10)
+
+The lesson above was learned one notch too low. Every rule in the table is
+enforced over the surface it claims — but each was written to a round's
+**mechanism** (shadowed TypedArray geometry; then a read-count tooth on one
+champion helper), and a mechanism is not an invariant. Round 9 possessed the
+precise instrument that finds this round's four blockers — a counting accessor
+asserting a single read — and pointed it at the one function the review had
+named, leaving ~40 exports unexamined. *Enforcement scoped to the mechanism is
+still enforcement written to the fix.*
+
+The invariant, stated once:
+
+> Any caller-owned value used to **validate, order, attest, encode, or execute**
+> must be captured into a module-owned local exactly once, and every subsequent
+> operation must use that capture.
+
+The exploit vehicle is an ordinary own accessor on a plain object or a genuine
+Array — inside the CODE-vs-DATA boundary settled above, not the excluded exotic
+class. A 6-area sweep with adversarial verification returned **39 confirmed, 7
+refuted**. Representative outcomes, all reproduced:
+
+| seam | validated | used |
+|---|---|---|
+| `repairGenotype` / `compileAssembly` | `hue` = 0.5 | `hue` = 1e6 → a *repaired* genotype outside `[0,1]`, an IR with a 300 km chassis half-extent, all finite so nothing failed loud |
+| `serializeGenotype` | a finite gene | `NaN` on the wire — bytes its own decoder rejects |
+| `serializeFitnessVector` | `valid: true` | `valid: false` carrying fitness 1 — a member combination the decoder refuses |
+| `resolveSpec` | `spawn.x = -44`, on-pad | executed at `x = 100`, **off-pad**, with the spec digest attesting the position that never ran |
+| both champion selectors | — | duplicate `individualId` made the documented total order position-dependent |
+
+The last two are the important ones. `resolveSpec` is an **execution** gate, not
+a codec seam: the flat-pad guard is a physical constraint, and it was bypassed.
+And duplicate ids are already outside the fitness vector's domain (its
+strictly-ascending id rule rejects them), which fixes the principle: **a row that
+cannot be serialized must not be ranked.**
+
+Every fix is the same move — capture once, then read only the capture.
+`captureGenotype` became THE ONE WALK (validate and copy in a single pass;
+`cloneGenotype` is gone, since `validate(x)` followed by `clone(x)` is by
+definition two readings backing one attestation). `validateRecord` returns a
+frozen module-owned snapshot. `capturePerBody` and `captureVehicleResult` do the
+same for the forensic and fitness paths.
+
+`tests/single-read.test.js` is the enforcement, and it is **universal by
+construction rather than by enumeration**: it deep-instruments every own
+property of a caller input with a counting accessor and asserts ≤1 read per
+path, table-driven over the public surface. A property read at most once cannot
+be lied to — so the tooth needs no knowledge of what any function does with the
+value, and a new export or a new field is covered without anyone remembering to
+add it.
+
+Three exemptions, each a decision rather than a gap: a genuine Array's `length`
+is a non-configurable own **data** property and cannot be made to lie (exempt by
+the language); TypedArray byte geometry remains the round-8 suite's concern; and
+the adapter's placement planner keeps its standing "trusts compiler-owned IRs"
+ruling — `spawnPoseOnFlatStart` closes that at **its own** boundary with
+`ownPlainData` rather than pushing the invariant into the physics realizer.
+
+All 14 mutations bite. Two teeth exist only because a mutation was *silent*:
+`compareCheckpoints` and `compareTraces` needed **divergent** fixtures, since
+identical inputs never reach the reporting branch — exactly where a re-read
+prints values that were never compared; and `resolveSpec`'s regression had to
+live in `tests/population-evaluation.test.js`, because it is private and
+reachable only through the physics path. **A fix no test can redden is not a
+fix** — the corollary to the lesson above, and the reason the mutation pass is
+run against every tooth rather than a sample.
+
 ## Binary identity vs the JSON envelope
 
 The canonical bytes **are** the identity. FNV digests are folded over them and

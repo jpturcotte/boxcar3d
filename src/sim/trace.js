@@ -120,19 +120,38 @@ function checkFlag(v, path) {
   if (typeof v !== 'boolean') fail(path, v);
 }
 
-function checkVector(rec, key) {
+// Capture one vector's components by index into a module-owned object.
+function captureVector(rec, key) {
   const vec = rec[key];
   if (typeof vec !== 'object' || vec === null) fail(key, vec);
   const want = VECTOR_KEYS[key];
   for (const k of Object.keys(vec)) {
     if (!want.includes(k)) fail(`${key}.${k}`, 'unknown key');
   }
+  const out = {};
   for (const k of want) {
+    const v = vec[k];
     // NaN / ±Infinity ACCEPTED — that is what finiteState records.
-    if (typeof vec[k] !== 'number') fail(`${key}.${k}`, vec[k]);
+    if (typeof v !== 'number') fail(`${key}.${k}`, v);
+    out[k] = v;
   }
+  return out;
 }
 
+/**
+ * Validate a caller record and return a MODULE-OWNED frozen snapshot of it.
+ *
+ * Every field is read exactly once, here, and the encoder writes from the
+ * snapshot. The former shape validated the caller's object and then let
+ * `encodeTraceRecord` dereference it a second time for each write — measured
+ * two-to-six reads per field — so an accessor could satisfy every check and
+ * then put something else in the stream. That mattered most where the record
+ * is self-describing: a `linvel.x` that turned NaN after its `typeof number`
+ * check produced a record whose `finiteState` byte says finite, and a
+ * `bodyRole`/`terminated` substitution produced streams this module's own
+ * `decodeTraceRecord` rejects. The digest is folded over those bytes, so the
+ * trace would attest a step that never occurred.
+ */
 function validateRecord(rec) {
   if (typeof rec !== 'object' || rec === null) fail('record', rec);
   // Unknown keys rejected — the structural no-handles / no-timestamps tooth:
@@ -140,33 +159,59 @@ function validateRecord(rec) {
   for (const k of Object.keys(rec)) {
     if (!RECORD_KEYS.includes(k)) fail(k, 'unknown key');
   }
-  checkUint(rec.stepIndex, MAX_STEP_INDEX, 'stepIndex');
-  checkUint(rec.vehicleIndex, MAX_VEHICLE_INDEX, 'vehicleIndex');
-  if (!BODY_ROLES.includes(rec.bodyRole)) fail('bodyRole', rec.bodyRole);
-  if (rec.axleIndex !== null) checkUint(rec.axleIndex, MAX_AXLE_INDEX, 'axleIndex');
-  if (rec.wheelIndex !== null) checkUint(rec.wheelIndex, MAX_WHEEL_INDEX, 'wheelIndex');
-  if (!JOINT_STATES.includes(rec.jointState)) fail('jointState', rec.jointState);
-  if (!TERMINATION_REASONS.includes(rec.terminationReason)) fail('terminationReason', rec.terminationReason);
-  checkFlag(rec.bodyValid, 'bodyValid');
-  checkFlag(rec.bodySleeping, 'bodySleeping');
-  checkFlag(rec.terminated, 'terminated');
-  checkFlag(rec.finiteState, 'finiteState');
+  const stepIndex = rec.stepIndex;
+  const vehicleIndex = rec.vehicleIndex;
+  const bodyRole = rec.bodyRole;
+  const axleIndex = rec.axleIndex;
+  const wheelIndex = rec.wheelIndex;
+  const jointState = rec.jointState;
+  const terminationReason = rec.terminationReason;
+  const bodyValid = rec.bodyValid;
+  const bodySleeping = rec.bodySleeping;
+  const terminated = rec.terminated;
+  const finiteState = rec.finiteState;
+  checkUint(stepIndex, MAX_STEP_INDEX, 'stepIndex');
+  checkUint(vehicleIndex, MAX_VEHICLE_INDEX, 'vehicleIndex');
+  if (!BODY_ROLES.includes(bodyRole)) fail('bodyRole', bodyRole);
+  if (axleIndex !== null) checkUint(axleIndex, MAX_AXLE_INDEX, 'axleIndex');
+  if (wheelIndex !== null) checkUint(wheelIndex, MAX_WHEEL_INDEX, 'wheelIndex');
+  if (!JOINT_STATES.includes(jointState)) fail('jointState', jointState);
+  if (!TERMINATION_REASONS.includes(terminationReason)) fail('terminationReason', terminationReason);
+  checkFlag(bodyValid, 'bodyValid');
+  checkFlag(bodySleeping, 'bodySleeping');
+  checkFlag(terminated, 'terminated');
+  checkFlag(finiteState, 'finiteState');
   // Role-conditional shape: the chassis is the only station-less body, and
   // the only body whose joint slot may be empty (a zero-joint sled).
-  if (rec.bodyRole === 'chassis') {
-    if (rec.axleIndex !== null) fail('axleIndex', `${rec.axleIndex} (chassis carries no station)`);
-    if (rec.wheelIndex !== null) fail('wheelIndex', `${rec.wheelIndex} (chassis carries no station)`);
+  if (bodyRole === 'chassis') {
+    if (axleIndex !== null) fail('axleIndex', `${axleIndex} (chassis carries no station)`);
+    if (wheelIndex !== null) fail('wheelIndex', `${wheelIndex} (chassis carries no station)`);
   } else {
-    if (rec.axleIndex === null) fail('axleIndex', 'null (station body requires an axle)');
-    if (rec.wheelIndex === null) fail('wheelIndex', 'null (station body requires a wheel)');
-    if (rec.jointState === 'notApplicable') {
+    if (axleIndex === null) fail('axleIndex', 'null (station body requires an axle)');
+    if (wheelIndex === null) fail('wheelIndex', 'null (station body requires a wheel)');
+    if (jointState === 'notApplicable') {
       fail('jointState', 'notApplicable (every hub has its prismatic, every wheel its revolute)');
     }
   }
   // Termination coherence.
-  if (rec.terminated === false && rec.terminationReason !== 'none') fail('terminationReason', rec.terminationReason);
-  if (rec.terminated === true && rec.terminationReason === 'none') fail('terminationReason', 'none (terminated record needs a reason)');
-  for (const key of Object.keys(VECTOR_KEYS)) checkVector(rec, key);
+  if (terminated === false && terminationReason !== 'none') fail('terminationReason', terminationReason);
+  if (terminated === true && terminationReason === 'none') fail('terminationReason', 'none (terminated record needs a reason)');
+  const vectors = {};
+  for (const key of Object.keys(VECTOR_KEYS)) vectors[key] = captureVector(rec, key);
+  return Object.freeze({
+    stepIndex,
+    vehicleIndex,
+    bodyRole,
+    axleIndex,
+    wheelIndex,
+    jointState,
+    terminationReason,
+    bodyValid,
+    bodySleeping,
+    terminated,
+    finiteState,
+    ...vectors,
+  });
 }
 
 // --- Codec -------------------------------------------------------------------
@@ -187,34 +232,42 @@ function writeF64(view, offset, v) {
  * fully; `out` must be exactly RECORD_BYTES. Returns `out`.
  */
 export function encodeTraceRecord(rec, out = new Uint8Array(RECORD_BYTES)) {
-  validateRecord(rec);
+  // `r` is the module-owned snapshot; the caller's `rec` is never read again.
+  return writeValidatedRecord(validateRecord(rec), out);
+}
+
+// The byte walk, over an already-validated module-owned snapshot. Split out so
+// TraceWriter can encode AND derive its ordering key from the same snapshot
+// instead of re-reading the caller's record (which let the bytes in the digest
+// and the order they were checked against describe different records).
+function writeValidatedRecord(r, out) {
   if (!(out instanceof Uint8Array) || taByteLength(out) !== RECORD_BYTES) fail('out', out);
   const view = taView(out);
-  view.setUint32(0, rec.stepIndex, true);
-  view.setUint32(4, rec.vehicleIndex, true);
-  view.setUint32(8, rec.axleIndex === null ? NO_INDEX : rec.axleIndex, true);
-  view.setUint32(12, rec.wheelIndex === null ? NO_INDEX : rec.wheelIndex, true);
-  view.setUint8(16, BODY_ROLES.indexOf(rec.bodyRole));
-  view.setUint8(17, rec.bodyValid ? 1 : 0);
-  view.setUint8(18, rec.bodySleeping ? 1 : 0);
-  view.setUint8(19, JOINT_STATES.indexOf(rec.jointState));
-  view.setUint8(20, rec.terminated ? 1 : 0);
-  view.setUint8(21, TERMINATION_REASONS.indexOf(rec.terminationReason));
-  view.setUint8(22, rec.finiteState ? 1 : 0);
+  view.setUint32(0, r.stepIndex, true);
+  view.setUint32(4, r.vehicleIndex, true);
+  view.setUint32(8, r.axleIndex === null ? NO_INDEX : r.axleIndex, true);
+  view.setUint32(12, r.wheelIndex === null ? NO_INDEX : r.wheelIndex, true);
+  view.setUint8(16, BODY_ROLES.indexOf(r.bodyRole));
+  view.setUint8(17, r.bodyValid ? 1 : 0);
+  view.setUint8(18, r.bodySleeping ? 1 : 0);
+  view.setUint8(19, JOINT_STATES.indexOf(r.jointState));
+  view.setUint8(20, r.terminated ? 1 : 0);
+  view.setUint8(21, TERMINATION_REASONS.indexOf(r.terminationReason));
+  view.setUint8(22, r.finiteState ? 1 : 0);
   view.setUint8(23, 0);
-  writeF64(view, 24, rec.translation.x);
-  writeF64(view, 32, rec.translation.y);
-  writeF64(view, 40, rec.translation.z);
-  writeF64(view, 48, rec.rotation.x);
-  writeF64(view, 56, rec.rotation.y);
-  writeF64(view, 64, rec.rotation.z);
-  writeF64(view, 72, rec.rotation.w);
-  writeF64(view, 80, rec.linvel.x);
-  writeF64(view, 88, rec.linvel.y);
-  writeF64(view, 96, rec.linvel.z);
-  writeF64(view, 104, rec.angvel.x);
-  writeF64(view, 112, rec.angvel.y);
-  writeF64(view, 120, rec.angvel.z);
+  writeF64(view, 24, r.translation.x);
+  writeF64(view, 32, r.translation.y);
+  writeF64(view, 40, r.translation.z);
+  writeF64(view, 48, r.rotation.x);
+  writeF64(view, 56, r.rotation.y);
+  writeF64(view, 64, r.rotation.z);
+  writeF64(view, 72, r.rotation.w);
+  writeF64(view, 80, r.linvel.x);
+  writeF64(view, 88, r.linvel.y);
+  writeF64(view, 96, r.linvel.z);
+  writeF64(view, 104, r.angvel.x);
+  writeF64(view, 112, r.angvel.y);
+  writeF64(view, 120, r.angvel.z);
   return out;
 }
 
@@ -325,15 +378,20 @@ export class TraceWriter {
   record(rec) {
     if (this.#finished) writerFail('record() after finish()', this.#mode);
     if (this.#mode === 'none') return;
-    encodeTraceRecord(rec, this.#scratch); // validates fully
-    if (rec.stepIndex <= this.#lastEndedStep) {
-      writerFail(`record for already-ended step ${rec.stepIndex}`, `lastEndedStep ${this.#lastEndedStep}`);
+    // ONE snapshot backs the bytes, the already-ended-step guard, the
+    // canonical-ordering key and maxSeenStep. Re-reading `rec` after encoding
+    // let the ordering invariant be enforced against a different record than
+    // the one folded into the digest.
+    const r = validateRecord(rec);
+    writeValidatedRecord(r, this.#scratch);
+    if (r.stepIndex <= this.#lastEndedStep) {
+      writerFail(`record for already-ended step ${r.stepIndex}`, `lastEndedStep ${this.#lastEndedStep}`);
     }
     const key = [
-      rec.stepIndex, rec.vehicleIndex,
-      rec.axleIndex === null ? -1 : rec.axleIndex,
-      rec.wheelIndex === null ? -1 : rec.wheelIndex,
-      BODY_ROLES.indexOf(rec.bodyRole),
+      r.stepIndex, r.vehicleIndex,
+      r.axleIndex === null ? -1 : r.axleIndex,
+      r.wheelIndex === null ? -1 : r.wheelIndex,
+      BODY_ROLES.indexOf(r.bodyRole),
     ];
     if (this.#lastKey !== null) {
       let cmp = 0;
@@ -343,7 +401,7 @@ export class TraceWriter {
       }
     }
     this.#lastKey = key;
-    if (rec.stepIndex > this.#maxSeenStep) this.#maxSeenStep = rec.stepIndex;
+    if (r.stepIndex > this.#maxSeenStep) this.#maxSeenStep = r.stepIndex;
     this.#state = fnv1aFold(this.#state, this.#scratch);
     this.#recordCount += 1;
     this.#byteCount += RECORD_BYTES;
@@ -465,12 +523,18 @@ function compareFail(what, value) {
   throw new Error(`trace: compare ${what} (${String(value)})`);
 }
 
+// Capture the three fields of one comparison side ONCE. The reported
+// version/recordBytes must be the values that were checked, and the records
+// walked must be the array whose length was counted.
 function normalizeRecords(side, label) {
   if (typeof side !== 'object' || side === null) compareFail(`invalid ${label}`, side);
-  if (!Number.isInteger(side.version)) compareFail(`${label}.version missing`, side.version);
-  if (!Number.isInteger(side.recordBytes)) compareFail(`${label}.recordBytes missing`, side.recordBytes);
-  if (!Array.isArray(side.records)) compareFail(`${label}.records missing (full-capture input required)`, side.records);
-  return side.records;
+  const version = side.version;
+  const recordBytes = side.recordBytes;
+  const records = side.records;
+  if (!Number.isInteger(version)) compareFail(`${label}.version missing`, version);
+  if (!Number.isInteger(recordBytes)) compareFail(`${label}.recordBytes missing`, recordBytes);
+  if (!Array.isArray(records)) compareFail(`${label}.records missing (full-capture input required)`, records);
+  return { version, recordBytes, records };
 }
 
 /**
@@ -485,17 +549,19 @@ function normalizeRecords(side, label) {
  * differing quaternion signs ARE divergences.
  */
 export function compareTraces(expected, actual) {
-  const expRecords = normalizeRecords(expected, 'expected');
-  const actRecords = normalizeRecords(actual, 'actual');
+  const exp = normalizeRecords(expected, 'expected');
+  const act = normalizeRecords(actual, 'actual');
+  const expRecords = exp.records;
+  const actRecords = act.records;
   const counts = { expectedCount: expRecords.length, actualCount: actRecords.length };
-  if (expected.version !== actual.version) {
-    return { kind: 'versionMismatch', ...counts, expected: expected.version, actual: actual.version };
+  if (exp.version !== act.version) {
+    return { kind: 'versionMismatch', ...counts, expected: exp.version, actual: act.version };
   }
-  if (expected.recordBytes !== actual.recordBytes
-    || expected.recordBytes !== RECORD_BYTES || actual.recordBytes !== RECORD_BYTES) {
+  if (exp.recordBytes !== act.recordBytes
+    || exp.recordBytes !== RECORD_BYTES || act.recordBytes !== RECORD_BYTES) {
     return {
       kind: 'recordSizeMismatch', ...counts, index: null,
-      expected: expected.recordBytes, actual: actual.recordBytes,
+      expected: exp.recordBytes, actual: act.recordBytes,
     };
   }
   const toBytes = (entry, index, label) => {
@@ -563,35 +629,58 @@ export function compareTraces(expected, actual) {
  * expected, actual }` — with interval 1 the first bad step exactly, with
  * interval N an N-step block for a bounded full-capture re-run.
  */
+const CHECKPOINT_FIELDS = Object.freeze(['stepIndex', 'recordCount', 'byteCount', 'state']);
+
+// Copy-on-intake by index: each entry's four canonical fields are read ONCE
+// into a module-owned row. The comparison, the reported expected/actual rows,
+// firstDifferingStepIndex and lastAgreedStepIndex then all describe the same
+// reading — a divergence report that re-read the caller could otherwise print
+// values that were never compared. (`length` on an Array.isArray-gated input is
+// a non-configurable own data property and cannot lie.)
+function snapshotCheckpoints(side, label) {
+  if (!Array.isArray(side)) compareFail(`invalid ${label} checkpoints`, side);
+  const rows = [];
+  for (let i = 0; i < side.length; i += 1) {
+    const entry = side[i];
+    if (typeof entry !== 'object' || entry === null) compareFail(`invalid ${label} checkpoint[${i}]`, entry);
+    const row = {};
+    for (let k = 0; k < CHECKPOINT_FIELDS.length; k += 1) {
+      row[CHECKPOINT_FIELDS[k]] = entry[CHECKPOINT_FIELDS[k]];
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 export function compareCheckpoints(expected, actual) {
-  if (!Array.isArray(expected)) compareFail('invalid expected checkpoints', expected);
-  if (!Array.isArray(actual)) compareFail('invalid actual checkpoints', actual);
-  const n = Math.min(expected.length, actual.length);
-  const lastAgreed = (i) => (i > 0 ? expected[i - 1].stepIndex : null);
+  const exp = snapshotCheckpoints(expected, 'expected');
+  const act = snapshotCheckpoints(actual, 'actual');
+  const n = Math.min(exp.length, act.length);
+  const lastAgreed = (i) => (i > 0 ? exp[i - 1].stepIndex : null);
   for (let i = 0; i < n; i += 1) {
-    for (const fieldName of ['stepIndex', 'recordCount', 'byteCount', 'state']) {
-      const e = expected[i][fieldName];
-      const a = actual[i][fieldName];
+    for (const fieldName of CHECKPOINT_FIELDS) {
+      const e = exp[i][fieldName];
+      const a = act[i][fieldName];
       if (e === undefined || a === undefined || e === a) continue;
       return {
         checkpointIndex: i,
         reason: fieldName,
         lastAgreedStepIndex: lastAgreed(i),
-        firstDifferingStepIndex: expected[i].stepIndex ?? actual[i].stepIndex ?? null,
-        expected: expected[i],
-        actual: actual[i],
+        firstDifferingStepIndex: exp[i].stepIndex ?? act[i].stepIndex ?? null,
+        expected: exp[i],
+        actual: act[i],
       };
     }
   }
-  if (expected.length !== actual.length) {
-    const longer = expected.length > actual.length ? expected : actual;
+  if (exp.length !== act.length) {
+    const longer = exp.length > act.length ? exp : act;
     return {
       checkpointIndex: n,
       reason: 'length',
       lastAgreedStepIndex: lastAgreed(n),
       firstDifferingStepIndex: longer[n].stepIndex ?? null,
-      expected: expected[n] ?? null,
-      actual: actual[n] ?? null,
+      expected: exp[n] ?? null,
+      actual: act[n] ?? null,
     };
   }
   return null;

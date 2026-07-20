@@ -52,6 +52,13 @@
 
 import { describe, test, expect } from 'vitest';
 import { Rng } from '../src/sim/prng.js';
+import * as AssemblyNS from '../src/sim/assembly.js';
+import * as PopulationNS from '../src/sim/population.js';
+import * as InitializerNS from '../src/sim/population-initializer.js';
+import * as EvaluationNS from '../src/sim/population-evaluation.js';
+import * as IntegrityNS from '../src/sim/integrity.js';
+import * as TraceNS from '../src/sim/trace.js';
+import * as ForensicsNS from '../src/sim/trace-forensics.js';
 import {
   hubMassProperties, randomGenotype, repairGenotype, compileAssembly,
   validateGenotype, serializeGenotype, deserializeGenotype, forEachGenotypeField,
@@ -399,6 +406,84 @@ describe('single-read invariant over the public surface', () => {
     const { counts, threw } = run(build, call);
     if (threw) throw threw; // valid input must succeed
     expect(multiReads(counts)).toEqual([]);
+  });
+});
+
+// F9: the INSTRUMENT is universal over an input's own properties, but the input
+// SET (CASES) is a curated table — a new export does NOT get instrumentation
+// automatically. This tooth makes the enumeration DERIVED and enforced: every
+// function export of the caller-data modules is either covered by a single-read
+// mechanism (a CASES/LOOP_BOUND row or a dedicated test) or exempt with a stated
+// reason. A new export fails here until classified — closing the "21 exports
+// unrowed" gap the break-it sweep named.
+const NS = { assembly: AssemblyNS, population: PopulationNS, initializer: InitializerNS,
+  evaluation: EvaluationNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS };
+
+// Function exports that consume caller DATA but are covered outside the CASES
+// table (a dedicated describe block above) or need no single-read coverage.
+const SINGLE_READ_COVERAGE = Object.freeze({
+  // dedicated tests in this file
+  compareTraces: 'dedicated: sibling-record byte-poison + loop-bound rows',
+  compareCheckpoints: 'CASES + loop-bound rows',
+  foldIntegrity: 'CASES + loop-bound + field-guard rows',
+  analyzeTrace: 'loop-bound rows (records + bodies)',
+  offlineIntegrityView: 'loop-bound row (perBody)',
+  bodyReachMetadataForIR: 'malformed-collections + loop-bound rows',
+  spawnPoseOnFlatStart: 'CASES + malformed-collections + loop-bound rows',
+  // no caller-DATA object: reads numbers/bytes/handles the instrument skips
+  deserializeGenotype: 'exempt: decodes a TypedArray (byte family, not plain data)',
+  deserializePopulationSnapshot: 'exempt: TypedArray input',
+  deserializePopulationInitialization: 'exempt: TypedArray input',
+  deserializeEvaluationSpec: 'exempt: TypedArray input',
+  deserializeFitnessVector: 'exempt: TypedArray input',
+  decodeTraceRecord: 'exempt: TypedArray input',
+  encodeTraceRecord: 'exempt: covered by trace.TraceWriter.record CASES row',
+  TraceWriter: 'CASES row (trace.TraceWriter.record)',
+  hubMassProperties: 'CASES row',
+  fitnessFromVehicleResult: 'CASES row',
+  isVehicleResultValid: 'CASES row',
+  isVehicleResultSelectable: 'CASES row',
+  scaledThresholds: 'CASES row',
+  createIntegrityState: 'exempt: reads two scalars, no caller object',
+  finalizeIntegrity: 'exempt: reads module-owned state',
+  norm3: 'exempt: reads {x,y,z} numbers only',
+  norm3xyz: 'exempt: three scalar args',
+  dist3: 'exempt: two {x,y,z} vectors of numbers',
+  createProgressState: 'exempt: no args',
+  foldProgress: 'exempt: reads one number',
+  readBodyState: 'exempt: Rapier handle, not caller data',
+  randomGenotype: 'exempt: rng injection contract (documented)',
+  sampleInitialGenotype: 'exempt: rng injection contract (documented)',
+  runEvaluation: 'exempt: physics (tests/evaluation.test.js)',
+  runRealizedEvaluationLoop: 'exempt: physics',
+  evaluatePopulation: 'exempt: physics (tests/population-evaluation.test.js)',
+  createByteReader: 'exempt: TypedArray reader (tests/ownership-boundary.test.js)',
+  typedArrayByteLength: 'exempt: TypedArray input',
+  bytesToHex: 'exempt: TypedArray input',
+  hexToBytes: 'exempt: string input',
+  fnv1aFold: 'exempt: TypedArray input',
+  fnv1aHex: 'exempt: number input',
+  fnv1aHexOf: 'exempt: number input',
+  genotypeFieldWalk: 'exempt: number arg (axleCount)',
+  genotypeByteLength: 'exempt: number arg',
+  wheelMass: 'exempt: three scalar args (radius, width, density)',
+  isCanonicalUint32: 'exempt: one scalar arg',
+  bytesEqual: 'exempt: two TypedArrays (byte family, ownership-boundary battery)',
+});
+
+const casesCovered = new Set(CASES.map(([name]) => name.split(' ')[0].split('.').pop()));
+
+describe('single-read coverage is derived from the export surface, not hand-picked (F9)', () => {
+  test('every caller-data function export is covered by a single-read mechanism or exempt', () => {
+    const uncovered = [];
+    for (const ns of Object.values(NS)) {
+      for (const [name, value] of Object.entries(ns)) {
+        if (typeof value !== 'function') continue;
+        if (casesCovered.has(name) || Object.prototype.hasOwnProperty.call(SINGLE_READ_COVERAGE, name)) continue;
+        uncovered.push(name);
+      }
+    }
+    expect(uncovered, 'add a CASES row or a SINGLE_READ_COVERAGE entry with a reason').toEqual([]);
   });
 });
 

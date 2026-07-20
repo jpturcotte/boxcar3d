@@ -199,8 +199,10 @@ caller-owned value used to validate, order, attest, encode or execute is
 captured once and every later operation reads the capture, so a value cannot be
 checked on one reading and used on another — enforced by a suite that
 instruments every own property of a caller input with a counting accessor and
-asserts at most one read per path, universal by construction rather than by
-enumeration. That closed an execution-constraint bypass (a spawn position
+asserts at most one read per path (universal over an input's fields; the input
+set is a curated table, backstopped by a coverage tooth that derives the
+function-export surface and fails until each export is covered or exempted).
+That closed an execution-constraint bypass (a spawn position
 approved on the flat pad and then *run* off it, with the digest attesting the
 position that never executed) and made duplicate individual ids a loud refusal
 in both champion selectors. A further pass then went after the *instruments*

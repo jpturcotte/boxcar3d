@@ -529,13 +529,16 @@ definition two readings backing one attestation). `validateRecord` returns a
 frozen module-owned snapshot. `capturePerBody` and `captureVehicleResult` do the
 same for the forensic and fitness paths.
 
-`tests/single-read.test.js` is the enforcement, and it is **universal by
-construction rather than by enumeration**: it deep-instruments every own
-property of a caller input with a counting accessor and asserts ≤1 read per
-path, table-driven over the public surface. A property read at most once cannot
-be lied to — so the tooth needs no knowledge of what any function does with the
-value, and a new export or a new field is covered without anyone remembering to
-add it.
+`tests/single-read.test.js` is the enforcement. The INSTRUMENT is **universal
+over an input's fields**: it deep-instruments every own property of a caller
+input with a counting accessor and asserts ≤1 read per path, so a new FIELD on
+an already-covered input is checked without anyone remembering. A property read
+at most once cannot be lied to — so the tooth needs no knowledge of what any
+function does. The INPUT SET, though, is a curated `CASES` table: a new EXPORT is
+not instrumented automatically. A coverage tooth (round-12) therefore derives
+the function-export set from the module namespaces and fails until each is a
+CASES row or a declared exemption — the earlier "a new export is covered without
+anyone remembering" was true of fields, not exports (break-it sweep F9).
 
 Three exemptions were declared. **The first was false — see round 11 below.**
 TypedArray byte geometry remains the round-8 suite's concern; and

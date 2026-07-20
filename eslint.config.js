@@ -9,6 +9,30 @@ const banMath = (props, why) =>
 const DETERMINISM_MESSAGE =
   'Banned in src/sim (ruling D7): use src/sim/prng.js streams; library transcendentals are implementation-defined across JS engines. See docs/boxcar3d-design-rulings-spec-v2.md §6.1.';
 
+// The D7/F3 syntax bans (globalThis back door, Math/Date/performance/crypto
+// aliasing, the ** operator). SHARED so the byte-family block below can include
+// them: flat-config `no-restricted-syntax` is REPLACED, not merged, when two
+// matching blocks both define it — so the byte-family block's own selectors used
+// to silently strip these determinism bans from the 7 most identity-critical
+// modules (assembly.js, trace.js, …), where `x ** 2` and `globalThis.Math.random()`
+// then linted clean (break-it sweep F2). Both blocks now spread this array.
+const DETERMINISM_SYNTAX = [
+  {
+    selector: 'MemberExpression[object.name="globalThis"]',
+    message: 'Reach nothing through globalThis in src/sim: it re-exposes Math/Date/performance/crypto past the D7/F3 bans.',
+  },
+  {
+    // `const M = Math` / `const { random } = Math` — aliasing the object moves
+    // every later call out of no-restricted-properties' sight.
+    selector: 'VariableDeclarator[init.name=/^(Math|Date|performance|crypto)$/]',
+    message: 'Do not alias Math/Date/performance/crypto in src/sim: the D7/F3 property bans only see direct access.',
+  },
+  {
+    selector: ':matches(BinaryExpression, AssignmentExpression)[operator=/^\\*\\*=?$/]',
+    message: 'The ** operator is Number::exponentiate — implementation-approximated exactly like the banned Math.pow (ruling D7). Use repeated multiplication, which IEEE 754 requires to be exact.',
+  },
+];
+
 export default [
   {
     ignores: ['dist/**', 'node_modules/**', 'docs/**', 'legacy/**', 'rapier-upstream/**'],
@@ -71,23 +95,7 @@ export default [
       // src/sim/** and src/workers/**, so both hard rules claimed
       // "(ESLint-enforced)" for a ban with an open spelling. No live violation
       // existed; these close the spelling, not a defect.
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: 'MemberExpression[object.name="globalThis"]',
-          message: 'Reach nothing through globalThis in src/sim: it re-exposes Math/Date/performance/crypto past the D7/F3 bans.',
-        },
-        {
-          // `const M = Math` / `const { random } = Math` — aliasing the object
-          // moves every later call out of no-restricted-properties' sight.
-          selector: 'VariableDeclarator[init.name=/^(Math|Date|performance|crypto)$/]',
-          message: 'Do not alias Math/Date/performance/crypto in src/sim: the D7/F3 property bans only see direct access.',
-        },
-        {
-          selector: ':matches(BinaryExpression, AssignmentExpression)[operator=/^\\*\\*=?$/]',
-          message: 'The ** operator is Number::exponentiate — implementation-approximated exactly like the banned Math.pow (ruling D7). Use repeated multiplication, which IEEE 754 requires to be exact.',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...DETERMINISM_SYNTAX],
     },
   },
   {
@@ -111,6 +119,11 @@ export default [
     rules: {
       'no-restricted-syntax': [
         'error',
+        // The D7/F3 determinism bans MUST be repeated here: flat-config replaces
+        // `no-restricted-syntax` rather than merging it, so without this spread
+        // the seven byte-family files (a subset of src/sim) would lose the
+        // globalThis / Math-aliasing / ** bans the src/sim block declares (F2).
+        ...DETERMINISM_SYNTAX,
         {
           // `length`/`byteLength`/`byteOffset`/`buffer` are INHERITED ACCESSORS
           // on %TypedArray%.prototype, so an own data property on a genuine

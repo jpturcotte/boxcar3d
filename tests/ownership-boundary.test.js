@@ -540,7 +540,10 @@ const EXPORT_ROLES = Object.freeze({
       name: 'runEvaluation',
       kind: 'orchestrator',
       callerCollections: ['options.vehicles', 'options.terrain.<range>'],
-      callerNumbers: ['maxSteps', 'spawn.position.*', 'targetWheelSurfaceSpeed', 'wheelFriction'],
+      // spawn.rotation.*/linvel.* were omitted (F10): the documentary table
+      // agreed with the defect (they were captured by reference, C8) instead of
+      // naming the full surface.
+      callerNumbers: ['maxSteps', 'spawn.position.*', 'spawn.rotation.*', 'spawn.linvel.*', 'targetWheelSurfaceSpeed', 'wheelFriction'],
     },
     // Takes ALREADY-REALIZED bodies and a module-owned option object from
     // runEvaluation; the investigation seam passes its own literals.
@@ -610,6 +613,23 @@ describe('(0) the byte-family lint scope covers every src/sim module', () => {
     expect([...exempt].filter((f) => !modules.includes(f))).toEqual([]);
     // And the two buckets are disjoint: an exemption must be a real exemption.
     expect([...exempt].filter((f) => linted.has(f))).toEqual([]);
+  });
+
+  // F2: checking the `files` LIST is not enough — flat-config REPLACES
+  // `no-restricted-syntax`, so the byte-family block silently stripped the
+  // D7/F3 determinism bans from these 7 files while the list still "covered"
+  // them. Resolve the REAL config for a byte-family file and lint a snippet:
+  // `x ** 2` must be flagged there, proving the determinism ban survives the
+  // block that overrides the rule.
+  test('the D7 determinism syntax bans actually fire in a byte-family file (not just the src/sim files)', async () => {
+    const { ESLint } = await import('eslint');
+    const eslint = new ESLint();
+    const [result] = await eslint.lintText('const y = x ** 2;\n', { filePath: 'src/sim/assembly.js' });
+    const messages = result.messages.map((m) => m.message).join(' | ');
+    expect(messages, `assembly.js is byte-family AND src/sim; got: ${messages}`).toMatch(/\*\* operator/);
+    // And a control: a non-sim file does NOT ban it.
+    const [render] = await eslint.lintText('const y = x ** 2;\n', { filePath: 'src/render/scene.js' });
+    expect(render.messages.map((m) => m.ruleId)).not.toContain('no-restricted-syntax');
   });
 });
 

@@ -1555,12 +1555,17 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   `spawn.x` five times, so an accessor passed the flat-pad guard at −44 and the
   vehicle RAN at x=100, off-pad, with the spec digest attesting the position
   that never executed.
-  **`tests/single-read.test.js` is the enforcement, universal by construction
-  rather than by enumeration:** it deep-instruments every own property of a
-  caller input with a counting accessor and asserts ≤1 read per path, table-
-  driven over the public surface — so a new export or a new field is covered
-  without anyone remembering to add it. A property read at most once cannot be
-  lied to, which is why the tooth needs no knowledge of what any function does.
+  **`tests/single-read.test.js` is the enforcement.** The INSTRUMENT is
+  universal over an input's fields: it deep-instruments every own property of a
+  caller input with a counting accessor and asserts ≤1 read per path, so a new
+  FIELD on an already-covered input is checked without anyone remembering. A
+  property read at most once cannot be lied to, which is why the tooth needs no
+  knowledge of what any function does. The INPUT SET, however, is a curated
+  `CASES` table — a new EXPORT does not get instrumented automatically — so a
+  coverage tooth (round-12, break-it sweep F9) derives the function-export set
+  from the module namespaces and fails until each is a CASES row or a declared
+  exemption; the corrected earlier claim was that a new export is covered
+  "without anyone remembering", which was true of fields, not exports.
   Declared non-exemptions: a genuine Array's `length` is a non-configurable own
   DATA property and cannot lie (exempt BY THE LANGUAGE, not by choice);
   TypedArray byte geometry stays round-8's concern; and the adapter's placement

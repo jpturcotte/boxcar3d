@@ -326,11 +326,20 @@ describe('Leg 3 — perturbing one leaf moves exactly its own bytes', () => {
 const EXPECTED_FRAME_FAMILIES = Object.freeze(['spine', 'ladder', 'hull']);
 const EXPECTED_SUSPENSION_TYPES = Object.freeze(['S0', 'S1', 'S2']);
 
-// One line per corpus member: family, then per axle its suspension type, wheel
-// count, and each wheel's drive flag + radius. Deliberately NOT a byte hash of
-// the genotype — it is the DECODED MEANING, which is the thing no existing lock
+// One line per corpus member folding the FULL decoded meaning: family, and per
+// axle its suspension type + spring params, posX/mountY/trackHalf/centerOffset,
+// and per wheel its drive flag + driveTorque + radius/width/z/density. Not a
+// byte hash of the genotype — the DECODED quantities, the thing no existing lock
 // covers. Seed 20260710, N=256, the same corpus construction as `24cd0dd5`.
-const PHENOTYPE_DIGEST = '341c2830';
+//
+// The break-it sweep (F5) found the previous version folded only family +
+// suspension type + wheel count + radius, so reversing an AFFINE decode table
+// in GENE_RANGES (stiffness/damping/travel/restLength/power/centerOffset) left
+// this golden AND both assembly locks byte-identical while every archived
+// genotype meant a materially different vehicle. This folds every GENE_RANGES-
+// governed quantity, so any decode-table rescale reddens it.
+const PHENOTYPE_DIGEST = '12c0bcd3';
+const num = (x) => Number(x).toFixed(6);
 
 describe('decode tables — the archived bytes still mean the same vehicle', () => {
   test('the enum orders are pinned by copy-declared literals', () => {
@@ -351,10 +360,14 @@ describe('decode tables — the archived bytes still mean the same vehicle', () 
       const parts = [ir.chassis.family];
       for (let a = 0; a < ir.axles.length; a += 1) {
         const axle = ir.axles[a];
+        const s = axle.suspension;
+        const spring = s.type === 'S1'
+          ? `[${num(s.stiffness)},${num(s.damping)},${num(s.travel)},${num(s.restLength)}]` : '';
+        const hdr = `${s.type}${spring}@${num(axle.posX)},${num(axle.mountY)},${num(axle.trackHalf)},${num(axle.centerOffset)}`;
         const wheels = axle.wheels
-          .map((w) => `${w.driveTorque > 0 ? 'D' : 'F'}${w.radius.toFixed(6)}`)
+          .map((w) => `${w.driven ? 'D' : 'F'}${num(w.driveTorque)}/r${num(w.radius)}/w${num(w.width)}/z${num(w.z)}/d${num(w.density)}`)
           .join(',');
-        parts.push(`${axle.suspension.type}:${axle.wheels.length}:${wheels}`);
+        parts.push(`${hdr}:${axle.wheels.length}:${wheels}`);
       }
       state = fnv1aFold(state, enc(parts.join('|')));
     }

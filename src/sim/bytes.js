@@ -100,6 +100,50 @@ const TA_BYTE_LENGTH = taGetter('byteLength');
 // only the geometry ACCESSORS are safe to borrow. Reach for a constructor, not
 // a method.
 
+// STORAGE-LIFETIME intake (JP's ruling, break-it sweep I7). The intrinsic
+// getters above defeat a caller that LIES about geometry, but not a genuine
+// Uint8Array whose BACKING STORE is transient or foreign — an axis the round-8
+// property boundary never named. A detached buffer reads as empty (bytesToHex
+// → "", fnv1aFold leaves its state unchanged, the reader's DataView throws a
+// foreign TypeError); a SharedArrayBuffer can be scrambled by another thread
+// mid-fold, digesting a state that never existed; a resizable buffer can shrink
+// under a live reader. The ruling: canonical bytes must be ORDINARY — a genuine
+// same-realm Uint8Array over a fixed-size, non-shared, non-detached
+// ArrayBuffer. Anything fancy is rejected loud at the door, in the caller's
+// dialect, never silently absorbed. Backing-store getters cached like the
+// geometry ones (an own data property on a genuine ArrayBuffer could shadow
+// `.detached`/`.resizable` too).
+const abGetter = (name) => Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, name)?.get ?? null;
+const AB_DETACHED = abGetter('detached');
+const AB_RESIZABLE = abGetter('resizable');
+const SAB = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : null;
+
+/**
+ * Reject any byte input that is not an ordinary same-realm Uint8Array over a
+ * fixed-size, non-shared, non-detached ArrayBuffer. Returns `bytes` on success.
+ * `fail(path, value)` is the calling module's fail-loud helper. Called at every
+ * public seam where caller bytes ENTER the codec (the reader, the hex encoder,
+ * the fixed-layout decoders).
+ */
+export function requireOrdinaryBytes(bytes, fail) {
+  if (typeof fail !== 'function') throw new Error(`bytes: invalid fail callback (${String(fail)})`);
+  // Genuine same-realm Uint8Array: a cross-realm view (iframe/worker/vm) is
+  // "fancy" and rejected. `instanceof` is same-realm by construction here.
+  if (!(bytes instanceof Uint8Array)) fail('bytes', 'not an ordinary same-realm Uint8Array');
+  const buffer = TA_BUFFER.call(bytes); // intrinsic, never the shadowable `.buffer`
+  // Shared first: the ArrayBuffer.prototype getters below throw on a SAB.
+  if (SAB !== null && buffer instanceof SAB) {
+    fail('bytes', 'SharedArrayBuffer-backed — concurrent mutation is not supported; pass ordinary bytes');
+  }
+  if (AB_RESIZABLE !== null && AB_RESIZABLE.call(buffer) === true) {
+    fail('bytes', 'resizable ArrayBuffer — canonical bytes must be fixed-size');
+  }
+  if (AB_DETACHED !== null && AB_DETACHED.call(buffer) === true) {
+    fail('bytes', 'detached ArrayBuffer — the backing store was transferred away');
+  }
+  return bytes;
+}
+
 /**
  * A strict little-endian cursor over `bytes`. `fail(path, value)` is the
  * calling module's fail-loud helper; every rejection routes through it.
@@ -118,7 +162,7 @@ export function createByteReader(bytes, fail) {
     fail(path, value);
     throw new Error(`bytes: reader aborted at ${path} (${String(value)}) — the fail callback returned`);
   };
-  if (!(bytes instanceof Uint8Array)) raise('bytes', bytes);
+  requireOrdinaryBytes(bytes, raise); // ordinary, same-realm, fixed, non-detached
   // Geometry via the intrinsic getters (see the module-load block above);
   // captured ONCE so every later check agrees with the DataView's window.
   const byteLength = TA_BYTE_LENGTH.call(bytes);
@@ -209,7 +253,9 @@ export function typedArrayByteLength(bytes) {
 
 /** Bytes -> the canonical lowercase-hex JSON-safe representation. */
 export function bytesToHex(bytes) {
-  if (!(bytes instanceof Uint8Array)) bytesFail('bytes (Uint8Array required)', bytes);
+  // Ordinary storage only (I7): a detached buffer used to hex-encode as "" — a
+  // formerly-nonempty identity silently blanked.
+  requireOrdinaryBytes(bytes, bytesFail);
   // Indexed reads with the length from the INTRINSIC getter. `length` is an
   // inherited accessor, so an own data property on a genuine Uint8Array
   // shadows it: measured, a 4-byte array claiming `length: 2` hex-encoded as

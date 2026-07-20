@@ -61,7 +61,7 @@ import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import { Rng } from '../src/sim/prng.js';
 
 const {
-  bytesToHex, createByteReader, typedArrayByteLength,
+  bytesToHex, createByteReader, requireOrdinaryBytes, typedArrayByteLength,
 } = BytesNS;
 const {
   compileAssembly, deserializeGenotype, forEachGenotypeField, randomGenotype,
@@ -242,7 +242,7 @@ const baseTraceRecord = () => ({
 
 const EXPECTED_EXPORTS = Object.freeze({
   'bytes.js': Object.freeze([
-    'bytesToHex', 'createByteReader', 'hexToBytes', 'typedArrayByteLength',
+    'bytesToHex', 'createByteReader', 'hexToBytes', 'requireOrdinaryBytes', 'typedArrayByteLength',
   ]),
   'assembly.js': Object.freeze([
     'ASSEMBLY_DEFAULTS', 'ASSEMBLY_IR_VERSION', 'ASSEMBLY_RULES', 'DISCRETE_GENE_KEYS',
@@ -344,6 +344,7 @@ const KINDS = Object.freeze(['encoder', 'decoder', 'validator', 'policy', 'pure'
 const EXPORT_ROLES = Object.freeze({
   'bytes.js': Object.freeze([
     { name: 'createByteReader', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'requireOrdinaryBytes', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'typedArrayByteLength', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'bytesToHex', kind: 'encoder', callerCollections: ['bytes'], callerNumbers: [] },
     // hex is a STRING: no caller collection, no caller number.
@@ -1045,6 +1046,7 @@ describe('(3) sub-views are CONSTRUCTED by the module, not selected by the calle
 const OWNERSHIP_VERDICTS = Object.freeze({
   // bytes.js
   createByteReader: 'sharedWindow',
+  requireOrdinaryBytes: 'callerElements', // a pass-through validator: returns its input array unchanged
   typedArrayByteLength: 'scalar',
   bytesToHex: 'scalar',
   // assembly.js
@@ -1117,6 +1119,13 @@ function callerElementsCases() {
       const state = createIntegrityState(1, 1 / 60);
       const reads = [{ finite: true, translation: { x: 0, y: 1, z: 0 }, linvel: { x: 1, y: 0, z: 0 } }];
       return foldIntegrity(state, 0, reads) === state;
+    },
+    // requireOrdinaryBytes returns the exact input array on success (a
+    // pass-through storage-lifetime gate), so it deliberately hands the caller
+    // its own object back.
+    requireOrdinaryBytes: () => {
+      const bytes = Uint8Array.of(1, 2, 3);
+      return requireOrdinaryBytes(bytes, () => { throw new Error('unexpected'); }) === bytes;
     },
   };
 }

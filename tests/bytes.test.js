@@ -175,8 +175,10 @@ describe('bytesToHex / hexToBytes — the lossless JSON-safe representation', ()
   });
 
   test('bytesToHex rejects anything that is not a Uint8Array', () => {
+    // The storage-lifetime gate (C12) subsumes the old brand check; the message
+    // moved to "not an ordinary same-realm Uint8Array".
     for (const bad of [[1, 2], 'ab', null, new Uint16Array(2)]) {
-      expect(() => bytesToHex(bad)).toThrow(/bytes: invalid bytes \(Uint8Array required\)/);
+      expect(() => bytesToHex(bad)).toThrow(/bytes: invalid bytes \(not an ordinary/);
     }
   });
 });
@@ -231,6 +233,39 @@ describe('intrinsic geometry — own-property shadowing cannot redirect a read',
     const out = r.bytes(4, 'all');
     expect(invoked).toBe(false);
     expect([...out]).toEqual([1, 2, 3, 4]);
+  });
+});
+
+// C12 (JP's ruling / break-it sweep I7): canonical bytes must be ORDINARY —
+// same-realm, fixed-size, non-shared, non-detached. A genuine Uint8Array whose
+// STORAGE is transient or foreign is rejected loud at the door, never silently
+// absorbed. These attack the shadowing tests' blind spot: the geometry is
+// honest, the backing store is not.
+describe('storage-lifetime intake — fancy backing stores are rejected at the door', () => {
+  const moduleFail = (path, value) => { throw new Error(`mod: invalid at ${path} (${String(value)})`); };
+  const detach = (u) => { u.buffer.transfer(); return u; }; // ArrayBuffer.prototype.transfer detaches
+
+  test('a detached buffer is rejected, never hex-encoded as ""', () => {
+    const u = detach(Uint8Array.from([0xde, 0xad, 0xbe, 0xef]));
+    expect(() => bytesToHex(u)).toThrow(/detached ArrayBuffer/);
+    expect(() => createByteReader(u, moduleFail)).toThrow(/mod: invalid at bytes/);
+  });
+
+  test('a SharedArrayBuffer-backed view is rejected (concurrent mutation)', () => {
+    const u = new Uint8Array(new SharedArrayBuffer(4));
+    expect(() => bytesToHex(u)).toThrow(/SharedArrayBuffer/);
+    expect(() => createByteReader(u, moduleFail)).toThrow(/mod: invalid at bytes/);
+  });
+
+  test('a resizable ArrayBuffer is rejected (can shift under a reader)', () => {
+    const u = new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 }));
+    expect(() => bytesToHex(u)).toThrow(/resizable ArrayBuffer/);
+  });
+
+  test('an ordinary fixed Uint8Array still works', () => {
+    expect(bytesToHex(Uint8Array.from([0xde, 0xad]))).toBe('dead');
+    const r = createByteReader(Uint8Array.of(1, 0, 0, 0), moduleFail);
+    expect(r.u32('x')).toBe(1);
   });
 });
 

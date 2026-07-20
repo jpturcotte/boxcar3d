@@ -609,9 +609,14 @@ describe('fail-loud negatives (domain-invalid throws; physical invalidity repair
 
   test('every options knob validates fail-loud', () => {
     const g = validGenotype();
-    for (const corridorHalfWidth of [0, -1, NaN, 0.4, Infinity, -Infinity]) {
+    // 0.7 is the F11 band: it passed the old guard (> wallMargin + wheelWidth/2
+    // = 0.55) but left the emitted wheel inside the wall margin, because the
+    // guard omitted the trackHalf floor (0.2). The bound is now
+    // wallMargin + trackHalf[0] + wheelWidth[1]/2 = 0.75.
+    for (const corridorHalfWidth of [0, -1, NaN, 0.4, 0.7, 0.75, Infinity, -Infinity]) {
       expect(() => compileAssembly(g, { corridorHalfWidth })).toThrow(/corridorHalfWidth/);
     }
+    expect(() => compileAssembly(g, { corridorHalfWidth: 0.76 })).not.toThrow();
     for (const maxAxles of [-1, 1.5, NaN, Infinity, -Infinity]) {
       expect(() => compileAssembly(g, { maxAxles })).toThrow(/maxAxles/);
     }

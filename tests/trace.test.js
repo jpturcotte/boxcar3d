@@ -120,6 +120,16 @@ describe('trace record codec (T1–T8)', () => {
     expect([...encodeTraceRecord(decodeTraceRecord(nanBytes))]).toEqual([...nanBytes]);
   });
 
+  test('a u32 index field rejects -0 (F15): setUint32 would normalize it to +0', () => {
+    // Number.isInteger(-0) is true and -0 < 0 / -0 === 0 both pass, so the old
+    // guard admitted -0; setUint32 erases the sign, silently normalizing it to
+    // +0 — the case isCanonicalUint32 was tightened to reject one module over.
+    for (const field of ['stepIndex', 'vehicleIndex']) {
+      expect(() => encodeTraceRecord({ ...baseRecord(), [field]: -0 })).toThrow(new RegExp(field));
+    }
+    expect(() => encodeTraceRecord({ ...baseRecord(), axleIndex: -0, wheelIndex: 0 })).toThrow(/axleIndex/);
+  });
+
   test('T4: enum wire codes are locked and frozen (append-only)', () => {
     expect(BODY_ROLES).toEqual(['chassis', 'hub', 'wheel']);
     expect(JOINT_STATES).toEqual(['invalid', 'valid', 'notApplicable']);

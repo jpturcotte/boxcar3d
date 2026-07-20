@@ -24,6 +24,7 @@
 // RECORD_BYTES` stays an exact identity.
 
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
+import { requireOrdinaryBytes } from './bytes.js';
 
 // INTRINSIC TypedArray geometry (the bytes.js ruling, applied here because this
 // codec also accepts byte buffers from outside). `buffer`, `byteOffset` and
@@ -111,7 +112,11 @@ const RECORD_KEYS = Object.freeze([
 const VECTOR_KEYS = Object.freeze({ translation: ['x', 'y', 'z'], rotation: ['x', 'y', 'z', 'w'], linvel: ['x', 'y', 'z'], angvel: ['x', 'y', 'z'] });
 
 function checkUint(v, max, path) {
-  if (!Number.isInteger(v) || v < 0 || v > max) fail(path, v);
+  // Reject -0 (F15): `Number.isInteger(-0)` is true and `setUint32` erases the
+  // sign, silently normalizing -0 to +0 — the exact case isCanonicalUint32 was
+  // tightened to reject one module over. `Object.is(v, -0)` is the only test
+  // that distinguishes it (`v < 0` and `=== 0` both pass -0).
+  if (!Number.isInteger(v) || v < 0 || v > max || Object.is(v, -0)) fail(path, v);
 }
 
 function checkFlag(v, path) {
@@ -287,7 +292,7 @@ function decodeFlag(view, offset, path) {
  * encode up to f64 bit patterns (NaN decodes as the canonical quiet NaN).
  */
 export function decodeTraceRecord(bytes, offset = 0) {
-  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
+  requireOrdinaryBytes(bytes, decodeFail); // ordinary, same-realm, fixed, non-detached (I7)
   const total = taByteLength(bytes);
   if (!Number.isInteger(offset) || offset < 0 || offset + RECORD_BYTES > total) {
     decodeFail('offset', `${offset} (byteLength ${total})`);

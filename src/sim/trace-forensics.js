@@ -315,9 +315,17 @@ export function analyzeTrace(traceResult, {
   }
 
   const perBody = [];
-  // Escalation flags per step (any body), for the backward causal scan.
-  const escalationBySteps = new Map();
-  const markEscalation = (step) => escalationBySteps.set(step, true);
+  // Escalation flags PER VEHICLE per step, for the backward causal scan. Was
+  // trace-global (F13): an unrelated ghost vehicle escalating at step k-1 pulled
+  // the leading vehicle's firstCausalCandidateStep back, crediting a chain that
+  // belongs to a different vehicle. Keyed by vehicleIndex now.
+  const escalationByVehicle = new Map();
+  const EMPTY_ESCALATION = new Map();
+  const markEscalation = (vehicleIndex, step) => {
+    let m = escalationByVehicle.get(vehicleIndex);
+    if (m === undefined) { m = new Map(); escalationByVehicle.set(vehicleIndex, m); }
+    m.set(step, true);
+  };
 
   for (const recs of perBodyRecords.values()) {
     recs.sort((a, b) => a.stepIndex - b.stepIndex);
@@ -366,7 +374,7 @@ export function analyzeTrace(traceResult, {
         foldPeak(body.peakSpeedDelta, speedDelta, k);
         foldPeak(body.peakStepDisplacement, stepDisplacement, k);
         if (speedDelta > t.causalSpeedDelta || angDelta > t.causalAngularSpeedDelta) {
-          markEscalation(k);
+          markEscalation(body.vehicleIndex, k);
         }
       }
       if (!rec.finiteState && body.firstNonFiniteStep === null) body.firstNonFiniteStep = k;
@@ -434,16 +442,19 @@ export function analyzeTrace(traceResult, {
   if (leading !== null) {
     firstAlertStep = leading.firstAlertStep;
     lastOrdinaryStep = firstAlertStep > firstStep ? firstAlertStep - 1 : null;
-    // Backward scan: the contiguous escalation chain ending at the alert.
-    // If the alert step itself shows no per-step escalation (a sustained-
-    // speed alert with no recent jump — the gradual signature), the
-    // candidate stays at the alert step and the sharpness discipline
-    // (threshold sensitivity) flags the case as gradual.
+    // Backward scan: the contiguous escalation chain ENDING AT the alert, in
+    // the leading body's OWN vehicle. If the alert step itself shows no per-step
+    // escalation (a sustained-speed alert with no recent jump — the gradual
+    // signature), the candidate stays at the alert step. The old code credited a
+    // prior chain even when it did NOT reach the alert step (F12: `|| k <
+    // firstAlertStep`), so a chain that ended before the alert was reported as
+    // the cause; the scan now runs only when the alert step escalates.
+    const esc = escalationByVehicle.get(leading.vehicleIndex) ?? EMPTY_ESCALATION;
     let k = firstAlertStep;
-    while (k - 1 > firstStep && escalationBySteps.get(k - 1) === true) k -= 1;
-    firstCausalCandidateStep = escalationBySteps.get(firstAlertStep) === true || k < firstAlertStep
-      ? k
-      : firstAlertStep;
+    if (esc.get(firstAlertStep) === true) {
+      while (k - 1 > firstStep && esc.get(k - 1) === true) k -= 1;
+    }
+    firstCausalCandidateStep = k;
     const chassis = perBody.find(
       (b) => b.vehicleIndex === leading.vehicleIndex && b.bodyRole === 'chassis',
     );

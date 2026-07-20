@@ -426,8 +426,16 @@ export function validateGenotype(genotype) {
 }
 
 function validateOptions(cfg) {
-  if (!Number.isFinite(cfg.corridorHalfWidth) || cfg.corridorHalfWidth <= ASSEMBLY_RULES.wallMargin + GENE_RANGES.wheelWidth[1] / 2) {
-    throw new Error('assembly: corridorHalfWidth must be a finite number leaving room inside the wall margin');
+  // R4: a wheel must clear the wall. Even a centered paired axle sits its wheel
+  // CENTER at `trackHalf` from the centerline (floor GENE_RANGES.trackHalf[0]),
+  // and the wheel extends ±wheelWidth/2 beyond that — so the corridor must leave
+  // `wallMargin + trackHalf[0] + wheelWidth[1]/2` of half-width. The guard
+  // omitted the trackHalf floor (F11), so for corridorHalfWidth in
+  // (wallMargin + wheelWidth[1]/2, that sum] the emitted wheel sat inside the
+  // wall margin with no error. Default 6 m is far above the bound.
+  const minHalfWidth = ASSEMBLY_RULES.wallMargin + GENE_RANGES.trackHalf[0] + GENE_RANGES.wheelWidth[1] / 2;
+  if (!Number.isFinite(cfg.corridorHalfWidth) || cfg.corridorHalfWidth <= minHalfWidth) {
+    throw new Error(`assembly: corridorHalfWidth must be a finite number > ${minHalfWidth} (wallMargin + min track + max wheel half-width)`);
   }
   if (!Number.isInteger(cfg.maxAxles) || cfg.maxAxles < 0) {
     throw new Error('assembly: maxAxles must be an integer >= 0');
@@ -1117,10 +1125,22 @@ const u8Geom = (name) => Object.getOwnPropertyDescriptor(U8_PROTO, name).get;
 const U8_BUFFER = u8Geom('buffer');
 const U8_BYTE_OFFSET = u8Geom('byteOffset');
 const U8_BYTE_LENGTH = u8Geom('byteLength');
+// Backing-store lifetime getters. DELIBERATE DUPLICATION of bytes.js
+// `requireOrdinaryBytes`, kept inline to preserve assembly.js's zero-import
+// genome-contract ruling (the same call the recorded hexBytes/bytesToHex
+// duplication makes). Canonical bytes must be ordinary: same-realm, fixed-size,
+// non-shared, non-detached (JP's ruling, break-it sweep I7).
+const AB_DETACHED = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached')?.get ?? null;
+const AB_RESIZABLE = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'resizable')?.get ?? null;
+const AB_SHARED = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : null;
 
 /** Canonical bytes -> genotype. The exact inverse of serializeGenotype. */
 export function deserializeGenotype(bytes) {
   if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
+  const buffer = U8_BUFFER.call(bytes);
+  if (AB_SHARED !== null && buffer instanceof AB_SHARED) decodeFail('bytes', 'SharedArrayBuffer-backed — pass ordinary bytes');
+  if (AB_RESIZABLE !== null && AB_RESIZABLE.call(buffer) === true) decodeFail('bytes', 'resizable ArrayBuffer — must be fixed-size');
+  if (AB_DETACHED !== null && AB_DETACHED.call(buffer) === true) decodeFail('bytes', 'detached ArrayBuffer');
   const byteLength = U8_BYTE_LENGTH.call(bytes);
   if (byteLength < GENOTYPE_BASE_BYTES) decodeFail('byteLength', byteLength);
   // byteOffset folded in: a subarray of a larger buffer reads its own window.

@@ -1362,8 +1362,9 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   attested; and an own `length` DATA property on a genuine Uint8Array (length
   is an inherited ACCESSOR — plain defineProperty shadows it) made bytesToHex
   emit 'dead' for content deadbeef. **The corrected boundary — the module owns
-  what it attests:** copy on intake by index (cloneGenotype, ownTerrain, the
-  vector row preflight); NEVER invoke caller-owned code (no method looked up
+  what it attests:** copy on intake by index (`captureGenotype` — round 8's
+  `cloneGenotype`, superseded when round 10 fused validation and copy into one
+  walk — `ownTerrain`, the vector row preflight); NEVER invoke caller-owned code (no method looked up
   on caller objects — no .map/.forEach/.indexOf/.slice/.subarray/iterators);
   attest exactly what was validated (`serializePopulationSnapshot` emits the
   very bytes the tooth checked via the shared `validatedMembers` walk;
@@ -1572,11 +1573,110 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   regression had to live in `tests/population-evaluation.test.js` because it is
   private and reachable only through physics — *a fix no test can redden is not
   a fix.*
-- Full suite green (51 files, 1089 tests), determinism gate green, pinned
+- **THE EXEMPTION WAS FALSE, AND THE INSTRUMENTS WERE SCOPED (round 11 — the
+  class one notch BELOW the instruments themselves).** Round 10 built a tooth
+  that is universal over FIELDS; round 11 asked what that tooth EXEMPTS and who
+  checks the exemptions. 20 defects survived adversarial verification (44
+  candidates, 11 refuted); three break the validated ≡ attested ≡ executed
+  chain. **The root: the Array-`length` exemption.** Half true — `length` is
+  non-configurable, so no accessor can be installed — and half FALSE: it is
+  WRITABLE, and every element read in a validation walk IS caller code running
+  between two readings of the bound. Measured with an ordinary own accessor on
+  a genuine Array: a `radius` getter assigning `axles.length = 1` made a 3-axle
+  genotype serialize to 396 bytes attesting axleCount 1 (short, well-formed,
+  cleanly decodable, reproduced through `attestPopulation` with the canonicality
+  tooth passing); a member getter assigning `individuals.length = 3` made
+  `attestPopulation` return a silent PREFIX (4 in, 3 attested, 1476 bytes not
+  1752); and a shrinking element getter made `compareTraces` /
+  `compareCheckpoints` return **null — "identical" — for divergent traces**, in
+  both directions. Every caller-collection loop bound is now captured before the
+  walk, the three false comments are corrected, and `LOOP_BOUND_CASES`
+  (`tests/single-read.test.js`) supplies the input the counting instrument
+  STRUCTURALLY cannot generate (it rebuilds Arrays, discarding the mutating
+  getter) — asserting the RESULT: a poisoned walk may fail loud in the owning
+  module's dialect, never SUCCEED with a different answer.
+  **A trust axis never posed before — own-property ENUMERABILITY:** presence
+  gated by `hasOwnProperty` (sees non-enumerable own props) while execution came
+  from `{ ...TERRAIN_DEFAULTS, ...terrain }` (own ENUMERABLE only), so one
+  `Object.defineProperty(t,'seed',{value})` — plain data — passed the guard whose
+  own message says a vector must never bind the default seed, and
+  `evaluatePopulation` ran and attested the **seed-0 DEFAULT world**,
+  byte-identical to an explicit seed-0 run. Same shape in `runEvaluation`. Rule:
+  *a guard that decides presence must use the same property enumeration its
+  consumer reads with* — plus rejection of any terrain carrying non-enumerable
+  own properties (a non-enumerable `featureDensity` silently reverted too).
+  **`validateOptions` returned the caller's `terrain`/`vehicles` BY REFERENCE**
+  and `runEvaluation` re-read them after `hooks.onPhase(...)` and across
+  `await createPhysics(...)`: a run validated `trace.mode:'none'` executed
+  'full'; a spawn validated at x=−25 realized at x=−13; a removed-`targetAngvel`
+  tombstone was bypassed so the vehicle ran at the default surface speed.
+  Indexing the loop (round 9) fixed holes and iterator divergence — it did not
+  make the two readings ONE. It now returns a module-owned capture (`ir` stays a
+  captured REFERENCE under the standing compiler-owned-IR ruling).
+  **Also closed:** `resolveSpecDigestState`'s double read of `evaluation.spec`
+  (its documented twin was fixed by caller capture in this same PR);
+  `ownTerrain` densifying a caller-DECLARED range length before any validation
+  — an uncatchable `FATAL ERROR: heap limit` V8 abort at 2^26 on the production
+  path, one function from the identical committed guard; `ownPlainData` passing
+  `Object.create(null)`/class instances BY REFERENCE, dropping an own
+  `"__proto__"` key through the inherited setter, and recursing unbounded;
+  `resolveReachMap` walking `bodies` with the CALLER's `forEach`;
+  `bodyReachMetadataForIR` returning chassis-only metadata with NO error for a
+  non-array `wheels` (a silent path this PR's own indexed rewrite introduced);
+  two diagnostics printing values that were never rejected; and three
+  `Object.hasOwn` defaults over-correcting to reject explicit `undefined` where
+  five sibling keys accept it.
+  **G9 — the enforcement surface — mattered more than the fixes.** Each
+  instrument was scoped to the round that built it:
+  `tests/ownership-boundary.test.js` pinned export lists for FIVE modules while
+  `single-read.test.js` cited it as the backstop for all (47 exports across
+  `integrity.js`/`trace.js`/`trace-forensics.js`/`evaluation.js`/`fnv1a.js`
+  unpinned — now pinned, with `RE_EXPORTS` declared and asserted
+  reference-identical); every CASES row asserted SUCCESS, so no rejection branch
+  was instrumented (now a rejection table); the `serializeFitnessVector` row
+  carried no `spec`, so its PRODUCTION branch was never entered (now two rows,
+  the sibling's pattern); and the byte-family lint block scoped itself with a
+  hard-coded seven-file list no test read — a probe file elsewhere in `src/sim`
+  produced ZERO diagnostics. `(0) the byte-family lint scope` now reads the real
+  directory and the real config, so a new `src/sim` module fails until it is
+  classified in `BYTE_FAMILY_EXEMPT` or the lint block. Selectors widened:
+  `bytes['byteLength']`, `const { byteLength } = bytes`, `Reflect.get(...)`,
+  `globalThis.Math.random()`, `const M = Math; M.random()` and
+  `globalThis.Date.now()` all linted CLEAN while both hard rules claimed
+  "(ESLint-enforced)"; no live violation existed — the spelling was open, not
+  the ban. **One arithmetic change, verified:** `**` was unbanned though
+  `Math.pow` is, and lived in the locked terrain feature generator feeding
+  `maxHalf.ramp` → every ramp's placement draw; `x ** 2` is
+  `Number::exponentiate` (implementation-approximated exactly like `Math.pow`),
+  now `x * x` (IEEE-exact), operator lint-banned, all five terrain fingerprints
+  byte-identical across the change.
+  **The completeness pass found the largest gap, and it is PRE-EXISTING:** every
+  codec test asks "do the same bytes come back?", none asked "do the same bytes
+  still describe the same VEHICLE?" Reordering `SUSPENSION_TYPES` to
+  `['S1','S0','S2']` flips every archived axle's suspension while BOTH locks stay
+  byte-identical (`24cd0dd5` hashes raw genes; `39bcd6c4` hashes chassis
+  colliders, which derive only from frame genes) — the sole guard was one
+  incidental repair-test assertion, and `genotype-codec.test.js` was
+  self-referential on both sides. A decode-table golden now pins the enum orders
+  as copy-declared literals and hashes the DECODED PHENOTYPE of the
+  seed-20260710 corpus (`341c2830`); changing it is a genotype-VERSION event.
+  **All 27 mutations bite, 0 silent** — four teeth exist only because a mutation
+  WAS silent, each a lesson in what an assertion must distinguish (a
+  `compareTraces` case whose shrink target equals the loop bound, or the walk
+  throws before the verdict; per-body capture counts rather than
+  `perBody.length`, which is 1 either way; `{}` rather than a string for the
+  non-array `wheels`, since a string has a `length`; and BOTH a `forEach` and a
+  `Symbol.iterator` poison, one defect wearing two names).
+  **The generalization, one notch above round 10's:** *enforcement scoped to a
+  round's mechanism is still enforcement written to the fix.* Make the SCOPE
+  derived rather than enumerated, and check the exemptions as carefully as the
+  rules.
+- Full suite green (51 files, 1152 tests), determinism gate green, pinned
   Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
   fingerprint, the A–D evaluation digests, all four population digests, the
   per-member fitness literals, the champion trace, and every version constant
-  byte-identical.
+  byte-identical. **Zero lock movement in round 11 either** — no committed
+  digest moved under any of the twenty fixes.
 
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a

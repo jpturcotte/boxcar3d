@@ -24,13 +24,19 @@
 import { describe, test, expect } from 'vitest';
 import {
   DISCRETE_GENE_KEYS,
+  FRAME_FAMILIES,
   GENOTYPE_VERSION,
   NODE_SLOTS,
+  SUSPENSION_TYPES,
+  compileAssembly,
   forEachGenotypeField,
   genotypeByteLength,
   genotypeFieldWalk,
+  randomGenotype,
+  repairGenotype,
   serializeGenotype,
 } from '../src/sim/assembly.js';
+import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from '../src/sim/fnv1a.js';
 import { jitterGenotype } from '../scripts/probe-integrity.js';
 import { Rng } from '../src/sim/prng.js';
 
@@ -292,6 +298,69 @@ describe('Leg 3 — perturbing one leaf moves exactly its own bytes', () => {
       expect(view.getUint8(at('frame.segments.length').byteOffset)).toBe(1);
       expect(view.getUint8(at('axles.length').byteOffset)).toBe(axleCount);
     }
+  });
+});
+
+// --- The decode tables: what the archived bytes MEAN -----------------------
+//
+// Round 11 (completeness pass). Every codec test in this repo asks "do the same
+// bytes come back?" — none asked "do the same bytes still describe the same
+// vehicle?" Measured on a copy of assembly.js with SUSPENSION_TYPES reordered
+// to ['S1','S0','S2']: EVERY archived axle's suspension type flips, and BOTH
+// locked fingerprints stay byte-identical —
+//
+//   head         corpus= 24cd0dd5  chassis= 39bcd6c4
+//   suspSwapped  corpus= 24cd0dd5  chassis= 39bcd6c4   <-- every axle flipped
+//
+// because `24cd0dd5` hashes raw [0,1] GENES and `39bcd6c4` hashes chassis
+// colliders, which derive only from frame genes. The sole prior guard was one
+// incidental assertion in a repair test, and genotype-codec.test.js:139 is
+// self-referential on both sides (`SUSPENSION_TYPES[...]` twice) — the exact
+// shape this file bans for DISCRETE_GENE_KEYS. `FRAME_FAMILIES` is caught only
+// incidentally, because repair depends on family geometry.
+//
+// This is precisely the failure the replay/import tooling exists to prevent: a
+// semantic reinterpretation of every stored stream that the artifacts the
+// project calls "the identity" cannot see. Pre-existing, not a PR-#23 defect.
+
+const EXPECTED_FRAME_FAMILIES = Object.freeze(['spine', 'ladder', 'hull']);
+const EXPECTED_SUSPENSION_TYPES = Object.freeze(['S0', 'S1', 'S2']);
+
+// One line per corpus member: family, then per axle its suspension type, wheel
+// count, and each wheel's drive flag + radius. Deliberately NOT a byte hash of
+// the genotype — it is the DECODED MEANING, which is the thing no existing lock
+// covers. Seed 20260710, N=256, the same corpus construction as `24cd0dd5`.
+const PHENOTYPE_DIGEST = '341c2830';
+
+describe('decode tables — the archived bytes still mean the same vehicle', () => {
+  test('the enum orders are pinned by copy-declared literals', () => {
+    // Production DECODES by these constants, so the expectation must be an
+    // independent literal — the DISCRETE_GENE_KEYS argument, applied to the
+    // tables that turn a gene band into a phenotype.
+    expect([...FRAME_FAMILIES]).toEqual([...EXPECTED_FRAME_FAMILIES]);
+    expect([...SUSPENSION_TYPES]).toEqual([...EXPECTED_SUSPENSION_TYPES]);
+  });
+
+  test('the seed-20260710 corpus decodes to the same phenotypes', () => {
+    // Ordinary ASCII, folded without TextEncoder (not in the lint env's
+    // declared globals, and widening those for one test is the wrong trade).
+    const enc = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+    let state = FNV_OFFSET_BASIS;
+    for (let i = 0; i < 256; i += 1) {
+      const ir = compileAssembly(repairGenotype(randomGenotype(new Rng(20260710).fork(i))));
+      const parts = [ir.chassis.family];
+      for (let a = 0; a < ir.axles.length; a += 1) {
+        const axle = ir.axles[a];
+        const wheels = axle.wheels
+          .map((w) => `${w.driveTorque > 0 ? 'D' : 'F'}${w.radius.toFixed(6)}`)
+          .join(',');
+        parts.push(`${axle.suspension.type}:${axle.wheels.length}:${wheels}`);
+      }
+      state = fnv1aFold(state, enc(parts.join('|')));
+    }
+    // Changing this is a deliberate re-lock: it means every archived genotype
+    // now describes a different vehicle, which is a genotype-VERSION event.
+    expect(fnv1aHexOf(state)).toBe(PHENOTYPE_DIGEST);
   });
 });
 

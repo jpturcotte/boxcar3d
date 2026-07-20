@@ -203,8 +203,24 @@ asserts at most one read per path, universal by construction rather than by
 enumeration. That closed an execution-constraint bypass (a spawn position
 approved on the flat pad and then *run* off it, with the digest attesting the
 position that never executed) and made duplicate individual ids a loud refusal
-in both champion selectors. Each tooth was mutation-verified: revert the fix,
-watch it fail. No evolutionary behaviour is
+in both champion selectors. A further pass then went after the *instruments*
+themselves, on the principle that enforcement scoped to one round's mechanism
+is still enforcement written to the fix. It found the exemption those
+instruments declared to be false — a genuine Array's `length` cannot be an
+accessor, but it *is* writable, and every element read in a validation walk is
+caller code that may write it, which let a three-axle genotype attest itself as
+one axle and made the determinism comparator report "identical" for divergent
+traces — plus a trust axis nobody had posed, own-property *enumerability*,
+where a presence check that saw a non-enumerable `seed` and a spread that did
+not made an evaluation run and attest the default world. Loop bounds are now
+captured before any walk, presence gates use the enumeration their consumer
+reads with, the runner validates a module-owned capture rather than the
+caller's objects, the export tables and lint scope are derived from the real
+directory instead of hand-enumerated, and a decode-table golden pins what the
+archived bytes *mean* — reordering the suspension enum reinterprets every
+stored genotype while both byte fingerprints stay identical, which nothing
+previously caught. Each tooth was mutation-verified: revert the fix, watch it
+fail. No evolutionary behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

@@ -570,7 +570,16 @@ export function compareTraces(expected, actual) {
       if (n !== RECORD_BYTES) {
         return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: n } };
       }
-      return { bytes: entry };
+      // COPY ON INTAKE. Capturing the loop BOUND (round-11) was not enough:
+      // `e.bytes` used to be the caller's array BY REFERENCE, so encoding the
+      // OTHER side's plain-record entry could run a getter that overwrote
+      // `e.bytes` to match, and this returned null ("identical") for a divergent
+      // pair (round-11 I6). `.set` reads the caller array by integer index
+      // (accessors are impossible on a genuine TypedArray) into a module-owned
+      // buffer, taken before the opposing entry's getters run.
+      const copy = new Uint8Array(RECORD_BYTES);
+      copy.set(entry);
+      return { bytes: copy };
     }
     return { bytes: encodeTraceRecord(entry) };
   };

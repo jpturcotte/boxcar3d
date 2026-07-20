@@ -521,8 +521,14 @@ const INTEGRITY_PEAK_KEYS = Object.freeze(['peakSpeed', 'peakSpeedDelta', 'peakS
 function capturePerBody(analysis) {
   const perBody = analysis.perBody;
   if (!Array.isArray(perBody)) fail('analysis', analysis);
+  // Capture the bound before the walk: the body reads caller accessors (`b[key]`
+  // below), so an accessor that shrank `perBody` mid-walk otherwise skipped a
+  // catastrophic body and offlineIntegrityView returned status:'ok' for it
+  // (round-11 I3 — the loop-bound class survived in the one function whose
+  // docblock claims to enforce it). `length` is writable on a genuine Array.
+  const count = perBody.length;
   const rows = [];
-  for (let i = 0; i < perBody.length; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const b = perBody[i];
     if (typeof b !== 'object' || b === null) fail(`analysis.perBody[${i}]`, b);
     const row = {};

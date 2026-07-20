@@ -185,6 +185,14 @@ export function foldIntegrity(state, stepIndex, reads) {
     const linvel = r.linvel;
     const translation = r.translation;
     const finite = r.finite;
+    // Guard the FIELDS the entry contributes, not just the entry: the round-11
+    // guard checked `r` but a primitive `linvel`/`translation` then read
+    // `.x` === undefined → norm3xyz(NaN) whose comparisons are all false, so a
+    // malformed read silently left status:'ok' over unread data (F14). A missing
+    // one escaped as a foreign TypeError off `.linvel`, the exact class the
+    // guard's own comment claims to close.
+    if (typeof linvel !== 'object' || linvel === null) fail(`reads[${i}].linvel`, linvel);
+    if (typeof translation !== 'object' || translation === null) fail(`reads[${i}].translation`, translation);
     const vx = linvel.x; const vy = linvel.y; const vz = linvel.z;
     const tx = translation.x; const ty = translation.y; const tz = translation.z;
     const speed = norm3xyz(vx, vy, vz);

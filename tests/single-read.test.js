@@ -254,6 +254,23 @@ const fullTrace = () => ({
 // that asserts a malformed input is refused rather than silently absorbed.
 const MODULE_DIALECT = /^(assembly|population|population-initializer|population-evaluation|trace|trace-forensics|integrity):/;
 
+// A full-trace analysis with TWO bodies, the second catastrophic (|v| ≫ 1000),
+// so offlineIntegrityView returns a non-'ok' status derived from perBody[1].
+const catastrophicAnalysis = () => {
+  const rec = (vehicleIndex, k, vx) => ({
+    ...chassisRecord(k, { linvel: { x: vx, y: 0, z: 0 } }), vehicleIndex,
+  });
+  const records = [];
+  for (let k = 0; k < 3; k += 1) {
+    records.push(encodeTraceRecord(rec(0, k, 1)));
+    records.push(encodeTraceRecord(rec(1, k, 2000)));
+  }
+  return analyzeTrace(
+    { version: EVALUATION_TRACE_VERSION, mode: 'full', recordBytes: RECORD_BYTES, records },
+    { captureDt: 1 / 60 },
+  );
+};
+
 // One per-body capture in the runner's `reads` shape.
 const integrityReads = () => [
   { finite: true, translation: { x: 0, y: 0.5, z: 0 }, linvel: { x: 1, y: 0, z: 0 } },
@@ -584,6 +601,18 @@ const LOOP_BOUND_CASES = [
       foldIntegrity(state, 0, reads);
       return state.peakBodySpeed;
     }],
+  // C9/I3: offlineIntegrityView folds analysis.perBody. capturePerBody re-read
+  // that bound inside the walk, so a shrinking getter dropped a catastrophic
+  // body and the view returned status:'ok'. The status derived from the walked
+  // rows must not change when the poison shrinks the array behind a captured
+  // bound — either the same status, or a loud failure.
+  ['trace-forensics.offlineIntegrityView (analysis.perBody)',
+    () => [catastrophicAnalysis()],
+    () => {
+      const a = catastrophicAnalysis();
+      return [{ ...a, perBody: shrinkingArray(a.perBody, 0) }];
+    },
+    (a) => offlineIntegrityView(a).status],
 ];
 
 describe('loop bounds captured before caller code runs (round-11)', () => {
@@ -700,10 +729,51 @@ describe('malformed caller collections fail loud, never silently narrow', () => 
     // indexed rewrite introduced and that a string never exposes.
     ['axles[0].wheels is not an array', (x) => { x.axles = [{ ...x.axles[0], wheels: {} }]; }],
     ['a hole in axles', (x) => { const a = [...x.axles]; a.length = a.length + 1; x.axles = a; }],
+    // C9/I9: vehicleWheelTransforms dereferences axle.suspension.type; a missing
+    // suspension escaped as a foreign TypeError the guard comment claims to close.
+    ['axles[0].suspension is missing', (x) => { const a = { ...x.axles[0] }; delete a.suspension; x.axles = [a]; }],
+    ['axles[0].suspension is null', (x) => { x.axles = [{ ...x.axles[0], suspension: null }]; }],
   ])('spawnPoseOnFlatStart: %s', (label, mutate) => {
     const x = { ...ir(), axles: [...ir().axles] };
     mutate(x);
     expect(() => spawnPoseOnFlatStart(x, { x: -44, z: 0 })).toThrow(MODULE_DIALECT);
+  });
+
+  test.each([
+    ['linvel is a primitive', (r) => { r.linvel = 5; }],
+    ['linvel is missing', (r) => { delete r.linvel; }],
+    ['translation is a primitive', (r) => { r.translation = 'x'; }],
+    ['translation is null', (r) => { r.translation = null; }],
+  ])('foldIntegrity: %s fails loud, never a silent status:ok', (label, mutate) => {
+    // C9/F14: the guard checked the entry but not the fields it dereferences, so
+    // a primitive linvel read `.x` === undefined → NaN comparisons all false →
+    // status stayed 'ok' over unread data; a missing one escaped as a foreign
+    // TypeError off `.linvel`.
+    const reads = integrityReads();
+    mutate(reads[0]);
+    const state = createIntegrityState(2, 1 / 60);
+    expect(() => foldIntegrity(state, 0, reads)).toThrow(MODULE_DIALECT);
+  });
+
+  test('compareTraces: a sibling-record getter cannot overwrite the opposing byte array to fake "identical"', () => {
+    // C9/I6: `e.bytes` used to be the caller's Uint8Array BY REFERENCE, so
+    // encoding the OTHER side's plain-record entry could run a getter that
+    // overwrote it to match, and compareTraces returned null for a divergent
+    // pair. Bytes are copied on intake now.
+    const expRec0 = encodeTraceRecord(chassisRecord(0));
+    const actRecord = chassisRecord(0, { linvel: { x: 42, y: 0, z: 0 } });
+    const actBytes = encodeTraceRecord(actRecord); // what the poison will paste
+    const exp = { version: EVALUATION_TRACE_VERSION, recordBytes: RECORD_BYTES, records: [expRec0] };
+    // act[0] is a plain record equal to actRecord, but reading `.translation`
+    // during encode overwrites exp's byte array to actBytes.
+    const poisoned = {
+      ...actRecord,
+      get translation() { expRec0.set(actBytes); return actRecord.translation; },
+    };
+    const act = { version: EVALUATION_TRACE_VERSION, recordBytes: RECORD_BYTES, records: [poisoned] };
+    const result = compareTraces(exp, act);
+    expect(result).not.toBeNull(); // the divergence must be reported, not hidden
+    expect(result.kind).toBe('fieldMismatch');
   });
 
   test('analyzeTrace: an own forEach on bodies cannot skip the validation walk', () => {

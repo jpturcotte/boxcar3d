@@ -395,6 +395,12 @@ export function spawnPoseOnFlatStart(ir, options) {
   for (let i = 0; i < ownedAxles.length; i += 1) {
     const axle = ownedAxles[i];
     if (typeof axle !== 'object' || axle === null) fail(`ir.axles[${i}]`, axle);
+    // vehicleWheelTransforms dereferences `axle.suspension.type`; a missing or
+    // null suspension escaped as a foreign TypeError (round-11 I9 — the comment
+    // listed suspension as covered, the code did not guard it).
+    if (typeof axle.suspension !== 'object' || axle.suspension === null) {
+      fail(`ir.axles[${i}].suspension`, axle.suspension);
+    }
     if (!Array.isArray(axle.wheels)) fail(`ir.axles[${i}].wheels`, axle.wheels);
     for (let w = 0; w < axle.wheels.length; w += 1) {
       const wheel = axle.wheels[w];

@@ -1724,7 +1724,9 @@ byte-identical.**
   whose BACKING STORE is transient/foreign: a detached buffer reads empty
   (`bytesToHex`→"", `fnv1aFold` unchanged), a SharedArrayBuffer races
   cross-thread, a resizable buffer shrinks under a reader.
-  `requireOrdinaryBytes` (bytes.js) enforces it at every intake seam.
+  `requireOrdinaryBytes` (bytes.js) enforces it — round 12 wrote "at every
+  intake seam" while gating TWO; the claim was false until round 13 closed the
+  derived surface (see below).
 - **THE FNV-IDENTITY RULING (JP): FNV-1a32 is a drift/lock digest + the
   determinism comparator, NOT persistent content identity.** A 32-bit collision
   appears in seconds but cannot fool the determinism gate (it compares the SAME
@@ -1748,6 +1750,55 @@ byte-identical.**
   whose success criterion is *finding a break* attacks the guarantees, not the
   sites — and found the previous round's claims, comments, and own new code were
   where the next defects hid.
+
+**Round 13 — external-review validation: the byte-storage closure and the
+first EXPLICIT deferral.** An external review of the full PR history was
+validated claim-by-claim at head (both blockers CONFIRMED by execution, a few
+precision errors, disposition upheld). JP ruled: fix Blocker 1, explicitly
+defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
+- **Blocker 1 CLOSED (the round-12 pattern, one notch up):** round 12 wrote
+  "`requireOrdinaryBytes` enforces it at every intake seam" and gated TWO
+  seams. Executed at head: `fnv1aFold(state, detached)` returned the state
+  UNCHANGED — a digest attesting zero bytes it was never handed, the exact
+  motivating failure bytes.js itself cites — and `bytesEqual` reported a
+  detached `[1,2,3]` EQUAL to a fresh empty array AND to a detached `[9,9]`.
+  Five seams closed: `fnv1aFold` (inline — the lock hash stays import-free by
+  ruling; rejection in its own dialect, since `String(detached)` dies as a
+  FOREIGN join error), `typedArrayByteLength` (detached geometry is 0 — true
+  and still a lie), `bytesEqual` (both sides), `encodeTraceRecord`'s
+  caller-supplied `out` (shared/resizable slipped past the RECORD_BYTES
+  identity; detached failed it only incidentally), and `compareTraces` record
+  entries (a resizable entry shrinking between the size identity and the copy
+  compared all-zero bytes that never existed — silently, as "identical";
+  fancy storage now THROWS as invalid input, never reported as divergence).
+  **The enforcement is DERIVED:** `tests/ownership-boundary.test.js` (0b)
+  takes the module set from the byte-family LINT block, the export set from
+  the real namespaces, and requires every function export classified —
+  'gated' (invoke thunk run against detached/SAB/resizable, all must throw)
+  or 'no-byte-intake' (stated reason). The two seams C12 gated but never
+  tested (decodeTraceRecord, deserializeGenotype) got their batteries. All 7
+  mutations bite.
+- **Blocker 2 EXPLICITLY DEFERRED (JP's ruling — the first entry in this
+  project's deferral register that states its CHECKED failure mode up
+  front):** `TraceWriter.finish()` returns its LIVE private
+  `#records`/`#checkpoints` arrays, and `analyzeTrace`/`compareTraces` never
+  re-verify caller-held record bytes against the digest/recordCount/
+  byteCount/checkpoint states — so a caller can mutate evidence AFTER
+  attestation and offline forensics will describe bytes the digest never
+  attested. Deferral is sound because the surface is DIAGNOSTIC-only (no
+  lock, no fitness, no selection path consumes it; production traces live
+  and die inside one process's `runEvaluation` result), and the fix belongs
+  to Phase 1B's persisted-history format alongside the strong-digest
+  deferral: EITHER the value model (finish() returns immutable/copied
+  representations) OR the verified-evidence model (`verifyFullTrace`
+  recomputes digest/counts/ordering/checkpoints; `analyzeTrace` accepts only
+  verified results). Freezing the outer array alone is insufficient —
+  Uint8Array contents stay mutable. Recorded at both sites (finish(),
+  analyzeTrace) and in the codec doc §Round 13.
+- The review's historical audit (trust-boundary reversal, champion-API flip,
+  Array-length exemption, the universal-claim ladder, the `__proto__`
+  recreation, spawn-capture propagation) matched the independent churn audit;
+  its "should not be reopened" list is adopted as stable.
 
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a

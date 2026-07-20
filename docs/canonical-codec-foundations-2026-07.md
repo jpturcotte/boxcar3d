@@ -720,12 +720,20 @@ buffer reads as empty (`bytesToHex` → "", `fnv1aFold` unchanged); a
 that never existed; a resizable buffer can shrink under a live reader; a
 cross-realm view fails the same-realm brand. The ruling is REJECTION, not
 support — no shared-memory publication protocol, no cross-realm bridging.
-`requireOrdinaryBytes(bytes, fail)` (bytes.js) enforces it at every intake seam
-(the reader, `bytesToHex`, `decodeTraceRecord`, and — inline, preserving
-assembly.js's zero-import genome-contract ruling — `deserializeGenotype`). The
-intrinsic geometry getters (round 8) and this gate are complementary: the first
-defeats a caller that LIES about shape, the second a caller whose STORAGE is
-transient.
+`requireOrdinaryBytes(bytes, fail)` (bytes.js) enforces it across the DERIVED
+byte-intake surface — the reader (behind the four sequential decoders),
+`bytesToHex`, `typedArrayByteLength`, `decodeTraceRecord`, the
+`encodeTraceRecord` output buffer, `compareTraces` record entries,
+`bytesEqual` (both sides), and — inline, preserving each module's zero-import
+ruling — `deserializeGenotype` and `fnv1aFold`. Round 12 wrote "at every
+intake seam" while gating TWO of these; the corrected claim is pinned, not
+prose: `tests/ownership-boundary.test.js` (0b) derives the module set from
+the byte-family lint block and the export set from the real namespaces, and
+every function export must classify as 'gated' (its thunk run against all
+three fancy stores) or 'no-byte-intake' with a stated reason (§Round 13). The
+intrinsic geometry getters (round 8) and this gate are complementary: the
+first defeats a caller that LIES about shape, the second a caller whose
+STORAGE is transient.
 
 **THE FNV-IDENTITY RULING (JP).** *FNV-1a32 is a drift/lock digest and the
 cross-platform determinism comparator, NOT persistent content identity.* A
@@ -750,6 +758,67 @@ found that the previous round's claims, comments, and even its own new code were
 where the next defects hid. The invariant is only as strong as the surface the
 enforcement actually covers, and the honest way to know that surface is to try
 to break it.
+
+## Round 13: external-review validation — the storage closure and the first explicit deferral
+
+An external review of the full PR history was validated claim-by-claim at
+head; both of its blockers were CONFIRMED by direct execution. JP ruled: fix
+Blocker 1, explicitly defer Blocker 2.
+
+**Blocker 1 (FIXED): the byte-storage gate covered two seams while the doc
+said "every intake seam."** Executed at head: `fnv1aFold(state, detached)`
+returned the state UNCHANGED — a digest attesting zero bytes it was never
+handed, the exact motivating failure this document itself cites — and
+`bytesEqual` reported a detached `[1,2,3]` EQUAL to a fresh empty array and
+to a detached `[9,9]`. Five seams closed (fnv1aFold inline; the gated
+`typedArrayByteLength`; `bytesEqual` through it; the `encodeTraceRecord`
+output buffer; `compareTraces` record entries — where a resizable entry
+shrinking between the size identity and the copy compared all-zero bytes that
+never existed, reported as "identical"). Fancy storage at a compare seam
+THROWS as invalid input; it is never reported as a divergence, because it is
+not one. The enforcement is DERIVED, not enumerated:
+`tests/ownership-boundary.test.js` (0b) takes the module set from the
+byte-family lint block, the export set from the real namespaces, and requires
+every function export classified — 'gated' rows carry an invoke thunk run
+against detached/SharedArrayBuffer/resizable (all must throw); exemptions
+state a reason. The two seams C12 gated but never tested
+(`decodeTraceRecord`, `deserializeGenotype`) received their batteries. Seven
+mutations, all bite. This is the round-11 lesson applied to round 12's own
+claim: a rule declared universal and enforced at discovered sites is not
+closed until the surface is derived.
+
+**Blocker 2 (EXPLICITLY DEFERRED — JP's ruling): mutable trace evidence after
+attestation.** The checked failure mode, stated up front per the round-8
+register discipline: `TraceWriter.finish()` returns its LIVE private
+`#records` and `#checkpoints` arrays, and neither `analyzeTrace` nor
+`compareTraces` re-verifies caller-held record bytes against the trace's
+digest, recordCount, byteCount, or checkpoint states. A caller can therefore
+mutate a record's bytes, a checkpoint state, or array membership AFTER the
+digest was computed, and offline forensics will describe evidence the digest
+never attested. The rounds 11–12 copy-on-intake fixes defend the WALK
+(mid-comparison mutation), not the PROVENANCE (post-attestation
+substitution) — a different axis, and C15's storage gate is a third
+(backing-store lifetime of ordinary bytes).
+
+Why deferral is sound: this surface is DIAGNOSTIC-only. No lock, no fitness
+path, and no selection path consumes `analyzeTrace` or `compareTraces`
+output; production traces are produced and analyzed inside one process's
+`runEvaluation` result. Corrupting caller-held diagnostic evidence deceives
+only its holder. The fix belongs to Phase 1B's persisted-history format —
+the same milestone as the strong-digest deferral — because evidence lifetime
+becomes a real contract exactly when traces are persisted and replayed across
+processes. The recorded decision space, either of:
+
+- **Value model** — `finish()` returns immutable representations (copied
+  frozen checkpoint rows; records as one canonical concatenated artifact or
+  copied buffers).
+- **Verified-evidence model** — a `verifyFullTrace(trace)` that recomputes
+  digest, counts, ordering, and checkpoint states; `analyzeTrace` accepts
+  only its verified/module-owned result.
+
+Freezing the outer arrays alone is insufficient — `Uint8Array` contents stay
+mutable. The deferral is marked at both sites (`finish()`, `analyzeTrace`)
+and in the (0b) classification (`TraceWriter`'s exemption row names it).
 
 ## Binary identity vs the JSON envelope
 

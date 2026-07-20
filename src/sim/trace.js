@@ -471,6 +471,15 @@ export class TraceWriter {
         state: this.#state,
       });
     }
+    // DEFERRED (round 13, explicit ruling — codec doc §Round 13): these are
+    // the writer's LIVE private arrays, and nothing downstream re-verifies
+    // caller-held records against the digest/counts/checkpoints — a caller
+    // can mutate evidence AFTER attestation and offline forensics will
+    // describe bytes the digest never attested. Deliberate: this surface is
+    // diagnostic-only (no lock, fitness, or selection path consumes it), and
+    // the fix (value model vs verified-evidence model) belongs to Phase 1B's
+    // persisted-history format. Freezing the outer arrays would NOT close
+    // it — Uint8Array contents stay mutable.
     return {
       version: EVALUATION_TRACE_VERSION,
       mode: this.#mode,

@@ -232,7 +232,15 @@ captured once, the lint bans re-applied and proven to fire, the decode golden
 widened to cover the gene-decode scales it had missed, and fancy byte storage
 (detached, shared, resizable, cross-realm) rejected at the door rather than
 silently read as empty. Each tooth was mutation-verified: revert the fix, watch
-it fail. No evolutionary behaviour is
+it fail. An external review then proved the storage claim was itself scoped to
+the discovered sites — the digest fold still returned its state unchanged for
+a detached buffer, and byte equality called two detached arrays equal — so the
+gate now covers a *derived* classification of every byte-family export
+(module set from the lint block, export set from the real namespaces, every
+gated seam battered against all three fancy stores), and the one remaining
+finding — trace evidence staying mutable after its digest is computed — is an
+explicit, documented deferral to the Phase-1B persisted-history format, its
+failure mode stated at both sites, rather than an open hole. No evolutionary behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

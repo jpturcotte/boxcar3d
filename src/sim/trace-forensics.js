@@ -277,6 +277,13 @@ export function analyzeTrace(traceResult, {
   if (mode !== 'full') fail('traceResult.mode', `${mode} (analyzeTrace needs retained records — run with trace mode 'full')`);
   if (recordBytes !== RECORD_BYTES) fail('traceResult.recordBytes', recordBytes);
   if (!Array.isArray(records)) fail('traceResult.records', records);
+  // DEFERRED (round 13, explicit ruling — codec doc §Round 13): `records` is
+  // caller-held evidence. Copy-on-intake (rounds 11-12) defends the WALK, not
+  // the PROVENANCE — nothing here re-verifies these bytes against
+  // traceResult.digest/recordCount/byteCount/checkpoints, so analysis of a
+  // post-attestation-mutated result describes bytes the digest never
+  // attested. Diagnostic-only surface; the verification model is a Phase 1B
+  // persisted-history decision.
   const recordCount = records.length;
   if (recordCount === 0) fail('traceResult.records', records);
   if (typeof captureDt !== 'number' || !Number.isFinite(captureDt) || captureDt <= 0) {

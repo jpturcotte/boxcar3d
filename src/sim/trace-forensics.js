@@ -276,9 +276,9 @@ export function analyzeTrace(traceResult, {
   if (version !== EVALUATION_TRACE_VERSION) fail('traceResult.version', version);
   if (mode !== 'full') fail('traceResult.mode', `${mode} (analyzeTrace needs retained records — run with trace mode 'full')`);
   if (recordBytes !== RECORD_BYTES) fail('traceResult.recordBytes', recordBytes);
-  if (!Array.isArray(records) || records.length === 0) {
-    fail('traceResult.records', records);
-  }
+  if (!Array.isArray(records)) fail('traceResult.records', records);
+  const recordCount = records.length;
+  if (recordCount === 0) fail('traceResult.records', records);
   if (typeof captureDt !== 'number' || !Number.isFinite(captureDt) || captureDt <= 0) {
     fail('captureDt', captureDt);
   }
@@ -302,7 +302,9 @@ export function analyzeTrace(traceResult, {
   // disagrees with its indices be ANALYSED as a different trace than the one
   // that was validated. Same rule as the encoders — one reading, the one the
   // consumer performs.
-  for (let ri = 0; ri < records.length; ri += 1) {
+  // Bound captured with the guard above: `resolveReachMap(bodies)` runs
+  // between the two readings, and `length` is writable (round-11).
+  for (let ri = 0; ri < recordCount; ri += 1) {
     const bytes = records[ri];
     const rec = decodeTraceRecord(bytes);
     const key = bodyKey(rec);

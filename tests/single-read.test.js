@@ -24,11 +24,19 @@
 //     destructuring, spread, and Object.values all count; typeof checks,
 //     Array.isArray, Object.keys, and hasOwn do NOT read values and are
 //     free, as in the real threat model.
-//   - A genuine Array's `length` is a non-configurable own data property:
-//     it CANNOT be made to lie by the in-scope threat (no accessor can be
-//     installed, and with no caller code running between reads it cannot
-//     change). Double reads of Array length are therefore harmless and are
-//     exempt BY THE LANGUAGE, not by choice.
+//   - A genuine Array's `length` is a non-configurable own data property, so
+//     no ACCESSOR can be installed on it — but it is WRITABLE, and every
+//     element read in a validation walk is caller code that may write it.
+//     The exemption claimed here through round 10 ("exempt by the language")
+//     was FALSE, and it was the rule behind three round-11 blockers: a
+//     `radius` getter assigning `axles.length = 1` made a 3-axle genotype
+//     serialize to 396 bytes attesting axleCount 1, and a member getter
+//     assigning `individuals.length = 3` made attestPopulation return a
+//     silent prefix. The honest statement is conditional: a repeated read of
+//     Array `length` is safe ONLY when no caller code runs between the reads.
+//     Because the counting instrument below rebuilds Arrays (and so discards
+//     any length-mutating getter), it is structurally blind to this case —
+//     the `LOOP_BOUND_CASES` battery is what covers it.
 //   - TypedArrays pass through untouched (integer-indexed properties
 //     cannot be redefined). The byte decoders read caller bytes through
 //     cached intrinsics and a single reader cursor — audited separately in
@@ -61,7 +69,9 @@ import {
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
-import { INTEGRITY_POLICY_VERSION } from '../src/sim/integrity.js';
+import {
+  INTEGRITY_POLICY_VERSION, createIntegrityState, foldIntegrity,
+} from '../src/sim/integrity.js';
 import {
   EVALUATION_TRACE_VERSION, RECORD_BYTES, TraceWriter,
   compareCheckpoints, compareTraces, encodeTraceRecord,
@@ -244,6 +254,12 @@ const fullTrace = () => ({
 // that asserts a malformed input is refused rather than silently absorbed.
 const MODULE_DIALECT = /^(assembly|population|population-initializer|population-evaluation|trace|trace-forensics|integrity):/;
 
+// One per-body capture in the runner's `reads` shape.
+const integrityReads = () => [
+  { finite: true, translation: { x: 0, y: 0.5, z: 0 }, linvel: { x: 1, y: 0, z: 0 } },
+  { finite: true, translation: { x: 0.2, y: 0.4, z: 0 }, linvel: { x: 2, y: 0, z: 0 } },
+];
+
 const checkpoints = () => [
   { stepIndex: 0, recordCount: 1, byteCount: RECORD_BYTES, state: 111 },
   { stepIndex: 1, recordCount: 2, byteCount: 2 * RECORD_BYTES, state: 222 },
@@ -343,6 +359,10 @@ const CASES = [
   ['trace-forensics.offlineIntegrityView',
     () => [analyzeTrace(fullTrace())],
     (a) => offlineIntegrityView(a)],
+  ['integrity.foldIntegrity', () => [integrityReads()], (reads) => {
+    const state = createIntegrityState(2, 1 / 60);
+    return foldIntegrity(state, 0, reads);
+  }],
 ];
 
 describe('single-read invariant over the public surface', () => {
@@ -350,6 +370,242 @@ describe('single-read invariant over the public surface', () => {
     const { counts, threw } = run(build, call);
     if (threw) throw threw; // valid input must succeed
     expect(multiReads(counts)).toEqual([]);
+  });
+});
+
+// --- The loop-bound battery (round 11) --------------------------------------
+//
+// The counting instrument cannot see this class: it rebuilds Arrays, which
+// discards a length-mutating element getter, so no input it constructs can
+// exhibit the defect. This battery supplies that input directly.
+//
+// `shrinkingArray` is ordinary data — a genuine Array whose FIRST element read
+// assigns its own `length`. Assigning length deletes the trailing indices, so
+// a walk that re-reads its bound mid-iteration silently processes a prefix.
+//
+// The assertion is on the RESULT, not on "it throws": a function may legally
+// reject the truncated input in its own dialect (the captured bound reaches a
+// now-deleted index), but it must never SUCCEED with a different answer. That
+// is the outcome every one of these produced before the bounds were captured —
+// a short well-formed genotype stream, a truncated attested population, and a
+// `compareTraces` verdict of null ("identical") for divergent traces.
+
+function shrinkingArray(values, shrinkTo) {
+  const arr = [];
+  arr.length = values.length;
+  let fired = false;
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    Object.defineProperty(arr, i, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        if (!fired) { fired = true; arr.length = shrinkTo; }
+        return v;
+      },
+    });
+  }
+  return arr;
+}
+
+const outcomeOf = (fn) => {
+  try {
+    return { ok: true, value: fn() };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+};
+
+const multiAxleGenotype = () => {
+  for (let i = 0; i < 200; i += 1) {
+    const g = genotype(i);
+    if (g.axles.length >= 2) return g;
+  }
+  throw new Error('no multi-axle genotype in the corpus');
+};
+
+// [name, honest builder, poisoned builder, call]
+const LOOP_BOUND_CASES = [
+  ['assembly.serializeGenotype (axles)',
+    () => [multiAxleGenotype()],
+    () => {
+      const g = multiAxleGenotype();
+      return [{ ...g, axles: shrinkingArray(g.axles, 1) }];
+    },
+    (g) => serializeGenotype(g)],
+  ['assembly.repairGenotype (axles)',
+    () => [multiAxleGenotype()],
+    () => {
+      const g = multiAxleGenotype();
+      return [{ ...g, axles: shrinkingArray(g.axles, 1) }];
+    },
+    (g) => serializeGenotype(repairGenotype(g))],
+  ['population.attestPopulation (individuals)',
+    () => [smallPopulation()],
+    () => {
+      const p = smallPopulation();
+      return [{ ...p, individuals: shrinkingArray(p.individuals, 2) }];
+    },
+    (p) => attestPopulation(p).bytes],
+  ['population.serializePopulationSnapshot (individuals)',
+    () => [smallPopulation()],
+    () => {
+      const p = smallPopulation();
+      return [{ ...p, individuals: shrinkingArray(p.individuals, 2) }];
+    },
+    (p) => serializePopulationSnapshot(p)],
+  ['population-evaluation.serializeFitnessVector (individuals)',
+    () => [fitnessEvaluation()],
+    () => {
+      const e = fitnessEvaluation();
+      return [{ ...e, individuals: shrinkingArray(e.individuals, 2) }];
+    },
+    (e) => serializeFitnessVector(e)],
+  ['population-initializer.createInitialPopulation (initialSuspensionTypes)',
+    () => [{ seed: 20260721, populationSize: 2, initialSuspensionTypes: ['S0', 'S1'] }],
+    () => [{
+      seed: 20260721,
+      populationSize: 2,
+      initialSuspensionTypes: shrinkingArray(['S0', 'S1'], 1),
+    }],
+    // The manifest bytes: a silently-narrowed category list changes the draw
+    // table, so the whole generation differs while the manifest still attests
+    // to a two-category policy.
+    (c) => serializePopulationInitialization(createInitialPopulation(c))],
+  ['population-evaluation.spawnPoseOnFlatStart (ir.axles)',
+    () => [compileAssembly(realizableGenotype()), { x: -44, z: 0 }],
+    () => {
+      const ir = compileAssembly(realizableGenotype());
+      return [{ ...ir, axles: shrinkingArray(ir.axles, 0) }, { x: -44, z: 0 }];
+    },
+    (ir, opts) => spawnPoseOnFlatStart(ir, opts)],
+  ['trace.compareTraces (records — divergent pair)',
+    () => {
+      const b = fullTrace();
+      b.records[2] = encodeTraceRecord(chassisRecord(2, { linvel: { x: 42, y: 0, z: 0 } }));
+      return [fullTrace(), b];
+    },
+    () => {
+      const b = fullTrace();
+      b.records[2] = encodeTraceRecord(chassisRecord(2, { linvel: { x: 42, y: 0, z: 0 } }));
+      const a = fullTrace();
+      return [{ ...a, records: shrinkingArray(a.records, 1) }, b];
+    },
+    (a, b) => compareTraces(a, b)],
+  // The COUNT verdict specifically: shrink to exactly the loop's bound so the
+  // walk completes and execution REACHES the missing/extra branches. Without
+  // this the two verdict re-reads were unreachable, and reverting them stayed
+  // green — the truncated walk always threw first.
+  ['trace.compareTraces (records — the missingRecord verdict)',
+    () => {
+      const a = fullTrace(); // 3 records
+      const b = fullTrace();
+      b.records.length = 2; // 2 records: a genuine missingRecord
+      return [a, b];
+    },
+    () => {
+      const a = fullTrace();
+      const b = fullTrace();
+      b.records.length = 2;
+      // Shrinks 3 -> 2, which is exactly `n`, so indices 0..1 stay readable.
+      return [{ ...a, records: shrinkingArray(a.records, 2) }, b];
+    },
+    (a, b) => compareTraces(a, b)],
+  ['trace.compareTraces (records — the extraRecord verdict)',
+    () => {
+      const a = fullTrace();
+      a.records.length = 2;
+      return [a, fullTrace()];
+    },
+    () => {
+      const a = fullTrace();
+      a.records.length = 2;
+      const b = fullTrace();
+      return [a, { ...b, records: shrinkingArray(b.records, 2) }];
+    },
+    (a, b) => compareTraces(a, b)],
+  ['trace.compareCheckpoints (entries — divergent pair)',
+    () => {
+      const b = checkpoints();
+      b[1].state = 999;
+      return [checkpoints(), b];
+    },
+    () => {
+      const b = checkpoints();
+      b[1].state = 999;
+      return [shrinkingArray(checkpoints(), 1), b];
+    },
+    (a, b) => compareCheckpoints(a, b)],
+  // `perBody.length` would NOT discriminate here (all three captures belong to
+  // one body), so the assertion reads the per-body CAPTURE COUNT and the step
+  // range — the values a truncated walk actually changes. A tooth that cannot
+  // tell the two apart is not a tooth.
+  ['trace-forensics.analyzeTrace (records)',
+    () => [fullTrace(), { captureDt: 1 / 60 }],
+    () => {
+      const t = fullTrace();
+      return [{ ...t, records: shrinkingArray(t.records, 1) }, { captureDt: 1 / 60 }];
+    },
+    (t, o) => {
+      const a = analyzeTrace(t, o);
+      return { bodies: a.perBody.length, captures: a.perBody[0].captureCount, range: a.stepRange };
+    }],
+  ['trace-forensics.analyzeTrace (bodies — the reach map)',
+    () => [fullTrace(), { captureDt: 1 / 60, bodies: bodyReachMetadataForIR(compileAssembly(realizableGenotype())) }],
+    () => {
+      const bodies = bodyReachMetadataForIR(compileAssembly(realizableGenotype()));
+      return [fullTrace(), { captureDt: 1 / 60, bodies: shrinkingArray(bodies, 1) }];
+    },
+    (t, o) => analyzeTrace(t, o).perBody.length],
+  ['trace-forensics.bodyReachMetadataForIR (ir.axles)',
+    () => [compileAssembly(realizableGenotype())],
+    () => {
+      const ir = compileAssembly(realizableGenotype());
+      return [{ ...ir, axles: shrinkingArray(ir.axles, 0) }];
+    },
+    (ir) => bodyReachMetadataForIR(ir).length],
+  ['integrity.foldIntegrity (reads)',
+    () => [integrityReads()],
+    () => [shrinkingArray(integrityReads(), 1)],
+    (reads) => {
+      const state = createIntegrityState(2, 1 / 60);
+      foldIntegrity(state, 0, reads);
+      return state.peakBodySpeed;
+    }],
+];
+
+describe('loop bounds captured before caller code runs (round-11)', () => {
+  test.each(LOOP_BOUND_CASES)('%s: a shrinking element getter never yields a different answer',
+    (name, honest, poisoned, call) => {
+      const expected = outcomeOf(() => call(...honest()));
+      expect(expected.ok).toBe(true); // the control must be a real success
+      const actual = outcomeOf(() => call(...poisoned()));
+      if (actual.ok) {
+        // Succeeded — then it must be the SAME answer, not a silent prefix.
+        expect(actual.value).toEqual(expected.value);
+      } else {
+        // Rejected — then loudly, in the owning module's dialect.
+        expect(actual.message).toMatch(MODULE_DIALECT);
+      }
+    });
+
+  test('the battery is honest: an uncaptured bound is caught', () => {
+    // A deliberately-broken walk with the exact defect shape, proving the
+    // assertion above reddens rather than passing vacuously.
+    const broken = (arr) => {
+      const out = [];
+      for (let i = 0; i < arr.length; i += 1) out.push(arr[i]);
+      return out;
+    };
+    const fixed = (arr) => {
+      const n = arr.length;
+      const out = [];
+      for (let i = 0; i < n; i += 1) out.push(arr[i]);
+      return out;
+    };
+    expect(broken([1, 2, 3])).toEqual([1, 2, 3]);
+    expect(broken(shrinkingArray([1, 2, 3], 1))).toEqual([1]); // silent prefix
+    expect(fixed(shrinkingArray([1, 2, 3], 1))).toEqual([1, undefined, undefined]);
   });
 });
 

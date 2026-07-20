@@ -574,7 +574,7 @@ export function compareTraces(expected, actual) {
     }
     return { bytes: encodeTraceRecord(entry) };
   };
-  const n = Math.min(expRecords.length, actRecords.length);
+  const n = Math.min(counts.expectedCount, counts.actualCount);
   for (let i = 0; i < n; i += 1) {
     const e = toBytes(expRecords[i], i, 'expected');
     if (e.sizeError) return e.sizeError;
@@ -609,11 +609,16 @@ export function compareTraces(expected, actual) {
       actualBytes: hexBytes(taWindow(a.bytes, f.offset, f.bytes)),
     };
   }
-  if (expRecords.length > actRecords.length) {
+  // The verdict uses the COUNTED lengths, never a fresh read: the loop above
+  // ran the caller's element getters, and Array length is writable, so an
+  // element getter that shrank its own array made both branches false and this
+  // function return null — "traces identical" — for genuinely divergent input
+  // (measured, round-11, in both directions).
+  if (counts.expectedCount > counts.actualCount) {
     const e = toBytes(expRecords[n], n, 'expected');
     return { kind: 'missingRecord', ...counts, index: n, identity: e.sizeError ? null : identityOf(e.bytes) };
   }
-  if (actRecords.length > expRecords.length) {
+  if (counts.actualCount > counts.expectedCount) {
     const a = toBytes(actRecords[n], n, 'actual');
     return { kind: 'extraRecord', ...counts, index: n, identity: a.sizeError ? null : identityOf(a.bytes) };
   }
@@ -635,12 +640,16 @@ const CHECKPOINT_FIELDS = Object.freeze(['stepIndex', 'recordCount', 'byteCount'
 // into a module-owned row. The comparison, the reported expected/actual rows,
 // firstDifferingStepIndex and lastAgreedStepIndex then all describe the same
 // reading — a divergence report that re-read the caller could otherwise print
-// values that were never compared. (`length` on an Array.isArray-gated input is
-// a non-configurable own data property and cannot lie.)
+// values that were never compared. The BOUND is captured for the same reason:
+// `length` cannot be an accessor on a genuine Array, but it is writable and the
+// entry reads below are caller code, so a shrinking element getter otherwise
+// truncated the snapshot and defeated the `length` divergence branch
+// (measured, round-11 — the earlier "cannot lie" note here was false).
 function snapshotCheckpoints(side, label) {
   if (!Array.isArray(side)) compareFail(`invalid ${label} checkpoints`, side);
+  const count = side.length;
   const rows = [];
-  for (let i = 0; i < side.length; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const entry = side[i];
     if (typeof entry !== 'object' || entry === null) compareFail(`invalid ${label} checkpoint[${i}]`, entry);
     const row = {};

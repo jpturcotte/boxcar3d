@@ -149,7 +149,10 @@ function resolvePolicy(config) {
   // and the Set is this module's, not the caller's.
   const owned = [];
   const seenCats = new Set();
-  for (let i = 0; i < cats.length; i += 1) {
+  // Bound captured: `length` is writable and the body reads caller elements
+  // (round-11 class sweep — the same rule as captureGenotype's axle walk).
+  const catCount = cats.length;
+  for (let i = 0; i < catCount; i += 1) {
     const c = cats[i];
     if (!INITIAL_SUSPENSION_MASK.includes(c)) {
       fail(`initialSuspensionTypes[${i}]`, `${String(c)} — initial seeding masks to ${INITIAL_SUSPENSION_MASK.join('/')} (S2 lands with its realization PR)`);

@@ -101,9 +101,16 @@ function validatedMembers(population) {
   }
   const individuals = population.individuals;
   if (!Array.isArray(individuals) || individuals.length === 0) fail('individuals', individuals);
+  // CAPTURE THE BOUND before the walk: the body calls serializeGenotype on a
+  // caller-owned genotype, so caller code runs between two readings of
+  // `individuals.length`, and Array length is writable. Measured (round-11): a
+  // member accessor assigning `individuals.length = 3` made attestPopulation
+  // return a silent PREFIX — 4 members in, 3 attested, 1476 bytes instead of
+  // 1752 — that re-decodes cleanly.
+  const count = individuals.length;
   const seen = new Set();
   const members = [];
-  for (let i = 0; i < individuals.length; i += 1) {
+  for (let i = 0; i < count; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`individuals[${i}]`, ind);
     // CAPTURE ONCE, then never touch the caller's property again. `ind` is a

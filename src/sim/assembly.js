@@ -368,11 +368,19 @@ function captureGenotype(genotype) {
   checkGene(bulge, 'fam.hull.bulge');
   const axles = genotype.axles;
   if (!Array.isArray(axles)) fail('axles', axles);
-  // `axles.length` on a genuine Array is a non-configurable own DATA property:
-  // it cannot be an accessor, and no caller code runs between these reads, so
-  // this is the one caller-owned length that cannot lie.
+  // CAPTURE THE BOUND. `axles.length` cannot be an ACCESSOR (it is a
+  // non-configurable own data property on a genuine Array) — but it IS
+  // writable, and the loop body below reads caller gene leaves, which may be
+  // ordinary own accessors, i.e. caller CODE running between two readings of
+  // the bound. Measured (round-11): a `radius` getter that assigned
+  // `axles.length = 1` on its first call made a 3-axle genotype serialize to
+  // 396 bytes with axleCount 1 — a short, well-formed, cleanly-decodable
+  // stream attesting a genotype the caller's object did not hold. The earlier
+  // comment here asserted the opposite and was false; "no accessor" is not
+  // "cannot change".
+  const axleCount = axles.length;
   const outAxles = [];
-  for (let i = 0; i < axles.length; i += 1) { // indexed: see nodes above
+  for (let i = 0; i < axleCount; i += 1) { // indexed: see nodes above
     const a = requireObject(axles[i], `axles[${i}]`);
     const axle = {};
     for (const k of AXLE_GENES) {

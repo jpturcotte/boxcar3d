@@ -73,9 +73,44 @@ function checkUnknownKeys(obj, allowed, path) {
 // the seed-0 DEFAULT terrain with no error. A guard that decides presence must
 // use the same property enumeration its consumer reads with.
 const TERRAIN_RANGE_MAX = 0xff;
+const QUAT_KEYS = ['x', 'y', 'z', 'w'];
+const VEC3_KEYS = ['x', 'y', 'z'];
+
+// Capture the components realizeVehicle reads into a module-owned object, so
+// the spawn pose the unit-quaternion gate validates is the pose the placement
+// math executes (round-11 I2). A non-object passes through unchanged.
+function captureSpawnComponents(v, keys) {
+  if (typeof v !== 'object' || v === null) return v;
+  const out = {};
+  for (let i = 0; i < keys.length; i += 1) out[keys[i]] = v[keys[i]];
+  return out;
+}
+
+// A terrain sub-object (e.g. featureTypeWeights) must be ORDINARY plain data:
+// a plain/null prototype and own-enumerable string keys only.
+// generateCorridorTerrain reads these by specific key, so a non-enumerable own
+// key or an inherited enumerable one would be silently dropped from the
+// module-owned copy and revert to a default while the digest attested it — the
+// silently-wrong-terrain class (round-11 I4/I5). Copied via spread
+// (CreateDataProperty), which — unlike `sub[k] = v[k]` — never invokes the
+// inherited `__proto__` SETTER, so an own `__proto__` key cannot re-prototype
+// the copy.
+function ownPlainTerrainSub(v, path) {
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) fail(path, 'must be a plain object');
+  if (Object.getOwnPropertyNames(v).length !== Object.keys(v).length) {
+    fail(path, 'carries non-enumerable own properties');
+  }
+  return { ...v };
+}
 
 function ownTerrainOptions(terrain) {
   const allowed = Object.keys(TERRAIN_DEFAULTS);
+  // The terrain itself must be ordinary: a custom prototype carrying enumerable
+  // knobs would be dropped by the `{ ...TERRAIN_DEFAULTS, ...terrain }` spread
+  // and revert to defaults while the digest attested them.
+  const tProto = Object.getPrototypeOf(terrain);
+  if (tProto !== Object.prototype && tProto !== null) fail('terrain', 'must be a plain object');
   const keys = Object.keys(terrain);
   // Nothing may hide outside the enumeration the spread reads: a non-enumerable
   // known knob would otherwise revert to its default silently while the digest
@@ -101,10 +136,7 @@ function ownTerrainOptions(terrain) {
       for (let j = 0; j < declared; j += 1) copy.push(v[j]);
       out[k] = copy;
     } else if (typeof v === 'object' && v !== null) {
-      const sub = {};
-      const subKeys = Object.keys(v);
-      for (let j = 0; j < subKeys.length; j += 1) sub[subKeys[j]] = v[subKeys[j]];
-      out[k] = sub;
+      out[k] = ownPlainTerrainSub(v, `terrain.${k}`);
     } else {
       out[k] = v;
     }
@@ -189,12 +221,20 @@ function validateOptions(options) {
       fail(`vehicles[${i}].spawn.position`, JSON.stringify({ x: px, y: py, z: pz }));
     }
     // rotation/linvel/targetWheelSurfaceSpeed/wheelFriction are validated in
-    // depth by realizeVehicle — the existing thorough, message-rich gate. They
-    // are captured here so the value whose PRESENCE decides whether the option
-    // is forwarded is the value that is forwarded.
+    // depth by realizeVehicle — the existing thorough, message-rich gate. Their
+    // COMPONENTS are captured here, exactly as spawn.position is two lines up:
+    // storing the caller's `rotation`/`linvel` OBJECT by reference (round-11's
+    // gap) let realizeVehicle read each component ~25/7 more times — the
+    // unit-quaternion gate, `setRotation`, every hub/wheel body, every
+    // `rotateByQuat` — so an ordinary own accessor validated the identity
+    // quaternion and executed yaw-90, or passed the |q|²=1 gate and realized a
+    // non-unit rotation, `finite:true`/`integrity:'ok'` at a pose nothing
+    // validated. Capturing {x,y,z,w}/{x,y,z} makes validated == executed. A
+    // non-object is passed through unchanged — a primitive cannot lie on
+    // re-read, and realizeVehicle rejects it with its message.
     const record = { ir, position: { x: px, y: py, z: pz } };
-    if (rotation !== undefined) record.rotation = rotation;
-    if (linvel !== undefined) record.linvel = linvel;
+    if (rotation !== undefined) record.rotation = captureSpawnComponents(rotation, QUAT_KEYS);
+    if (linvel !== undefined) record.linvel = captureSpawnComponents(linvel, VEC3_KEYS);
     if (targetWheelSurfaceSpeed !== undefined) record.targetWheelSurfaceSpeed = targetWheelSurfaceSpeed;
     if (wheelFriction !== undefined) record.wheelFriction = wheelFriction;
     ownedVehicles.push(record);

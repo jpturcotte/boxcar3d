@@ -496,6 +496,10 @@ function resolveSpec(spec) {
   // any non-enumerable known knob (featureDensity 0 silently became 0.4).
   // The general rule: a guard that decides presence must use the same property
   // enumeration its consumer reads with.
+  // The terrain must be ordinary: a custom prototype carrying enumerable knobs
+  // would be dropped by the generation spread and revert to defaults.
+  const tProto = Object.getPrototypeOf(terrain);
+  if (tProto !== Object.prototype && tProto !== null) fail('terrain', 'must be a plain object');
   const terrainKeys = Object.keys(terrain);
   // …and nothing may hide OUTSIDE that enumeration. Without this, a
   // non-enumerable known knob (`featureDensity`) still reverted to its default
@@ -504,13 +508,26 @@ function resolveSpec(spec) {
   if (Object.getOwnPropertyNames(terrain).length !== terrainKeys.length) {
     fail('terrain', 'carries non-enumerable own properties (the resolved terrain reads own enumerable keys only)');
   }
-  let sawSeed = false;
+  // CAPTURE ONCE: read each own-enumerable value into a module-owned object, and
+  // derive BOTH the seed-presence guard and the resolved terrain from that
+  // single reading. The old shape enumerated the caller TWICE — the presence
+  // walk here, then the `{ ...terrain }` spread at line ~550 — so an accessor on
+  // an earlier key could `delete this.seed` between them: the guard saw seed
+  // present, the spread dropped it, and evaluatePopulation attested the DEFAULT
+  // seed-0 world (round-11 I1, measured). The captured seed value, if deleted
+  // mid-walk, becomes `undefined` and fails loud at validateConfig, never a
+  // silent default.
+  const capturedTerrain = {};
   for (let i = 0; i < terrainKeys.length; i += 1) {
     const k = terrainKeys[i];
     if (!Object.prototype.hasOwnProperty.call(TERRAIN_DEFAULTS, k)) fail(`terrain.${k}`, 'unknown key');
-    if (k === 'seed') sawSeed = true;
+    // k is a known TERRAIN_DEFAULTS key (never `__proto__`); defineProperty for
+    // uniformity with the rest of the ownership boundary.
+    Object.defineProperty(capturedTerrain, k, {
+      value: terrain[k], writable: true, enumerable: true, configurable: true,
+    });
   }
-  if (!sawSeed) {
+  if (!Object.prototype.hasOwnProperty.call(capturedTerrain, 'seed')) {
     fail('terrain.seed', 'missing (a fitness vector must never bind the default seed by accident)');
   }
   if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 0xffffffff) fail('maxSteps', maxSteps);
@@ -547,7 +564,7 @@ function resolveSpec(spec) {
   if (onIndividual !== undefined && typeof onIndividual !== 'function') {
     fail('hooks.onIndividual', onIndividual);
   }
-  const resolvedTerrain = ownTerrain({ ...TERRAIN_DEFAULTS, ...terrain });
+  const resolvedTerrain = ownTerrain({ ...TERRAIN_DEFAULTS, ...capturedTerrain });
   // The two scalars the flat-pad guard computes with must be honest numbers
   // BEFORE the comparison: a NaN length made both comparisons vacuously false
   // (the guard silently passed), and a string coerced through the arithmetic.
@@ -609,6 +626,17 @@ function ownTerrain(terrain) {
       for (let i = 0; i < declared; i += 1) copy.push(v[i]);
       out[k] = Object.freeze(copy);
     } else if (v !== null && typeof v === 'object') {
+      // A nested knob object (featureTypeWeights) must be ordinary plain data.
+      // The old `{ ...v }` was safe against an own `__proto__` key but silently
+      // DROPPED a non-enumerable own key or an inherited enumerable one, which
+      // generateCorridorTerrain then read as a missing (0/default) weight while
+      // the digest attested it — the silently-wrong-terrain class one level down
+      // (round-11).
+      const proto = Object.getPrototypeOf(v);
+      if (proto !== Object.prototype && proto !== null) fail(`terrain.${k}`, 'must be a plain object');
+      if (Object.getOwnPropertyNames(v).length !== Object.keys(v).length) {
+        fail(`terrain.${k}`, 'carries non-enumerable own properties');
+      }
       out[k] = Object.freeze({ ...v });
     } else {
       out[k] = v;

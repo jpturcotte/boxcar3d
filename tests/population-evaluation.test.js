@@ -762,6 +762,37 @@ describe('evaluatePopulation (deterministic flavor)', () => {
       .rejects.toThrow(/terrain.*non-enumerable/);
   });
 
+  test('a deleter-accessor that removes seed between the guard and the spread fails loud, never seed-0', { timeout: 240000 }, async () => {
+    // The break-it sweep (C8/I1): resolveSpec enumerated the caller's terrain
+    // TWICE — the presence guard, then `{ ...terrain }` at generation — so an
+    // accessor on an earlier key deleting `seed` between them let the guard see
+    // it present while the spread dropped it, and evaluatePopulation attested
+    // the DEFAULT seed-0 world. The single capture makes the deleted seed
+    // `undefined`, which fails loud at validateConfig.
+    const spec = baseSpec();
+    const terrain = { featureDensity: 0.1, seed: spec.terrain.seed, length: 120, startFlatLength: 30 };
+    Object.defineProperty(terrain, 'featureDensity', {
+      enumerable: true, configurable: true, get() { delete terrain.seed; return 0.1; },
+    });
+    await expect(evaluatePopulation(popOf(member(5, s0PlainGenotype())), { ...spec, terrain }))
+      .rejects.toThrow(/seed/);
+  });
+
+  test('a terrain on a custom prototype is refused, never run with inherited knobs dropped', { timeout: 240000 }, async () => {
+    const spec = baseSpec();
+    const terrain = Object.assign(Object.create({ featureDensity: 0.9 }),
+      { ...spec.terrain });
+    await expect(evaluatePopulation(popOf(member(5, s0PlainGenotype())), { ...spec, terrain }))
+      .rejects.toThrow(/plain object/);
+  });
+
+  test('an own __proto__ in featureTypeWeights cannot re-prototype the resolved terrain', { timeout: 240000 }, async () => {
+    const spec = baseSpec();
+    const terrain = { ...spec.terrain, featureTypeWeights: JSON.parse('{"__proto__":{"boulder":9},"ramp":0.3,"log":0.3}') };
+    await expect(evaluatePopulation(popOf(member(5, s0PlainGenotype())), { ...spec, terrain }))
+      .rejects.toThrow();
+  });
+
   test('a caller-declared terrain range length cannot allocate before it is bounded', async () => {
     // `ownTerrain` densified a range up to the caller's DECLARED length before
     // any value validation — measured 58 MB at 2e6 and an uncatchable

@@ -219,6 +219,81 @@ describe('runEvaluation options validation', () => {
     expect(reads).toBe(1);
     expect(r.vehicles).toHaveLength(1);
   });
+
+  // --- The break-it sweep: spawn.rotation/linvel and terrain (C8) ------------
+  //
+  // Round-11 C3 captured spawn.position componentwise but left spawn.rotation
+  // and spawn.linvel by reference, so realizeVehicle re-read each component ~25
+  // times: a validated identity quaternion executed as yaw-90, and a |q|²=1
+  // reading passed the unit-quaternion gate to a realized non-unit rotation.
+
+  test('a two-faced spawn.rotation cannot make the validated pose differ from the executed one', async () => {
+    const S = Math.SQRT1_2;
+    const twoFaced = (first, then) => {
+      const c = { x: 0, y: 0, z: 0, w: 0 }; const o = {};
+      for (const k of ['x', 'y', 'z', 'w']) {
+        Object.defineProperty(o, k, { enumerable: true, get() { c[k] += 1; return c[k] === 1 ? first[k] : then[k]; } });
+      }
+      return o;
+    };
+    const run = async (rot) => {
+      const o = base(); o.maxSteps = 30; o.trace = { mode: 'digest' };
+      o.vehicles[0].spawn.rotation = rot;
+      return runEvaluation(o);
+    };
+    const honestId = await run({ x: 0, y: 0, z: 0, w: 1 });
+    // The accessor is honest on the FIRST read of each component (the only read
+    // the captured pose now performs) and lies afterward. The run must match the
+    // honest first-read value, not the poison.
+    const attacked = await run(twoFaced({ x: 0, y: 0, z: 0, w: 1 }, { x: 0, y: S, z: 0, w: S }));
+    expect(attacked.trace.digest).toBe(honestId.trace.digest);
+  });
+
+  test('a genuinely non-unit spawn.rotation is still rejected by the unit-quaternion gate', async () => {
+    const o = base(); o.maxSteps = 2; o.trace = { mode: 'none' };
+    o.vehicles[0].spawn.rotation = { x: 0.9, y: 0.9, z: 0.9, w: 0.9 }; // |q|² = 3.24
+    await expect(runEvaluation(o)).rejects.toThrow(/unit quaternion/);
+  });
+
+  test('a two-faced spawn.linvel cannot slip a NaN past finiteVec via a later read', async () => {
+    const o = base(); o.maxSteps = 2; o.trace = { mode: 'none' };
+    // Honest {0,0,0} on the first read of each component — the captured value —
+    // and NaN afterward. The single-read capture runs the honest value.
+    const c = { x: 0, y: 0, z: 0 }; const lv = {};
+    for (const k of ['x', 'y', 'z']) {
+      Object.defineProperty(lv, k, { enumerable: true, get() { c[k] += 1; return c[k] === 1 ? 0 : NaN; } });
+    }
+    o.vehicles[0].spawn.linvel = lv;
+    const r = await runEvaluation(o);
+    expect(r.vehicles[0].finite).toBe(true);
+  });
+
+  test('an own __proto__ key in featureTypeWeights cannot re-prototype the terrain copy', async () => {
+    const o = base();
+    o.terrain = { ...o.terrain, featureTypeWeights: JSON.parse('{"__proto__":{"boulder":9},"ramp":0.3,"log":0.3}') };
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow();
+  });
+
+  test('a terrain whose deleter-accessor removes seed during the walk fails loud, never seed-0', async () => {
+    // An accessor on an earlier key deletes `seed` mid-walk. The old shape read
+    // the terrain twice (presence guard, then spread), so the guard saw seed and
+    // the run digested the default seed-0 world; the single capture makes the
+    // deleted seed `undefined`, which fails loud.
+    const o = base();
+    const t = { featureDensity: 0.1, seed: 20260722, length: 120, startFlatLength: 30 };
+    Object.defineProperty(t, 'featureDensity', {
+      enumerable: true, configurable: true,
+      get() { delete t.seed; return 0.1; },
+    });
+    o.terrain = t;
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow(/seed/);
+  });
+
+  test('a terrain on a custom prototype is rejected, never run with inherited knobs dropped', async () => {
+    const o = base();
+    o.terrain = Object.assign(Object.create({ featureDensity: 0.9 }), { seed: 20260722, length: 120, startFlatLength: 30 });
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow(/plain object/);
+  });
 });
 
 // --- readBodyState: the latch classification seam (measured engine states) ----

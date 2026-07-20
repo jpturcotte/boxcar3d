@@ -239,6 +239,11 @@ const fullTrace = () => ({
   records: [0, 1, 2].map((k) => encodeTraceRecord(chassisRecord(k))),
 });
 
+// Every module's fail-loud dialect, so "rejected" can be distinguished from
+// "escaped as a foreign TypeError/RangeError". Shared by every section below
+// that asserts a malformed input is refused rather than silently absorbed.
+const MODULE_DIALECT = /^(assembly|population|population-initializer|population-evaluation|trace|trace-forensics|integrity):/;
+
 const checkpoints = () => [
   { stepIndex: 0, recordCount: 1, byteCount: RECORD_BYTES, state: 111 },
   { stepIndex: 1, recordCount: 2, byteCount: 2 * RECORD_BYTES, state: 222 },
@@ -345,6 +350,168 @@ describe('single-read invariant over the public surface', () => {
     const { counts, threw } = run(build, call);
     if (threw) throw threw; // valid input must succeed
     expect(multiReads(counts)).toEqual([]);
+  });
+});
+
+// --- Structural guards on caller collections (round-11) ---------------------
+//
+// Ordinary malformed data must leave a public seam in the OWNING module's
+// dialect, never as a foreign TypeError and never as a silently narrower
+// answer. `bodyReachMetadataForIR`'s non-array `wheels` is the sharpest case:
+// the indexed rewrite made it return chassis-only metadata with NO error,
+// nulling every wheel and hub tip-speed proxy, where the previous shape threw.
+
+describe('malformed caller collections fail loud, never silently narrow', () => {
+  const ir = () => compileAssembly(realizableGenotype());
+
+  test.each([
+    ['axles[0] is not an object', (x) => { x.axles = [42]; }],
+    ['axles[0] is null', (x) => { x.axles = [null]; }],
+    // `{}` specifically, not a string: a string has a `length`, so the loop
+    // still runs and fails on its first character. An object with NO length
+    // makes the loop run zero times — the SILENT path (chassis-only metadata,
+    // every wheel and hub tip-speed proxy nulled, no error) that this module's
+    // indexed rewrite introduced and that a string never exposes.
+    ['axles[0].wheels is not an array', (x) => { x.axles = [{ ...x.axles[0], wheels: {} }]; }],
+    ['axles[0].wheels[0] is null', (x) => { x.axles = [{ ...x.axles[0], wheels: [null] }]; }],
+  ])('bodyReachMetadataForIR: %s', (label, mutate) => {
+    const x = { ...ir(), axles: [...ir().axles] };
+    mutate(x);
+    expect(() => bodyReachMetadataForIR(x)).toThrow(MODULE_DIALECT);
+  });
+
+  test.each([
+    ['axles[0] is not an object', (x) => { x.axles = [42]; }],
+    ['axles[0] is null', (x) => { x.axles = [null]; }],
+    // `{}` specifically, not a string: a string has a `length`, so the loop
+    // still runs and fails on its first character. An object with NO length
+    // makes the loop run zero times — the SILENT path (chassis-only metadata,
+    // every wheel and hub tip-speed proxy nulled, no error) that this module's
+    // indexed rewrite introduced and that a string never exposes.
+    ['axles[0].wheels is not an array', (x) => { x.axles = [{ ...x.axles[0], wheels: {} }]; }],
+    ['a hole in axles', (x) => { const a = [...x.axles]; a.length = a.length + 1; x.axles = a; }],
+  ])('spawnPoseOnFlatStart: %s', (label, mutate) => {
+    const x = { ...ir(), axles: [...ir().axles] };
+    mutate(x);
+    expect(() => spawnPoseOnFlatStart(x, { x: -44, z: 0 })).toThrow(MODULE_DIALECT);
+  });
+
+  test('analyzeTrace: an own forEach on bodies cannot skip the validation walk', () => {
+    // `bodies.forEach` was looked up on the CALLER's array, so a no-op own
+    // forEach silently produced an EMPTY reach map: every malformed entry
+    // passed and tip speed came back null with no error. The walk is indexed
+    // now, so the malformed entry is what it always should have been — loud.
+    const bodies = [{ vehicleIndex: 0, bodyRole: 'chassis', axleIndex: null, wheelIndex: null, reach: -1 }];
+    Object.defineProperty(bodies, 'forEach', { value: () => {}, configurable: true });
+    expect(() => analyzeTrace(fullTrace(), { captureDt: 1 / 60, bodies }))
+      .toThrow(/bodies\[0\]\.reach/);
+  });
+
+  test('analyzeTrace: an own Symbol.iterator on bodies cannot substitute the walk', () => {
+    // The other half of "never walk a caller collection through caller code":
+    // `forEach` and `Symbol.iterator` are the same defect wearing two names.
+    // Index 0 holds a malformed entry; the iterator yields a valid one. An
+    // iterator-driven walk validates what it was HANDED and the map keys what
+    // the indices hold — two different collections.
+    const bad = { vehicleIndex: 0, bodyRole: 'chassis', axleIndex: null, wheelIndex: null, reach: -1 };
+    const good = { vehicleIndex: 0, bodyRole: 'chassis', axleIndex: null, wheelIndex: null, reach: 1 };
+    const bodies = [bad];
+    Object.defineProperty(bodies, Symbol.iterator, {
+      configurable: true,
+      value: function* iterate() { yield good; },
+    });
+    expect(() => analyzeTrace(fullTrace(), { captureDt: 1 / 60, bodies }))
+      .toThrow(/bodies\[0\]\.reach/);
+  });
+
+  test('analyzeTrace: a two-faced reach cannot store a value no check saw', () => {
+    // A nonzero angvel, so tip speed = |angvel| * reach actually depends on the
+    // stored value and the assertion cannot pass vacuously at 0.
+    const spinning = () => ({
+      version: EVALUATION_TRACE_VERSION,
+      mode: 'full',
+      recordBytes: RECORD_BYTES,
+      records: [0, 1, 2].map((k) => encodeTraceRecord(
+        chassisRecord(k, { angvel: { x: 0, y: 0, z: 4 } }),
+      )),
+    });
+    const body = (reach) => ({
+      vehicleIndex: 0, bodyRole: 'chassis', axleIndex: null, wheelIndex: null, reach,
+    });
+    let n = 0;
+    const poisoned = [{ ...body(1), get reach() { n += 1; return n === 1 ? 1 : 1e6; } }];
+    const a = analyzeTrace(spinning(), { captureDt: 1 / 60, bodies: poisoned });
+    expect(n).toBe(1);
+    const control = analyzeTrace(spinning(), { captureDt: 1 / 60, bodies: [body(1)] });
+    expect(control.perBody[0].peakTipSpeed.value).toBeGreaterThan(0); // discriminating
+    expect(a.perBody[0].peakTipSpeed).toEqual(control.perBody[0].peakTipSpeed);
+  });
+});
+
+// --- ownPlainData fidelity (round-11) ---------------------------------------
+//
+// The copy that makes `spawnPoseOnFlatStart`'s ownership boundary true is new
+// in this PR and was the least-reviewed code in it. Three gaps, each measured:
+// a non-Object.prototype container passed through BY REFERENCE (so the planner
+// re-read caller data and a caller-installed `forEach` ran inside the module —
+// spawn y 50.42 vs 0.54); `out[key] = ...` on an own `"__proto__"` key invoked
+// the inherited SETTER, dropping the property and giving the copy a
+// caller-chosen prototype; and unbounded recursion turned a cyclic IR into a
+// foreign RangeError.
+
+describe('ownPlainData copies with fidelity or refuses (round-11)', () => {
+  const baseIr = () => compileAssembly(realizableGenotype());
+  const withAxles = (axles) => ({ ...baseIr(), axles });
+
+  test('a null-prototype axle is copied, not aliased — and still yields the honest pose', () => {
+    const ir = baseIr();
+    const control = spawnPoseOnFlatStart(ir, { x: -44, z: 0 });
+    const dictAxles = ir.axles.map((a) => Object.assign(Object.create(null), a));
+    const got = spawnPoseOnFlatStart(withAxles(dictAxles), { x: -44, z: 0 });
+    expect(got).toEqual(control);
+  });
+
+  test('a class-instance axle is refused rather than silently passed by reference', () => {
+    class Axle {}
+    const ir = baseIr();
+    const exotic = ir.axles.map((a) => Object.assign(new Axle(), a));
+    expect(() => spawnPoseOnFlatStart(withAxles(exotic), { x: -44, z: 0 }))
+      .toThrow(MODULE_DIALECT);
+  });
+
+  test('an own "__proto__" key cannot smuggle structure through the copy', () => {
+    // Exactly what `JSON.parse('{"__proto__": {...}}')` yields — plain data, an
+    // own data property, not the inherited accessor. With `out[key] = ...` the
+    // ASSIGNMENT invoked that inherited setter: the property vanished from the
+    // copy and the copy's PROTOTYPE became the caller's object, so an axle with
+    // no own `wheels` silently acquired one and the guards below saw a
+    // well-formed axle that the caller's data never contained.
+    // `defineProperty` stores it as data, so the missing `wheels` stays missing
+    // and is refused.
+    const ir = baseIr();
+    const axle = { ...ir.axles[0] };
+    delete axle.wheels;
+    Object.defineProperty(axle, '__proto__', {
+      value: { wheels: [] }, enumerable: true, configurable: true, writable: true,
+    });
+    // Premise: the own key really is own and enumerable (not the accessor).
+    expect(Object.keys(axle)).toContain('__proto__');
+    expect(() => spawnPoseOnFlatStart(withAxles([axle]), { x: -44, z: 0 }))
+      .toThrow(/ir\.axles\[0\]\.wheels/);
+  });
+
+  test('a cyclic IR fails in the module dialect, never as a foreign RangeError', () => {
+    const ir = baseIr();
+    const axles = ir.axles.map((a) => ({ ...a }));
+    axles[0].self = axles[0]; // an ordinary cycle in plain data
+    let message = '';
+    try {
+      spawnPoseOnFlatStart(withAxles(axles), { x: -44, z: 0 });
+    } catch (e) {
+      message = e.message;
+    }
+    expect(message).toMatch(MODULE_DIALECT);
+    expect(message).not.toMatch(/call stack/);
   });
 });
 

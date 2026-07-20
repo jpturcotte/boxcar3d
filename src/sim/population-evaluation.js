@@ -255,19 +255,55 @@ export function fitnessFromVehicleResult(vehicleResult) {
  * this module's single-read guarantee holds at its own boundary without
  * imposing the rule on the physics layer. Indexed and key-enumerated, never
  * via caller-visible `.map`/iterators.
+ *
+ * Three round-11 corrections, each measured:
+ *  - the plainness gate was `getPrototypeOf(v) === Object.prototype`, so an
+ *    `Object.create(null)` dictionary or a class instance — ordinary data,
+ *    not exotic — passed through BY REFERENCE and the planner then re-read it
+ *    (spawn y 50.42 vs 0.54, and a caller-installed `forEach` invoked inside
+ *    the boundary). The gate is now "no caller code reachable through the
+ *    copy": null-prototype and Object.prototype containers are copied,
+ *    everything else is refused rather than silently aliased.
+ *  - `out[key] = ...` invokes the inherited SETTER for an own `"__proto__"`
+ *    key (exactly what `JSON.parse('{"__proto__":{...}}')` produces): the
+ *    property vanished and the "owned" copy adopted a caller-chosen
+ *    prototype. defineProperty stores the value as data, always.
+ *  - the recursion had no bound, so a cyclic or 12,000-deep plain object left
+ *    this module as a foreign `RangeError`. A depth cap converts that to the
+ *    module's own diagnosis; a cycle is infinite depth, so no `seen` set is
+ *    needed. Compiled IRs measure depth 6.
  */
-function ownPlainData(value) {
+const OWN_PLAIN_MAX_DEPTH = 64;
+
+function ownPlainData(value, path = 'ir', depth = 0) {
+  if (depth > OWN_PLAIN_MAX_DEPTH) {
+    fail(path, `nesting exceeds ${OWN_PLAIN_MAX_DEPTH} levels (cyclic or pathologically deep)`);
+  }
   if (Array.isArray(value)) {
+    // Bound captured: element reads below are caller code and `length` is
+    // writable (the round-11 loop-bound class).
+    const count = value.length;
     const out = [];
-    for (let i = 0; i < value.length; i += 1) out.push(ownPlainData(value[i]));
+    for (let i = 0; i < count; i += 1) out.push(ownPlainData(value[i], `${path}[${i}]`, depth + 1));
     return out;
   }
-  if (typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+  if (typeof value === 'object' && value !== null) {
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) fail(path, value);
     const out = {};
     const keys = Object.keys(value);
-    for (let i = 0; i < keys.length; i += 1) out[keys[i]] = ownPlainData(value[keys[i]]);
+    for (let i = 0; i < keys.length; i += 1) {
+      const key = keys[i];
+      Object.defineProperty(out, key, {
+        value: ownPlainData(value[key], `${path}.${key}`, depth + 1),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    }
     return out;
   }
+  if (typeof value === 'function') fail(path, value);
   return value;
 }
 
@@ -338,7 +374,22 @@ export function spawnPoseOnFlatStart(ir, options) {
   // passes on rather than extending the single-read rule into the realizer.
   // A minimal `{ axles }` wrapper would NOT be enough: the planner would still
   // be re-reading the caller's own axle objects through it.
-  const ownedAxles = ownPlainData(axles);
+  const ownedAxles = ownPlainData(axles, 'ir.axles');
+  // Structural pass over the MODULE-OWNED copy before the planner sees it.
+  // `Array.isArray(ir.axles)` said nothing about the elements, so `[{}]`,
+  // `[null]`, `[42]`, a hole, or a missing `suspension` each left this public
+  // seam as a foreign `TypeError: Cannot read properties of undefined` — the
+  // exact class the chassis guards above exist to close, one level down. The
+  // committed dialect test stopped at an ABSENT axles array.
+  for (let i = 0; i < ownedAxles.length; i += 1) {
+    const axle = ownedAxles[i];
+    if (typeof axle !== 'object' || axle === null) fail(`ir.axles[${i}]`, axle);
+    if (!Array.isArray(axle.wheels)) fail(`ir.axles[${i}].wheels`, axle.wheels);
+    for (let w = 0; w < axle.wheels.length; w += 1) {
+      const wheel = axle.wheels[w];
+      if (typeof wheel !== 'object' || wheel === null) fail(`ir.axles[${i}].wheels[${w}]`, wheel);
+    }
+  }
   for (const t of vehicleWheelTransforms({ axles: ownedAxles }, {})) {
     const wheel = ownedAxles[t.axleIndex].wheels[t.wheelIndex];
     const radius = wheel.radius;

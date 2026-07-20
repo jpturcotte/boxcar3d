@@ -120,33 +120,50 @@ const BODY_META_ROLES = Object.freeze(['chassis', 'hub', 'wheel']);
 // Full identity validation (the trace's own role-conditional rules): a
 // malformed entry must fail loud, never silently miss its trace key and
 // suppress tip-speed output.
+// INDEXED and capture-once, never `bodies.forEach`. `forEach` is looked up on
+// the CALLER's array, so an own no-op `forEach` skipped this entire validation
+// walk (a malformed entry passed silently and tip speed came back null), and
+// one yielding a phantom entry — or an ordinary `reach` accessor answering 1 to
+// the three domain checks and 1e6 to `map.set` — made analyzeTrace report a tip
+// speed derived from a value at no index (measured 4000 vs an honest 1). The
+// duplicate-identity rejection was defeated the same way. The rule was already
+// written 40 lines below, applied to the sibling loops and not to this one.
 function resolveReachMap(bodies) {
   if (bodies === null) return null;
   if (!Array.isArray(bodies)) fail('bodies', bodies);
+  const count = bodies.length;
   const map = new Map();
-  bodies.forEach((b, i) => {
+  for (let i = 0; i < count; i += 1) {
+    const b = bodies[i];
     if (typeof b !== 'object' || b === null) fail(`bodies[${i}]`, b);
     for (const k of Object.keys(b)) {
       if (!BODY_META_KEYS.includes(k)) fail(`bodies[${i}].${k}`, 'unknown key');
     }
-    if (!Number.isInteger(b.vehicleIndex) || b.vehicleIndex < 0) {
-      fail(`bodies[${i}].vehicleIndex`, b.vehicleIndex);
+    const vehicleIndex = b.vehicleIndex;
+    const bodyRole = b.bodyRole;
+    const axleIndex = b.axleIndex;
+    const wheelIndex = b.wheelIndex;
+    const reach = b.reach;
+    if (!Number.isInteger(vehicleIndex) || vehicleIndex < 0) {
+      fail(`bodies[${i}].vehicleIndex`, vehicleIndex);
     }
-    if (!BODY_META_ROLES.includes(b.bodyRole)) fail(`bodies[${i}].bodyRole`, b.bodyRole);
-    if (b.bodyRole === 'chassis') {
-      if (b.axleIndex !== null) fail(`bodies[${i}].axleIndex`, `${b.axleIndex} (chassis carries no station)`);
-      if (b.wheelIndex !== null) fail(`bodies[${i}].wheelIndex`, `${b.wheelIndex} (chassis carries no station)`);
+    if (!BODY_META_ROLES.includes(bodyRole)) fail(`bodies[${i}].bodyRole`, bodyRole);
+    if (bodyRole === 'chassis') {
+      if (axleIndex !== null) fail(`bodies[${i}].axleIndex`, `${axleIndex} (chassis carries no station)`);
+      if (wheelIndex !== null) fail(`bodies[${i}].wheelIndex`, `${wheelIndex} (chassis carries no station)`);
     } else {
-      if (!Number.isInteger(b.axleIndex) || b.axleIndex < 0) fail(`bodies[${i}].axleIndex`, b.axleIndex);
-      if (!Number.isInteger(b.wheelIndex) || b.wheelIndex < 0) fail(`bodies[${i}].wheelIndex`, b.wheelIndex);
+      if (!Number.isInteger(axleIndex) || axleIndex < 0) fail(`bodies[${i}].axleIndex`, axleIndex);
+      if (!Number.isInteger(wheelIndex) || wheelIndex < 0) fail(`bodies[${i}].wheelIndex`, wheelIndex);
     }
-    if (typeof b.reach !== 'number' || !Number.isFinite(b.reach) || b.reach <= 0) {
-      fail(`bodies[${i}].reach`, b.reach);
+    if (typeof reach !== 'number' || !Number.isFinite(reach) || reach <= 0) {
+      fail(`bodies[${i}].reach`, reach);
     }
-    const key = bodyKey(b);
+    // The key is built from the CAPTURES, so the identity that is checked for
+    // duplication is the identity the reach is stored under.
+    const key = bodyKey({ vehicleIndex, bodyRole, axleIndex, wheelIndex });
     if (map.has(key)) fail(`bodies[${i}]`, `duplicate body identity ${key}`);
-    map.set(key, b.reach);
-  });
+    map.set(key, reach);
+  }
   return map;
 }
 
@@ -164,22 +181,43 @@ export function bodyReachMetadataForIR(ir, { vehicleIndex = 0 } = {}) {
   if (typeof ir !== 'object' || ir === null) fail('ir', ir);
   const axles = ir.axles;
   if (!Array.isArray(axles)) fail('ir', ir);
+  const axleCount = axles.length; // bound captured: the body reads caller code
   if (!Number.isInteger(vehicleIndex) || vehicleIndex < 0) fail('vehicleIndex', vehicleIndex);
+  // Structural guards on the chassis chain, captured link by link. `ir.chassis`,
+  // `.supports` and `.reach` were dereferenced unguarded, so three ordinary
+  // shapes left this public seam as a foreign TypeError.
+  const chassis = ir.chassis;
+  const supports = typeof chassis === 'object' && chassis !== null ? chassis.supports : null;
+  if (typeof chassis !== 'object' || chassis === null
+    || typeof supports !== 'object' || supports === null) {
+    fail('ir.chassis', chassis);
+  }
   const entries = [{
     vehicleIndex, bodyRole: 'chassis', axleIndex: null, wheelIndex: null,
-    reach: ir.chassis.supports.reach,
+    reach: supports.reach,
   }];
   // Indexed, and every scalar captured once: `.forEach`/`.map` are looked up
   // on the caller's arrays (running caller code inside a module walk), and the
   // former shape read `axle.index` twice through the ternary and each hub /
   // wheel dimension twice inside its own Math.sqrt.
-  for (let i = 0; i < axles.length; i += 1) {
+  for (let i = 0; i < axleCount; i += 1) {
     const axle = axles[i];
+    if (typeof axle !== 'object' || axle === null) fail(`ir.axles[${i}]`, axle);
     const rawIndex = axle.index;
     const axleIndex = Number.isInteger(rawIndex) ? rawIndex : i;
     const wheels = axle.wheels;
-    for (let wheelIndex = 0; wheelIndex < wheels.length; wheelIndex += 1) {
+    // A non-array `wheels` returned chassis-only metadata with NO error — a
+    // silent path this module's indexed rewrite introduced (the previous
+    // `.forEach` shape threw) — which nulls every wheel/hub tip-speed proxy
+    // while `resolveReachMap`'s "never silently suppress" contract cannot see
+    // entries that were never produced.
+    if (!Array.isArray(wheels)) fail(`ir.axles[${i}].wheels`, wheels);
+    const wheelCount = wheels.length;
+    for (let wheelIndex = 0; wheelIndex < wheelCount; wheelIndex += 1) {
       const wheel = wheels[wheelIndex];
+      if (typeof wheel !== 'object' || wheel === null) {
+        fail(`ir.axles[${i}].wheels[${wheelIndex}]`, wheel);
+      }
       const hub = wheel.hub;
       if (hub !== null && hub !== undefined) {
         const hubRadius = hub.radius;

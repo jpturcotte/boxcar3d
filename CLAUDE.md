@@ -1683,6 +1683,72 @@ Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
   byte-identical. **Zero lock movement in round 11 either** — no committed
   digest moved under any of the twenty fixes.
 
+**Round 12 — the break-it sweep (a 20-lens adversarial pass whose success
+criterion was BREAKAGE, 42 confirmed findings) proved round 11 falsified its own
+guarantees, and drew two scope rulings. Seven commits; every committed lock
+byte-identical.**
+- **The blockers were round 11's own headline invariant.** "Validated ≡ attested
+  ≡ executed" was false four in-scope ways: `runEvaluation` captured
+  `spawn.position` but left `spawn.rotation`/`spawn.linvel` BY REFERENCE (a
+  validated identity quaternion executed as yaw-90; a |q|²=1 reading passed the
+  unit-quaternion gate and realized |q|²=3.24, `integrity:'ok'`); `resolveSpec`'s
+  seed guard was bypassable by an accessor deleting `terrain.seed` between the
+  presence walk and the spread (seed-0 default world attested); and the new
+  `ownTerrainOptions` re-introduced the `__proto__` poisoning round 11 fixed in
+  `ownPlainData` one module over. Spawn components are captured component-wise
+  now; the terrain is captured ONCE and both sites reject a non-plain prototype
+  and non-enumerable/`__proto__` keys.
+- **"Every loop bound is captured" and "a poisoned walk never succeeds with a
+  different answer" were overclaims.** `capturePerBody` still re-read its bound
+  (offlineIntegrityView returned 'ok' for a catastrophic analysis), and
+  `compareTraces` still returned null ("identical") for divergent traces via a
+  sibling-record byte overwrite — the loop BOUND was captured, the record BYTES
+  were not. Both fixed; `spawnPoseOnFlatStart` and `foldIntegrity` gained the
+  field guards their comments already claimed.
+- **Four allocations round 11 left unbounded** reach an uncatchable V8 heap abort
+  from a validated input (terrain descriptor counts, `populationSize`,
+  `maxSteps`+profile buffer, `ownPlainData` array length) — each now bounded
+  before it allocates, verified under `--max-old-space-size=256`.
+- **The enforcement was hollow in three places, now real:** the D7/F3
+  determinism lint bans were DISABLED in the 7 byte-family files (flat-config
+  replaces `no-restricted-syntax`) — `x ** 2` and `globalThis.Math.random()`
+  linted clean in assembly.js; the decode-table golden folded 5 of ~20 decoded
+  quantities (a GENE_RANGES rescale left all three locks identical) → widened to
+  `12c0bcd3`; and the single-read suite's "universal by construction... a new
+  export covered without anyone remembering" was true of FIELDS, not exports → a
+  coverage tooth derives the function-export surface and fails until each is
+  covered or exempted.
+- **THE STORAGE-LIFETIME RULING (JP): canonical bytes must be ORDINARY —
+  same-realm, fixed-size, non-shared, non-detached; anything fancy rejected loud
+  at the door.** The round-8 property boundary never named a genuine Uint8Array
+  whose BACKING STORE is transient/foreign: a detached buffer reads empty
+  (`bytesToHex`→"", `fnv1aFold` unchanged), a SharedArrayBuffer races
+  cross-thread, a resizable buffer shrinks under a reader.
+  `requireOrdinaryBytes` (bytes.js) enforces it at every intake seam.
+- **THE FNV-IDENTITY RULING (JP): FNV-1a32 is a drift/lock digest + the
+  determinism comparator, NOT persistent content identity.** A 32-bit collision
+  appears in seconds but cannot fool the determinism gate (it compares the SAME
+  input across environments, never two artifacts). Verified no equality-by-FNV
+  where bytes are in hand (`bytesEqual` compares bytes). A strong digest for
+  persisted history is DEFERRED to Phase 1B, unneeded until artifact identity is.
+- Report-only + hygiene: `characterize-population.js` reported 0 explosions on a
+  population holding the 8.17e6 m witness (it read the policy-v2 integrity-GATED
+  `fitness`, not the raw `maxForwardDistance`; the undriven audit printed
+  `passive max-fwd 0.00` beside `passive final 2.10e2`) — fixed, §3.3 corrected;
+  `-0` rejected in the trace u32 fields; the R4 wall-clearance guard tightened by
+  the trackHalf floor; the causal scan vehicle-scoped and its chain rule
+  corrected; the app-scene smoke fixed on Windows (shell:true) and no longer
+  runs at import.
+- **Full suite green (51 files, 1183 tests), determinism + pinned Chromium
+  green.** Every terrain/noise/boulder/assembly fingerprint, the A–D evaluation
+  digests, all four population digests, the per-member fitness literals, the
+  champion trace, and every version constant byte-identical — **zero committed
+  lock moved under any round-12 fix** (the widened decode golden `12c0bcd3` is a
+  test-internal literal, not a production lock). The generalization: an adversary
+  whose success criterion is *finding a break* attacks the guarantees, not the
+  sites — and found the previous round's claims, comments, and own new code were
+  where the next defects hid.
+
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a
 generational loop over `evaluatePopulation`, sim-time pure), now UNBLOCKED (the

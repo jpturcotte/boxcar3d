@@ -221,8 +221,18 @@ caller's objects, the export tables and lint scope are derived from the real
 directory instead of hand-enumerated, and a decode-table golden pins what the
 archived bytes *mean* — reordering the suspension enum reinterprets every
 stored genotype while both byte fingerprints stay identical, which nothing
-previously caught. Each tooth was mutation-verified: revert the fix, watch it
-fail. No evolutionary behaviour is
+previously caught. A final adversarial pass whose success criterion was
+*breakage* then proved that round had, in turn, falsified its own guarantees:
+the runner captured a spawn's position but not its rotation or velocity, so a
+validated orientation executed as a different one; a seed guard was slipped by
+an accessor that deleted the key between the check and the read; and the
+determinism lint bans were silently disabled in the seven most important files.
+Those are fixed too — spawn poses captured component-by-component, terrain
+captured once, the lint bans re-applied and proven to fire, the decode golden
+widened to cover the gene-decode scales it had missed, and fancy byte storage
+(detached, shared, resizable, cross-realm) rejected at the door rather than
+silently read as empty. Each tooth was mutation-verified: revert the fix, watch
+it fail. No evolutionary behaviour is
 implemented, and every committed lock — terrain, noise, assembly, evaluation
 A–D, and all four population digests — is byte-identical. Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).

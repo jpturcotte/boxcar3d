@@ -686,6 +686,71 @@ sees one spelling — each was a rule holding exactly where its author had
 looked. The counter-move is the same every time: make the scope itself derived
 rather than enumerated, and check the exemptions as carefully as the rules.
 
+## Round 12: the break-it sweep, and two scope rulings
+
+A 20-lens adversarial pass whose success criterion was BREAKAGE (42 confirmed
+findings after refuting verification) proved round 11 falsified several of its
+own guarantees, and surfaced a class no prior round had named. All fixed across
+seven commits; every committed lock stayed byte-identical.
+
+**The blockers were round 11's own headline invariant.** "Validated ≡ attested ≡
+executed" was false four in-scope ways, each via an ordinary own accessor on a
+plain object: `runEvaluation` captured `spawn.position` but left
+`spawn.rotation`/`spawn.linvel` BY REFERENCE (a validated identity quaternion
+executed as yaw-90; a reading that passed the unit-quaternion gate realized
+|q|²=3.24); `resolveSpec`'s seed guard was bypassable by an accessor deleting
+`terrain.seed` between the presence walk and the spread (the seed-0 default world
+attested); and the new `ownTerrainOptions` re-introduced the `__proto__`
+poisoning round 11 fixed one module over. Round 11's "every loop bound is
+captured" and "a poisoned walk never succeeds with a different answer" were
+overclaims: `capturePerBody` and `compareTraces`'s record bytes were still
+uncaptured. The enforcement was hollow in three places: the D7/F3 determinism
+lint bans were disabled in the 7 byte-family files (flat-config replaces
+`no-restricted-syntax`), the decode-table golden folded 5 of ~20 decoded
+quantities (a GENE_RANGES rescale left all three locks identical), and the
+single-read suite's "universal by construction" was true of fields, not exports.
+
+**THE STORAGE-LIFETIME RULING (JP).** *Canonical bytes must be ordinary
+same-realm, fixed-size, non-shared, non-detached `ArrayBuffer`-backed
+`Uint8Array`; anything fancy is rejected loud at the door.* The round-8 property
+boundary (CODE vs DATA — reject lies, trust plain reads) never named an axis:
+a genuine `Uint8Array` whose BACKING STORE is transient or foreign. A detached
+buffer reads as empty (`bytesToHex` → "", `fnv1aFold` unchanged); a
+`SharedArrayBuffer` can be scrambled cross-thread mid-fold, digesting a state
+that never existed; a resizable buffer can shrink under a live reader; a
+cross-realm view fails the same-realm brand. The ruling is REJECTION, not
+support — no shared-memory publication protocol, no cross-realm bridging.
+`requireOrdinaryBytes(bytes, fail)` (bytes.js) enforces it at every intake seam
+(the reader, `bytesToHex`, `decodeTraceRecord`, and — inline, preserving
+assembly.js's zero-import genome-contract ruling — `deserializeGenotype`). The
+intrinsic geometry getters (round 8) and this gate are complementary: the first
+defeats a caller that LIES about shape, the second a caller whose STORAGE is
+transient.
+
+**THE FNV-IDENTITY RULING (JP).** *FNV-1a32 is a drift/lock digest and the
+cross-platform determinism comparator, NOT persistent content identity.* A
+32-bit hash collides by the birthday bound (~50% at ~77k artifacts; one appears
+in seconds), so it must never be leaned on for artifact identity, dedup,
+provenance, or equality of two independently-supplied artifacts. It is adequate
+where it is used: the determinism gate compares the SAME input recomputed across
+Node/Chromium, never two different artifacts, so a collision cannot fool it —
+the "except cross-platform determinism" clause is satisfied. Verified: nowhere
+concludes two byte arrays are EQUAL from their digests when the bytes are in
+hand — `bytesEqual` compares bytes directly, and every digest `===` is against a
+golden literal or a same-source dual-state agreement. A collision-resistant
+digest (SHA-256) for persisted evolution history is DEFERRED to Phase 1B,
+introduced only when artifact identity is actually needed; adding it now would
+move no lock and serve no consumer.
+
+**The generalization, one more notch.** Round 10: a test written to the fix is
+not enforcement of the rule. Round 11: enforcement scoped to a round's mechanism
+is still enforcement written to the fix. Round 12: an adversary whose success
+criterion is *finding a break* attacks the guarantees, not the sites — and it
+found that the previous round's claims, comments, and even its own new code were
+where the next defects hid. The invariant is only as strong as the surface the
+enforcement actually covers, and the honest way to know that surface is to try
+to break it.
+
 ## Binary identity vs the JSON envelope
 
 The canonical bytes **are** the identity. FNV digests are folded over them and

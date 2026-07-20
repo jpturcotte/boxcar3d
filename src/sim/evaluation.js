@@ -62,8 +62,64 @@ function checkUnknownKeys(obj, allowed, path) {
   }
 }
 
+// One walk over the caller's terrain that captures what it validates, so the
+// terrain that is GENERATED is the terrain that was guarded — not a second
+// reading of the caller's object taken after a hook ran.
+const TERRAIN_RANGE_MAX = 0xff;
+
+function ownTerrainOptions(terrain) {
+  const allowed = Object.keys(TERRAIN_DEFAULTS);
+  const keys = Object.keys(terrain);
+  if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
+    fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
+  }
+  const out = {};
+  for (let i = 0; i < keys.length; i += 1) {
+    const k = keys[i];
+    if (!allowed.includes(k)) fail(`terrain.${k}`, 'unknown key');
+    const v = terrain[k];
+    if (Array.isArray(v)) {
+      // Bound before allocate (the encoders' ruling), then an indexed copy —
+      // never `.slice()`, which is looked up on the caller's array.
+      const declared = v.length;
+      if (!Number.isInteger(declared) || declared < 0 || declared > TERRAIN_RANGE_MAX) {
+        fail(`terrain.${k}.length`, `${declared} exceeds ${TERRAIN_RANGE_MAX}`);
+      }
+      const copy = [];
+      for (let j = 0; j < declared; j += 1) copy.push(v[j]);
+      out[k] = copy;
+    } else if (typeof v === 'object' && v !== null) {
+      const sub = {};
+      const subKeys = Object.keys(v);
+      for (let j = 0; j < subKeys.length; j += 1) sub[subKeys[j]] = v[subKeys[j]];
+      out[k] = sub;
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 // All validation is PRE-WORLD: a typo'd option (linVel, checkpointinterval …)
 // must fail loud here, never silently change a digest.
+//
+// It returns a MODULE-OWNED capture, not the caller's objects. Returning
+// `terrain`/`vehicles` by reference meant runEvaluation re-read them after
+// `hooks.onPhase(...)` (caller code) and across `await createPhysics(...)`, so
+// the validated reading and the executed reading were different ones. Measured
+// (round-11), all with an ordinary own accessor on a plain object or a genuine
+// Array: a run validated with `trace.mode:'none'` executed in `'full'`; a spawn
+// validated at x=-25 realized at x=-13; a 6-axle IR was guarded and a 0-axle
+// sled realized; a vehicle carrying the removed `targetAngvel` tombstone
+// realized silently at the default surface speed; and a terrain validated at
+// seed 20260722 executed at seed 999 with a digest byte-identical to the
+// seed-999 control. Indexing the vehicle loop (round-9) fixed holes and
+// iterator divergence — it did not make the two readings one.
+//
+// `ir` is captured BY REFERENCE, deliberately: the standing ruling is that the
+// adapter trusts compiler-owned IRs, and the production caller compiles them.
+// What matters here is that it is captured ONCE, so the IR that was guarded is
+// the IR that is realized.
 function validateOptions(options) {
   if (typeof options !== 'object' || options === null) fail('options', options);
   checkUnknownKeys(options, OPTION_KEYS, 'options');
@@ -73,18 +129,16 @@ function validateOptions(options) {
   } = options;
   if (typeof deterministic !== 'boolean') fail('deterministic', deterministic);
   if (typeof terrain !== 'object' || terrain === null) fail('terrain', terrain);
-  if (!Object.prototype.hasOwnProperty.call(terrain, 'seed')) {
-    fail('terrain.seed', 'missing (a digest must never bind to the default seed by accident)');
-  }
-  // Reject unknown terrain keys HERE, consistent with the runner's other
+  // Unknown terrain keys are rejected HERE, consistent with the runner's other
   // option objects: generateCorridorTerrain spreads `{ ...TERRAIN_DEFAULTS,
   // ...terrain }` and silently ignores extras, so a typo'd knob (e.g.
   // `featureDensitty`) would otherwise run the DEFAULT terrain while producing
   // a valid digest — the exact silently-wrong-terrain class fail-loud prevents.
-  checkUnknownKeys(terrain, Object.keys(TERRAIN_DEFAULTS), 'terrain');
   // Domain validation of the values themselves stays delegated to
   // generateCorridorTerrain's function-wide validateConfig.
+  const ownedTerrain = ownTerrainOptions(terrain);
   if (!Array.isArray(vehicles) || vehicles.length === 0) fail('vehicles', vehicles);
+  const vehicleCount = vehicles.length; // bound captured: the body reads caller code
   // INDEXED, never forEach: forEach SKIPS HOLES, while the length guard above
   // and the realization/step loops below are index-based. A sparse `vehicles`
   // (a genuine Array grown by a `length` assignment — exactly what a
@@ -92,7 +146,8 @@ function validateOptions(options) {
   // then died as a foreign TypeError deep inside realization. Same defect the
   // population layer's validateGenotype/resolvePolicy walks already fixed;
   // this is the runner's copy of it.
-  for (let i = 0; i < vehicles.length; i += 1) {
+  const ownedVehicles = [];
+  for (let i = 0; i < vehicleCount; i += 1) {
     const v = vehicles[i];
     if (typeof v !== 'object' || v === null) fail(`vehicles[${i}]`, v);
     // Migration tombstone BEFORE the generic key check: a stale caller using
@@ -102,38 +157,60 @@ function validateOptions(options) {
       fail(`vehicles[${i}].targetAngvel`, 'removed; use targetWheelSurfaceSpeed');
     }
     checkUnknownKeys(v, VEHICLE_KEYS, `vehicles[${i}]`);
-    if (typeof v.ir !== 'object' || v.ir === null) fail(`vehicles[${i}].ir`, v.ir);
-    if (typeof v.spawn !== 'object' || v.spawn === null) fail(`vehicles[${i}].spawn`, v.spawn);
-    checkUnknownKeys(v.spawn, SPAWN_KEYS, `vehicles[${i}].spawn`);
-    const p = v.spawn.position;
-    if (typeof p !== 'object' || p === null
-      || ![p.x, p.y, p.z].every((c) => typeof c === 'number' && Number.isFinite(c))) {
-      fail(`vehicles[${i}].spawn.position`, JSON.stringify(p));
+    // Capture every field ONCE, here, and hand realization these captures.
+    const ir = v.ir;
+    const spawn = v.spawn;
+    const targetWheelSurfaceSpeed = v.targetWheelSurfaceSpeed;
+    const wheelFriction = v.wheelFriction;
+    if (typeof ir !== 'object' || ir === null) fail(`vehicles[${i}].ir`, ir);
+    if (typeof spawn !== 'object' || spawn === null) fail(`vehicles[${i}].spawn`, spawn);
+    checkUnknownKeys(spawn, SPAWN_KEYS, `vehicles[${i}].spawn`);
+    const p = spawn.position;
+    const rotation = spawn.rotation;
+    const linvel = spawn.linvel;
+    if (typeof p !== 'object' || p === null) fail(`vehicles[${i}].spawn.position`, JSON.stringify(p));
+    const px = p.x; const py = p.y; const pz = p.z;
+    if (![px, py, pz].every((c) => typeof c === 'number' && Number.isFinite(c))) {
+      fail(`vehicles[${i}].spawn.position`, JSON.stringify({ x: px, y: py, z: pz }));
     }
     // rotation/linvel/targetWheelSurfaceSpeed/wheelFriction are validated in
-    // depth by realizeVehicle — the existing thorough, message-rich gate.
+    // depth by realizeVehicle — the existing thorough, message-rich gate. They
+    // are captured here so the value whose PRESENCE decides whether the option
+    // is forwarded is the value that is forwarded.
+    const record = { ir, position: { x: px, y: py, z: pz } };
+    if (rotation !== undefined) record.rotation = rotation;
+    if (linvel !== undefined) record.linvel = linvel;
+    if (targetWheelSurfaceSpeed !== undefined) record.targetWheelSurfaceSpeed = targetWheelSurfaceSpeed;
+    if (wheelFriction !== undefined) record.wheelFriction = wheelFriction;
+    ownedVehicles.push(record);
   }
   if (!Number.isInteger(maxSteps) || maxSteps < 1) fail('maxSteps', maxSteps);
   if (termination !== 'maxSteps') fail('termination', termination);
   if (typeof trace !== 'object' || trace === null) fail('trace', trace);
   checkUnknownKeys(trace, TRACE_KEYS, 'trace');
-  if (!TRACE_MODES.includes(trace.mode)) fail('trace.mode', trace.mode);
+  // The mode that is CHECKED is the mode that is returned and that drives
+  // capture: read three times, a `mode` accessor validated 'none' and ran
+  // 'full' (a traced run where the caller was told nothing would be retained).
+  const traceMode = trace.mode;
+  const checkpointIntervalIn = trace.checkpointInterval;
+  if (!TRACE_MODES.includes(traceMode)) fail('trace.mode', traceMode);
   // Capture indices run 0..maxSteps and the trace stepIndex field is u32, so a
   // traced run needs maxSteps <= MAX_STEP_INDEX — reject the overflow pre-world
   // rather than letting the encoder throw at the final capture mid-run.
-  if (trace.mode !== 'none' && maxSteps > MAX_STEP_INDEX) fail('maxSteps', `${maxSteps} > MAX_STEP_INDEX ${MAX_STEP_INDEX} (trace stepIndex is u32)`);
-  if (trace.checkpointInterval !== undefined
-    && (!Number.isInteger(trace.checkpointInterval) || trace.checkpointInterval < 1)) {
-    fail('trace.checkpointInterval', trace.checkpointInterval);
+  if (traceMode !== 'none' && maxSteps > MAX_STEP_INDEX) fail('maxSteps', `${maxSteps} > MAX_STEP_INDEX ${MAX_STEP_INDEX} (trace stepIndex is u32)`);
+  if (checkpointIntervalIn !== undefined
+    && (!Number.isInteger(checkpointIntervalIn) || checkpointIntervalIn < 1)) {
+    fail('trace.checkpointInterval', checkpointIntervalIn);
   }
   if (typeof profile !== 'boolean') fail('profile', profile);
   if (typeof hooks !== 'object' || hooks === null) fail('hooks', hooks);
   checkUnknownKeys(hooks, HOOK_KEYS, 'hooks');
-  if (hooks.onPhase !== undefined && typeof hooks.onPhase !== 'function') fail('hooks.onPhase', hooks.onPhase);
+  const onPhase = hooks.onPhase;
+  if (onPhase !== undefined && typeof onPhase !== 'function') fail('hooks.onPhase', onPhase);
   return {
-    deterministic, terrain, vehicles, maxSteps, termination,
-    traceMode: trace.mode, checkpointInterval: trace.checkpointInterval ?? 1,
-    profile, onPhase: hooks.onPhase ?? null,
+    deterministic, terrain: ownedTerrain, vehicles: ownedVehicles, maxSteps, termination,
+    traceMode, checkpointInterval: checkpointIntervalIn ?? 1,
+    profile, onPhase: onPhase ?? null,
   };
 }
 
@@ -480,14 +557,16 @@ export async function runEvaluation(options) {
     const staticColliders = world.colliders.len();
 
     onPhase('realize');
-    // Indexed for the same reason validateOptions is: the guarded reading and
-    // the realized reading must be the same one.
+    // `cfg.vehicles` are validateOptions' MODULE-OWNED records, so the guarded
+    // reading and the realized reading are literally the same values — not
+    // merely the same indices. Re-reading the caller's objects here (the old
+    // shape) put `onPhase(...)` and an `await` between validation and use.
     const realized = [];
     for (let vi = 0; vi < cfg.vehicles.length; vi += 1) {
       const v = cfg.vehicles[vi];
-      const opts = { position: v.spawn.position };
-      if (v.spawn.rotation !== undefined) opts.rotation = v.spawn.rotation;
-      if (v.spawn.linvel !== undefined) opts.linvel = v.spawn.linvel;
+      const opts = { position: v.position };
+      if (v.rotation !== undefined) opts.rotation = v.rotation;
+      if (v.linvel !== undefined) opts.linvel = v.linvel;
       if (v.targetWheelSurfaceSpeed !== undefined) opts.targetWheelSurfaceSpeed = v.targetWheelSurfaceSpeed;
       if (v.wheelFriction !== undefined) opts.wheelFriction = v.wheelFriction;
       realized.push(realizeVehicle(RAPIER, world, v.ir, opts));

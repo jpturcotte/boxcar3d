@@ -305,7 +305,19 @@ const CASES = [
     (ir, opts) => spawnPoseOnFlatStart(ir, opts)],
   ['population-evaluation.serializeEvaluationSpec', () => [resolvedSpec()],
     (s) => serializeEvaluationSpec(s)],
-  ['population-evaluation.serializeFitnessVector', () => [fitnessEvaluation()],
+  ['population-evaluation.serializeFitnessVector (digest-state path)', () => [fitnessEvaluation()],
+    (e) => serializeFitnessVector(e)],
+  // EVERY presence-selected optional input needs its own row: the row above
+  // carries `evaluationSpecDigestState` and no `spec`, so the PRODUCTION branch
+  // — which serializes the spec and folds it into the attestation — was never
+  // instrumented, and its double read of `evaluation.spec` survived round 10.
+  // The sibling encoder already had two rows for exactly this reason.
+  ['population-evaluation.serializeFitnessVector (production spec path)',
+    () => {
+      const e = fitnessEvaluation();
+      delete e.evaluationSpecDigestState;
+      return [{ ...e, spec: resolvedSpec() }];
+    },
     (e) => serializeFitnessVector(e)],
   ['population-evaluation.isVehicleResultValid', () => [okVehicleResult()],
     (v) => isVehicleResultValid(v)],

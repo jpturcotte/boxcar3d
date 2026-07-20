@@ -954,8 +954,14 @@ export async function evaluatePopulation(population, evaluationSpec) {
 // disagrees with; neither present fails loud.
 function resolveSpecDigestState(evaluation) {
   const declared = evaluation.evaluationSpecDigestState;
-  if (evaluation.spec !== undefined) {
-    const specBytes = serializeEvaluationSpec(evaluation.spec);
+  // ONE reading: the object whose PRESENCE selects this branch is the object
+  // that is serialized and folded. Two reads let the branch be chosen by spec A
+  // while the vector attested spec B (measured, round-11) — and the documented
+  // twin `resolvePopulationDigestState` already takes its population as a
+  // captured parameter for exactly this reason.
+  const spec = evaluation.spec;
+  if (spec !== undefined) {
+    const specBytes = serializeEvaluationSpec(spec);
     const state = fnv1aFold(FNV_OFFSET_BASIS, specBytes);
     if (declared !== undefined && declared !== state) {
       fail('evaluation.evaluationSpecDigestState',

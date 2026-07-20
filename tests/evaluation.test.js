@@ -136,6 +136,78 @@ describe('runEvaluation options validation', () => {
       await expect(runEvaluation(opts), String(re)).rejects.toThrow(re);
     }
   });
+
+  // --- Round-11: the validated reading IS the executed reading ---------------
+  //
+  // validateOptions returned the caller's `terrain` and `vehicles` BY
+  // REFERENCE, and runEvaluation re-read them after `hooks.onPhase(...)` (an
+  // invocation of caller code) and across `await createPhysics(...)`. Every
+  // case below was measured escaping that gap with an ordinary own accessor on
+  // a plain object — no Proxy, no lying prototype. This is the runner's copy of
+  // the single-read invariant, and it lives here because the seam is private
+  // and reachable only through physics: a fix no test can redden is not a fix.
+
+  test('a two-faced terrain.seed cannot make the runner execute a different world', async () => {
+    const opts = base();
+    let reads = 0;
+    const honestSeed = opts.terrain.seed;
+    Object.defineProperty(opts.terrain, 'seed', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? honestSeed : 999; },
+    });
+    const r = await runEvaluation({ ...opts, trace: { mode: 'digest' } });
+    expect(reads).toBe(1); // one reading: the guarded one is the generated one
+    const control = await runEvaluation({ ...base(), trace: { mode: 'digest' } });
+    expect(r.trace.digest).toBe(control.trace.digest);
+  });
+
+  test('a two-faced trace.mode cannot make a run capture what it was not asked to', async () => {
+    const opts = base();
+    let reads = 0;
+    opts.trace = {
+      get mode() { reads += 1; return reads === 1 ? 'none' : 'full'; },
+    };
+    const r = await runEvaluation(opts);
+    expect(reads).toBe(1);
+    // Mode 'none' is literal no-work: the result carries no trace envelope at
+    // all, so a run that had silently switched to 'full' is unmistakable.
+    expect(r.trace).toBeNull();
+  });
+
+  test('a two-faced spawn.position cannot realize a vehicle where it was not validated', async () => {
+    const opts = base();
+    const honest = opts.vehicles[0].spawn.position;
+    let reads = 0;
+    Object.defineProperty(opts.vehicles[0].spawn, 'position', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? honest : { x: honest.x + 12, y: honest.y, z: honest.z }; },
+    });
+    const r = await runEvaluation({ ...opts, maxSteps: 2, trace: { mode: 'none' } });
+    expect(reads).toBe(1);
+    // Capture 0 is post-realization, so the final pose reflects the spawn that
+    // actually ran — it must be the validated one, not the second reading.
+    expect(r.vehicles[0].finalPose.translation.x).toBeCloseTo(honest.x, 0);
+  });
+
+  test('a targetAngvel tombstone appearing after validation cannot reach the realizer', async () => {
+    // The removed drive option must always produce the rename diagnosis. With
+    // the vehicle read twice, a key that materializes on the SECOND read was
+    // forwarded silently (unknown realizer options are ignored), so the vehicle
+    // ran at the default surface speed while the caller believed otherwise.
+    const opts = base();
+    const v = opts.vehicles[0];
+    let reads = 0;
+    Object.defineProperty(opts.vehicles, '0', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? v : { ...v, targetAngvel: -10 }; },
+    });
+    const r = await runEvaluation({ ...opts, maxSteps: 2, trace: { mode: 'none' } });
+    expect(reads).toBe(1);
+    expect(r.vehicles).toHaveLength(1);
+  });
 });
 
 // --- readBodyState: the latch classification seam (measured engine states) ----

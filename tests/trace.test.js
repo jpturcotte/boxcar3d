@@ -120,6 +120,16 @@ describe('trace record codec (T1–T8)', () => {
     expect([...encodeTraceRecord(decodeTraceRecord(nanBytes))]).toEqual([...nanBytes]);
   });
 
+  test('a u32 index field rejects -0 (F15): setUint32 would normalize it to +0', () => {
+    // Number.isInteger(-0) is true and -0 < 0 / -0 === 0 both pass, so the old
+    // guard admitted -0; setUint32 erases the sign, silently normalizing it to
+    // +0 — the case isCanonicalUint32 was tightened to reject one module over.
+    for (const field of ['stepIndex', 'vehicleIndex']) {
+      expect(() => encodeTraceRecord({ ...baseRecord(), [field]: -0 })).toThrow(new RegExp(field));
+    }
+    expect(() => encodeTraceRecord({ ...baseRecord(), axleIndex: -0, wheelIndex: 0 })).toThrow(/axleIndex/);
+  });
+
   test('T4: enum wire codes are locked and frozen (append-only)', () => {
     expect(BODY_ROLES).toEqual(['chassis', 'hub', 'wheel']);
     expect(JOINT_STATES).toEqual(['invalid', 'valid', 'notApplicable']);
@@ -403,5 +413,51 @@ describe('compareTraces (T9–T14)', () => {
     });
     // Metadata is required — a records-only object is rejected loud.
     expect(() => compareTraces({ records: [] }, encodedTrace(stream()))).toThrow(/version missing/);
+  });
+});
+
+describe('storage-lifetime intake (round 13) — trace byte seams reject fancy backing stores', () => {
+  const detached = (n) => {
+    const u = new Uint8Array(n);
+    u.buffer.transfer();
+    return u;
+  };
+  const sab = (n) => new Uint8Array(new SharedArrayBuffer(n));
+  const resizable = (n) => new Uint8Array(new ArrayBuffer(n, { maxByteLength: n * 2 }));
+  const envelope = (records) => ({ version: EVALUATION_TRACE_VERSION, recordBytes: RECORD_BYTES, records });
+
+  test('decodeTraceRecord: the C12 gate, now covered on all three axes', () => {
+    expect(() => decodeTraceRecord(detached(RECORD_BYTES))).toThrow(/detached ArrayBuffer/);
+    expect(() => decodeTraceRecord(sab(RECORD_BYTES))).toThrow(/SharedArrayBuffer/);
+    expect(() => decodeTraceRecord(resizable(RECORD_BYTES))).toThrow(/resizable ArrayBuffer/);
+  });
+
+  test('encodeTraceRecord: a caller-supplied `out` must be ordinary fixed storage', () => {
+    // Pre-gate, a resizable `out` could shrink mid-write (a foreign
+    // TypeError from deep in the walk) and a SAB-backed one let another
+    // thread read a TORN record; detached failed only incidentally via the
+    // RECORD_BYTES identity. The gate runs BEFORE record validation, so no
+    // valid record is needed to reach it.
+    expect(() => encodeTraceRecord(baseRecord(), sab(RECORD_BYTES))).toThrow(/trace: invalid record at out \(SharedArrayBuffer/);
+    expect(() => encodeTraceRecord(baseRecord(), resizable(RECORD_BYTES))).toThrow(/resizable ArrayBuffer/);
+    expect(() => encodeTraceRecord(baseRecord(), detached(RECORD_BYTES))).toThrow(/detached ArrayBuffer/);
+    // Ordinary out still works and the default-allocation path is untouched.
+    const out = new Uint8Array(RECORD_BYTES);
+    expect(encodeTraceRecord(baseRecord(), out)).toBe(out);
+  });
+
+  test('compareTraces: a fancy record entry THROWS as invalid input — never absorbed, never reported as divergence', () => {
+    // Pre-gate, a resizable entry shrunk between the size identity and the
+    // copy left `copy` all zeros — comparing bytes that never existed,
+    // SILENTLY; a SAB entry could tear mid-copy.
+    const good = () => envelope([encodeTraceRecord(baseRecord())]);
+    expect(() => compareTraces(good(), envelope([sab(RECORD_BYTES)])))
+      .toThrow(/actual record 0 bytes \(SharedArrayBuffer/);
+    expect(() => compareTraces(envelope([sab(RECORD_BYTES)]), good()))
+      .toThrow(/expected record 0 bytes/);
+    expect(() => compareTraces(good(), envelope([resizable(RECORD_BYTES)]))).toThrow(/resizable ArrayBuffer/);
+    expect(() => compareTraces(good(), envelope([detached(RECORD_BYTES)]))).toThrow(/detached ArrayBuffer/);
+    // Ordinary identical traces still compare to null through the gate.
+    expect(compareTraces(good(), good())).toBeNull();
   });
 });

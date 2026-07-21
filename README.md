@@ -28,10 +28,12 @@ position — a new `maxForwardDistance` result field on the canonical runner
 from the same per-step chassis read the trace already consumes, so the
 existing A–D golden digests are byte-identical with no re-lock. This is a
 **deterministic, reproducible baseline score contract** — exact and
-cross-environment-locked — **not yet a selection-ready fitness policy** for
-rough composite terrain (see the explosion-tail finding below); Phase 1B
-must produce a policy v2 or constrain its training terrain before building
-selection on it. The
+cross-environment-locked. It was *not* selection-ready as first written,
+because of the explosion-tail finding below; the numerical-integrity PR
+answered that with **fitness policy v2**, which ships today
+(`FITNESS_POLICY_VERSION = 2`): an integrity-failed individual is
+unselectable and scores 0, and `selectableChampionFromEvaluation` returns an
+explicit `null` when a generation has no selectable member. The
 mandatory empirical question — does an individual's exact result change
 because unrelated ghost vehicles share its world or the cohort is permuted?
 — was measured before the evaluator was built, and the answer is **no
@@ -158,6 +160,90 @@ adjudication time — instead of a copied digest literal that staled on
 re-lock. Full contract in
 [`docs/numerical-integrity-policy-2026-07.md`](docs/numerical-integrity-policy-2026-07.md);
 no physics changed and the A–D evaluation golden digests are byte-identical.
+The first Phase-1B preparatory PR then landed the **canonical schema and codec
+foundations**: one validated schema walk over the genotype
+(`genotypeFieldWalk` / `forEachGenotypeField`, classifying every field as
+version, structural, discrete, or continuous) plus lossless decoders for all
+five canonical byte encodings — genotype, population snapshot, initialization
+manifest, evaluation spec, and fitness vector — behind a shared strict
+little-endian reader and a canonical lowercase-hex representation for JSON
+envelopes. `serializeGenotype` stays the byte-layout authority and is
+unrestructured; the schema is a mirror bound to it by a copy-declared literal
+walk, tiling identities, and perturb-one-leaf byte exclusivity against the real
+serializer. Each decoder mirrors exactly the validation its encoder performs —
+which is why the evaluation-spec decoder deliberately does not run
+`resolveSpec` (that would reject streams the encoder legally produces;
+execution validation stays with `evaluatePopulation`) — and every decoder fails
+loud on truncation, trailing bytes, unknown versions, and malformed data rather
+than repairing it. A decoded spec is directly replayable: `resolveSpec` now
+accepts the `termination` key it derives, so a resolved spec re-enters the
+resolver and re-encodes byte-identically. Two encoders gained an additive
+digest-state input so a decoded record can be re-encoded from itself; three
+silent wire-overflow holes (u8 axle count, u8 range length, u32 initialization
+`populationSize`) now fail loud without changing any valid stream; and the
+codec family enforces an ownership boundary settled by a full caller-trust
+inventory — every variable-length field is read by index (the same reading its
+consumer performs), no caller-owned method is ever invoked, encoders attest
+exactly the bytes their validation checked, byte geometry comes from intrinsic
+TypedArray getters, and no attested record retains a caller reference — so a
+count byte, its allocation, its payload, and the record a digest attests can
+no longer disagree with each other or with what the run executes. **Those rules
+are now enforced by the build rather than by prose** — a lint ban on
+caller-visible byte geometry (and on `subarray`, which is species-aware and ran
+caller code even when borrowed from the prototype), plus an ownership-boundary
+suite that feeds shadowed geometry to every function accepting caller bytes and
+asserts the *result* is identical to the un-shadowed call, a seeded
+boundary-value round-trip harness, and a permutation-invariance check on the
+champion selectors. On top of that sits the **single-read invariant**: any
+caller-owned value used to validate, order, attest, encode or execute is
+captured once and every later operation reads the capture, so a value cannot be
+checked on one reading and used on another — enforced by a suite that
+instruments every own property of a caller input with a counting accessor and
+asserts at most one read per path (universal over an input's fields; the input
+set is a curated table, backstopped by a coverage tooth that derives the
+function-export surface and fails until each export is covered or exempted).
+That closed an execution-constraint bypass (a spawn position
+approved on the flat pad and then *run* off it, with the digest attesting the
+position that never executed) and made duplicate individual ids a loud refusal
+in both champion selectors. A further pass then went after the *instruments*
+themselves, on the principle that enforcement scoped to one round's mechanism
+is still enforcement written to the fix. It found the exemption those
+instruments declared to be false — a genuine Array's `length` cannot be an
+accessor, but it *is* writable, and every element read in a validation walk is
+caller code that may write it, which let a three-axle genotype attest itself as
+one axle and made the determinism comparator report "identical" for divergent
+traces — plus a trust axis nobody had posed, own-property *enumerability*,
+where a presence check that saw a non-enumerable `seed` and a spread that did
+not made an evaluation run and attest the default world. Loop bounds are now
+captured before any walk, presence gates use the enumeration their consumer
+reads with, the runner validates a module-owned capture rather than the
+caller's objects, the export tables and lint scope are derived from the real
+directory instead of hand-enumerated, and a decode-table golden pins what the
+archived bytes *mean* — reordering the suspension enum reinterprets every
+stored genotype while both byte fingerprints stay identical, which nothing
+previously caught. A final adversarial pass whose success criterion was
+*breakage* then proved that round had, in turn, falsified its own guarantees:
+the runner captured a spawn's position but not its rotation or velocity, so a
+validated orientation executed as a different one; a seed guard was slipped by
+an accessor that deleted the key between the check and the read; and the
+determinism lint bans were silently disabled in the seven most important files.
+Those are fixed too — spawn poses captured component-by-component, terrain
+captured once, the lint bans re-applied and proven to fire, the decode golden
+widened to cover the gene-decode scales it had missed, and fancy byte storage
+(detached, shared, resizable, cross-realm) rejected at the door rather than
+silently read as empty. Each tooth was mutation-verified: revert the fix, watch
+it fail. An external review then proved the storage claim was itself scoped to
+the discovered sites — the digest fold still returned its state unchanged for
+a detached buffer, and byte equality called two detached arrays equal — so the
+gate now covers a *derived* classification of every byte-family export
+(module set from the lint block, export set from the real namespaces, every
+gated seam battered against all three fancy stores), and the one remaining
+finding — trace evidence staying mutable after its digest is computed — is an
+explicit, documented deferral to the Phase-1B persisted-history format, its
+failure mode stated at both sites, rather than an open hole. No evolutionary behaviour is
+implemented, and every committed lock — terrain, noise, assembly, evaluation
+A–D, and all four population digests — is byte-identical. Full contract in
+[`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).
 Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement), now unblocked — elitism
 consumes `selectableChampionFromEvaluation`; the multibody binding-extension

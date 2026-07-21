@@ -79,11 +79,17 @@ evidence notes. Reference only; never import from `legacy/`.
 - `src/sim/` — deterministic core: `prng.js`, `noise.js`, `terrain.js` (pure
   composite generator), `features.js` (pure descriptor→geometry: quats, hulls,
   support samples), `assembly.js` (the genome contract: genotype schema +
-  compiler + repair v0 + the S1 hub policy), `physics/adapter.js` (the only
+  compiler + repair v0 + the S1 hub policy + the authoritative serializer, its
+  validated schema WALK, and the genotype decoder), `physics/adapter.js` (the only
   Rapier seam: realization, seating, collision groups, chassis, the S0
   wheel/joint/motor kernel, and the S1 prismatic/hub suspension behind
   `realizeVehicle`'s explicit dispatch), `fnv1a.js` (the extracted house lock
-  hash — streaming state-passing fold), `trace.js` (the versioned per-step
+  hash — streaming state-passing fold), `bytes.js` (the shared strict
+  little-endian byte READER — bounds-checked, subarray-safe, trailing-byte
+  refusing, errors routed through the calling module's fail idiom — plus
+  `bytesToHex`/`hexToBytes`, the canonical-lowercase JSON-safe byte
+  representation; bytes are the identity, JSON is only an envelope),
+  `trace.js` (the versioned per-step
   trace: 128-byte records, TraceWriter, checkpoint + divergence diagnostics),
   `evaluation.js` (the ONE canonical headless runner — `runEvaluation` — plus
   `runRealizedEvaluationLoop`, the extracted simulate/capture/collect loop it
@@ -171,8 +177,23 @@ evidence notes. Reference only; never import from `legacy/`.
   classify/invariants/timing/compare over pure JSON fixtures with verbatim
   determinism-test titles/messages, bound to the committed expected-red
   inventory — no physics, no Rapier),
+  `genotype-schema.test.js` (the schema-walk drift triangle: copy-declared
+  literal walk, stride/tiling derivation, perturb-one-leaf byte exclusivity
+  against the real serializer, classification teeth anchored to a COPY-DECLARED
+  `EXPECTED_DISCRETE_GENE_KEYS` literal — never to the production constant,
+  which production classifies BY, so deriving expectations from it would let a
+  reclassification move both sides together and stay green; proven by mutation
+  (deleting `suspType` from the constant reddens 6 tests) — and the
+  path-multiset cross-check against probe-integrity's independent walk,
+  partitioned by that same literal),
+  `genotype-codec.test.js` + `population-codec.test.js` +
+  `evaluation-codec.test.js` (the five decoders: round trips both
+  directions, the locked-corpus inversion, the self-contained-history proof,
+  the committed fitness vector reconstructed without physics, and every
+  malformed-stream rejection), `bytes.test.js` (the reader + hex codec),
   and `tests/browser/evaluation-determinism.test.js` +
-  `tests/browser/population-determinism.test.js` (the Chromium gates, own
+  `tests/browser/population-determinism.test.js` +
+  `tests/browser/codec-smoke.test.js` (the Chromium gates, own
   config `vitest.browser.config.js`, excluded from `npm test`); plus the
   committed instruments `s1-calibration-probe.js` (`npm run probe:s1`) —
   NOT tests.
@@ -1211,6 +1232,660 @@ stable 0.19.3. Full evidence: `docs/numerical-integrity-policy-2026-07.md`:**
   digest literal in any signature — sync-tooth-enforced;
   `tests/integrity-probe-schema.test.js` joins the expected candidate reds,
   Node totals 11→12; the July 2026 C5 evidence stays historical/untouched).
+
+**Canonical schema + codec foundations landed (Phase-1B prep PR 1) — the
+genotype schema walk and lossless decoders for all five canonical byte
+encodings. NO evolutionary behavior (no mutation/selection/elitism/evolution
+RNG/replacement/lineage/generation stepping/evolution formats or locks/
+crossover), ZERO change to any valid canonical stream, ZERO lock movement.
+Full contract: `docs/canonical-codec-foundations-2026-07.md`:**
+- **Roles, stated once:** `serializeGenotype` stays the canonical
+  byte-layout AUTHORITY (unrestructured — hard rule 4, the `24cd0dd5` lock);
+  the new `genotypeFieldWalk(axleCount)` / `forEachGenotypeField(genotype,
+  visit)` (assembly.js) is a validated METADATA MIRROR. 36 fixed-prefix
+  entries + 16 per axle (68 at 2 axles), `{path, key, type, kind, byteOffset,
+  byteLength}`; `kind` ∈ version/structural/discrete/continuous, with
+  `discrete` single-sourced from `DISCRETE_GENE_KEYS`.
+  `tests/genotype-schema.test.js` binds mirror to authority with three legs —
+  a copy-declared literal walk, the stride-128/tiling derivation identities,
+  and perturb-one-leaf byte EXCLUSIVITY against the real serializer — plus a
+  path-MULTISET cross-check against `probe-integrity.js`'s independent
+  reflection walk (multiset, not key set: keys repeat across node slots and
+  axles). Refactoring serialization onto the walk is a deliberate later PR.
+- **Latent genes are PROSE, not metadata (ruling):** node slots past the
+  active prefix, `nodes[0].gap`, the two idle `fam` blocks, and the
+  symmetry-gated `asym` block are always serialized, never erased by repair,
+  and freely perturbable by parametric mutation (heritable neutral
+  variation). Encoding expression would create a second semantic contract
+  drifting independently of the byte layout and make the walk a function of
+  gene VALUES rather than axle count. Expression is a `buildIR` question; if
+  a consumer ever needs it, it gets its own derived helper.
+- **Five decoders, each beside its encoder:** `deserializeGenotype`
+  (assembly.js), `deserializePopulationSnapshot` (population.js),
+  `deserializePopulationInitialization` (population-initializer.js),
+  `deserializeEvaluationSpec` + `deserializeFitnessVector`
+  (population-evaluation.js). Fail-loud, NEVER repairing (truncation,
+  trailing bytes, unknown versions, out-of-range enum/flag bytes, lying
+  length prefixes, out-of-domain values, contradictory records). Round-trip
+  invariants committed both directions: `serialize(deserialize(bytes))`
+  byte-identical, `deserialize(serialize(x))` leaf-equal under `Object.is`
+  (−0 sign bit and denormals preserved; nothing `Math.fround`-ed).
+- **THE VALIDATION-DEPTH RULING — mirror the encoder exactly, no more, no
+  less** (this is what makes each decoder a true inverse across its
+  encoder's whole output domain): genotype re-runs `validateGenotype`;
+  snapshot re-runs `validatePopulation` (incl. the repair-identity
+  canonicality tooth — no raw-draw side door) PLUS strict-ascending STREAM
+  order (validatePopulation sorts a copy and cannot see stream order; a
+  decoder that re-sorted would accept non-canonical bytes and break
+  re-encode identity); manifest re-runs `resolveConfig`. The evaluation spec
+  is the load-bearing asymmetry: its encoder does NOT run `resolveSpec`, so
+  the decoder must not either — `resolveSpec` enforces EXECUTION constraints
+  (clearance band, flat-pad guard, non-negative friction) the encoder never
+  applies, and calling it would reject encoder-producible bytes. Execution
+  validation stays `evaluatePopulation`'s job; a committed positive test
+  asserts such streams decode cleanly. Only CURRENT-version streams decode
+  (encoders write current constants unconditionally — that ruling is what
+  makes re-encode reproduce the bytes).
+- **Two ADDITIVE digest-state input paths** (`serializeFitnessVector`,
+  `serializePopulationInitialization`): a digest is one-way, so a decoded
+  record cannot reconstruct the `spec` / `population` its encoder folds.
+  Both encoders now accept EITHER the original object (production path,
+  statements verbatim and in original order) OR a pre-computed canonical
+  uint32; both present must AGREE, neither fails loud. No existing caller
+  passes the new field ⇒ the production branch is bit-for-bit unchanged
+  (`a6d04f75` / `7acb271d` stand; the population-determinism gate is the
+  tripwire).
+- **ONE SOURCE OF TRUTH per variable-length field — and INDICES ARE THE TRUTH
+  (the ruling, settled over three review rounds):** every canonical encoder
+  reads a variable-length field BY INDEX, the same reading its consumer
+  performs. `serializeEvaluationSpec` materializes each terrain range by index
+  once and both the size pass and the write pass consume that snapshot.
+  Sizing/counting from a declared `.length` while writing by `for...of` let an
+  iterable whose cardinality disagreed with its length emit a correctly-SIZED
+  but semantically wrong stream (under-yield ⇒ a zero-filled hole shifting
+  every later field — the worst failure mode, since the stream looks
+  well-formed) or overrun the DataView with a FOREIGN RangeError (over-yield);
+  measured both ways. **The class was SYSTEMIC** — a sweep of every encoder
+  found it in three more places, each reproduced: `serializeGenotype`
+  (`axles`/`nodes` — the WORST case: the unwritten axle's 128 zero bytes are
+  all legal [0,1] genes, so the short stream DECODED CLEANLY into a different
+  genotype), `serializeFitnessVector` (`individuals`), and
+  `serializePopulationInitialization` (categories). A fourth round found it
+  one layer UP, in the gate the snapshot encoder depends on:
+  `validatePopulation` checked members BY INDEX and returned `[...individuals]`
+  — an ITERATOR read — so a population whose indices held repaired genotypes
+  and whose iterator yielded a RAW draw passed validation (canonicality tooth
+  included) and then SERIALIZED the raw draw, defeating the one bug class that
+  seam exists to stop, and producing a stream the codec's own decoder refuses.
+  **The rule is therefore not about encoders: any function that validates one
+  reading of a caller's collection and returns another has this defect.**
+  Two related shapes closed with it — `validateGenotype` used
+  `Array.prototype.forEach`, which SKIPS HOLES, so a sparse `axles`/`nodes`
+  (exactly what a structural operator produces by growing `.length`) passed
+  validation with its genes unchecked and died as a FOREIGN TypeError inside
+  the serializer; and a hole in `initialSuspensionTypes` made
+  `indexOf(undefined)` = −1 wrap to byte 255, encoding and folding into the
+  digest before the decoder caught it. **Two intermediate fixes
+  looked complete and were not, and both are recorded because the class is
+  subtle:** materializing with an unbounded `Array.from` let an INFINITE
+  generator declaring `length: 2` exhaust memory instead of failing loud
+  (measured 47 MB for 2,000,000 values); bounding it fixed the hang but still
+  took the VALUES from the iterator, so a genuine Array carrying an overridden
+  `Symbol.iterator` (`Array.isArray` stays true — it was never the
+  discriminator; the READ is) encoded `[9, 9]` while `terrain.js`, which reads
+  `cfg.craterRadiusRange[0]/[1]`, would have used `[2, 5]` — decoding cleanly
+  and re-encoding byte-identically, a digest attesting a terrain that never
+  existed. The indexed read closes both by construction: nothing can
+  under-yield, over-yield, or fail to terminate when nothing is iterated, and
+  a slot that is not a finite number fails loud at the existing f64 gate. The
+  u8 bound is still checked BEFORE materializing. Reachability, honestly:
+  `ownTerrain` copies each range by an indexed loop (it used `.slice()` when
+  this was written; `.slice` is itself a caller-looked-up method and was
+  replaced under the ownership boundary — the conclusion stands, the mechanism
+  changed), so the `evaluatePopulation →
+  resolveSpec` production path was never exposed — the exposure is direct
+  calls to the public encoders, i.e. exactly the replay and import tooling
+  whose byte-exactness this PR exists to guarantee. Any future
+  variable-length wire field must follow this rule: count, allocation, and
+  payload from ONE INDEXED reading, never from an iterator when indices are
+  what execution consumes.
+- **THE OWNERSHIP BOUNDARY (the ruling that superseded the first threat-model
+  draft):** the fifth adversarial round drew the line at "plain data in scope,
+  hostile objects out" — and a sixth round broke that line with ordinary
+  JavaScript (a genuine Array's own no-op `forEach` walked 'S2' past the
+  suspension mask; a caller's retained reference rewrote provenance after
+  generation). A FULL TRUST INVENTORY then swept every public function for one
+  question — what does this code trust that a caller controls? — 149 trust
+  points, 20 confirmed findings, 0 refuted, incl. two more blockers: member
+  B's own `axles.map`, invoked BY the canonicality tooth's own repairGenotype
+  call, swapped already-validated member A for a raw draw the snapshot then
+  attested; and an own `length` DATA property on a genuine Uint8Array (length
+  is an inherited ACCESSOR — plain defineProperty shadows it) made bytesToHex
+  emit 'dead' for content deadbeef. **The corrected boundary — the module owns
+  what it attests:** copy on intake by index (`captureGenotype` — round 8's
+  `cloneGenotype`, superseded when round 10 fused validation and copy into one
+  walk — `ownTerrain`, the vector row preflight); NEVER invoke caller-owned code (no method looked up
+  on caller objects — no .map/.forEach/.indexOf/.slice/.subarray/iterators);
+  attest exactly what was validated (`serializePopulationSnapshot` emits the
+  very bytes the tooth checked via the shared `validatedMembers` walk;
+  `serializeFitnessVector` writes from its preflight's module-owned rows —
+  nothing re-reads the caller after validation); byte-boundary geometry via
+  cached `%TypedArray%.prototype` intrinsic getters (bytes.js +
+  deserializeGenotype), and the reader wraps the caller `fail` callback with
+  an unconditional abort (a returning fail could REWIND the cursor); no
+  retained caller references in attested records (resolvePolicy returns an
+  owned frozen category list; the IR shares nothing with the input genotype);
+  structural checks before every deep dereference and coercion nowhere
+  (strict-boolean `deterministic` — truthiness encoded the string 'false' and
+  a boxed Boolean as TRUE, the field that selects the physics flavor; explicit
+  null fails where absent defaults — keepRaw, spawn.clearance; unknown
+  assembly option keys loud; the flat-pad guard validates the scalars it
+  compares — NaN made it vacuously pass; hubMassProperties refuses the shapes
+  that silently returned all-NaN; spawnPose/validity/champion entry points
+  shape-check rows and read them BY INDEX). **Still out of scope (the regress
+  argument holds only here):** exotic objects whose FUNDAMENTAL operations lie
+  — Proxy non-idempotent getters, lying prototypes, throwing toString on
+  otherwise-valid values. The line is CODE vs DATA: never run caller code,
+  never re-read caller data after validating it, but assume a plain data read
+  returns what the runtime holds. **Documented-not-fixed (loud-on-first-use,
+  none silent):** bytesEqual's inputs; the rng injection contract
+  (randomGenotype/sampleInitialGenotype — downstream domain validation
+  contains out-of-range draws); fnv1a.js (locked, untouched); the adapter
+  trusts compiler-owned IRs. **Two guards considered and REJECTED** (recorded
+  so the asymmetry reads as a decision): u32 fitness-vector member count and
+  u8 category count — unlike the three shipping guards, each closing a
+  REACHABLE gap with a triggering test, neither can be triggered at all
+  (`Array.isArray` gates `individuals` and a genuine Array maxes at exactly
+  the u32 bound 4294967295; categories are mask-validated with duplicate
+  rejection before counting) — dead code defending an unconstructable shape.
+- **Three wire-representability guards (fail loud; NO valid bytes change):**
+  `serializeGenotype` caps `axles.length` at the u8 bound (validateGenotype has
+  no axle cap — `maxAxles` is repair POLICY); `serializeEvaluationSpec` caps
+  each range length **in the SIZE pass, before allocation** (validating at the
+  write let a pathological declared length size the buffer first — measured
+  ~17 GB reserved at 2^31 and a foreign `RangeError: Array buffer allocation
+  failed` at 2^40 escaping instead of the module's diagnosis); and
+  `serializePopulationInitialization` caps `populationSize` at the u32 bound —
+  `resolveConfig` bounds it below but not above, and the digest-only path has
+  no population array to bound it implicitly, so `0x100000001` wrapped to 1 and
+  produced a manifest that REBUILDS a different population while carrying the
+  original's digest state. All unreachable today; each converts silent
+  corruption into a loud error and is what makes the exact-inverse claim honest
+  rather than scoped.
+- **Replay ruling:** `deserializeEvaluationSpec` returns the RESOLVED shape
+  (what `serializeEvaluationSpec` consumes), so rerunning the evaluation those
+  bytes describe must work — but `resolveSpec` rejected `termination` as an
+  unknown key (it DERIVES it), making the resolver non-idempotent on its own
+  output and a decoded spec unusable with `evaluatePopulation`. `termination`
+  is now an accepted input key validated against `TERMINATIONS` (an unknown
+  value still fails loud, never coerced). Additive and byte-neutral — the
+  resolver already emitted that exact value, no digest moves; a committed test
+  replays a decoded spec and asserts the re-resolved spec re-encodes
+  byte-identically, so a persisted fitness vector stays comparable across a
+  reload.
+- **`src/sim/bytes.js`** (new, pure) — `createByteReader(bytes, fail)`
+  (little-endian, bounds-checked before every read, `byteOffset` folded in so
+  a subarray reads its own window, cursor state as GETTERS on a frozen
+  object, failures routed through the CALLING module's fail idiom,
+  `expectEnd` for trailing-byte refusal) + `bytesToHex`/`hexToBytes`, the
+  lossless canonical-LOWERCASE JSON-safe representation (odd length,
+  uppercase, and non-hex rejected — never normalized). **Binary identity vs
+  JSON envelope:** the bytes ARE the identity, digests are folded over them
+  and never over JSON; JSON carries hex inside a `boxcar3d.<name>/<v>`
+  envelope. No base64. `trace.js hexBytes` / `characterize-population.js
+  bytesToHex` stay put (recorded duplication — locked module / out-of-ban
+  script).
+- **Tests:** `tests/genotype-schema.test.js`, `genotype-codec.test.js`
+  (incl. the seed-20260710 corpus inverted per member — binding the decoder
+  to the `24cd0dd5` corpus with NO duplicated digest literal — and the NEW
+  seed **20260732** boundary-value sprinkle corpus), `population-codec.test.js`
+  (incl. the SELF-CONTAINED HISTORY proof: decoded config →
+  `createInitialPopulation` → byte-identical manifest + matching snapshot
+  digest state), `evaluation-codec.test.js` (the committed `a6d04f75` vector
+  reconstructed WITHOUT physics from the fixture builder + the imported lock),
+  `bytes.test.js`, and `tests/browser/codec-smoke.test.js` — the last exists
+  because `vitest.browser.config.js` collects only `tests/browser/**`, so
+  without it no codec line would ever run in Chromium. No new lock anywhere;
+  no `*-locks.js` file touched.
+- **THE ENFORCEMENT RULING (review round 8 — the correction that matters most
+  for future work):** every ruling above had been written as PROSE with nothing
+  binding it to the code. That was the actual defect, and it had already
+  repeated three review rounds: a defect is found, the SITE is fixed, a RULE is
+  written, the class is never swept — so the rule holds wherever someone looked
+  and nowhere else. Two measurements settled it: deleting the three cached
+  intrinsic getters from `deserializeGenotype` left the WHOLE SUITE GREEN, and
+  the committed tooth "an own `subarray` property is never invoked by r.bytes"
+  asserted a strictly WEAKER proposition than the rule it claimed to enforce —
+  **the test had been written to the fix, not to the rule.** A 5-dimension
+  whole-surface sweep (39 candidates, **35 CONFIRMED by reproduction, 0
+  refuted**) then found what instance-fixing had left, including two that broke
+  the PR's headline claim: (1) **`TA_SUBARRAY.call` still runs caller code** —
+  `%TypedArray%.prototype.subarray` is SPECIES-AWARE (it reads the receiver's
+  `constructor[Symbol.species]` and CONSTRUCTS the result), so an own
+  `constructor` data property on a genuine Uint8Array made the snapshot decoder
+  return genotype B from a 1052-byte stream containing genotype A and re-encode
+  to 796 different bytes, with every bounds check and `expectEnd` passing.
+  **Borrowing the intrinsic is only safe for the geometry ACCESSORS; a
+  prototype METHOD may be species-aware — reach for a constructor, not a
+  method.** Byte windows are now
+  `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)` and
+  `subarray` is lint-banned outright in the family. (2) **`bytesEqual` returned
+  true for deadbeef vs dead0000 and `fnv1aFold` digested a PREFIX** — both read
+  the shadowable `length`, and both were listed in the memo under "documented,
+  deliberately not fixed — each loud-on-first-use, none silent", a claim that
+  was false for both; a not-fixed register is only honest if each entry's
+  FAILURE MODE was checked, not just its reachability. Also closed: `-0` passed
+  every uint32 gate while setUint32 erased the sign (silent normalization
+  breaking the Object.is round-trip claim — `isCanonicalUint32` now rejects it,
+  and f64 gene leaves deliberately still accept it since setFloat64 preserves
+  the bit); `evaluatePopulation` read the caller's population FOUR times to back
+  ONE attestation (now `attestPopulation` — one walk returning the bytes plus
+  genotypes DECODED FROM THOSE BYTES, which makes the codec's exact-inverse
+  property load-bearing in production, not only in its own tests);
+  `fitnessFromVehicleResult` returned NaN/Infinity/-5/the STRING '12' unchecked
+  — the PRODUCER behind the champion-poisoning hole, where `>` and `!==` against
+  NaN are both false so the first eligible row wins permanently; both champion
+  selectors now judge MODULE-OWNED VALUES captured in one read while still
+  RETURNING the caller's winning row (production rows carry a full diagnostics
+  block the diagnostic selector exists to report; a compact summary would have
+  silently narrowed a working API under cover of hardening), and both enforce
+  the fitness vector's row domain — a row that cannot be SERIALIZED must not be
+  RANKED, so an unknown integrity status or an unselectable row carrying
+  non-zero fitness is refused rather than quietly filtered. Adjacent
+  modules fixed in the same class: `trace.js` geometry + its diagnostic byte
+  windows (a divergence reporter printing bytes not in the stream),
+  `trace-forensics.js` and `evaluation.js` caller-iterator/hole walks.
+  **The rules now fail a build:** `eslint.config.js` bans caller-visible byte
+  geometry in the seven byte-handling modules (legal module-owned receivers
+  carry a disable comment NAMING the receiver — that comment IS the audit
+  trail) and bans `subarray` with no exception; `tests/ownership-boundary.test.js`
+  pins each module's export list as a copy-declared literal plus a per-export
+  classification table (a new export cannot ship unclassified — that is how an
+  `export const` arrow and a function 16 lines above a read window each survived
+  a full round unguarded), runs the shadowed-geometry battery asserting the
+  RESULT is identical to the un-shadowed call rather than merely "it throws"
+  (which scored `deserializeFitnessVector` green while it FALSELY REJECTED valid
+  vectors), and asserts copy-on-intake/freeze/no-retained-reference;
+  `tests/codec-roundtrip-property.test.js` (seed **20260733**, 200 samples ×
+  5 pairs) generates boundary-value encoder outputs and asserts byte-identical
+  re-encode + Object.is leaf equality with the failing PATH, carrying its own
+  coverage teeth and broken-codec self-checks; a table-driven unvalidated-field
+  sweep plus a permutation-invariance check pin the "total order" claim the
+  selectors' own docblock makes. **Every tooth was mutation-verified — revert
+  the fix, watch it fail, restore.** Generalizable rule, since this cost three
+  rounds: *a test written to reproduce the bug you found is not enforcement of
+  the rule you wrote about it.*
+- **THE SINGLE-READ INVARIANT (review round 10 — the rule rounds 7–9 kept
+  fixing one site at a time).** Stated once, now enforced:
+  *any caller-owned value used to VALIDATE, ORDER, ATTEST, ENCODE or EXECUTE
+  must be captured into a module-owned local exactly once, and every
+  subsequent operation must use that capture.* The exploit vehicle is an
+  ORDINARY own accessor on a plain object or genuine Array — squarely inside
+  the round-8 ownership boundary (CODE vs DATA), not the excluded exotic
+  class. Round 9 already had the exact instrument that finds these (a counting
+  accessor asserting one read) and applied it to ONE function, because that is
+  where the reported finding was; ~40 exports went unchecked. **Enforcement
+  scoped to a round's MECHANISM is still enforcement written to the fix** —
+  that is the generalization of round 8's lesson, one notch up, and it is why
+  this round exists.
+  A 6-area sweep with adversarial skeptic verification found **39 confirmed,
+  7 refuted**, closing the four reported blockers and 35 more. Fix shapes, all
+  one move: `assembly.js` — `captureGenotype` is now THE ONE WALK (validate and
+  copy in the same pass; `cloneGenotype` is deleted, and `repairGenotype` /
+  `serializeGenotype` / `forEachGenotypeField` / `compileAssembly` all consume
+  the capture, since `validate(x)`-then-`clone(x)` let a `hue` getter answering
+  0.5 then 1e6 produce a REPAIRED genotype outside `[0,1]`, an IR with a 300 km
+  chassis half-extent, and a NaN on the wire the module's own decoder rejects);
+  `population.js` — the canonicality tooth serializes ONCE and repairs the
+  decoded copy, so it can no longer compare one reading against the repair of
+  another; `population-evaluation.js` — `captureVehicleResult` backs all three
+  fitness predicates (six reads of `bodies` became one), `resolveSpec` and
+  `serializeEvaluationSpec` capture every scalar and materialize every terrain
+  value, the fitness-vector preflight captures all four row fields BEFORE any
+  check, and `championCandidates` is one shared capture that also **refuses
+  duplicate individualIds** (both comparators tie-break on id, so duplicates
+  made the documented total order position-dependent — and the vector encoder's
+  strictly-ascending rule already rejected them: *a row that cannot be
+  SERIALIZED must not be RANKED*); `trace.js` — `validateRecord` returns a
+  frozen module-owned snapshot that the writer encodes AND derives its ordering
+  key from; `trace-forensics.js` — copy-on-intake for `perBody` and `records`
+  (`maxOf` also evaluated `sel(b).value` twice, so the value that won the
+  comparison need not have been the one stored).
+  **The blocker was an EXECUTION gate, not a codec seam:** `resolveSpec` read
+  `spawn.x` five times, so an accessor passed the flat-pad guard at −44 and the
+  vehicle RAN at x=100, off-pad, with the spec digest attesting the position
+  that never executed.
+  **`tests/single-read.test.js` is the enforcement.** The INSTRUMENT is
+  universal over an input's fields: it deep-instruments every own property of a
+  caller input with a counting accessor and asserts ≤1 read per path, so a new
+  FIELD on an already-covered input is checked without anyone remembering. A
+  property read at most once cannot be lied to, which is why the tooth needs no
+  knowledge of what any function does. The INPUT SET, however, is a curated
+  `CASES` table — a new EXPORT does not get instrumented automatically — so a
+  coverage tooth (round-12, break-it sweep F9) derives the function-export set
+  from the module namespaces and fails until each is a CASES row or a declared
+  exemption; the corrected earlier claim was that a new export is covered
+  "without anyone remembering", which was true of fields, not exports.
+  Declared non-exemptions: a genuine Array's `length` is a non-configurable own
+  DATA property and cannot lie (exempt BY THE LANGUAGE, not by choice);
+  TypedArray byte geometry stays round-8's concern; and the adapter's placement
+  planner keeps its "trusts compiler-owned IRs" ruling — `spawnPoseOnFlatStart`
+  closes that at ITS OWN boundary via `ownPlainData` instead of pushing the rule
+  into the realizer. **All 14 mutations bite**, including two teeth added only
+  because a mutation was silent: `compareCheckpoints`/`compareTraces` needed
+  DIVERGENT fixtures (identical inputs never reach the reporting branch, where a
+  re-read prints values that were never compared), and `resolveSpec`'s
+  regression had to live in `tests/population-evaluation.test.js` because it is
+  private and reachable only through physics — *a fix no test can redden is not
+  a fix.*
+- **THE EXEMPTION WAS FALSE, AND THE INSTRUMENTS WERE SCOPED (round 11 — the
+  class one notch BELOW the instruments themselves).** Round 10 built a tooth
+  that is universal over FIELDS; round 11 asked what that tooth EXEMPTS and who
+  checks the exemptions. 20 defects survived adversarial verification (44
+  candidates, 11 refuted); three break the validated ≡ attested ≡ executed
+  chain. **The root: the Array-`length` exemption.** Half true — `length` is
+  non-configurable, so no accessor can be installed — and half FALSE: it is
+  WRITABLE, and every element read in a validation walk IS caller code running
+  between two readings of the bound. Measured with an ordinary own accessor on
+  a genuine Array: a `radius` getter assigning `axles.length = 1` made a 3-axle
+  genotype serialize to 396 bytes attesting axleCount 1 (short, well-formed,
+  cleanly decodable, reproduced through `attestPopulation` with the canonicality
+  tooth passing); a member getter assigning `individuals.length = 3` made
+  `attestPopulation` return a silent PREFIX (4 in, 3 attested, 1476 bytes not
+  1752); and a shrinking element getter made `compareTraces` /
+  `compareCheckpoints` return **null — "identical" — for divergent traces**, in
+  both directions. Every caller-collection loop bound is now captured before the
+  walk, the three false comments are corrected, and `LOOP_BOUND_CASES`
+  (`tests/single-read.test.js`) supplies the input the counting instrument
+  STRUCTURALLY cannot generate (it rebuilds Arrays, discarding the mutating
+  getter) — asserting the RESULT: a poisoned walk may fail loud in the owning
+  module's dialect, never SUCCEED with a different answer.
+  **A trust axis never posed before — own-property ENUMERABILITY:** presence
+  gated by `hasOwnProperty` (sees non-enumerable own props) while execution came
+  from `{ ...TERRAIN_DEFAULTS, ...terrain }` (own ENUMERABLE only), so one
+  `Object.defineProperty(t,'seed',{value})` — plain data — passed the guard whose
+  own message says a vector must never bind the default seed, and
+  `evaluatePopulation` ran and attested the **seed-0 DEFAULT world**,
+  byte-identical to an explicit seed-0 run. Same shape in `runEvaluation`. Rule:
+  *a guard that decides presence must use the same property enumeration its
+  consumer reads with* — plus rejection of any terrain carrying non-enumerable
+  own properties (a non-enumerable `featureDensity` silently reverted too).
+  **`validateOptions` returned the caller's `terrain`/`vehicles` BY REFERENCE**
+  and `runEvaluation` re-read them after `hooks.onPhase(...)` and across
+  `await createPhysics(...)`: a run validated `trace.mode:'none'` executed
+  'full'; a spawn validated at x=−25 realized at x=−13; a removed-`targetAngvel`
+  tombstone was bypassed so the vehicle ran at the default surface speed.
+  Indexing the loop (round 9) fixed holes and iterator divergence — it did not
+  make the two readings ONE. It now returns a module-owned capture (`ir` stays a
+  captured REFERENCE under the standing compiler-owned-IR ruling).
+  **Also closed:** `resolveSpecDigestState`'s double read of `evaluation.spec`
+  (its documented twin was fixed by caller capture in this same PR);
+  `ownTerrain` densifying a caller-DECLARED range length before any validation
+  — an uncatchable `FATAL ERROR: heap limit` V8 abort at 2^26 on the production
+  path, one function from the identical committed guard; `ownPlainData` passing
+  `Object.create(null)`/class instances BY REFERENCE, dropping an own
+  `"__proto__"` key through the inherited setter, and recursing unbounded;
+  `resolveReachMap` walking `bodies` with the CALLER's `forEach`;
+  `bodyReachMetadataForIR` returning chassis-only metadata with NO error for a
+  non-array `wheels` (a silent path this PR's own indexed rewrite introduced);
+  two diagnostics printing values that were never rejected; and three
+  `Object.hasOwn` defaults over-correcting to reject explicit `undefined` where
+  five sibling keys accept it.
+  **G9 — the enforcement surface — mattered more than the fixes.** Each
+  instrument was scoped to the round that built it:
+  `tests/ownership-boundary.test.js` pinned export lists for FIVE modules while
+  `single-read.test.js` cited it as the backstop for all (47 exports across
+  `integrity.js`/`trace.js`/`trace-forensics.js`/`evaluation.js`/`fnv1a.js`
+  unpinned — now pinned, with `RE_EXPORTS` declared and asserted
+  reference-identical); every CASES row asserted SUCCESS, so no rejection branch
+  was instrumented (now a rejection table); the `serializeFitnessVector` row
+  carried no `spec`, so its PRODUCTION branch was never entered (now two rows,
+  the sibling's pattern); and the byte-family lint block scoped itself with a
+  hard-coded seven-file list no test read — a probe file elsewhere in `src/sim`
+  produced ZERO diagnostics. `(0) the byte-family lint scope` now reads the real
+  directory and the real config, so a new `src/sim` module fails until it is
+  classified in `BYTE_FAMILY_EXEMPT` or the lint block. Selectors widened:
+  `bytes['byteLength']`, `const { byteLength } = bytes`, `Reflect.get(...)`,
+  `globalThis.Math.random()`, `const M = Math; M.random()` and
+  `globalThis.Date.now()` all linted CLEAN while both hard rules claimed
+  "(ESLint-enforced)"; no live violation existed — the spelling was open, not
+  the ban. **One arithmetic change, verified:** `**` was unbanned though
+  `Math.pow` is, and lived in the locked terrain feature generator feeding
+  `maxHalf.ramp` → every ramp's placement draw; `x ** 2` is
+  `Number::exponentiate` (implementation-approximated exactly like `Math.pow`),
+  now `x * x` (IEEE-exact), operator lint-banned, all five terrain fingerprints
+  byte-identical across the change.
+  **The completeness pass found the largest gap, and it is PRE-EXISTING:** every
+  codec test asks "do the same bytes come back?", none asked "do the same bytes
+  still describe the same VEHICLE?" Reordering `SUSPENSION_TYPES` to
+  `['S1','S0','S2']` flips every archived axle's suspension while BOTH locks stay
+  byte-identical (`24cd0dd5` hashes raw genes; `39bcd6c4` hashes chassis
+  colliders, which derive only from frame genes) — the sole guard was one
+  incidental repair-test assertion, and `genotype-codec.test.js` was
+  self-referential on both sides. A decode-table golden now pins the enum orders
+  as copy-declared literals and hashes the DECODED PHENOTYPE of the
+  seed-20260710 corpus (`341c2830`); changing it is a genotype-VERSION event.
+  **All 27 mutations bite, 0 silent** — four teeth exist only because a mutation
+  WAS silent, each a lesson in what an assertion must distinguish (a
+  `compareTraces` case whose shrink target equals the loop bound, or the walk
+  throws before the verdict; per-body capture counts rather than
+  `perBody.length`, which is 1 either way; `{}` rather than a string for the
+  non-array `wheels`, since a string has a `length`; and BOTH a `forEach` and a
+  `Symbol.iterator` poison, one defect wearing two names).
+  **The generalization, one notch above round 10's:** *enforcement scoped to a
+  round's mechanism is still enforcement written to the fix.* Make the SCOPE
+  derived rather than enumerated, and check the exemptions as carefully as the
+  rules.
+- Full suite green (51 files, 1152 tests), determinism gate green, pinned
+  Chromium green, lint + build clean. Every terrain/noise/boulder/assembly
+  fingerprint, the A–D evaluation digests, all four population digests, the
+  per-member fitness literals, the champion trace, and every version constant
+  byte-identical. **Zero lock movement in round 11 either** — no committed
+  digest moved under any of the twenty fixes.
+
+**Round 12 — the break-it sweep (a 20-lens adversarial pass whose success
+criterion was BREAKAGE, 42 confirmed findings) proved round 11 falsified its own
+guarantees, and drew two scope rulings. Seven commits; every committed lock
+byte-identical.**
+- **The blockers were round 11's own headline invariant.** "Validated ≡ attested
+  ≡ executed" was false four in-scope ways: `runEvaluation` captured
+  `spawn.position` but left `spawn.rotation`/`spawn.linvel` BY REFERENCE (a
+  validated identity quaternion executed as yaw-90; a |q|²=1 reading passed the
+  unit-quaternion gate and realized |q|²=3.24, `integrity:'ok'`); `resolveSpec`'s
+  seed guard was bypassable by an accessor deleting `terrain.seed` between the
+  presence walk and the spread (seed-0 default world attested); and the new
+  `ownTerrainOptions` re-introduced the `__proto__` poisoning round 11 fixed in
+  `ownPlainData` one module over. Spawn components are captured component-wise
+  now; the terrain is captured ONCE and both sites reject a non-plain prototype
+  and non-enumerable/`__proto__` keys.
+- **"Every loop bound is captured" and "a poisoned walk never succeeds with a
+  different answer" were overclaims.** `capturePerBody` still re-read its bound
+  (offlineIntegrityView returned 'ok' for a catastrophic analysis), and
+  `compareTraces` still returned null ("identical") for divergent traces via a
+  sibling-record byte overwrite — the loop BOUND was captured, the record BYTES
+  were not. Both fixed; `spawnPoseOnFlatStart` and `foldIntegrity` gained the
+  field guards their comments already claimed.
+- **Four allocations round 11 left unbounded** reach an uncatchable V8 heap abort
+  from a validated input (terrain descriptor counts, `populationSize`,
+  `maxSteps`+profile buffer, `ownPlainData` array length) — each now bounded
+  before it allocates, verified under `--max-old-space-size=256`.
+- **The enforcement was hollow in three places, now real:** the D7/F3
+  determinism lint bans were DISABLED in the 7 byte-family files (flat-config
+  replaces `no-restricted-syntax`) — `x ** 2` and `globalThis.Math.random()`
+  linted clean in assembly.js; the decode-table golden folded 5 of ~20 decoded
+  quantities (a GENE_RANGES rescale left all three locks identical) → widened to
+  `12c0bcd3`; and the single-read suite's "universal by construction... a new
+  export covered without anyone remembering" was true of FIELDS, not exports → a
+  coverage tooth derives the function-export surface and fails until each is
+  covered or exempted.
+- **THE STORAGE-LIFETIME RULING (JP): canonical bytes must be ORDINARY —
+  same-realm, fixed-size, non-shared, non-detached; anything fancy rejected loud
+  at the door.** The round-8 property boundary never named a genuine Uint8Array
+  whose BACKING STORE is transient/foreign: a detached buffer reads empty
+  (`bytesToHex`→"", `fnv1aFold` unchanged), a SharedArrayBuffer races
+  cross-thread, a resizable buffer shrinks under a reader.
+  `requireOrdinaryBytes` (bytes.js) enforces it — round 12 wrote "at every
+  intake seam" while gating TWO; the claim was false until round 13 closed the
+  derived surface (see below).
+- **THE FNV-IDENTITY RULING (JP): FNV-1a32 is a drift/lock digest + the
+  determinism comparator, NOT persistent content identity.** A 32-bit collision
+  appears in seconds but cannot fool the determinism gate (it compares the SAME
+  input across environments, never two artifacts). Verified no equality-by-FNV
+  where bytes are in hand (`bytesEqual` compares bytes). A strong digest for
+  persisted history is DEFERRED to Phase 1B, unneeded until artifact identity is.
+- Report-only + hygiene: `characterize-population.js` reported 0 explosions on a
+  population holding the 8.17e6 m witness (it read the policy-v2 integrity-GATED
+  `fitness`, not the raw `maxForwardDistance`; the undriven audit printed
+  `passive max-fwd 0.00` beside `passive final 2.10e2`) — fixed, §3.3 corrected;
+  `-0` rejected in the trace u32 fields; the R4 wall-clearance guard tightened by
+  the trackHalf floor; the causal scan vehicle-scoped and its chain rule
+  corrected; the app-scene smoke fixed on Windows (shell:true) and no longer
+  runs at import.
+- **Full suite green (51 files, 1183 tests), determinism + pinned Chromium
+  green.** Every terrain/noise/boulder/assembly fingerprint, the A–D evaluation
+  digests, all four population digests, the per-member fitness literals, the
+  champion trace, and every version constant byte-identical — **zero committed
+  lock moved under any round-12 fix** (the widened decode golden `12c0bcd3` is a
+  test-internal literal, not a production lock). The generalization: an adversary
+  whose success criterion is *finding a break* attacks the guarantees, not the
+  sites — and found the previous round's claims, comments, and own new code were
+  where the next defects hid.
+
+**Round 13 — external-review validation: the byte-storage closure and the
+first EXPLICIT deferral.** An external review of the full PR history was
+validated claim-by-claim at head (both blockers CONFIRMED by execution, a few
+precision errors, disposition upheld). JP ruled: fix Blocker 1, explicitly
+defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
+- **Blocker 1 CLOSED (the round-12 pattern, one notch up):** round 12 wrote
+  "`requireOrdinaryBytes` enforces it at every intake seam" and gated TWO
+  seams. Executed at head: `fnv1aFold(state, detached)` returned the state
+  UNCHANGED — a digest attesting zero bytes it was never handed, the exact
+  motivating failure bytes.js itself cites — and `bytesEqual` reported a
+  detached `[1,2,3]` EQUAL to a fresh empty array AND to a detached `[9,9]`.
+  Five seams closed: `fnv1aFold` (inline — the lock hash stays import-free by
+  ruling; rejection in its own dialect, since `String(detached)` dies as a
+  FOREIGN join error), `typedArrayByteLength` (detached geometry is 0 — true
+  and still a lie), `bytesEqual` (both sides), `encodeTraceRecord`'s
+  caller-supplied `out` (shared/resizable slipped past the RECORD_BYTES
+  identity; detached failed it only incidentally), and `compareTraces` record
+  entries (a resizable entry shrinking between the size identity and the copy
+  compared all-zero bytes that never existed — silently, as "identical";
+  fancy storage now THROWS as invalid input, never reported as divergence).
+  **The enforcement is DERIVED:** `tests/ownership-boundary.test.js` (0b)
+  takes the module set from the byte-family LINT block, the export set from
+  the real namespaces, and requires every function export classified —
+  'gated' (invoke thunk run against detached/SAB/resizable, all must throw)
+  or 'no-byte-intake' (stated reason). The two seams C12 gated but never
+  tested (decodeTraceRecord, deserializeGenotype) got their batteries. All 7
+  mutations bite.
+- **Blocker 2 EXPLICITLY DEFERRED (JP's ruling — the first entry in this
+  project's deferral register that states its CHECKED failure mode up
+  front):** `TraceWriter.finish()` returns its LIVE private
+  `#records`/`#checkpoints` arrays, and `analyzeTrace`/`compareTraces` never
+  re-verify caller-held record bytes against the digest/recordCount/
+  byteCount/checkpoint states — so a caller can mutate evidence AFTER
+  attestation and offline forensics will describe bytes the digest never
+  attested. Deferral is sound because the surface is DIAGNOSTIC-only (no
+  lock, no fitness, no selection path consumes it; production traces live
+  and die inside one process's `runEvaluation` result), and the fix belongs
+  to Phase 1B's persisted-history format alongside the strong-digest
+  deferral: EITHER the value model (finish() returns immutable/copied
+  representations) OR the verified-evidence model (`verifyFullTrace`
+  recomputes digest/counts/ordering/checkpoints; `analyzeTrace` accepts only
+  verified results). Freezing the outer array alone is insufficient —
+  Uint8Array contents stay mutable. Recorded at both sites (finish(),
+  analyzeTrace) and in the codec doc §Round 13.
+- The review's historical audit (trust-boundary reversal, champion-API flip,
+  Array-length exemption, the universal-claim ladder, the `__proto__`
+  recreation, spawn-capture propagation) matched the independent churn audit;
+  its "should not be reopened" list is adopted as stable.
+
+**Round 14 — two real fixes and one honest deferral (avoiding the whack-a-mole trap).** A second external review after the round-13 push reported three findings; verified two blockers by direct execution at HEAD, then asked "are we sure we're not playing whack-a-mole?" — a fair question, so I attacked the first candidate fix and it fell over one level down. That fix was reverted and replaced with an explicit deferral. Net result: one commit, zero lock movement; 51 files, 1199 tests.**
+- **runRealizedEvaluationLoop caller-collection ownership — FIXED (real,
+  structural).** The seam consumed `realized.map` / `.flatMap` / for-of, and
+  its ownership classification declared `callerCollections: []` on the
+  reasoning "usually called with module output" — which effectively exempted
+  it from every hostile-collection battery. Executed at HEAD: a genuine
+  Array with an own no-op `.map` returned `vehicles.length === 0` while the
+  world stepped maxSteps and `counts.staticColliders` matched — silent
+  contradiction of every documented ownership rule. Fixed by
+  captured-length integer walks over BOTH `realized` and each `rec.wheels`
+  (the codebase-wide rule from round 8+); classification updated honestly
+  to `callerCollections: ['realized', 'realized[].wheels']`. Two
+  regressions in `tests/evaluation-core.test.js` mutation-verified against
+  the pre-fix walks (outer `.map` and inner `.flatMap` shadows both bite).
+  Not whack-a-mole: replacing method calls with indexed loops closes the
+  class structurally at that seam.
+- **Cross-realm coverage (P2 finding) — FIXED.** Round 13's storage battery
+  ran detached / SAB / resizable but not cross-realm — the fourth named
+  policy axis. A Node `vm.runInNewContext('new Uint8Array(128)')` view now
+  runs through the (0b) FANCY_STORES matrix against all 12 gated seams, and
+  a same-origin iframe view runs through the pinned Chromium codec smoke.
+  A drift from `instanceof Uint8Array` to a broader brand check would need
+  active cross-realm rejection to keep both green.
+- **THE COMPARE-CLASS DEFERRAL (JP's ruling) — the meta-point of the round.**
+  compareTraces silently returned `null` for streams that genuinely differed
+  when an ordinary accessor descriptor on `records[i]` — no Proxy, no
+  exotic storage — mutated the opposing side to match. Same shape reproduced
+  in `compareCheckpoints` via field accessors. A first fix installed accessor-
+  descriptor pre-scans on both sides; JP asked "are we sure this isn't
+  whack-a-mole?" and I attacked my own fix — an accessor one level down
+  (getter on `records[i].translation.x`, or on `envelope.version`, or on
+  `envelope.records`) still ran during capture and reproduced the silent
+  false-identical. Refusing accessors at each discovered location is by
+  definition site-by-site, not class closure. The candidate fix was
+  REVERTED and the class DEFERRED, with the failure shape stated at both
+  call sites and the two candidate atomic architectural fixes recorded for
+  Phase-1B persisted history: (A) accept only pre-encoded Uint8Array
+  records (hard API boundary), or (B) total deep pre-scan of nested
+  descriptors. Test tooling that must trust a comparison is expected to
+  encode both sides via `encodeTraceRecord()` before calling, which
+  mechanically closes the class for that caller.
+- **THE DEFERRAL RATIONALE WAS WRONG, AND THE CORRECTION IS THE LESSON.**
+  The first version said the surface is "DIAGNOSTIC-only — no lock, no
+  fitness, no selection path consumes the return values". True of
+  `compareTraces`; **FALSE of `compareCheckpoints`**, which all three
+  `test:determinism` files (evaluation-determinism, evaluation-golden,
+  population-determinism) and both Chromium gates call. Published across
+  five files without grepping the call sites — the project's signature
+  failure (unenforced prose read as an audited guarantee), committed inside
+  a deferral rationale, where the prose IS the justification. The honest
+  reason is narrower and stronger and does not depend on which gate calls
+  what: **BoxCar3D has no untrusted input.** Every argument reaching these
+  comparators is module-owned (TraceWriter output, committed lock literals,
+  codec-decoded structures, structured-clone worker payloads), so
+  exploiting the class means writing an accessor into this repo's own
+  source to deceive this repo's own gates. Real bug, nil exposure, and a
+  32-call-site migration to close it. **Explicit expiry: Phase 1B persists
+  evolution history and reloads it — the first moment a trace crosses a
+  trust boundary. Revisit there, not before.**
+- **Three follow-up fixes, all cheap, all mutation-verified:**
+  `runRealizedEvaluationLoop` checks `Array.isArray(realized)` before
+  reading `.length` (measured: `{length: 0}` returned a clean `vehicles: []`
+  while the world stepped `maxSteps`; `null` leaked a foreign TypeError —
+  fixing the ELEMENT walk had left the COLLECTION the only unguarded input;
+  a genuine empty array stays legal); `compareTraces` does a realm-neutral
+  `ArrayBuffer.isView` check before the plain-record path; and the
+  cross-realm storage-battery row, whose regex accepted `invalid`/`unknown
+  key` and was therefore **vacuous for `compareTraces`** (the foreign view
+  missed the byte branch, fell to the record path, died on "unknown key" —
+  a wrong-reason rejection scored as a storage-gate pass), now demands the
+  storage diagnosis. Tightening it immediately exposed a second site
+  (`deserializeGenotype`'s generic message), now aligned. *A test that
+  passes for the wrong reason is worse than no test.*
+- **The generalization.** Round 11 said "enforcement scoped to a round's
+  MECHANISM is still enforcement written to the fix." Round 12 said it
+  again about round-11 claims. Round 13 said it about round-12's storage
+  claim. Round 14 caught round-14's own compareTraces fix falsifying it —
+  the pattern the review was warning about, reproduced live inside the fix
+  meant to close it. The escape from the ladder is not "one more clever
+  check"; it is to recognize when a class needs a real architectural
+  boundary (defer to when it can be made) versus a site-level guarantee
+  (fix now). This round did both.
+- **No format or lock movement.** Every version constant unchanged; every
+  committed fingerprint byte-identical. Lint clean, full suite 51 files /
+  1199 tests, determinism gate 4/23, build clean, pinned Chromium 3 files /
+  15 tests (up 1 for the cross-realm iframe smoke).
 
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a

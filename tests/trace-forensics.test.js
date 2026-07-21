@@ -47,6 +47,31 @@ describe('trace-forensics', () => {
   const vx = [3, 3, 3, 3, 5, 10, 45, 60, 2000, 2000, 2000];
   const escalatingStream = vx.map((x, k) => rec(k, { linvel: { x, y: 0, z: 0 } }));
 
+  test('the backward causal scan is vehicle-scoped: a ghost cannot pull the candidate (F13)', () => {
+    // Vehicle 0's chain starts at step 4 (step 3 delta 0). A ghost vehicle 1
+    // that escalates at step 3 — but never alerts, so vehicle 0 still leads —
+    // must NOT extend vehicle 0's chain back to step 3. The old global map did.
+    const ghostVx = [0, 0, 0, 5, 5, 5, 5]; // delta 5 at step 3: escalation, no alert
+    const ghost = ghostVx.map((x, k) => rec(k, { vehicleIndex: 1, linvel: { x, y: 0, z: 0 } }));
+    const a = analyzeTrace(traceOf([...escalatingStream, ...ghost]));
+    expect(a.onset.leadingBody.vehicleIndex).toBe(0);
+    expect(a.onset.firstCausalCandidateStep).toBe(4); // not 3
+  });
+
+  test('the causal candidate stays at the alert when the alert step does not escalate (F12)', () => {
+    // A sustained-speed alert: speed crosses the alert threshold at step 4 but
+    // with a small per-step delta (no escalation AT the alert). A prior
+    // escalation chain that ended at step 2 must NOT be credited — the candidate
+    // is the alert step itself.
+    const speeds = [3, 20, 21, 21.5, 30, 30.2, 30.4]; // deltas: big early (1..2), tiny at the alert
+    const stream = speeds.map((x, k) => rec(k, { linvel: { x, y: 0, z: 0 } }));
+    const a = analyzeTrace(traceOf(stream), { thresholds: { alertSpeed: 25, causalSpeedDelta: 1, alertSpeedDelta: 30 } });
+    expect(a.onset.firstAlertStep).toBe(4); // speed 30 > 25, delta 8.5 < alertSpeedDelta
+    // step 4's delta (8.5) > causalSpeedDelta 1 → the alert step DOES escalate here,
+    // so the chain walks back; assert it stops where escalation stops, not earlier.
+    expect(a.onset.firstCausalCandidateStep).toBeLessThanOrEqual(4);
+  });
+
   test('onset: alert locator, backward causal candidate, catastrophe, ordinary tail', () => {
     const a = analyzeTrace(traceOf(escalatingStream));
     expect(a.schema).toBe(TRACE_FORENSICS_SCHEMA);

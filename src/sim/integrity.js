@@ -98,7 +98,12 @@ function fail(path, value) {
 // The ONE shared vector arithmetic for both detectors (trace-forensics
 // imports these): plain Euclidean norms, Math.sqrt only (algebraic — the sim
 // ESLint ban forbids transcendentals, not sqrt).
-export const norm3 = (v) => Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+// `norm3xyz` is the arithmetic; `norm3` is the object-reading convenience.
+// The split exists so a caller that has already CAPTURED its components can
+// reach the identical expression without re-reading the source object — see
+// foldIntegrity's hot loop (round-11 single-read sweep, no allocation).
+export const norm3xyz = (x, y, z) => Math.sqrt(x * x + y * y + z * z);
+export const norm3 = (v) => norm3xyz(v.x, v.y, v.z);
 export const dist3 = (a, b) => {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
@@ -150,28 +155,59 @@ const addReason = (state, code) => {
  * hand. Returns the state for chaining (the foldProgress convention).
  */
 export function foldIntegrity(state, stepIndex, reads) {
-  if (reads.length !== state.bodyCount) {
-    fail('reads.length', `${reads.length} (state tracks ${state.bodyCount} bodies)`);
+  // The bound is captured: `length` is writable on a genuine Array and the
+  // body reads caller record fields, so the count that was checked against
+  // `state.bodyCount` must be the count that is walked (round-11 class sweep;
+  // the production `reads` is runner-owned, so this is a boundary guarantee,
+  // not a reachable-defect fix).
+  const readCount = reads.length;
+  if (readCount !== state.bodyCount) {
+    fail('reads.length', `${readCount} (state tracks ${state.bodyCount} bodies)`);
   }
   const t = state.appliedThresholds;
   const pl = state.prevLinvel;
   const pt = state.prevTranslation;
-  for (let i = 0; i < reads.length; i += 1) {
+  for (let i = 0; i < readCount; i += 1) {
     const r = reads[i];
+    // Structural guard so a malformed or missing entry leaves this public
+    // export in the module's own dialect rather than as a foreign TypeError
+    // off `.linvel`. One typeof per body per capture, in a loop that already
+    // evaluates two Math.sqrt — the hot-path claim above still holds.
+    if (typeof r !== 'object' || r === null) fail(`reads[${i}]`, r);
     const o = i * 3;
-    const speed = norm3(r.linvel);
+    // Every caller-owned field this body contributes, captured ONCE into
+    // locals: the value that is compared against the thresholds is the value
+    // stored into the scratch for the next capture's deltas. Reading
+    // `r.linvel.x` seven times and `r.translation.x` six (the previous shape)
+    // gave a two-faced accessor seven chances to answer differently within one
+    // body's fold — classify on one number, remember another. No allocation:
+    // norm3xyz is the same expression norm3 evaluates.
+    const linvel = r.linvel;
+    const translation = r.translation;
+    const finite = r.finite;
+    // Guard the FIELDS the entry contributes, not just the entry: the round-11
+    // guard checked `r` but a primitive `linvel`/`translation` then read
+    // `.x` === undefined → norm3xyz(NaN) whose comparisons are all false, so a
+    // malformed read silently left status:'ok' over unread data (F14). A missing
+    // one escaped as a foreign TypeError off `.linvel`, the exact class the
+    // guard's own comment claims to close.
+    if (typeof linvel !== 'object' || linvel === null) fail(`reads[${i}].linvel`, linvel);
+    if (typeof translation !== 'object' || translation === null) fail(`reads[${i}].translation`, translation);
+    const vx = linvel.x; const vy = linvel.y; const vz = linvel.z;
+    const tx = translation.x; const ty = translation.y; const tz = translation.z;
+    const speed = norm3xyz(vx, vy, vz);
     if (speed > state.peakBodySpeed) state.peakBodySpeed = speed;
     let speedDelta = null;
     let stepDisplacement = null;
     if (state.hasPrev) {
       // Same subtraction order as analyzeTrace's dist3(current, previous).
-      const dvx = r.linvel.x - pl[o];
-      const dvy = r.linvel.y - pl[o + 1];
-      const dvz = r.linvel.z - pl[o + 2];
+      const dvx = vx - pl[o];
+      const dvy = vy - pl[o + 1];
+      const dvz = vz - pl[o + 2];
       speedDelta = Math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz);
-      const dxx = r.translation.x - pt[o];
-      const dxy = r.translation.y - pt[o + 1];
-      const dxz = r.translation.z - pt[o + 2];
+      const dxx = tx - pt[o];
+      const dxy = ty - pt[o + 1];
+      const dxz = tz - pt[o + 2];
       stepDisplacement = Math.sqrt(dxx * dxx + dxy * dxy + dxz * dxz);
       if (speedDelta > state.peakSpeedDelta) state.peakSpeedDelta = speedDelta;
       if (stepDisplacement > state.peakStepDisplacement) state.peakStepDisplacement = stepDisplacement;
@@ -192,7 +228,7 @@ export function foldIntegrity(state, stepIndex, reads) {
         state.firstFailureStep = stepIndex;
       }
     }
-    if (!r.finite) {
+    if (!finite) {
       addReason(state, 'nonFinite');
       if (state.status === 'ok') {
         state.status = 'nonFinite';
@@ -202,8 +238,8 @@ export function foldIntegrity(state, stepIndex, reads) {
     // Unconditional, NaN included — analyzeTrace's `prev = rec` parity. A NaN
     // here poisons the NEXT capture's deltas into NaN, whose comparisons are
     // all false — identical on both arms.
-    pl[o] = r.linvel.x; pl[o + 1] = r.linvel.y; pl[o + 2] = r.linvel.z;
-    pt[o] = r.translation.x; pt[o + 1] = r.translation.y; pt[o + 2] = r.translation.z;
+    pl[o] = vx; pl[o + 1] = vy; pl[o + 2] = vz;
+    pt[o] = tx; pt[o + 1] = ty; pt[o + 2] = tz;
   }
   state.hasPrev = true;
   return state;

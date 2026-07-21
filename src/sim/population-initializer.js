@@ -86,10 +86,19 @@ import {
   ASSEMBLY_DEFAULTS, GENOTYPE_VERSION, NODE_SLOTS, SUSPENSION_TYPES,
   compileAssembly, serializeGenotype,
 } from './assembly.js';
-import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from './population.js';
+import {
+  POPULATION_SNAPSHOT_VERSION, attestPopulation, bytesEqual, isCanonicalUint32,
+} from './population.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
+import { createByteReader } from './bytes.js';
 
 export const POPULATION_INITIALIZER_VERSION = 1;
+
+// Practical ceiling for createInitialPopulation, which materializes every
+// member in memory (F6). Far above any real GA population (default 20); only a
+// pathological size that would abort the process is rejected. NOT the u32 wire
+// bound — the digest-only encoder allows up to u32 because it builds no members.
+export const MAX_POPULATION_SIZE = 1000000;
 
 // Categories the INITIAL population may draw — initializer POLICY, distinct
 // from the evaluator's REALIZABLE_SUSPENSION_TYPES (engine capability). They
@@ -133,12 +142,40 @@ function resolvePolicy(config) {
   if (!isProbability(cfg.minInitialPowerGene)) fail('minInitialPowerGene', cfg.minInitialPowerGene);
   const cats = cfg.initialSuspensionTypes;
   if (!Array.isArray(cats) || cats.length === 0) fail('initialSuspensionTypes', cats);
-  cats.forEach((c, i) => {
+  // INDEXED walk with a module-owned Set — never caller-owned array methods.
+  // The former `cats.forEach(...)` + `cats.indexOf(...)` had three measured
+  // failures on plain data: forEach SKIPS HOLES, so a sparse `['S0']` with
+  // length 2 passed validation and sampleInitialGenotype then drew
+  // suspType = (indexOf(undefined)+v)/3 < 0 — a SILENT out-of-domain gene
+  // from a public export (or a seed-dependent wrong-module error out of
+  // assembly); an own `forEach` no-op property let 'S2' straight past the
+  // mask; and an own `indexOf` defeated the duplicate check — each producing
+  // a manifest the decoder then rejects, breaking the exact-inverse contract.
+  // The indexed read catches the hole naturally (undefined fails the mask),
+  // and the Set is this module's, not the caller's.
+  const owned = [];
+  const seenCats = new Set();
+  // Bound captured: `length` is writable and the body reads caller elements
+  // (round-11 class sweep — the same rule as captureGenotype's axle walk).
+  const catCount = cats.length;
+  for (let i = 0; i < catCount; i += 1) {
+    const c = cats[i];
     if (!INITIAL_SUSPENSION_MASK.includes(c)) {
       fail(`initialSuspensionTypes[${i}]`, `${String(c)} — initial seeding masks to ${INITIAL_SUSPENSION_MASK.join('/')} (S2 lands with its realization PR)`);
     }
-    if (cats.indexOf(c) !== i) fail(`initialSuspensionTypes[${i}]`, `duplicate ${c}`);
-  });
+    if (seenCats.has(c)) fail(`initialSuspensionTypes[${i}]`, `duplicate ${c}`);
+    seenCats.add(c);
+    owned.push(c);
+  }
+  // The resolved config carries an OWNED, FROZEN copy — never the caller's
+  // array. createInitialPopulation freezes the config object it returns, but
+  // a shallow freeze left the caller holding a live alias to the array
+  // inside: mutating it after generation changed what the provenance
+  // manifest ENCODED while the digest still attested the population the
+  // ORIGINAL categories produced — a manifest that decodes into a config
+  // which rebuilds a different population (measured; the
+  // self-contained-history guarantee broke on a plain array write).
+  cfg.initialSuspensionTypes = Object.freeze(owned);
   return cfg;
 }
 
@@ -146,7 +183,7 @@ function resolveConfig(config) {
   const cfg = resolvePolicy(config);
   // Seeds are canonical uint32 BY RULING (the terrain-seed precedent): -1,
   // 1.5, 2^32, NaN must fail loud, never alias another population.
-  if (!Number.isInteger(cfg.seed) || cfg.seed < 0 || cfg.seed > 0xffffffff) fail('seed', cfg.seed);
+  if (!isCanonicalUint32(cfg.seed)) fail('seed', cfg.seed);
   if (!Number.isInteger(cfg.populationSize) || cfg.populationSize < 1) fail('populationSize', cfg.populationSize);
   return cfg;
 }
@@ -235,11 +272,25 @@ export function sampleInitialGenotype(rng, config = {}) {
  */
 export function createInitialPopulation(config, options = {}) {
   const cfg = resolveConfig(config);
+  // A practical ceiling BEFORE the build loop (F6): resolveConfig bounds
+  // populationSize below (>= 1) and the digest-only encoder bounds it at the u32
+  // wire max, but this function BUILDS every member in memory, so a populationSize
+  // of 2^30 — well under u32 — is an uncatchable heap abort. The GA default is
+  // 20; this only rejects a population too large to materialize.
+  if (cfg.populationSize > MAX_POPULATION_SIZE) {
+    fail('populationSize', `${cfg.populationSize} exceeds MAX_POPULATION_SIZE (${MAX_POPULATION_SIZE}) — createInitialPopulation builds every member in memory`);
+  }
   if (typeof options !== 'object' || options === null) fail('options', options);
   for (const k of Object.keys(options)) {
     if (k !== 'keepRaw') fail(`options.${k}`, 'unknown key');
   }
-  const keepRaw = options.keepRaw ?? false;
+  // Absent (or explicitly `undefined`) defaults to false; an EXPLICIT null
+  // fails like every other non-boolean. The former `options.keepRaw ?? false`
+  // silently coerced null past the typeof gate — the one value class that
+  // slipped the module's fail-loud idiom — and the `Object.hasOwn` shape that
+  // replaced it went one step too far, rejecting `undefined` as well.
+  const rawKeepRaw = options.keepRaw;
+  const keepRaw = rawKeepRaw === undefined ? false : rawKeepRaw;
   if (typeof keepRaw !== 'boolean') fail('options.keepRaw', keepRaw);
 
   const root = new Rng(cfg.seed);
@@ -264,26 +315,112 @@ export function createInitialPopulation(config, options = {}) {
   };
 }
 
+// Where the encoded snapshot digest state comes from. The production path
+// carries the population itself and folds its snapshot — unchanged, statement
+// for statement. The ADDITIVE path exists because the digest is a one-way
+// attestation: a decoded manifest holds the state but can never reconstruct
+// the population from it, so without this a manifest could not be re-encoded
+// from its own decoded form (the codec's round-trip contract). Both present
+// must AGREE; neither present fails loud. The fitness vector's
+// resolveSpecDigestState (population-evaluation.js) is the same ruling in the
+// same shape — extracted here too so the two read as one policy rather than
+// one policy and one inline special case.
+// `population` is captured by the CALLER (serializePopulationInitialization)
+// and passed in, so the object whose presence selects this branch is the object
+// that is serialized and counted. It used to be read three times — the
+// undefined check, the snapshot call, and the size guard — with `.individuals`
+// read twice more inside the guard's own message.
+function resolvePopulationDigestState(initialization, cfg, population) {
+  const declared = initialization.populationSnapshotDigestState;
+  if (population !== undefined) {
+    // attestPopulation is the single-walk seam: one reading of the caller's
+    // population yields both the canonical bytes and the members they
+    // describe, so the count guarded below and the bytes folded into the
+    // digest cannot come from two different readings.
+    const { individuals, bytes: snapshotBytes } = attestPopulation(population);
+    if (individuals.length !== cfg.populationSize) {
+      fail('initialization.population.individuals.length', `${individuals.length} !== populationSize ${cfg.populationSize}`);
+    }
+    const state = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
+    if (declared !== undefined && declared !== state) {
+      fail('initialization.populationSnapshotDigestState',
+        `${declared} disagrees with the population's computed state ${state}`);
+    }
+    return state;
+  }
+  if (!isCanonicalUint32(declared)) {
+    fail('initialization.populationSnapshotDigestState', declared);
+  }
+  return declared;
+}
+
 /** Serialize the provenance manifest (see the encoding walk above). */
 export function serializePopulationInitialization(initialization) {
   if (typeof initialization !== 'object' || initialization === null) fail('initialization', initialization);
-  if (initialization.initializerVersion !== POPULATION_INITIALIZER_VERSION) {
-    fail('initialization.initializerVersion', initialization.initializerVersion);
+  // Capture every consumed field once. `config`, `config.seed`, `seed` and
+  // `population` were each read two to five times across the version check,
+  // the agreement guard, its error message, the resolveConfig spread and the
+  // digest branch — so the manifest could be validated against one provenance
+  // and encoded from another.
+  const initializerVersion = initialization.initializerVersion;
+  if (initializerVersion !== POPULATION_INITIALIZER_VERSION) {
+    fail('initialization.initializerVersion', initializerVersion);
   }
-  if (initialization.config === null || typeof initialization.config !== 'object') {
-    fail('initialization.config', initialization.config);
+  const config = initialization.config;
+  if (config === null || typeof config !== 'object') {
+    fail('initialization.config', config);
   }
-  if (Object.hasOwn(initialization.config, 'seed') && initialization.config.seed !== initialization.seed) {
-    fail('initialization.seed', `${initialization.seed} disagrees with config.seed ${initialization.config.seed}`);
+  const seed = initialization.seed;
+  const population = initialization.population;
+  // ONE spread reads every config property once; the agreement check and the
+  // resolver both consume that module-owned copy. Reading `config.seed`
+  // explicitly AND spreading `config` was two readings of the same property —
+  // the manifest could agree with one seed and be built from another.
+  const configCopy = { ...config };
+  const hasConfigSeed = Object.hasOwn(config, 'seed');
+  const configSeed = configCopy.seed;
+  if (hasConfigSeed && configSeed !== seed) {
+    fail('initialization.seed', `${seed} disagrees with config.seed ${configSeed}`);
   }
-  const cfg = resolveConfig({ ...initialization.config, seed: initialization.seed });
-  const snapshotBytes = serializePopulationSnapshot(initialization.population);
-  if (initialization.population.individuals.length !== cfg.populationSize) {
-    fail('initialization.population.individuals.length', `${initialization.population.individuals.length} !== populationSize ${cfg.populationSize}`);
+  const cfg = resolveConfig({ ...configCopy, seed });
+  // Wire representability: populationSize is a u32. resolveConfig bounds it
+  // below (>= 1) but not above, and the digest-only path below has no
+  // population array whose length would implicitly bound it — so without this
+  // a populationSize of 0x100000001 would wrap to 1 on the wire and produce a
+  // manifest that decodes and REBUILDS a different population while carrying
+  // the digest state of the original. Same ruling as the u8 axle-count and
+  // range-length guards; no valid stream changes.
+  if (cfg.populationSize > 0xffffffff) {
+    fail('populationSize', `${cfg.populationSize} exceeds the u32 wire bound (4294967295)`);
   }
-  const snapshotState = fnv1aFold(FNV_OFFSET_BASIS, snapshotBytes);
+  const snapshotState = resolvePopulationDigestState(initialization, cfg, population);
   const cats = cfg.initialSuspensionTypes;
-  const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + cats.length + 4));
+  // Read the count ONCE and resolve every category to its wire index BEFORE
+  // allocating, so the count byte, the buffer, and the payload come from one
+  // indexed reading. Resolving here also makes an unknown category fail loud:
+  // `indexOf` returns -1 for anything outside SUSPENSION_TYPES and
+  // setUint8(-1) writes 255 silently — a manifest that encodes, folds into the
+  // digest, and only fails much later at the decoder. (This guard was
+  // originally justified by a sparse `['S0']` with length 2 reaching here,
+  // because resolvePolicy walked with `forEach` and skipped holes. That walk
+  // is now indexed and the hole fails the mask first, so the stated premise is
+  // dead. The guard stays — it is the last check before a byte is written —
+  // but the reason is now depth, not reachability. A comment asserting a false
+  // premise is how a guard gets deleted later for the wrong reason.)
+  // NO u8 guard on catCount, deliberately. resolveConfig ran above, and
+  // resolvePolicy validates this list against INITIAL_SUSPENSION_MASK
+  // (['S0','S1']) with duplicate rejection, so the count is structurally at
+  // most 2 against a bound of 255. Unlike the axle-count / range-length /
+  // populationSize guards, which each close a reachable gap and each carry a
+  // test that triggers it, a guard here could not be triggered by any input.
+  const catCount = cats.length;
+  const catIndices = [];
+  for (let i = 0; i < catCount; i += 1) {
+    const index = SUSPENSION_TYPES.indexOf(cats[i]);
+    if (index === -1) fail(`initialSuspensionTypes[${i}]`, cats[i]);
+    catIndices.push(index);
+  }
+  const view = new DataView(new ArrayBuffer(2 + 2 + 4 + 4 + 1 + 1 + 8 + 8 + 1 + catCount + 4));
   let o = 0;
   view.setUint16(o, POPULATION_INITIALIZER_VERSION, true); o += 2;
   view.setUint16(o, GENOTYPE_VERSION, true); o += 2;
@@ -293,8 +430,70 @@ export function serializePopulationInitialization(initialization) {
   view.setUint8(o, cfg.maxAxles); o += 1;
   view.setFloat64(o, cfg.symmetricProbability, true); o += 8;
   view.setFloat64(o, cfg.minInitialPowerGene, true); o += 8;
-  view.setUint8(o, cats.length); o += 1;
-  for (const c of cats) { view.setUint8(o, SUSPENSION_TYPES.indexOf(c)); o += 1; }
+  view.setUint8(o, catCount); o += 1;
+  // The resolved indices from above — count, allocation and payload are the
+  // same indexed reading (the one-source-of-truth ruling, serializeEvaluationSpec).
+  for (let i = 0; i < catIndices.length; i += 1) { view.setUint8(o, catIndices[i]); o += 1; }
   view.setUint32(o, snapshotState, true); o += 4;
+  // receiver `view` is the module-owned DataView allocated above, not caller data.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
+}
+
+function decodeFail(path, value) {
+  throw new Error(`population-initializer: invalid encoded initialization at ${path} (${String(value)})`);
+}
+
+/**
+ * The exact inverse of serializePopulationInitialization. Returns the
+ * provenance record — versions, seed, the resolved config, and the snapshot
+ * digest state it attests to. The population itself is NOT recoverable from
+ * these bytes (the manifest binds content by digest, by design); re-running
+ * createInitialPopulation with the decoded config reproduces it, and the
+ * digest state is what proves the reproduction matched.
+ *
+ * The decoded config re-runs resolveConfig — the same gate the encoder applies
+ * — so an S2 or duplicate category index, an out-of-band axle bound, or a
+ * non-probability field is rejected loud rather than decoded into a config
+ * the initializer would refuse.
+ */
+export function deserializePopulationInitialization(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const initializerVersion = r.u16('initializerVersion');
+  if (initializerVersion !== POPULATION_INITIALIZER_VERSION) {
+    decodeFail('initializerVersion', initializerVersion);
+  }
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  const seed = r.u32('seed');
+  const populationSize = r.u32('populationSize');
+  const minAxles = r.u8('minAxles');
+  const maxAxles = r.u8('maxAxles');
+  const symmetricProbability = r.finiteF64('symmetricProbability');
+  const minInitialPowerGene = r.finiteF64('minInitialPowerGene');
+  const categoryCount = r.u8('categoryCount');
+  const initialSuspensionTypes = [];
+  for (let i = 0; i < categoryCount; i += 1) {
+    const index = r.u8(`initialSuspensionTypes[${i}]`);
+    if (index >= SUSPENSION_TYPES.length) decodeFail(`initialSuspensionTypes[${i}]`, index);
+    initialSuspensionTypes.push(SUSPENSION_TYPES[index]);
+  }
+  const populationSnapshotDigestState = r.u32('populationSnapshotDigestState');
+  r.expectEnd('initialization');
+  const config = resolveConfig({
+    seed,
+    populationSize,
+    minAxles,
+    maxAxles,
+    symmetricProbability,
+    minInitialPowerGene,
+    initialSuspensionTypes,
+  });
+  return Object.freeze({
+    initializerVersion,
+    genotypeVersion,
+    seed,
+    config: Object.freeze({ ...config, initialSuspensionTypes: Object.freeze([...config.initialSuspensionTypes]) }),
+    populationSnapshotDigestState,
+  });
 }

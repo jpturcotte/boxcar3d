@@ -29,7 +29,7 @@
 
 import { spawn } from 'node:child_process';
 import { setTimeout as setTimer, clearTimeout as clearTimer } from 'node:timers';
-import { URL } from 'node:url';
+import { URL, fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const PORT = 4173;
@@ -72,6 +72,9 @@ function startPreview() {
       {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
+        // Node 20+ refuses to spawn a `.cmd`/`.bat` (npm.cmd) without a shell —
+        // EINVAL otherwise, on the project's own Windows dev platform (F8).
+        shell: process.platform === 'win32',
         env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
       },
     );
@@ -195,4 +198,9 @@ async function main() {
   }
 }
 
-await main();
+// Run ONLY when invoked directly (node scripts/probe-app-scene-smoke.js), never
+// on import (F8): importing this module — e.g. from a schema test — used to boot
+// Chromium and spawn `vite preview` as a side effect.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  await main();
+}

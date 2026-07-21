@@ -48,6 +48,13 @@ export const FEATURE_TYPES = Object.freeze(['boulder', 'ramp', 'log']);
 // 0.25 m cells — generous headroom for any GA-scale terrain, while staying
 // ~1,000× under the Float32Array element limit (2^32−1) and far under 2^53.
 export const MAX_TERRAIN_VERTICES = 4194304; // 2^22
+// Crater/feature descriptor-count ceiling. The counts derive from
+// density × corridor-area / 100 — quantities NOT bounded by MAX_TERRAIN_VERTICES
+// (that guards the heightfield grid). A finite, per-knob-validated density could
+// therefore drive the crater/feature loop to an uncatchable V8 heap abort before
+// any of its descriptors was built. Realistic corridors produce single digits;
+// this ceiling only ever rejects a pathological density/dimension.
+export const MAX_TERRAIN_DESCRIPTORS = 1000000;
 
 // The public config contract, exported so the scalar-knob domain sweep in
 // tests/terrain.test.js can enumerate every knob programmatically (a new knob
@@ -277,9 +284,18 @@ function generateFeatures(cfg, terrain, featureRng) {
   const count = Math.round((cfg.featureDensity * (length - startFlatLength - startBlendLength) * width) / 100);
   const weights = FEATURE_TYPES.map((type) => cfg.featureTypeWeights[type] || 0);
   const totalWeight = weights.reduce((a, b) => a + b, 0);
+  // `x * x`, not `x ** 2`: the exponentiation OPERATOR is
+  // Number::exponentiate, which the spec leaves implementation-approximated
+  // exactly like Math.pow (already banned by ruling D7) — and this value feeds
+  // `maxHalf.ramp`, which bounds every ramp's placement draw, so a one-ulp
+  // difference would move a feature's drawn z and change the seed's world.
+  // Multiplication is IEEE-exact by definition. Byte-identity of the five
+  // terrain fingerprints was verified across this change.
+  const rampHalfLength = cfg.rampLengthRange[1] / 2;
+  const rampHalfWidth = cfg.rampWidthRange[1] / 2;
   const maxHalf = {
     boulder: cfg.boulderRadiusRange[1],
-    ramp: Math.sqrt((cfg.rampLengthRange[1] / 2) ** 2 + (cfg.rampWidthRange[1] / 2) ** 2),
+    ramp: Math.sqrt(rampHalfLength * rampHalfLength + rampHalfWidth * rampHalfWidth),
     log: cfg.logLengthRange[1] / 2 + cfg.logRadiusRange[1],
   };
   const features = [];
@@ -448,6 +464,21 @@ function validateConfig(cfg) {
   }
 }
 
+// The crater/feature descriptor count = density × corridor-area / 100 (the SAME
+// formula the crater/feature generators use). MAX_TERRAIN_VERTICES bounds the
+// grid, not this — a finite, per-knob-validated density can drive the generation
+// loop to an uncatchable heap abort. Bounded AFTER the grid guard so a huge
+// DIMENSION is still reported as a grid overflow; this catches a huge DENSITY on
+// an in-bounds grid (F3).
+function checkDescriptorBudget(cfg) {
+  const span = cfg.length - cfg.startFlatLength - cfg.startBlendLength;
+  const craterCount = Math.round((cfg.craterDensity * span * cfg.width) / 100);
+  const featureCount = Math.round((cfg.featureDensity * span * cfg.width) / 100);
+  if (craterCount > MAX_TERRAIN_DESCRIPTORS || featureCount > MAX_TERRAIN_DESCRIPTORS) {
+    throw new Error(`generateCorridorTerrain: ${craterCount} craters / ${featureCount} features exceed MAX_TERRAIN_DESCRIPTORS (${MAX_TERRAIN_DESCRIPTORS}) — reduce density or dimensions`);
+  }
+}
+
 export function generateCorridorTerrain(options = {}) {
   const cfg = { ...TERRAIN_DEFAULTS, ...options };
   validateConfig(cfg);
@@ -467,6 +498,8 @@ export function generateCorridorTerrain(options = {}) {
   if (rows > MAX_TERRAIN_VERTICES || cols > MAX_TERRAIN_VERTICES || (rows + 1) * (cols + 1) > MAX_TERRAIN_VERTICES) {
     throw new Error(`generateCorridorTerrain: grid of ${rows}×${cols} cells exceeds MAX_TERRAIN_VERTICES (${MAX_TERRAIN_VERTICES}) — increase cellSize or reduce length/width`);
   }
+  checkDescriptorBudget(cfg); // after the grid guard: huge dimension is a grid overflow first
+
   const scale = { x: length, y: 1, z: width }; // y=1 -> heights are literal metres
   const heights = new Float32Array((rows + 1) * (cols + 1));
   // The composite seam (spec §4 / red-team F13), complete as data: `walls`,

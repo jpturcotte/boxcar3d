@@ -129,12 +129,173 @@ describe('runEvaluation options validation', () => {
       // Traced runs cannot exceed the u32 stepIndex field — rejected pre-world,
       // not mid-run at the final capture's encode.
       [(o) => { o.trace = { mode: 'digest' }; o.maxSteps = 0x100000000; }, /MAX_STEP_INDEX/],
+      // C10/F7: even UNTRACED, maxSteps bounds the profile buffer and per-step
+      // allocations. 2^30 reserved multiple GB / threw a foreign RangeError.
+      [(o) => { o.trace = { mode: 'none' }; o.profile = true; o.maxSteps = 2 ** 30; }, /MAX_EVALUATION_STEPS/],
     ];
     for (const [mutate, re] of cases) {
       const opts = base();
       mutate(opts);
       await expect(runEvaluation(opts), String(re)).rejects.toThrow(re);
     }
+  });
+
+  // --- Round-11: the validated reading IS the executed reading ---------------
+  //
+  // validateOptions returned the caller's `terrain` and `vehicles` BY
+  // REFERENCE, and runEvaluation re-read them after `hooks.onPhase(...)` (an
+  // invocation of caller code) and across `await createPhysics(...)`. Every
+  // case below was measured escaping that gap with an ordinary own accessor on
+  // a plain object — no Proxy, no lying prototype. This is the runner's copy of
+  // the single-read invariant, and it lives here because the seam is private
+  // and reachable only through physics: a fix no test can redden is not a fix.
+
+  test('a two-faced terrain.seed cannot make the runner execute a different world', async () => {
+    const opts = base();
+    let reads = 0;
+    const honestSeed = opts.terrain.seed;
+    Object.defineProperty(opts.terrain, 'seed', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? honestSeed : 999; },
+    });
+    const r = await runEvaluation({ ...opts, trace: { mode: 'digest' } });
+    expect(reads).toBe(1); // one reading: the guarded one is the generated one
+    const control = await runEvaluation({ ...base(), trace: { mode: 'digest' } });
+    expect(r.trace.digest).toBe(control.trace.digest);
+  });
+
+  test('a non-enumerable own terrain.seed is refused, never silently defaulted', async () => {
+    // `hasOwnProperty` sees it; `{ ...TERRAIN_DEFAULTS, ...terrain }` does not.
+    // Measured: this ran and digested the seed-0 DEFAULT terrain, with the
+    // guard whose message says that must never happen reporting nothing.
+    const opts = base();
+    const seed = opts.terrain.seed;
+    delete opts.terrain.seed;
+    Object.defineProperty(opts.terrain, 'seed', { value: seed, enumerable: false });
+    await expect(runEvaluation(opts)).rejects.toThrow(/terrain.*non-enumerable/);
+  });
+
+  test('a two-faced trace.mode cannot make a run capture what it was not asked to', async () => {
+    const opts = base();
+    let reads = 0;
+    opts.trace = {
+      get mode() { reads += 1; return reads === 1 ? 'none' : 'full'; },
+    };
+    const r = await runEvaluation(opts);
+    expect(reads).toBe(1);
+    // Mode 'none' is literal no-work: the result carries no trace envelope at
+    // all, so a run that had silently switched to 'full' is unmistakable.
+    expect(r.trace).toBeNull();
+  });
+
+  test('a two-faced spawn.position cannot realize a vehicle where it was not validated', async () => {
+    const opts = base();
+    const honest = opts.vehicles[0].spawn.position;
+    let reads = 0;
+    Object.defineProperty(opts.vehicles[0].spawn, 'position', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? honest : { x: honest.x + 12, y: honest.y, z: honest.z }; },
+    });
+    const r = await runEvaluation({ ...opts, maxSteps: 2, trace: { mode: 'none' } });
+    expect(reads).toBe(1);
+    // Capture 0 is post-realization, so the final pose reflects the spawn that
+    // actually ran — it must be the validated one, not the second reading.
+    expect(r.vehicles[0].finalPose.translation.x).toBeCloseTo(honest.x, 0);
+  });
+
+  test('a targetAngvel tombstone appearing after validation cannot reach the realizer', async () => {
+    // The removed drive option must always produce the rename diagnosis. With
+    // the vehicle read twice, a key that materializes on the SECOND read was
+    // forwarded silently (unknown realizer options are ignored), so the vehicle
+    // ran at the default surface speed while the caller believed otherwise.
+    const opts = base();
+    const v = opts.vehicles[0];
+    let reads = 0;
+    Object.defineProperty(opts.vehicles, '0', {
+      configurable: true,
+      enumerable: true,
+      get() { reads += 1; return reads === 1 ? v : { ...v, targetAngvel: -10 }; },
+    });
+    const r = await runEvaluation({ ...opts, maxSteps: 2, trace: { mode: 'none' } });
+    expect(reads).toBe(1);
+    expect(r.vehicles).toHaveLength(1);
+  });
+
+  // --- The break-it sweep: spawn.rotation/linvel and terrain (C8) ------------
+  //
+  // Round-11 C3 captured spawn.position componentwise but left spawn.rotation
+  // and spawn.linvel by reference, so realizeVehicle re-read each component ~25
+  // times: a validated identity quaternion executed as yaw-90, and a |q|²=1
+  // reading passed the unit-quaternion gate to a realized non-unit rotation.
+
+  test('a two-faced spawn.rotation cannot make the validated pose differ from the executed one', async () => {
+    const S = Math.SQRT1_2;
+    const twoFaced = (first, then) => {
+      const c = { x: 0, y: 0, z: 0, w: 0 }; const o = {};
+      for (const k of ['x', 'y', 'z', 'w']) {
+        Object.defineProperty(o, k, { enumerable: true, get() { c[k] += 1; return c[k] === 1 ? first[k] : then[k]; } });
+      }
+      return o;
+    };
+    const run = async (rot) => {
+      const o = base(); o.maxSteps = 30; o.trace = { mode: 'digest' };
+      o.vehicles[0].spawn.rotation = rot;
+      return runEvaluation(o);
+    };
+    const honestId = await run({ x: 0, y: 0, z: 0, w: 1 });
+    // The accessor is honest on the FIRST read of each component (the only read
+    // the captured pose now performs) and lies afterward. The run must match the
+    // honest first-read value, not the poison.
+    const attacked = await run(twoFaced({ x: 0, y: 0, z: 0, w: 1 }, { x: 0, y: S, z: 0, w: S }));
+    expect(attacked.trace.digest).toBe(honestId.trace.digest);
+  });
+
+  test('a genuinely non-unit spawn.rotation is still rejected by the unit-quaternion gate', async () => {
+    const o = base(); o.maxSteps = 2; o.trace = { mode: 'none' };
+    o.vehicles[0].spawn.rotation = { x: 0.9, y: 0.9, z: 0.9, w: 0.9 }; // |q|² = 3.24
+    await expect(runEvaluation(o)).rejects.toThrow(/unit quaternion/);
+  });
+
+  test('a two-faced spawn.linvel cannot slip a NaN past finiteVec via a later read', async () => {
+    const o = base(); o.maxSteps = 2; o.trace = { mode: 'none' };
+    // Honest {0,0,0} on the first read of each component — the captured value —
+    // and NaN afterward. The single-read capture runs the honest value.
+    const c = { x: 0, y: 0, z: 0 }; const lv = {};
+    for (const k of ['x', 'y', 'z']) {
+      Object.defineProperty(lv, k, { enumerable: true, get() { c[k] += 1; return c[k] === 1 ? 0 : NaN; } });
+    }
+    o.vehicles[0].spawn.linvel = lv;
+    const r = await runEvaluation(o);
+    expect(r.vehicles[0].finite).toBe(true);
+  });
+
+  test('an own __proto__ key in featureTypeWeights cannot re-prototype the terrain copy', async () => {
+    const o = base();
+    o.terrain = { ...o.terrain, featureTypeWeights: JSON.parse('{"__proto__":{"boulder":9},"ramp":0.3,"log":0.3}') };
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow();
+  });
+
+  test('a terrain whose deleter-accessor removes seed during the walk fails loud, never seed-0', async () => {
+    // An accessor on an earlier key deletes `seed` mid-walk. The old shape read
+    // the terrain twice (presence guard, then spread), so the guard saw seed and
+    // the run digested the default seed-0 world; the single capture makes the
+    // deleted seed `undefined`, which fails loud.
+    const o = base();
+    const t = { featureDensity: 0.1, seed: 20260722, length: 120, startFlatLength: 30 };
+    Object.defineProperty(t, 'featureDensity', {
+      enumerable: true, configurable: true,
+      get() { delete t.seed; return 0.1; },
+    });
+    o.terrain = t;
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow(/seed/);
+  });
+
+  test('a terrain on a custom prototype is rejected, never run with inherited knobs dropped', async () => {
+    const o = base();
+    o.terrain = Object.assign(Object.create({ featureDensity: 0.9 }), { seed: 20260722, length: 120, startFlatLength: 30 });
+    await expect(runEvaluation({ ...o, maxSteps: 2, trace: { mode: 'none' } })).rejects.toThrow(/plain object/);
   });
 });
 

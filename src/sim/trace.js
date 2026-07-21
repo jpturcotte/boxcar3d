@@ -24,6 +24,26 @@
 // RECORD_BYTES` stays an exact identity.
 
 import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
+import { requireOrdinaryBytes } from './bytes.js';
+
+// INTRINSIC TypedArray geometry (the bytes.js ruling, applied here because this
+// codec also accepts byte buffers from outside). `buffer`, `byteOffset` and
+// `byteLength` are inherited ACCESSORS on %TypedArray%.prototype, so an own
+// data property on a genuine Uint8Array shadows them with ordinary
+// defineProperty — no Proxy. Reading them as plain properties let a caller
+// point this module's DataView at bytes outside the array's real window while
+// every bounds check still passed: encodeTraceRecord would write a 128-byte
+// record into a foreign buffer, and decodeTraceRecord would decode one from
+// bytes the caller never supplied.
+const TA_PROTO = Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0)));
+const taGetter = (name) => Object.getOwnPropertyDescriptor(TA_PROTO, name).get;
+const TA_BUFFER = taGetter('buffer');
+const TA_BYTE_OFFSET = taGetter('byteOffset');
+const TA_BYTE_LENGTH = taGetter('byteLength');
+const taByteLength = (bytes) => TA_BYTE_LENGTH.call(bytes);
+const taView = (bytes) => new DataView(
+  TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes), TA_BYTE_LENGTH.call(bytes),
+);
 
 export const EVALUATION_TRACE_VERSION = 1;
 export const RECORD_BYTES = 128;
@@ -92,7 +112,11 @@ const RECORD_KEYS = Object.freeze([
 const VECTOR_KEYS = Object.freeze({ translation: ['x', 'y', 'z'], rotation: ['x', 'y', 'z', 'w'], linvel: ['x', 'y', 'z'], angvel: ['x', 'y', 'z'] });
 
 function checkUint(v, max, path) {
-  if (!Number.isInteger(v) || v < 0 || v > max) fail(path, v);
+  // Reject -0 (F15): `Number.isInteger(-0)` is true and `setUint32` erases the
+  // sign, silently normalizing -0 to +0 — the exact case isCanonicalUint32 was
+  // tightened to reject one module over. `Object.is(v, -0)` is the only test
+  // that distinguishes it (`v < 0` and `=== 0` both pass -0).
+  if (!Number.isInteger(v) || v < 0 || v > max || Object.is(v, -0)) fail(path, v);
 }
 
 function checkFlag(v, path) {
@@ -101,19 +125,38 @@ function checkFlag(v, path) {
   if (typeof v !== 'boolean') fail(path, v);
 }
 
-function checkVector(rec, key) {
+// Capture one vector's components by index into a module-owned object.
+function captureVector(rec, key) {
   const vec = rec[key];
   if (typeof vec !== 'object' || vec === null) fail(key, vec);
   const want = VECTOR_KEYS[key];
   for (const k of Object.keys(vec)) {
     if (!want.includes(k)) fail(`${key}.${k}`, 'unknown key');
   }
+  const out = {};
   for (const k of want) {
+    const v = vec[k];
     // NaN / ±Infinity ACCEPTED — that is what finiteState records.
-    if (typeof vec[k] !== 'number') fail(`${key}.${k}`, vec[k]);
+    if (typeof v !== 'number') fail(`${key}.${k}`, v);
+    out[k] = v;
   }
+  return out;
 }
 
+/**
+ * Validate a caller record and return a MODULE-OWNED frozen snapshot of it.
+ *
+ * Every field is read exactly once, here, and the encoder writes from the
+ * snapshot. The former shape validated the caller's object and then let
+ * `encodeTraceRecord` dereference it a second time for each write — measured
+ * two-to-six reads per field — so an accessor could satisfy every check and
+ * then put something else in the stream. That mattered most where the record
+ * is self-describing: a `linvel.x` that turned NaN after its `typeof number`
+ * check produced a record whose `finiteState` byte says finite, and a
+ * `bodyRole`/`terminated` substitution produced streams this module's own
+ * `decodeTraceRecord` rejects. The digest is folded over those bytes, so the
+ * trace would attest a step that never occurred.
+ */
 function validateRecord(rec) {
   if (typeof rec !== 'object' || rec === null) fail('record', rec);
   // Unknown keys rejected — the structural no-handles / no-timestamps tooth:
@@ -121,33 +164,59 @@ function validateRecord(rec) {
   for (const k of Object.keys(rec)) {
     if (!RECORD_KEYS.includes(k)) fail(k, 'unknown key');
   }
-  checkUint(rec.stepIndex, MAX_STEP_INDEX, 'stepIndex');
-  checkUint(rec.vehicleIndex, MAX_VEHICLE_INDEX, 'vehicleIndex');
-  if (!BODY_ROLES.includes(rec.bodyRole)) fail('bodyRole', rec.bodyRole);
-  if (rec.axleIndex !== null) checkUint(rec.axleIndex, MAX_AXLE_INDEX, 'axleIndex');
-  if (rec.wheelIndex !== null) checkUint(rec.wheelIndex, MAX_WHEEL_INDEX, 'wheelIndex');
-  if (!JOINT_STATES.includes(rec.jointState)) fail('jointState', rec.jointState);
-  if (!TERMINATION_REASONS.includes(rec.terminationReason)) fail('terminationReason', rec.terminationReason);
-  checkFlag(rec.bodyValid, 'bodyValid');
-  checkFlag(rec.bodySleeping, 'bodySleeping');
-  checkFlag(rec.terminated, 'terminated');
-  checkFlag(rec.finiteState, 'finiteState');
+  const stepIndex = rec.stepIndex;
+  const vehicleIndex = rec.vehicleIndex;
+  const bodyRole = rec.bodyRole;
+  const axleIndex = rec.axleIndex;
+  const wheelIndex = rec.wheelIndex;
+  const jointState = rec.jointState;
+  const terminationReason = rec.terminationReason;
+  const bodyValid = rec.bodyValid;
+  const bodySleeping = rec.bodySleeping;
+  const terminated = rec.terminated;
+  const finiteState = rec.finiteState;
+  checkUint(stepIndex, MAX_STEP_INDEX, 'stepIndex');
+  checkUint(vehicleIndex, MAX_VEHICLE_INDEX, 'vehicleIndex');
+  if (!BODY_ROLES.includes(bodyRole)) fail('bodyRole', bodyRole);
+  if (axleIndex !== null) checkUint(axleIndex, MAX_AXLE_INDEX, 'axleIndex');
+  if (wheelIndex !== null) checkUint(wheelIndex, MAX_WHEEL_INDEX, 'wheelIndex');
+  if (!JOINT_STATES.includes(jointState)) fail('jointState', jointState);
+  if (!TERMINATION_REASONS.includes(terminationReason)) fail('terminationReason', terminationReason);
+  checkFlag(bodyValid, 'bodyValid');
+  checkFlag(bodySleeping, 'bodySleeping');
+  checkFlag(terminated, 'terminated');
+  checkFlag(finiteState, 'finiteState');
   // Role-conditional shape: the chassis is the only station-less body, and
   // the only body whose joint slot may be empty (a zero-joint sled).
-  if (rec.bodyRole === 'chassis') {
-    if (rec.axleIndex !== null) fail('axleIndex', `${rec.axleIndex} (chassis carries no station)`);
-    if (rec.wheelIndex !== null) fail('wheelIndex', `${rec.wheelIndex} (chassis carries no station)`);
+  if (bodyRole === 'chassis') {
+    if (axleIndex !== null) fail('axleIndex', `${axleIndex} (chassis carries no station)`);
+    if (wheelIndex !== null) fail('wheelIndex', `${wheelIndex} (chassis carries no station)`);
   } else {
-    if (rec.axleIndex === null) fail('axleIndex', 'null (station body requires an axle)');
-    if (rec.wheelIndex === null) fail('wheelIndex', 'null (station body requires a wheel)');
-    if (rec.jointState === 'notApplicable') {
+    if (axleIndex === null) fail('axleIndex', 'null (station body requires an axle)');
+    if (wheelIndex === null) fail('wheelIndex', 'null (station body requires a wheel)');
+    if (jointState === 'notApplicable') {
       fail('jointState', 'notApplicable (every hub has its prismatic, every wheel its revolute)');
     }
   }
   // Termination coherence.
-  if (rec.terminated === false && rec.terminationReason !== 'none') fail('terminationReason', rec.terminationReason);
-  if (rec.terminated === true && rec.terminationReason === 'none') fail('terminationReason', 'none (terminated record needs a reason)');
-  for (const key of Object.keys(VECTOR_KEYS)) checkVector(rec, key);
+  if (terminated === false && terminationReason !== 'none') fail('terminationReason', terminationReason);
+  if (terminated === true && terminationReason === 'none') fail('terminationReason', 'none (terminated record needs a reason)');
+  const vectors = {};
+  for (const key of Object.keys(VECTOR_KEYS)) vectors[key] = captureVector(rec, key);
+  return Object.freeze({
+    stepIndex,
+    vehicleIndex,
+    bodyRole,
+    axleIndex,
+    wheelIndex,
+    jointState,
+    terminationReason,
+    bodyValid,
+    bodySleeping,
+    terminated,
+    finiteState,
+    ...vectors,
+  });
 }
 
 // --- Codec -------------------------------------------------------------------
@@ -168,34 +237,50 @@ function writeF64(view, offset, v) {
  * fully; `out` must be exactly RECORD_BYTES. Returns `out`.
  */
 export function encodeTraceRecord(rec, out = new Uint8Array(RECORD_BYTES)) {
-  validateRecord(rec);
-  if (!(out instanceof Uint8Array) || out.byteLength !== RECORD_BYTES) fail('out', out);
-  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
-  view.setUint32(0, rec.stepIndex, true);
-  view.setUint32(4, rec.vehicleIndex, true);
-  view.setUint32(8, rec.axleIndex === null ? NO_INDEX : rec.axleIndex, true);
-  view.setUint32(12, rec.wheelIndex === null ? NO_INDEX : rec.wheelIndex, true);
-  view.setUint8(16, BODY_ROLES.indexOf(rec.bodyRole));
-  view.setUint8(17, rec.bodyValid ? 1 : 0);
-  view.setUint8(18, rec.bodySleeping ? 1 : 0);
-  view.setUint8(19, JOINT_STATES.indexOf(rec.jointState));
-  view.setUint8(20, rec.terminated ? 1 : 0);
-  view.setUint8(21, TERMINATION_REASONS.indexOf(rec.terminationReason));
-  view.setUint8(22, rec.finiteState ? 1 : 0);
+  // Ordinary storage for the caller-supplied output (round 13): a resizable
+  // `out` can shrink mid-write (a foreign TypeError from deep in the walk) and
+  // a SharedArrayBuffer-backed one lets another thread read a TORN record; a
+  // detached one already failed the RECORD_BYTES identity below, but only
+  // incidentally. Rejected loud here instead. The TraceWriter hot path never
+  // enters: record() writes into its module-owned #scratch via
+  // writeValidatedRecord directly.
+  requireOrdinaryBytes(out, (path, value) => fail('out', value));
+  // `r` is the module-owned snapshot; the caller's `rec` is never read again.
+  return writeValidatedRecord(validateRecord(rec), out);
+}
+
+// The byte walk, over an already-validated module-owned snapshot. Split out so
+// TraceWriter can encode AND derive its ordering key from the same snapshot
+// instead of re-reading the caller's record (which let the bytes in the digest
+// and the order they were checked against describe different records).
+function writeValidatedRecord(r, out) {
+  if (!(out instanceof Uint8Array) || taByteLength(out) !== RECORD_BYTES) fail('out', out);
+  const view = taView(out);
+  view.setUint32(0, r.stepIndex, true);
+  view.setUint32(4, r.vehicleIndex, true);
+  view.setUint32(8, r.axleIndex === null ? NO_INDEX : r.axleIndex, true);
+  view.setUint32(12, r.wheelIndex === null ? NO_INDEX : r.wheelIndex, true);
+  view.setUint8(16, BODY_ROLES.indexOf(r.bodyRole));
+  view.setUint8(17, r.bodyValid ? 1 : 0);
+  view.setUint8(18, r.bodySleeping ? 1 : 0);
+  view.setUint8(19, JOINT_STATES.indexOf(r.jointState));
+  view.setUint8(20, r.terminated ? 1 : 0);
+  view.setUint8(21, TERMINATION_REASONS.indexOf(r.terminationReason));
+  view.setUint8(22, r.finiteState ? 1 : 0);
   view.setUint8(23, 0);
-  writeF64(view, 24, rec.translation.x);
-  writeF64(view, 32, rec.translation.y);
-  writeF64(view, 40, rec.translation.z);
-  writeF64(view, 48, rec.rotation.x);
-  writeF64(view, 56, rec.rotation.y);
-  writeF64(view, 64, rec.rotation.z);
-  writeF64(view, 72, rec.rotation.w);
-  writeF64(view, 80, rec.linvel.x);
-  writeF64(view, 88, rec.linvel.y);
-  writeF64(view, 96, rec.linvel.z);
-  writeF64(view, 104, rec.angvel.x);
-  writeF64(view, 112, rec.angvel.y);
-  writeF64(view, 120, rec.angvel.z);
+  writeF64(view, 24, r.translation.x);
+  writeF64(view, 32, r.translation.y);
+  writeF64(view, 40, r.translation.z);
+  writeF64(view, 48, r.rotation.x);
+  writeF64(view, 56, r.rotation.y);
+  writeF64(view, 64, r.rotation.z);
+  writeF64(view, 72, r.rotation.w);
+  writeF64(view, 80, r.linvel.x);
+  writeF64(view, 88, r.linvel.y);
+  writeF64(view, 96, r.linvel.z);
+  writeF64(view, 104, r.angvel.x);
+  writeF64(view, 112, r.angvel.y);
+  writeF64(view, 120, r.angvel.z);
   return out;
 }
 
@@ -215,11 +300,12 @@ function decodeFlag(view, offset, path) {
  * encode up to f64 bit patterns (NaN decodes as the canonical quiet NaN).
  */
 export function decodeTraceRecord(bytes, offset = 0) {
-  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
-  if (!Number.isInteger(offset) || offset < 0 || offset + RECORD_BYTES > bytes.byteLength) {
-    decodeFail('offset', `${offset} (byteLength ${bytes.byteLength})`);
+  requireOrdinaryBytes(bytes, decodeFail); // ordinary, same-realm, fixed, non-detached (I7)
+  const total = taByteLength(bytes);
+  if (!Number.isInteger(offset) || offset < 0 || offset + RECORD_BYTES > total) {
+    decodeFail('offset', `${offset} (byteLength ${total})`);
   }
-  const view = new DataView(bytes.buffer, bytes.byteOffset + offset, RECORD_BYTES);
+  const view = new DataView(TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes) + offset, RECORD_BYTES);
   const roleCode = view.getUint8(16);
   if (roleCode >= BODY_ROLES.length) decodeFail('bodyRole', roleCode);
   const jointCode = view.getUint8(19);
@@ -305,15 +391,20 @@ export class TraceWriter {
   record(rec) {
     if (this.#finished) writerFail('record() after finish()', this.#mode);
     if (this.#mode === 'none') return;
-    encodeTraceRecord(rec, this.#scratch); // validates fully
-    if (rec.stepIndex <= this.#lastEndedStep) {
-      writerFail(`record for already-ended step ${rec.stepIndex}`, `lastEndedStep ${this.#lastEndedStep}`);
+    // ONE snapshot backs the bytes, the already-ended-step guard, the
+    // canonical-ordering key and maxSeenStep. Re-reading `rec` after encoding
+    // let the ordering invariant be enforced against a different record than
+    // the one folded into the digest.
+    const r = validateRecord(rec);
+    writeValidatedRecord(r, this.#scratch);
+    if (r.stepIndex <= this.#lastEndedStep) {
+      writerFail(`record for already-ended step ${r.stepIndex}`, `lastEndedStep ${this.#lastEndedStep}`);
     }
     const key = [
-      rec.stepIndex, rec.vehicleIndex,
-      rec.axleIndex === null ? -1 : rec.axleIndex,
-      rec.wheelIndex === null ? -1 : rec.wheelIndex,
-      BODY_ROLES.indexOf(rec.bodyRole),
+      r.stepIndex, r.vehicleIndex,
+      r.axleIndex === null ? -1 : r.axleIndex,
+      r.wheelIndex === null ? -1 : r.wheelIndex,
+      BODY_ROLES.indexOf(r.bodyRole),
     ];
     if (this.#lastKey !== null) {
       let cmp = 0;
@@ -323,7 +414,7 @@ export class TraceWriter {
       }
     }
     this.#lastKey = key;
-    if (rec.stepIndex > this.#maxSeenStep) this.#maxSeenStep = rec.stepIndex;
+    if (r.stepIndex > this.#maxSeenStep) this.#maxSeenStep = r.stepIndex;
     this.#state = fnv1aFold(this.#state, this.#scratch);
     this.#recordCount += 1;
     this.#byteCount += RECORD_BYTES;
@@ -380,6 +471,19 @@ export class TraceWriter {
         state: this.#state,
       });
     }
+    // DEFERRED (round 13, explicit ruling — codec doc §Round 13): these are
+    // the writer's LIVE private arrays, and nothing downstream re-verifies
+    // caller-held records against the digest/counts/checkpoints — a caller
+    // can mutate evidence AFTER attestation and offline forensics will
+    // describe bytes the digest never attested. Deliberate, and the rationale
+    // is the corrected one (see compareTraces below): not "diagnostic-only"
+    // — `analyzeTrace` is diagnostic but `compareCheckpoints` is on the
+    // determinism gates — but that BoxCar3D has no untrusted input, so every
+    // trace here is module-owned from writer to comparison. The fix (value
+    // model vs verified-evidence model) belongs to Phase 1B's
+    // persisted-history format, the first point at which a trace crosses a
+    // trust boundary. Freezing the outer arrays would NOT close it —
+    // Uint8Array contents stay mutable.
     return {
       version: EVALUATION_TRACE_VERSION,
       mode: this.#mode,
@@ -395,13 +499,26 @@ export class TraceWriter {
 
 // --- Comparison / diagnostics --------------------------------------------------
 
-const hexBytes = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+const hexBytes = (bytes) => {
+  const n = taByteLength(bytes);
+  const out = [];
+  for (let i = 0; i < n; i += 1) out.push(bytes[i].toString(16).padStart(2, '0'));
+  return out.join('');
+};
+
+// A module-owned window over n bytes at `from`. Never `subarray`: that method
+// is species-aware (it reads the caller's `constructor[Symbol.species]` and
+// CONSTRUCTS the result), so on a caller-supplied array it returns whatever
+// caller code chose. Diagnostics must report the real bytes.
+const taWindow = (bytes, from, n) => new Uint8Array(
+  TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes) + from, n,
+);
 
 // Lenient identity read for divergence reports: raw wire values, no
 // validation — a corrupt stream must still be REPORTABLE, so this never
 // throws on out-of-range codes (it reports the raw code instead).
 function identityOf(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = taView(bytes);
   const axleRaw = view.getUint32(8, true);
   const wheelRaw = view.getUint32(12, true);
   const roleCode = view.getUint8(16);
@@ -415,7 +532,7 @@ function identityOf(bytes) {
 }
 
 function fieldValueOf(f, bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const view = taView(bytes);
   if (f.type === 'f64') return view.getFloat64(f.offset, true);
   if (f.type === 'u32') {
     const v = view.getUint32(f.offset, true);
@@ -432,12 +549,18 @@ function compareFail(what, value) {
   throw new Error(`trace: compare ${what} (${String(value)})`);
 }
 
+// Capture the three fields of one comparison side ONCE. The reported
+// version/recordBytes must be the values that were checked, and the records
+// walked must be the array whose length was counted.
 function normalizeRecords(side, label) {
   if (typeof side !== 'object' || side === null) compareFail(`invalid ${label}`, side);
-  if (!Number.isInteger(side.version)) compareFail(`${label}.version missing`, side.version);
-  if (!Number.isInteger(side.recordBytes)) compareFail(`${label}.recordBytes missing`, side.recordBytes);
-  if (!Array.isArray(side.records)) compareFail(`${label}.records missing (full-capture input required)`, side.records);
-  return side.records;
+  const version = side.version;
+  const recordBytes = side.recordBytes;
+  const records = side.records;
+  if (!Number.isInteger(version)) compareFail(`${label}.version missing`, version);
+  if (!Number.isInteger(recordBytes)) compareFail(`${label}.recordBytes missing`, recordBytes);
+  if (!Array.isArray(records)) compareFail(`${label}.records missing (full-capture input required)`, records);
+  return { version, recordBytes, records };
 }
 
 /**
@@ -450,31 +573,101 @@ function normalizeRecords(side, label) {
  * versionMismatch | recordSizeMismatch | fieldMismatch | orderingMismatch |
  * missingRecord | extraRecord. Comparison is byte-first, so −0 vs +0 and
  * differing quaternion signs ARE divergences.
+ *
+ * DEFERRED (round 14, explicit ruling — codec doc §Round 14): the class
+ * "cross-side accessor rewrites opposing evidence before the compare loop
+ * reads it" is NOT closed. Round 12 I6 closed byte-content mutation via the
+ * OPPOSING side's plain-record entry (copy-on-intake below). Round 14 first
+ * closed accessor descriptors on `records[i]` — but that fix was
+ * whack-a-mole: an accessor one level down (a getter on
+ * `records[i].translation.x`, or on the envelope's `version`/`records`
+ * itself) still runs during capture and can rewrite the opposing side to
+ * match, producing a silent `null` for genuinely divergent streams
+ * (executed at HEAD against the round-14 fix — false-identical
+ * reproduced). Refusing descriptors at each discovered location is by
+ * definition site-by-site, not class-closure. The atomic fixes are
+ * architectural: EITHER accept ONLY pre-encoded Uint8Array records so no
+ * caller code runs while both sides are live (hard API boundary), OR do a
+ * total deep pre-scan refusing accessor descriptors on every nested key of
+ * both sides before comparison. Both belong to the Phase-1B persisted-
+ * history milestone alongside the round-13 mutable-trace-evidence and
+ * strong-digest deferrals.
+ *
+ * WHY DEFERRAL IS SOUND — corrected (round 14 follow-up). The first version
+ * of this note said "no lock, fitness, or selection path consumes the return
+ * value". That is TRUE of compareTraces and FALSE of compareCheckpoints,
+ * which all three `test:determinism` files and both Chromium gates call — the
+ * claim was published without grepping the call sites, and a reviewer was
+ * right to reject it. The honest rationale is narrower and stronger:
+ * BOXCAR3D HAS NO UNTRUSTED INPUT. Every argument these comparators receive
+ * is module-owned — traces from TraceWriter, checkpoint states from committed
+ * lock literals, decoded artifacts from the byte codecs (which emit
+ * module-owned structures), worker payloads through structured clone (which
+ * drops accessors). Exploiting this class means writing an accessor into this
+ * repo's own code to deceive this repo's own gates. The bug is real and the
+ * exposure is nil, and that — not "diagnostic-only" — is why it waits.
+ * The expiry condition is explicit: Phase 1B persists evolution history to
+ * disk and reloads it, which is the first moment a trace crosses a trust
+ * boundary. Revisit there, not before.
+ *
+ * Test tooling that wants the guarantee today can encode both sides via
+ * `encodeTraceRecord()` before calling, which mechanically closes the class
+ * for that caller (option A applied per-caller).
  */
 export function compareTraces(expected, actual) {
-  const expRecords = normalizeRecords(expected, 'expected');
-  const actRecords = normalizeRecords(actual, 'actual');
+  const exp = normalizeRecords(expected, 'expected');
+  const act = normalizeRecords(actual, 'actual');
+  const expRecords = exp.records;
+  const actRecords = act.records;
   const counts = { expectedCount: expRecords.length, actualCount: actRecords.length };
-  if (expected.version !== actual.version) {
-    return { kind: 'versionMismatch', ...counts, expected: expected.version, actual: actual.version };
+  if (exp.version !== act.version) {
+    return { kind: 'versionMismatch', ...counts, expected: exp.version, actual: act.version };
   }
-  if (expected.recordBytes !== actual.recordBytes
-    || expected.recordBytes !== RECORD_BYTES || actual.recordBytes !== RECORD_BYTES) {
+  if (exp.recordBytes !== act.recordBytes
+    || exp.recordBytes !== RECORD_BYTES || act.recordBytes !== RECORD_BYTES) {
     return {
       kind: 'recordSizeMismatch', ...counts, index: null,
-      expected: expected.recordBytes, actual: actual.recordBytes,
+      expected: exp.recordBytes, actual: act.recordBytes,
     };
   }
   const toBytes = (entry, index, label) => {
+    // Realm-neutral byte-container check FIRST (round 14 follow-up).
+    // `instanceof` is same-realm, so a cross-realm Uint8Array missed the byte
+    // branch entirely and fell through to the plain-record path, where its 128
+    // indexed properties failed as "unknown key" — a rejection for the WRONG
+    // reason, which a storage-battery regex then counted as a storage-gate
+    // pass. `ArrayBuffer.isView` sees any typed-array/DataView regardless of
+    // realm, so a foreign byte container is now diagnosed as what it is.
+    if (ArrayBuffer.isView(entry) && !(entry instanceof Uint8Array)) {
+      fail(`${label} record ${index} bytes`, 'not an ordinary same-realm Uint8Array');
+    }
     if (entry instanceof Uint8Array) {
-      if (entry.byteLength !== RECORD_BYTES) {
-        return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: entry.byteLength } };
+      // Ordinary storage only (round 13): fancy backing is invalid INPUT, not
+      // a trace divergence, so it THROWS rather than reporting. Ungated, a
+      // resizable entry could shrink between the RECORD_BYTES identity below
+      // and the copy (`.set` then reads length 0 and leaves `copy` all zeros —
+      // comparing bytes that never existed, silently) and a
+      // SharedArrayBuffer entry can tear mid-copy; a detached one failed the
+      // identity already, but only incidentally.
+      requireOrdinaryBytes(entry, (path, value) => fail(`${label} record ${index} bytes`, value));
+      const n = taByteLength(entry);
+      if (n !== RECORD_BYTES) {
+        return { sizeError: { kind: 'recordSizeMismatch', ...counts, index, label, expected: RECORD_BYTES, actual: n } };
       }
-      return { bytes: entry };
+      // COPY ON INTAKE. Capturing the loop BOUND (round-11) was not enough:
+      // `e.bytes` used to be the caller's array BY REFERENCE, so encoding the
+      // OTHER side's plain-record entry could run a getter that overwrote
+      // `e.bytes` to match, and this returned null ("identical") for a divergent
+      // pair (round-11 I6). `.set` reads the caller array by integer index
+      // (accessors are impossible on a genuine TypedArray) into a module-owned
+      // buffer, taken before the opposing entry's getters run.
+      const copy = new Uint8Array(RECORD_BYTES);
+      copy.set(entry);
+      return { bytes: copy };
     }
     return { bytes: encodeTraceRecord(entry) };
   };
-  const n = Math.min(expRecords.length, actRecords.length);
+  const n = Math.min(counts.expectedCount, counts.actualCount);
   for (let i = 0; i < n; i += 1) {
     const e = toBytes(expRecords[i], i, 'expected');
     if (e.sizeError) return e.sizeError;
@@ -505,15 +698,20 @@ export function compareTraces(expected, actual) {
       byteOffset: f.offset,
       expectedValue: fieldValueOf(f, e.bytes),
       actualValue: fieldValueOf(f, a.bytes),
-      expectedBytes: hexBytes(e.bytes.subarray(f.offset, f.offset + f.bytes)),
-      actualBytes: hexBytes(a.bytes.subarray(f.offset, f.offset + f.bytes)),
+      expectedBytes: hexBytes(taWindow(e.bytes, f.offset, f.bytes)),
+      actualBytes: hexBytes(taWindow(a.bytes, f.offset, f.bytes)),
     };
   }
-  if (expRecords.length > actRecords.length) {
+  // The verdict uses the COUNTED lengths, never a fresh read: the loop above
+  // ran the caller's element getters, and Array length is writable, so an
+  // element getter that shrank its own array made both branches false and this
+  // function return null — "traces identical" — for genuinely divergent input
+  // (measured, round-11, in both directions).
+  if (counts.expectedCount > counts.actualCount) {
     const e = toBytes(expRecords[n], n, 'expected');
     return { kind: 'missingRecord', ...counts, index: n, identity: e.sizeError ? null : identityOf(e.bytes) };
   }
-  if (actRecords.length > expRecords.length) {
+  if (counts.actualCount > counts.expectedCount) {
     const a = toBytes(actRecords[n], n, 'actual');
     return { kind: 'extraRecord', ...counts, index: n, identity: a.sizeError ? null : identityOf(a.bytes) };
   }
@@ -529,35 +727,70 @@ export function compareTraces(expected, actual) {
  * expected, actual }` — with interval 1 the first bad step exactly, with
  * interval N an N-step block for a bounded full-capture re-run.
  */
+const CHECKPOINT_FIELDS = Object.freeze(['stepIndex', 'recordCount', 'byteCount', 'state']);
+
+// Copy-on-intake by index: each entry's four canonical fields are read ONCE
+// into a module-owned row. The comparison, the reported expected/actual rows,
+// firstDifferingStepIndex and lastAgreedStepIndex then all describe the same
+// reading — a divergence report that re-read the caller could otherwise print
+// values that were never compared. The BOUND is captured for the same reason:
+// `length` cannot be an accessor on a genuine Array, but it is writable and the
+// entry reads below are caller code, so a shrinking element getter otherwise
+// truncated the snapshot and defeated the `length` divergence branch
+// (measured, round-11 — the earlier "cannot lie" note here was false).
+function snapshotCheckpoints(side, label) {
+  if (!Array.isArray(side)) compareFail(`invalid ${label} checkpoints`, side);
+  const count = side.length;
+  const rows = [];
+  for (let i = 0; i < count; i += 1) {
+    const entry = side[i];
+    if (typeof entry !== 'object' || entry === null) compareFail(`invalid ${label} checkpoint[${i}]`, entry);
+    const row = {};
+    for (let k = 0; k < CHECKPOINT_FIELDS.length; k += 1) {
+      row[CHECKPOINT_FIELDS[k]] = entry[CHECKPOINT_FIELDS[k]];
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+// DEFERRED (round 14, explicit ruling — codec doc §Round 14): same class as
+// compareTraces above, one level down (accessor descriptors on entry FIELDS
+// instead of `records[i]`). Executed at HEAD: `exp[0].state` getter mutating
+// `act[1].state` to match `exp[1].state` returned null for genuinely
+// divergent streams. `snapshotCheckpoints(expected)` runs first and reads
+// exp entry fields, giving exp's getters a window to mutate act BEFORE
+// snapshotCheckpoints(actual) captures it. Diagnostic-only surface; fix
+// belongs to the same Phase-1B milestone.
 export function compareCheckpoints(expected, actual) {
-  if (!Array.isArray(expected)) compareFail('invalid expected checkpoints', expected);
-  if (!Array.isArray(actual)) compareFail('invalid actual checkpoints', actual);
-  const n = Math.min(expected.length, actual.length);
-  const lastAgreed = (i) => (i > 0 ? expected[i - 1].stepIndex : null);
+  const exp = snapshotCheckpoints(expected, 'expected');
+  const act = snapshotCheckpoints(actual, 'actual');
+  const n = Math.min(exp.length, act.length);
+  const lastAgreed = (i) => (i > 0 ? exp[i - 1].stepIndex : null);
   for (let i = 0; i < n; i += 1) {
-    for (const fieldName of ['stepIndex', 'recordCount', 'byteCount', 'state']) {
-      const e = expected[i][fieldName];
-      const a = actual[i][fieldName];
+    for (const fieldName of CHECKPOINT_FIELDS) {
+      const e = exp[i][fieldName];
+      const a = act[i][fieldName];
       if (e === undefined || a === undefined || e === a) continue;
       return {
         checkpointIndex: i,
         reason: fieldName,
         lastAgreedStepIndex: lastAgreed(i),
-        firstDifferingStepIndex: expected[i].stepIndex ?? actual[i].stepIndex ?? null,
-        expected: expected[i],
-        actual: actual[i],
+        firstDifferingStepIndex: exp[i].stepIndex ?? act[i].stepIndex ?? null,
+        expected: exp[i],
+        actual: act[i],
       };
     }
   }
-  if (expected.length !== actual.length) {
-    const longer = expected.length > actual.length ? expected : actual;
+  if (exp.length !== act.length) {
+    const longer = exp.length > act.length ? exp : act;
     return {
       checkpointIndex: n,
       reason: 'length',
       lastAgreedStepIndex: lastAgreed(n),
       firstDifferingStepIndex: longer[n].stepIndex ?? null,
-      expected: expected[n] ?? null,
-      actual: actual[n] ?? null,
+      expected: exp[n] ?? null,
+      actual: act[n] ?? null,
     };
   }
   return null;

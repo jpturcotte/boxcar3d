@@ -141,7 +141,20 @@ const fusedClamp = (g, lo, hi) => Math.min(hi, Math.max(g, Math.min(lo, hi)));
 // two sites cannot silently diverge if the formula is ever revised — and the
 // realizer's guard still catches a tampered `mass` field, since only the
 // stored value (not the recomputed one) is corrupted there.
-export const wheelMass = (radius, width, density) => Math.PI * radius * radius * width * density;
+// Arguments are validated because this is a PUBLIC export, and an unguarded
+// product is the silent-invalid-output class: `wheelMass(NaN, 1, 1)` returned
+// NaN, `wheelMass(-2, 1, 1)` returned a POSITIVE mass (radius is squared, so
+// the sign launders away), and a numeric string coerced through `*`. The
+// internal callers always pass repaired genes; this guards the exported
+// formula, which the adapter's tamper check also consumes.
+export const wheelMass = (radius, width, density) => {
+  for (const [name, v] of [['radius', radius], ['width', width], ['density', density]]) {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`assembly: invalid wheelMass ${name} (${String(v)})`);
+    }
+  }
+  return Math.PI * radius * radius * width * density;
+};
 
 // --- S1 hub policy (single-sourced, the wheelMass pattern) ------------------
 // The S1 topology interposes a hub body between the chassis prismatic and the
@@ -173,17 +186,60 @@ export const HUB_RADIUS_FRACTION = 0.4; // of the wheel radius
 export const HUB_LENGTH_FRACTION = 0.5; // of the wheel width
 
 export function hubMassProperties(wheel) {
-  const mass = Math.min(HUB_MASS_RANGE[1], Math.max(HUB_MASS_RANGE[0], HUB_MASS_FRACTION * wheel.mass));
-  const radius = HUB_RADIUS_FRACTION * wheel.radius;
-  const halfWidth = (HUB_LENGTH_FRACTION * wheel.width) / 2;
+  // Fail-loud on the record's shape and the three inputs the formulas
+  // consume: without this, `hubMassProperties(null)` leaked a foreign
+  // TypeError and — worse — `hubMassProperties({})` returned a SILENT
+  // all-NaN record, and radius 0 a density of Infinity. The internal callers
+  // (buildIR, the adapter's tamper guard) always pass validated wheel
+  // records, so this guards direct consumers of the exported policy only.
+  if (typeof wheel !== 'object' || wheel === null) {
+    throw new Error(`assembly: invalid hub wheel record (${String(wheel)})`);
+  }
+  // Capture the three inputs as they are checked, and compute from the
+  // captures. Reading `wheel.mass` again below would let an accessor pass the
+  // domain check and then feed the formulas a different number — and the
+  // HUB_MASS_RANGE clamp would LAUNDER it into a legal-looking 0.5–20 kg hub,
+  // so the substitution left no trace anywhere downstream.
+  const src = {};
+  for (const k of ['mass', 'radius', 'width']) {
+    const v = wheel[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) {
+      throw new Error(`assembly: invalid hub wheel record at ${k} (${String(v)})`);
+    }
+    src[k] = v;
+  }
+  const mass = Math.min(HUB_MASS_RANGE[1], Math.max(HUB_MASS_RANGE[0], HUB_MASS_FRACTION * src.mass));
+  const radius = HUB_RADIUS_FRACTION * src.radius;
+  const halfWidth = (HUB_LENGTH_FRACTION * src.width) / 2;
   const length = 2 * halfWidth;
   const transverse = (mass * (3 * radius * radius + length * length)) / 12;
+  const density = mass / (Math.PI * radius * radius * length); // kg/m³ — realizes the mass through the collider
+  const axial = mass * radius * radius * 0.5;
+  // Validate the DERIVED record too, not only the three inputs. Guarding the
+  // inputs made `hubMassProperties({})` loud but left the arithmetic's own
+  // failure modes silent: finite in-domain magnitudes can still underflow
+  // radius² to 0 (density Infinity, zero principal inertia) or overflow it
+  // (inertia Infinity), and a physically impossible hub record then flows
+  // into ir.mass and on to the realizer's readback cross-check, where it
+  // reads as an engine disagreement rather than as bad input. A function that
+  // validates what it consumes and not what it returns has only moved the
+  // silence one step downstream.
+  for (const [name, v] of [['mass', mass], ['radius', radius], ['halfWidth', halfWidth],
+    ['density', density], ['principalInertia.transverse', transverse], ['principalInertia.axial', axial]]) {
+    if (!Number.isFinite(v) || v <= 0) {
+      // Diagnostics quote the CAPTURES — the numbers that actually entered
+      // the arithmetic. Re-reading the caller here printed values that never
+      // did, which is the worst possible time to be reporting a fiction.
+      throw new Error(`assembly: hub record for wheel (mass ${src.mass}, radius ${src.radius}, `
+        + `width ${src.width}) derives a non-physical ${name} (${String(v)})`);
+    }
+  }
   return {
     mass, // kg
     radius, // m — hub cylinder radius
     halfWidth, // m — hub cylinder half-length along the axle
-    density: mass / (Math.PI * radius * radius * length), // kg/m³ — realizes the mass through the collider
-    principalInertia: Object.freeze({ x: transverse, y: transverse, z: mass * radius * radius * 0.5 }), // kg·m², body frame (axle = z)
+    density,
+    principalInertia: Object.freeze({ x: transverse, y: transverse, z: axial }), // kg·m², body frame (axle = z)
   };
 }
 
@@ -224,101 +280,196 @@ export const DISCRETE_GENE_KEYS = Object.freeze([
   'family', 'suspType', 'symmetric', 'paired', 'driven', 'nodeCount',
 ]);
 
-export function validateGenotype(genotype) {
-  if (typeof genotype !== 'object' || genotype === null) fail('genotype', genotype);
-  if (genotype.version !== GENOTYPE_VERSION) fail('version', genotype.version);
-  checkGene(genotype.hue, 'hue');
-  checkGene(genotype.symmetric, 'symmetric');
-  checkGene(genotype.power, 'power');
-  checkGene(genotype.frameDensity, 'frameDensity');
-  const frame = genotype.frame;
-  if (typeof frame !== 'object' || frame === null) fail('frame', frame);
-  checkGene(frame.family, 'frame.family');
-  if (!Array.isArray(frame.segments) || frame.segments.length !== 1) {
-    fail('frame.segments.length', Array.isArray(frame.segments) ? frame.segments.length : frame.segments);
+// Read a caller property ONCE and require it to be a non-null object. The
+// idiomatic `typeof x.k !== 'object' || x.k === null` shape reads the caller
+// TWICE before anyone touches the value, so every such guard was itself an
+// instance of the defect it was written to prevent.
+function requireObject(v, path) {
+  if (typeof v !== 'object' || v === null) fail(path, v);
+  return v;
+}
+
+/**
+ * THE ONE WALK — the genotype ownership boundary.
+ *
+ * Reads every caller-owned container and leaf EXACTLY once, validating each
+ * value as it is captured, and returns a module-owned genotype in canonical
+ * shape. Everything downstream (repair, serialization, the field walk) then
+ * consumes the CAPTURE, so the values that were validated are necessarily the
+ * values that are repaired, encoded, and attested.
+ *
+ * This replaces the former validate-then-clone pair. That shape read the
+ * caller twice — `validateGenotype(genotype)` followed by
+ * `cloneGenotype(genotype)` — so an ordinary own accessor could pass the
+ * domain check on its first read and hand a different value to the clone.
+ * Measured (round-10 external review): a `hue` getter returning 0.5 then 1e6
+ * produced a REPAIRED genotype carrying 1e6 in a [0,1] gene slot, an IR with
+ * a 300 km chassis half-extent, and a `serializeGenotype` NaN write that the
+ * module's own decoder then rejected. Unknown extra fields still do not
+ * survive: the walk enumerates the schema, never the caller's key order.
+ */
+function captureGenotype(genotype) {
+  requireObject(genotype, 'genotype');
+  const version = genotype.version;
+  if (version !== GENOTYPE_VERSION) fail('version', version);
+  const hue = genotype.hue;
+  checkGene(hue, 'hue');
+  const symmetric = genotype.symmetric;
+  checkGene(symmetric, 'symmetric');
+  const power = genotype.power;
+  checkGene(power, 'power');
+  const frameDensity = genotype.frameDensity;
+  checkGene(frameDensity, 'frameDensity');
+  const frame = requireObject(genotype.frame, 'frame');
+  const family = frame.family;
+  checkGene(family, 'frame.family');
+  const segments = frame.segments;
+  if (!Array.isArray(segments) || segments.length !== 1) {
+    fail('frame.segments.length', Array.isArray(segments) ? segments.length : segments);
   }
-  const seg = frame.segments[0];
-  if (typeof seg !== 'object' || seg === null) fail('frame.segments[0]', seg);
-  checkGene(seg.nodeCount, 'frame.segments[0].nodeCount');
-  if (!Array.isArray(seg.nodes) || seg.nodes.length !== NODE_SLOTS) {
-    fail('frame.segments[0].nodes.length', Array.isArray(seg.nodes) ? seg.nodes.length : seg.nodes);
+  const seg = requireObject(segments[0], 'frame.segments[0]');
+  const nodeCount = seg.nodeCount;
+  checkGene(nodeCount, 'frame.segments[0].nodeCount');
+  const nodes = seg.nodes;
+  if (!Array.isArray(nodes) || nodes.length !== NODE_SLOTS) {
+    fail('frame.segments[0].nodes.length', Array.isArray(nodes) ? nodes.length : nodes);
   }
-  seg.nodes.forEach((n, i) => {
-    if (typeof n !== 'object' || n === null) fail(`nodes[${i}]`, n);
-    for (const k of NODE_GENES) checkGene(n[k], `nodes[${i}].${k}`);
-  });
-  const fam = seg.fam;
-  if (typeof fam !== 'object' || fam === null) fail('fam', fam);
+  // Indexed, never forEach: forEach SKIPS HOLES, so a sparse array (`nodes`
+  // grown by a length assignment, the shape a structural operator produces)
+  // would pass validation with its holes unchecked and then die inside
+  // serializeGenotype as a foreign TypeError reading a gene off undefined.
+  // Validation must cover exactly the slots the serializer writes. The bound
+  // is the module constant, already proven equal to the captured length.
+  const outNodes = [];
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    const n = requireObject(nodes[i], `nodes[${i}]`);
+    const node = {};
+    for (const k of NODE_GENES) {
+      const v = n[k];
+      checkGene(v, `nodes[${i}].${k}`);
+      node[k] = v;
+    }
+    outNodes.push(node);
+  }
+  const fam = requireObject(seg.fam, 'fam');
   // Explicit object checks per block: a falsy-but-valid-gene value
   // (fam.spine = 0) would slip through a `fam.spine && fam.spine.gene`
   // truthiness chain AS the gene 0, then clone to undefined and surface as
   // NaN geometry — exactly the operator-bug class this layer exists to stop
   // at the door (external review finding, PR #10).
-  if (typeof fam.spine !== 'object' || fam.spine === null) fail('fam.spine', fam.spine);
-  if (typeof fam.ladder !== 'object' || fam.ladder === null) fail('fam.ladder', fam.ladder);
-  if (typeof fam.hull !== 'object' || fam.hull === null) fail('fam.hull', fam.hull);
-  checkGene(fam.spine.beamWidthFrac, 'fam.spine.beamWidthFrac');
-  checkGene(fam.ladder.crossFrac, 'fam.ladder.crossFrac');
-  checkGene(fam.hull.bulge, 'fam.hull.bulge');
-  if (!Array.isArray(genotype.axles)) fail('axles', genotype.axles);
-  genotype.axles.forEach((a, i) => {
-    if (typeof a !== 'object' || a === null) fail(`axles[${i}]`, a);
-    for (const k of AXLE_GENES) checkGene(a[k], `axles[${i}].${k}`);
-    if (typeof a.asym !== 'object' || a.asym === null) fail(`axles[${i}].asym`, a.asym);
-    for (const k of ASYM_GENES) checkGene(a.asym[k], `axles[${i}].asym.${k}`);
-  });
+  const spine = requireObject(fam.spine, 'fam.spine');
+  const ladder = requireObject(fam.ladder, 'fam.ladder');
+  const hull = requireObject(fam.hull, 'fam.hull');
+  const beamWidthFrac = spine.beamWidthFrac;
+  checkGene(beamWidthFrac, 'fam.spine.beamWidthFrac');
+  const crossFrac = ladder.crossFrac;
+  checkGene(crossFrac, 'fam.ladder.crossFrac');
+  const bulge = hull.bulge;
+  checkGene(bulge, 'fam.hull.bulge');
+  const axles = genotype.axles;
+  if (!Array.isArray(axles)) fail('axles', axles);
+  // CAPTURE THE BOUND. `axles.length` cannot be an ACCESSOR (it is a
+  // non-configurable own data property on a genuine Array) — but it IS
+  // writable, and the loop body below reads caller gene leaves, which may be
+  // ordinary own accessors, i.e. caller CODE running between two readings of
+  // the bound. Measured (round-11): a `radius` getter that assigned
+  // `axles.length = 1` on its first call made a 3-axle genotype serialize to
+  // 396 bytes with axleCount 1 — a short, well-formed, cleanly-decodable
+  // stream attesting a genotype the caller's object did not hold. The earlier
+  // comment here asserted the opposite and was false; "no accessor" is not
+  // "cannot change".
+  const axleCount = axles.length;
+  const outAxles = [];
+  for (let i = 0; i < axleCount; i += 1) { // indexed: see nodes above
+    const a = requireObject(axles[i], `axles[${i}]`);
+    const axle = {};
+    for (const k of AXLE_GENES) {
+      const v = a[k];
+      checkGene(v, `axles[${i}].${k}`);
+      axle[k] = v;
+    }
+    const asymIn = requireObject(a.asym, `axles[${i}].asym`);
+    const asym = {};
+    for (const k of ASYM_GENES) {
+      const v = asymIn[k];
+      checkGene(v, `axles[${i}].asym.${k}`);
+      asym[k] = v;
+    }
+    axle.asym = asym;
+    outAxles.push(axle);
+  }
+  return {
+    version,
+    hue,
+    symmetric,
+    power,
+    frameDensity,
+    frame: {
+      family,
+      segments: [{
+        nodeCount,
+        nodes: outNodes,
+        fam: { spine: { beamWidthFrac }, ladder: { crossFrac }, hull: { bulge } },
+      }],
+    },
+    axles: outAxles,
+  };
+}
+
+/**
+ * Domain validation. Retained as the public predicate (it throws or returns
+ * undefined); every INTERNAL consumer uses `captureGenotype` instead, so no
+ * caller-owned value is ever validated here and read again elsewhere.
+ */
+export function validateGenotype(genotype) {
+  captureGenotype(genotype);
 }
 
 function validateOptions(cfg) {
-  if (!Number.isFinite(cfg.corridorHalfWidth) || cfg.corridorHalfWidth <= ASSEMBLY_RULES.wallMargin + GENE_RANGES.wheelWidth[1] / 2) {
-    throw new Error('assembly: corridorHalfWidth must be a finite number leaving room inside the wall margin');
+  // R4: a wheel must clear the wall. Even a centered paired axle sits its wheel
+  // CENTER at `trackHalf` from the centerline (floor GENE_RANGES.trackHalf[0]),
+  // and the wheel extends ±wheelWidth/2 beyond that — so the corridor must leave
+  // `wallMargin + trackHalf[0] + wheelWidth[1]/2` of half-width. The guard
+  // omitted the trackHalf floor (F11), so for corridorHalfWidth in
+  // (wallMargin + wheelWidth[1]/2, that sum] the emitted wheel sat inside the
+  // wall margin with no error. Default 6 m is far above the bound.
+  const minHalfWidth = ASSEMBLY_RULES.wallMargin + GENE_RANGES.trackHalf[0] + GENE_RANGES.wheelWidth[1] / 2;
+  if (!Number.isFinite(cfg.corridorHalfWidth) || cfg.corridorHalfWidth <= minHalfWidth) {
+    throw new Error(`assembly: corridorHalfWidth must be a finite number > ${minHalfWidth} (wallMargin + min track + max wheel half-width)`);
   }
   if (!Number.isInteger(cfg.maxAxles) || cfg.maxAxles < 0) {
     throw new Error('assembly: maxAxles must be an integer >= 0');
   }
 }
 
-// Explicit structural clone in canonical field shape. Unknown extra fields do
-// not survive (the clone enumerates the schema, so the repaired output is
-// always in canonical shape); all leaves are f64 copied exactly.
-function cloneGenotype(g) {
-  const seg = g.frame.segments[0];
-  return {
-    version: g.version,
-    hue: g.hue,
-    symmetric: g.symmetric,
-    power: g.power,
-    frameDensity: g.frameDensity,
-    frame: {
-      family: g.frame.family,
-      segments: [{
-        nodeCount: seg.nodeCount,
-        nodes: seg.nodes.map((n) => ({ gap: n.gap, height: n.height, halfWidth: n.halfWidth, thickness: n.thickness })),
-        fam: {
-          spine: { beamWidthFrac: seg.fam.spine.beamWidthFrac },
-          ladder: { crossFrac: seg.fam.ladder.crossFrac },
-          hull: { bulge: seg.fam.hull.bulge },
-        },
-      }],
-    },
-    axles: g.axles.map((a) => ({
-      posX01: a.posX01,
-      paired: a.paired,
-      trackHalf: a.trackHalf,
-      radius: a.radius,
-      width: a.width,
-      density: a.density,
-      suspType: a.suspType,
-      stiffness: a.stiffness,
-      damping: a.damping,
-      travel: a.travel,
-      restLength: a.restLength,
-      driven: a.driven,
-      share: a.share,
-      asym: { driveBias: a.asym.driveBias, sizeBias: a.asym.sizeBias, centerOffset: a.asym.centerOffset },
-    })),
-  };
+// Unknown option keys reject loud (the repo-wide runner convention — a typo'd
+// knob must never silently become a no-op that compiles a different vehicle
+// than the caller believes it configured).
+const ASSEMBLY_OPTION_KEYS = Object.freeze(Object.keys(ASSEMBLY_DEFAULTS));
+function checkOptionKeys(options) {
+  // Structural check FIRST: an explicit `options: null` on repairGenotype /
+  // compileAssembly reached Object.keys(null) and leaked a foreign TypeError,
+  // so the "explicit null fails where absent defaults" ruling was enforced at
+  // createInitialPopulation and skipped at the two assembly entry points that
+  // share the idiom.
+  if (typeof options !== 'object' || options === null) {
+    throw new Error(`assembly: invalid options (${String(options)})`);
+  }
+  for (const k of Object.keys(options)) {
+    if (!ASSEMBLY_OPTION_KEYS.includes(k)) {
+      throw new Error(`assembly: unknown option key '${k}' (known: ${ASSEMBLY_OPTION_KEYS.join(', ')})`);
+    }
+  }
 }
+
+// (`cloneGenotype` lived here. It was a SECOND walk of the caller's genotype,
+// performed after `validateGenotype` had already walked it — the structure
+// that let a validated value and an encoded value differ. `captureGenotype`
+// above subsumes it: one walk that validates and copies in the same step, so
+// the ownership boundary and the domain check can no longer disagree. Its
+// INDEXED-reads ruling is preserved verbatim there — `.map`/`.forEach` are
+// looked up on the caller's arrays and would run caller code inside the
+// "owned" clone.)
 
 // --- Frame geometry (shared by repair and buildIR) --------------------------
 //
@@ -483,10 +634,12 @@ function supportsOf(colliders) {
 // --- Repair (gene space, exactly idempotent) --------------------------------
 
 export function repairGenotype(genotype, options = {}) {
+  checkOptionKeys(options);
   const cfg = { ...ASSEMBLY_DEFAULTS, ...options };
   validateOptions(cfg);
-  validateGenotype(genotype);
-  const g = cloneGenotype(genotype);
+  // ONE walk: validate and capture together, so repair operates on exactly
+  // the values that were checked (see captureGenotype's ruling).
+  const g = captureGenotype(genotype);
 
   // R1 — axle-count cap (structural truncation; deterministic, idempotent).
   if (g.axles.length > cfg.maxAxles) g.axles = g.axles.slice(0, cfg.maxAxles);
@@ -705,6 +858,7 @@ function buildIR(repaired, cfg) {
 // Genotype -> repaired assembly IR. Never mutates its input (repair works on
 // an explicit structural clone; the IR embeds that clone as ir.genotype).
 export function compileAssembly(genotype, options = {}) {
+  checkOptionKeys(options);
   const cfg = { ...ASSEMBLY_DEFAULTS, ...options };
   const repaired = repairGenotype(genotype, cfg); // validates options + domain
   return buildIR(repaired, cfg);
@@ -725,24 +879,50 @@ export function compileAssembly(genotype, options = {}) {
 // radius, width, density, suspType, stiffness, damping, travel, restLength,
 // driven, share, driveBias, sizeBias, centerOffset.
 export function serializeGenotype(genotype) {
-  validateGenotype(genotype);
-  const seg = genotype.frame.segments[0];
-  const n = genotype.axles.length;
-  const bytes = 2 + 4 * 8 + 8 + 1 + 8 + NODE_SLOTS * 4 * 8 + 3 * 8 + 1 + n * 16 * 8;
-  const view = new DataView(new ArrayBuffer(bytes));
+  // The bytes are written from the CAPTURE, never from a second reading of
+  // the caller: what was validated is what is encoded. Before this, a gene
+  // accessor could pass `validateGenotype` and then hand the writer a NaN —
+  // emitting a stream this module's own decoder rejects, which broke the
+  // exact-inverse property the codec exists to guarantee.
+  const g = captureGenotype(genotype);
+  const seg = g.frame.segments[0];
+  const n = g.axles.length;
+  // Wire representability: the axle count is a u8. validateGenotype imposes no
+  // axle cap (repair's maxAxles is policy, not domain), so without this guard a
+  // 256+-axle genotype would emit a WRAPPED count byte disagreeing with its own
+  // payload — malformed bytes produced silently. No reachable input hits this
+  // (repair and the initializer both cap at 6) and no valid stream changes;
+  // this only converts a silent corruption into a loud failure.
+  //
+  // The guard keeps its own diagnostic (it names the FIELD a caller controls,
+  // which `axleCount` would not), but the ALLOCATION comes from
+  // genotypeByteLength — the same function deserializeGenotype checks an
+  // incoming length against. One geometry, so the encoder's buffer and the
+  // decoder's exact-length identity cannot drift apart; they agreed as two
+  // independent literals, and agreeing by construction is the point.
+  if (n > 0xff) fail('axles.length', `${n} exceeds the u8 wire bound (255)`);
+  const view = new DataView(new ArrayBuffer(genotypeByteLength(n)));
   let o = 0;
   const u8 = (v) => { view.setUint8(o, v); o += 1; };
   const u16 = (v) => { view.setUint16(o, v, true); o += 2; };
   const f64 = (v) => { view.setFloat64(o, v, true); o += 8; };
-  u16(genotype.version);
-  f64(genotype.hue);
-  f64(genotype.symmetric);
-  f64(genotype.power);
-  f64(genotype.frameDensity);
-  f64(genotype.frame.family);
-  u8(genotype.frame.segments.length);
+  u16(g.version);
+  f64(g.hue);
+  f64(g.symmetric);
+  f64(g.power);
+  f64(g.frameDensity);
+  f64(g.frame.family);
+  u8(g.frame.segments.length);
   f64(seg.nodeCount);
-  for (const node of seg.nodes) {
+  // INDEXED, never for...of: the byte count above is derived from NODE_SLOTS
+  // and `n`, so iterating instead would let an array with an overridden
+  // Symbol.iterator write fewer values than the header promises and leave a
+  // zero-filled hole — a stream that stays the right SIZE, decodes cleanly,
+  // and means something else (measured: an under-yielding `axles` decoded to a
+  // genotype whose extra axle was all-zero genes, which are legal values).
+  // validateGenotype's own checks are index-based, so they do not catch it.
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    const node = seg.nodes[i];
     f64(node.gap);
     f64(node.height);
     f64(node.halfWidth);
@@ -752,11 +932,282 @@ export function serializeGenotype(genotype) {
   f64(seg.fam.ladder.crossFrac);
   f64(seg.fam.hull.bulge);
   u8(n);
-  for (const a of genotype.axles) {
+  for (let i = 0; i < n; i += 1) {
+    const a = g.axles[i];
     for (const k of AXLE_GENES) f64(a[k]);
     for (const k of ASYM_GENES) f64(a.asym[k]);
   }
+  // receiver `view` is the module-owned DataView allocated above, not caller data.
+  // eslint-disable-next-line no-restricted-syntax
   return new Uint8Array(view.buffer);
+}
+
+// --- The schema walk: a validated MIRROR of the serializer ------------------
+//
+// ROLES, stated once so they cannot blur: `serializeGenotype` above is the
+// CANONICAL BYTE-LAYOUT AUTHORITY — it alone produces the stream the 24cd0dd5
+// corpus fingerprint hashes, and it stays hand-written. What follows is a
+// validated METADATA MIRROR of that walk: the same fields, in the same order,
+// at the same offsets, annotated with the classification a future parametric
+// mutation operator needs. tests/genotype-schema.test.js proves the two agree
+// exactly (a copy-declared literal walk, byte-offset exclusivity under
+// single-leaf perturbation, and the tiling identity), so the mirror cannot
+// drift silently. Refactoring serialization ONTO this walk is a deliberate
+// later PR, never an accident of this one.
+//
+// SERIALIZATION ORDER ONLY. This walk describes the byte layout. It is NOT the
+// draw order of any sampler: randomGenotype happens to draw in serialization
+// order (a convenience for auditable re-locks) and the live initializer's draw
+// table (population-initializer.js) deliberately does NOT — it is its own
+// versioned contract with extra interleaved draws.
+//
+// CLASSIFICATION (`kind`):
+//   'version'    — the u16 schema version.
+//   'structural' — an array LENGTH written on the wire (segment count, axle
+//                  count). Not a [0,1] gene; a mutation operator changes these
+//                  only through a structural operator, never by jitter.
+//   'discrete'   — a gene whose DECODE crosses a threshold: enum band
+//                  (family, suspType), boolean (symmetric, paired, driven), or
+//                  slot count (nodeCount). Single-sourced from
+//                  DISCRETE_GENE_KEYS; a PARAMETRIC operator must preserve
+//                  these verbatim (see that constant's ruling).
+//   'continuous' — every other gene leaf: a magnitude a parametric operator
+//                  may jitter freely inside [0,1].
+//
+// LATENT GENES (documented in prose, deliberately NOT schema metadata). Some
+// leaves do not reach the compiled phenotype for a given genotype: node slots
+// beyond the active `nodeCount` prefix, `nodes[0].gap` (cumulative spacing
+// starts at 0), the two inactive `fam` blocks, and the `asym` block under
+// symmetry gating. Every one of them is ALWAYS serialized and repair never
+// erases them, so they are ordinary continuous genes for both the codec and
+// for mutation — latent drift is heritable neutral variation, and the schema
+// stays a pure function of axle count. Whether a leaf is EXPRESSED is a
+// compile-time question about buildIR, not a property of the byte layout; if a
+// consumer ever needs it, it belongs in its own derived helper.
+
+const GENOTYPE_BASE_BYTES = 268; // the fixed prefix: version .. axleCount
+const GENOTYPE_AXLE_STRIDE = 128; // 16 f64 per axle (AXLE_GENES + ASYM_GENES)
+
+// The WIRE domain for an axle count: the u8 the canonical stream writes.
+// Deliberately narrower than validateGenotype's, which stays uncapped for
+// in-memory genotypes (maxAxles is repair POLICY, not a schema bound).
+function assertWireAxleCount(axleCount) {
+  if (!Number.isInteger(axleCount) || axleCount < 0 || axleCount > 0xff) {
+    fail('axleCount', axleCount);
+  }
+}
+
+/** Exact byte length of the canonical stream for `axleCount` axles. */
+export function genotypeByteLength(axleCount) {
+  assertWireAxleCount(axleCount);
+  return GENOTYPE_BASE_BYTES + GENOTYPE_AXLE_STRIDE * axleCount;
+}
+
+// The one walk builder. Statement-for-statement the serializer's order; the
+// only data-driven loops are over the declared field lists the serializer
+// itself walks (NODE_GENES / AXLE_GENES / ASYM_GENES) — never object key order.
+// `g === null` yields the static layout (no `value` fields).
+function genotypeEntries(g, axleCount) {
+  const entries = [];
+  let o = 0;
+  const push = (path, key, type, kind, value) => {
+    const byteLength = type === 'u16' ? 2 : (type === 'u8' ? 1 : 8);
+    const entry = { path, key, type, kind, byteOffset: o, byteLength };
+    if (g !== null) entry.value = value;
+    entries.push(Object.freeze(entry));
+    o += byteLength;
+  };
+  const gene = (path, key, value) => {
+    push(path, key, 'f64', DISCRETE_GENE_KEYS.includes(key) ? 'discrete' : 'continuous', value);
+  };
+  const seg = g === null ? null : g.frame.segments[0];
+
+  push('version', 'version', 'u16', 'version', g === null ? undefined : g.version);
+  gene('hue', 'hue', g === null ? undefined : g.hue);
+  gene('symmetric', 'symmetric', g === null ? undefined : g.symmetric);
+  gene('power', 'power', g === null ? undefined : g.power);
+  gene('frameDensity', 'frameDensity', g === null ? undefined : g.frameDensity);
+  gene('frame.family', 'family', g === null ? undefined : g.frame.family);
+  push('frame.segments.length', 'segmentCount', 'u8', 'structural',
+    g === null ? undefined : g.frame.segments.length);
+  gene('frame.segments[0].nodeCount', 'nodeCount', seg === null ? undefined : seg.nodeCount);
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    const node = seg === null ? null : seg.nodes[i];
+    for (const k of NODE_GENES) {
+      gene(`frame.segments[0].nodes[${i}].${k}`, k, node === null ? undefined : node[k]);
+    }
+  }
+  gene('frame.segments[0].fam.spine.beamWidthFrac', 'beamWidthFrac',
+    seg === null ? undefined : seg.fam.spine.beamWidthFrac);
+  gene('frame.segments[0].fam.ladder.crossFrac', 'crossFrac',
+    seg === null ? undefined : seg.fam.ladder.crossFrac);
+  gene('frame.segments[0].fam.hull.bulge', 'bulge',
+    seg === null ? undefined : seg.fam.hull.bulge);
+  push('axles.length', 'axleCount', 'u8', 'structural', g === null ? undefined : g.axles.length);
+  for (let a = 0; a < axleCount; a += 1) {
+    const axle = g === null ? null : g.axles[a];
+    for (const k of AXLE_GENES) {
+      gene(`axles[${a}].${k}`, k, axle === null ? undefined : axle[k]);
+    }
+    for (const k of ASYM_GENES) {
+      gene(`axles[${a}].asym.${k}`, k, axle === null ? undefined : axle.asym[k]);
+    }
+  }
+  return Object.freeze(entries);
+}
+
+/**
+ * The STATIC field walk for a given axle count — ordered metadata with no
+ * genotype instance (documentation, mutation-rate tables, conformance tests).
+ * 36 fixed-prefix entries + 16 per axle; offsets tile [0, genotypeByteLength).
+ */
+export function genotypeFieldWalk(axleCount) {
+  assertWireAxleCount(axleCount);
+  return genotypeEntries(null, axleCount);
+}
+
+/**
+ * Visit every field of `genotype` in canonical serialization order, with its
+ * raw stored value. Validates first, so a visitor always sees in-domain genes.
+ */
+export function forEachGenotypeField(genotype, visit) {
+  // Walk the CAPTURE: a visitor must see the values that were validated, and
+  // the emitted byteOffsets must describe the stream those same values encode
+  // to. Reading the caller again here would hand a mutation operator — the
+  // intended consumer of this walk — unvalidated genes.
+  const g = captureGenotype(genotype);
+  // The walk describes the CANONICAL SERIALIZATION order, so its domain is the
+  // wire's, not validateGenotype's. Without this, this function would happily
+  // emit byteOffsets for a genotype serializeGenotype refuses — metadata
+  // describing a stream that cannot exist.
+  assertWireAxleCount(g.axles.length);
+  if (typeof visit !== 'function') fail('visit', visit);
+  for (const entry of genotypeEntries(g, g.axles.length)) visit(entry);
+}
+
+// --- Canonical flat DECODING -------------------------------------------------
+//
+// The exact inverse of serializeGenotype. Fail-loud, never repairing: a
+// malformed stream is an error, not something to normalize into the nearest
+// legal genotype (that would let a raw or corrupt draw re-enter the population
+// layer wearing a canonical face). Raw [0,1] genes are returned bit-exact,
+// signed zero included.
+//
+// Only streams at the CURRENT version decode. The serializer writes
+// GENOTYPE_VERSION unconditionally, so accepting an older version would
+// either misread bytes or re-encode under a different version and break the
+// serialize(deserialize(bytes)) === bytes identity. Reading historical
+// versions, if ever needed, is separate append-only work.
+//
+// WHY THIS ONE READS ITS OWN DataView while the other four decoders share
+// bytes.js's createByteReader: the genotype is the only FIXED-LAYOUT format
+// here, and its length identity is out of order. The axle count sits at byte
+// 267, and reading it up front is what lets `byteLength === expected` reject
+// truncation AND trailing bytes in a single check before a single gene is
+// read. A sequential cursor would have to consume the preceding 265 bytes to
+// reach it, so the same malformed stream would surface as a truncation from
+// somewhere inside the node block instead. The exemption is recorded in
+// bytes.js's header too, where a reader looking for the shared discipline
+// will hit it first.
+
+function decodeFail(path, value) {
+  throw new Error(`assembly: invalid encoded genotype at ${path} (${String(value)})`);
+}
+
+// Intrinsic TypedArray geometry (the bytes.js idiom, duplicated locally
+// because this module keeps ZERO imports by ruling): `buffer`, `byteOffset`
+// and `byteLength` are inherited accessors, so an own data property on a
+// genuine Uint8Array shadows them and would redirect the DataView to bytes
+// outside the array's real window while every check below still passes. The
+// prototype getters report the runtime's truth regardless.
+const U8_PROTO = Object.getPrototypeOf(Object.getPrototypeOf(new Uint8Array(0)));
+const u8Geom = (name) => Object.getOwnPropertyDescriptor(U8_PROTO, name).get;
+const U8_BUFFER = u8Geom('buffer');
+const U8_BYTE_OFFSET = u8Geom('byteOffset');
+const U8_BYTE_LENGTH = u8Geom('byteLength');
+// Backing-store lifetime getters. DELIBERATE DUPLICATION of bytes.js
+// `requireOrdinaryBytes`, kept inline to preserve assembly.js's zero-import
+// genome-contract ruling (the same call the recorded hexBytes/bytesToHex
+// duplication makes). Canonical bytes must be ordinary: same-realm, fixed-size,
+// non-shared, non-detached (JP's ruling, break-it sweep I7).
+const AB_DETACHED = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached')?.get ?? null;
+const AB_RESIZABLE = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'resizable')?.get ?? null;
+const AB_SHARED = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer : null;
+
+/** Canonical bytes -> genotype. The exact inverse of serializeGenotype. */
+export function deserializeGenotype(bytes) {
+  // Same diagnosis as bytes.js requireOrdinaryBytes: `instanceof` is
+  // same-realm, so this rejects a cross-realm view too — and must SAY that,
+  // not print the caller's value. (A round-14 follow-up: the storage battery's
+  // cross-realm row was tightened to demand the storage diagnosis, and this
+  // seam's generic message was the one that did not say why.)
+  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', 'not an ordinary same-realm Uint8Array');
+  const buffer = U8_BUFFER.call(bytes);
+  if (AB_SHARED !== null && buffer instanceof AB_SHARED) decodeFail('bytes', 'SharedArrayBuffer-backed — pass ordinary bytes');
+  if (AB_RESIZABLE !== null && AB_RESIZABLE.call(buffer) === true) decodeFail('bytes', 'resizable ArrayBuffer — must be fixed-size');
+  if (AB_DETACHED !== null && AB_DETACHED.call(buffer) === true) decodeFail('bytes', 'detached ArrayBuffer');
+  const byteLength = U8_BYTE_LENGTH.call(bytes);
+  if (byteLength < GENOTYPE_BASE_BYTES) decodeFail('byteLength', byteLength);
+  // byteOffset folded in: a subarray of a larger buffer reads its own window.
+  const view = new DataView(U8_BUFFER.call(bytes), U8_BYTE_OFFSET.call(bytes), byteLength);
+  const version = view.getUint16(0, true);
+  if (version !== GENOTYPE_VERSION) decodeFail('version', version);
+  const segmentCount = view.getUint8(42);
+  if (segmentCount !== 1) decodeFail('frame.segments.length', segmentCount);
+  const axleCount = view.getUint8(267);
+  // ONE exact-length identity rejects truncation AND trailing bytes: the
+  // stream is exactly its content, so any other length is malformed.
+  const expected = genotypeByteLength(axleCount);
+  if (byteLength !== expected) {
+    decodeFail('byteLength', `${byteLength} (expected ${expected} for axleCount ${axleCount})`);
+  }
+  let o = 2; // version consumed
+  const f64 = () => { const v = view.getFloat64(o, true); o += 8; return v; };
+  const hue = f64();
+  const symmetric = f64();
+  const power = f64();
+  const frameDensity = f64();
+  const family = f64();
+  o += 1; // segmentCount consumed (read and checked above)
+  const nodeCount = f64();
+  const nodes = [];
+  for (let i = 0; i < NODE_SLOTS; i += 1) {
+    nodes.push({ gap: f64(), height: f64(), halfWidth: f64(), thickness: f64() });
+  }
+  const beamWidthFrac = f64();
+  const crossFrac = f64();
+  const bulge = f64();
+  o += 1; // axleCount consumed (read and checked above)
+  const axles = [];
+  for (let a = 0; a < axleCount; a += 1) {
+    const axle = {};
+    for (const k of AXLE_GENES) axle[k] = f64();
+    const asym = {};
+    for (const k of ASYM_GENES) asym[k] = f64();
+    axle.asym = asym;
+    axles.push(axle);
+  }
+  const genotype = {
+    version,
+    hue,
+    symmetric,
+    power,
+    frameDensity,
+    frame: {
+      family,
+      segments: [{
+        nodeCount,
+        nodes,
+        fam: { spine: { beamWidthFrac }, ladder: { crossFrac }, hull: { bulge } },
+      }],
+    },
+    axles,
+  };
+  // A decoded stream must satisfy the same rules as encoder input (the
+  // decodeTraceRecord precedent): this is where a NaN / out-of-[0,1] f64
+  // patched into the bytes is caught. No repair — validation only.
+  validateGenotype(genotype);
+  return genotype;
 }
 
 // --- Random genotype (test corpus / dev scene) -------------------------------

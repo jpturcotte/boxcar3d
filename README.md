@@ -6,13 +6,16 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1A — the Deterministic Population and Fitness
-Foundation — landed. This is the scientific instrument the genetic
-algorithm will trust: given a population seed and a declared evaluation
-configuration, BoxCar3D now produces a canonical repaired population and an
-exact, reproducible fitness vector whose per-individual results are
-independent of cohort membership and ordering. Selection and mutation are
-deliberately NOT in this stage (that is Phase 1B). A live initializer
+**Status:** GA Phase 1B PR 2 — the Pure Evolution Operators slice — landed on
+the deterministic Phase 1A population and fitness foundation. Given a
+population seed and a declared evaluation configuration, BoxCar3D produces a
+canonical repaired population and an exact, reproducible fitness vector whose
+per-individual results are independent of cohort membership and ordering. It
+now also provides pure selection-pool, tournament, elitism, and continuous-
+mutation operators. PR 3 owns generation/replacement orchestration and child
+IDs, lineage, persisted history/codecs, replay/determinism gates, and the
+evolution probe. PR 4 owns the empirical report and validation or tuning of the
+provisional defaults. A live initializer
 (`src/sim/population-initializer.js`, separate from the locked test-corpus
 generator) turns a seed into 20-odd vehicles via one order-independent
 `Rng.fork(individualId)` stream each, with the GA biases the corpus must
@@ -240,16 +243,19 @@ gate now covers a *derived* classification of every byte-family export
 gated seam battered against all three fancy stores), and the one remaining
 finding — trace evidence staying mutable after its digest is computed — is an
 explicit, documented deferral to the Phase-1B persisted-history format, its
-failure mode stated at both sites, rather than an open hole. No evolutionary behaviour is
-implemented, and every committed lock — terrain, noise, assembly, evaluation
-A–D, and all four population digests — is byte-identical. Full contract in
+failure mode stated at both sites, rather than an open hole. Phase 1B PR 2's
+pure evolutionary operators are implemented, but no generation loop or
+persisted evolution history exists yet. Every committed lock — terrain, noise,
+assembly, evaluation A–D, and all four population digests — is byte-identical.
+Full contract in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md).
-Next: **GA Phase 1B — Mutation-Only Evolution** (selection, elitism,
-deterministic mutation, generational replacement), now unblocked — elitism
-consumes `selectableChampionFromEvaluation`; the multibody binding-extension
-feasibility investigation, zone material response, S2 trailing arms, and worker
-sharding are deferred behind it, each in its own PR. The design docs in `docs/`
-define
+Next: **GA Phase 1B PR 3 — engine, history, codecs, and determinism** over the
+PR 2 operators: generation/replacement, child IDs, lineage, persisted history,
+strong artifact digests, replay gates, and the evolution probe. PR 4 then runs
+the full experiment and publishes the empirical report that validates or tunes
+the provisional mutation defaults. The multibody binding-extension feasibility
+investigation, zone material response, S2 trailing arms, and worker sharding are
+deferred behind it, each in its own PR. The design docs in `docs/` define
 everything that comes after.
 
 ## Quickstart
@@ -258,7 +264,7 @@ everything that comes after.
 npm install
 npm run dev              # corridor terrain scene at http://localhost:5173
 npm test                 # full suite: PRNG/terrain locks + headless Rapier (both flavors)
-npm run test:determinism # the narrow golden-lock + fresh-module determinism gate
+npm run test:determinism # 5-file golden/fresh-module + operator-contract gate
 npm run test:browser     # the Chromium gate (one-time: npx playwright install chromium)
 npm run bench:physics    # the physics cost matrix (instrument; -- --smoke for a quick pass)
 npm run lint             # includes the determinism ban on src/sim
@@ -316,7 +322,8 @@ Elitism attests the population bytes and compares the pool's FNV-1a state as an
 **in-process mismatch sentinel only**; it is not cryptographic identity or
 equality.
 
-Continuous mutation defaults to `{ probability: 0.05, magnitude: 0.05 }`.
+Continuous mutation uses provisional Phase 1B baseline defaults of
+`{ probability: 0.05, magnitude: 0.05 }`.
 It consumes one `nextFloat()` decision per continuous f64 leaf and a second
 draw for every selected leaf. The signed delta is in
 `[-magnitude, +magnitude)`, values clamp to `[0, 1]`, and repair runs once.
@@ -324,7 +331,8 @@ draw for every selected leaf. The signed delta is in
 result. Raw and final schemas remain identical to the parent, and structural,
 discrete, and version bytes remain bit-exact. Frozen accounting separates
 continuous-leaf changes from complete-stream byte deltas and records repair
-introduced, erased, and redirected effects. PR 3 remains responsible for
-generation/replacement orchestration and child ids; PR 4 remains responsible
-for persisted history/replay. Crossover, structural mutation, and discrete
-mutation are explicitly deferred.
+introduced, erased, and redirected effects. PR 3 remains responsible for the
+generation engine, child ids, lineage, persisted history/codecs, replay/
+determinism gates, and the evolution probe. PR 4 owns the empirical report and
+validation or tuning of those defaults. Crossover, structural mutation, and
+discrete mutation are explicitly deferred.

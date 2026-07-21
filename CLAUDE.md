@@ -50,9 +50,9 @@ evidence notes. Reference only; never import from `legacy/`.
 - `npm run dev` — Vite dev server (smoke scene: falling cubes prove the stack)
 - `npm test` / `npm run test:watch` — Vitest (Node env, headless Rapier works;
   excludes `tests/browser/**`)
-- `npm run test:determinism` — the narrow golden-lock + fresh-module gate
-  (the FOUR files CI's 3-OS matrix runs: the two evaluation files plus
-  `cohort-determinism` and `population-determinism`)
+- `npm run test:determinism` — the five-file deterministic-contract gate CI's
+  3-OS matrix runs: the two evaluation golden/fresh-module files plus
+  `cohort-determinism`, `population-determinism`, and the pure operator suite
 - `npm run test:browser` — the Chromium gate (vitest browser mode + pinned
   playwright; one-time local setup: `npx playwright install chromium`)
 - `npm run bench:physics` — the physics cost matrix (an INSTRUMENT, results
@@ -106,9 +106,10 @@ evidence notes. Reference only; never import from `legacy/`.
   symmetry prior, S0/S1 mask, driven-by-construction, + the provenance
   manifest), `population-evaluation.js` (the deterministic per-individual
   evaluator on ISOLATED worlds: fitness policy, spawn placement, evaluation-
-  spec + fitness-vector encodings, champion selection), `population-fixtures.js`
-  + `population-locks.js` (the committed population/fitness contract, literals
-  only), later: GA operators (selection/mutation — Phase 1B).
+  spec + fitness-vector encodings, champion selection, selection-pool capture),
+  `population-fixtures.js` + `population-locks.js` (the committed population/
+  fitness contract, literals only), `evolution-operators.js` (the pure Phase 1B
+  tournament, elitism, and continuous-mutation operators).
   Must run headless in Node (tests and CI depend on it).
 - `scripts/` — Node-only instruments OUTSIDE the sim ESLint ban (wall clock
   allowed): `probe-rapier-timing.js`, `bench-physics.js`,
@@ -163,6 +164,8 @@ evidence notes. Reference only; never import from `legacy/`.
   protocol) + `cohort-determinism.test.js` (its matrix-narrowed cross-OS
   gate — `test:determinism`), `population-determinism.test.js` (the committed
   population/fitness golden gate — `test:determinism`),
+  `evolution-operators.test.js` (the pure selection/elitism/mutation contract —
+  `test:determinism`),
   `population-probe-schema.test.js` (the characterization instrument's only
   CI touchpoint), `bench-schema.test.js` (the bench's only CI touchpoint),
   `explosion-witnesses.test.js` (witness + reproducer identity locks —
@@ -1887,16 +1890,20 @@ defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
   1199 tests, determinism gate 4/23, build clean, pinned Chromium 3 files /
   15 tests (up 1 for the cross-realm iframe smoke).
 
-Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
-deterministic mutation, generational replacement, champion history — a
-generational loop over `evaluatePopulation`, sim-time pure), now UNBLOCKED (the
-integrity gate makes divergence non-selectable, and the mutation-neighborhood
-probe gives its first empirical footing). **Phase 1B consumes the Phase-1A +
-policy-v2 contracts**: `createInitialPopulation`, the snapshot/initialization/
-spec/fitness-vector(v2) encodings, `evaluatePopulation` (isolatedWorlds,
-id-keyed, integrity-gated), **`selectableChampionFromEvaluation`** for elitism
-(handle the explicit null — a generation with no selectable member is a real
-condition), and the max-progress result fields. The integrity disposition is
+**GA Phase 1B PR 2 landed — Pure Evolution Operators:** immutable selectable
+pools, deterministic tournament selection, owned elites, and continuous
+parametric mutation with repair accounting. Next — **PR 3: the deterministic
+engine, history, codecs, and determinism layer** (generation/replacement, child
+IDs, lineage, persisted history with strong digests, replay/determinism gates,
+and the evolution probe, all sim-time pure). PR 4 owns the full experiment,
+empirical report, and validation or tuning of the provisional mutation defaults.
+**PR 3 consumes the Phase-1A + policy-v2 contracts**:
+`createInitialPopulation`, the snapshot/initialization/spec/fitness-vector(v2)
+encodings, `evaluatePopulation` (isolatedWorlds, id-keyed, integrity-gated), and
+PR 2's `selectablePoolFromEvaluation`, `selectTournamentParent`, `selectElites`,
+and `mutateContinuousGenotype` operators. An empty selectable pool is an explicit
+terminal condition, never permission to substitute the diagnostic champion.
+The integrity disposition is
 DECIDED (PR-B): the threshold is a fitness-eligibility bound (integrity failure
 ⇒ non-selectable, fitness 0), run per evaluation — constraining the training
 terrain is not an escape hatch, since mutation moves morphologies across the
@@ -1939,10 +1946,14 @@ Parametric mutation owns a canonical parent through a one-member attestation,
 walks every continuous f64 field in serialization order, and consumes one
 `nextFloat` decision plus a selected-leaf delta draw. Its signed interval is
 `[-magnitude, +magnitude)`, and it repairs exactly once after raw mutation.
+The `{ probability: 0.05, magnitude: 0.05 }` defaults are provisional Phase 1B
+baselines; PR 4 owns their empirical validation or tuning.
 `rawGenotype` is diagnostic-only; neither it nor final `genotype` may alias the
 parent or each other. Both outputs retain the complete parent schema and exact
 version, structural, and discrete bytes. Accounting leaf counts cover
 continuous f64 leaves, while byte counts cover the whole canonical stream.
-PR 3 owns generation/replacement and child IDs; PR 4 owns persisted history
-and replay. Do not smuggle crossover, structural/discrete mutation, codecs, or
-determinism-lock changes into this PR.
+PR 3 owns generation/replacement, child IDs, lineage, persisted history/codecs,
+strong artifact digests, replay/determinism gates, and the evolution probe.
+PR 4 owns the full empirical experiment/report and validation or tuning of the
+provisional defaults. Do not smuggle crossover, structural/discrete mutation,
+codecs, or determinism-lock changes into this PR.

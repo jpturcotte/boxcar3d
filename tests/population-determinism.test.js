@@ -153,6 +153,7 @@ describe('population evaluation gate (deterministic flavor)', () => {
     };
     const a = await run();
     const b = await run();
+    expect(b.fitnessPolicyVersion).toBe(FITNESS_POLICY_VERSION);
     expect(bytesEqual(a.fitnessVector.bytes, b.fitnessVector.bytes)).toBe(true);
     expect(b.fitnessVector.digest).toBe(a.fitnessVector.digest);
     b.individuals.forEach((ind, i) => {

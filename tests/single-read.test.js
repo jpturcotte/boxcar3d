@@ -52,10 +52,12 @@
 
 import { describe, test, expect } from 'vitest';
 import { Rng } from '../src/sim/prng.js';
+import { FNV_OFFSET_BASIS, fnv1aFold } from '../src/sim/fnv1a.js';
 import * as AssemblyNS from '../src/sim/assembly.js';
 import * as PopulationNS from '../src/sim/population.js';
 import * as InitializerNS from '../src/sim/population-initializer.js';
 import * as EvaluationNS from '../src/sim/population-evaluation.js';
+import * as EvolutionNS from '../src/sim/evolution-operators.js';
 import * as IntegrityNS from '../src/sim/integrity.js';
 import * as TraceNS from '../src/sim/trace.js';
 import * as ForensicsNS from '../src/sim/trace-forensics.js';
@@ -73,8 +75,11 @@ import {
   championFromEvaluation, selectableChampionFromEvaluation,
   deserializeFitnessVector, fitnessFromVehicleResult,
   isVehicleResultSelectable, isVehicleResultValid,
-  serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
+  selectablePoolFromEvaluation, serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } from '../src/sim/population-evaluation.js';
+import {
+  mutateContinuousGenotype, selectElites, selectTournamentParent,
+} from '../src/sim/evolution-operators.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import {
   INTEGRITY_POLICY_VERSION, createIntegrityState, foldIntegrity,
@@ -213,6 +218,7 @@ const okVehicleResult = () => ({
 });
 
 const fitnessEvaluation = () => ({
+  fitnessPolicyVersion: 2,
   populationSnapshotDigestState: 12345,
   evaluationSpecDigestState: 67890,
   individuals: [
@@ -353,6 +359,30 @@ const CASES = [
     (e) => championFromEvaluation(e)],
   ['population-evaluation.selectableChampionFromEvaluation', () => [championEvaluation()],
     (e) => selectableChampionFromEvaluation(e)],
+  ['population-evaluation.selectablePoolFromEvaluation', () => [fitnessEvaluation()],
+    (e) => selectablePoolFromEvaluation(e)],
+  ['evolution-operators.selectTournamentParent', () => [{
+    selectionPoolVersion: 1,
+    fitnessPolicyVersion: 2,
+    populationSnapshotDigestState: 1,
+    evaluatedIndividualIds: [0],
+    individuals: [{ individualId: 0, fitness: 1 }],
+  }], (p) => selectTournamentParent(p, { nextUint32: () => 0 })],
+  ['evolution-operators.selectElites', () => {
+    const p = smallPopulation();
+    const ids = p.individuals.map((x) => x.individualId).sort((a, b) => a - b);
+    const bytes = serializePopulationSnapshot(p);
+    const state = fnv1aFold(FNV_OFFSET_BASIS, bytes);
+    return [p, {
+      selectionPoolVersion: 1,
+      fitnessPolicyVersion: 2,
+      populationSnapshotDigestState: state,
+      evaluatedIndividualIds: ids,
+      individuals: ids.map((individualId) => ({ individualId, fitness: 1 })),
+    }];
+  }, (p, q) => selectElites(p, q)],
+  ['evolution-operators.mutateContinuousGenotype', () => [genotype(), { probability: 0, magnitude: 0 }],
+    (g, o) => mutateContinuousGenotype(g, { nextFloat: () => 0 }, o)],
   ['trace.encodeTraceRecord', () => [chassisRecord()], (r) => encodeTraceRecord(r)],
   ['trace.TraceWriter.record', () => [chassisRecord()], (r) => {
     const w = new TraceWriter({ mode: 'digest', checkpointInterval: 1 });
@@ -417,7 +447,7 @@ describe('single-read invariant over the public surface', () => {
 // reason. A new export fails here until classified — closing the "21 exports
 // unrowed" gap the break-it sweep named.
 const NS = { assembly: AssemblyNS, population: PopulationNS, initializer: InitializerNS,
-  evaluation: EvaluationNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS };
+  evaluation: EvaluationNS, evolution: EvolutionNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS };
 
 // Function exports that consume caller DATA but are covered outside the CASES
 // table (a dedicated describe block above) or need no single-read coverage.

@@ -304,3 +304,27 @@ All simulation randomness flows from one integer seed through
 and library trig are lint-banned in simulation code; every sim clock counts
 fixed physics steps. Replay/seed mode runs on Rapier's deterministic build.
 The why behind each rule lives in `docs/boxcar3d-red-team-2026-07.md`.
+
+## Phase 1B PR 2 operators
+
+`selectablePoolFromEvaluation` creates an immutable v1 in-memory selection
+pool from a v2 fitness evaluation: it retains every evaluated id in ascending
+order, and only `valid && integrityStatus === 'ok'` members can compete.
+`evolution-operators.js` applies a three-draw tournament with replacement
+(higher fitness, then lower id) and returns up to two canonical, owned elites.
+Elitism attests the population bytes and compares the pool's FNV-1a state as an
+**in-process mismatch sentinel only**; it is not cryptographic identity or
+equality.
+
+Continuous mutation defaults to `{ probability: 0.05, magnitude: 0.05 }`.
+It consumes one `nextFloat()` decision per continuous f64 leaf and a second
+draw for every selected leaf. The signed delta is in
+`[-magnitude, +magnitude)`, values clamp to `[0, 1]`, and repair runs once.
+`rawGenotype` is diagnostic-only; `genotype` is the owned repaired hereditary
+result. Raw and final schemas remain identical to the parent, and structural,
+discrete, and version bytes remain bit-exact. Frozen accounting separates
+continuous-leaf changes from complete-stream byte deltas and records repair
+introduced, erased, and redirected effects. PR 3 remains responsible for
+generation/replacement orchestration and child ids; PR 4 remains responsible
+for persisted history/replay. Crossover, structural mutation, and discrete
+mutation are explicitly deferred.

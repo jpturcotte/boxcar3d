@@ -1922,3 +1922,27 @@ residual-overlap rulings. Open ruling question carried from PR #10 review:
 are visually-overlapping wheels acceptable for evolution? Physics ignores
 them (collision-inert, stable, no detach), but they read as one thick wheel
 on screen.
+
+### Phase 1B PR 2 operator boundary
+
+`SELECTION_POOL_VERSION = 1` is an immutable, non-wire selection view over
+fitness-policy v2 evaluation rows. Capture the declared snapshot state before
+any row accessor, retain all evaluated ids ascending, and retain selectable
+rows only (`valid && integrityStatus === 'ok'`). Tournament selection uses
+exactly three `nextUint32` calls whenever the pool is nonempty (including a
+one-member pool), with replacement; an empty selectable set returns `null`
+without reading RNG. Elitism attests population bytes and compares FNV state
+only as an in-process mismatch sentinel—never claim that FNV establishes
+cryptographic identity or equality.
+
+Parametric mutation owns a canonical parent through a one-member attestation,
+walks every continuous f64 field in serialization order, and consumes one
+`nextFloat` decision plus a selected-leaf delta draw. Its signed interval is
+`[-magnitude, +magnitude)`, and it repairs exactly once after raw mutation.
+`rawGenotype` is diagnostic-only; neither it nor final `genotype` may alias the
+parent or each other. Both outputs retain the complete parent schema and exact
+version, structural, and discrete bytes. Accounting leaf counts cover
+continuous f64 leaves, while byte counts cover the whole canonical stream.
+PR 3 owns generation/replacement and child IDs; PR 4 owns persisted history
+and replay. Do not smuggle crossover, structural/discrete mutation, codecs, or
+determinism-lock changes into this PR.

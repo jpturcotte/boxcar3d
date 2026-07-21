@@ -284,6 +284,33 @@ describe('runRealizedEvaluationLoop — caller-collection ownership (round 14, e
     }
   });
 
+  test('the TOP-LEVEL collection is shape-checked: an array-LIKE is not an array', async () => {
+    // Round-14 follow-up. The indexed rewrite read `realized.length` off an
+    // unvalidated argument, so any array-LIKE walked: `{ length: 0 }` produced
+    // a clean `vehicles: []` result while the world stepped maxSteps, and
+    // `null` leaked a foreign "Cannot read properties of null" TypeError
+    // instead of this module's dialect. Fixing the ELEMENT walk without
+    // checking the COLLECTION left the outermost input the only unguarded one.
+    const { RAPIER, world } = await createPhysics({ deterministic: true });
+    try {
+      const terrain = generateCorridorTerrain({ ...WITNESS_TERRAIN });
+      addCorridorWithFeatures(RAPIER, world, terrain);
+      const staticColliders = world.colliders.len();
+      const opts = { requestedDt: FIXED_DT, maxSteps: 3, staticColliders, traceMode: 'none' };
+      for (const bad of [{ length: 0 }, { length: 2 }, null, undefined, 'nope', 42]) {
+        expect(() => runRealizedEvaluationLoop(world, bad, opts), String(bad))
+          .toThrow(/runRealizedEvaluationLoop\.realized/);
+      }
+      // A genuine EMPTY array stays legal — a zero-vehicle run is a real case
+      // (the explosion probe's static-only arms use it), so the guard must
+      // reject the array-like without rejecting the empty array.
+      const r = runRealizedEvaluationLoop(world, [], opts);
+      expect(r.vehicles).toEqual([]);
+    } finally {
+      world.free();
+    }
+  });
+
   test('malformed shapes fail loud in the runner dialect (not a silent zero)', async () => {
     const { RAPIER, world } = await createPhysics({ deterministic: true });
     try {

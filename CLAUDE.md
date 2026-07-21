@@ -1838,13 +1838,41 @@ defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
   call sites and the two candidate atomic architectural fixes recorded for
   Phase-1B persisted history: (A) accept only pre-encoded Uint8Array
   records (hard API boundary), or (B) total deep pre-scan of nested
-  descriptors. Deferral is sound because this surface is DIAGNOSTIC-only —
-  no lock, no fitness, no selection path consumes `compareTraces` /
-  `compareCheckpoints` return values, so a silent false-identical deceives
-  only its own caller. Same reasoning as the round-13 mutable-trace-evidence
-  deferral, in the same milestone. Test tooling that must trust a
-  comparison is expected to encode both sides via `encodeTraceRecord()`
-  before calling, which mechanically closes the class for that caller.
+  descriptors. Test tooling that must trust a comparison is expected to
+  encode both sides via `encodeTraceRecord()` before calling, which
+  mechanically closes the class for that caller.
+- **THE DEFERRAL RATIONALE WAS WRONG, AND THE CORRECTION IS THE LESSON.**
+  The first version said the surface is "DIAGNOSTIC-only — no lock, no
+  fitness, no selection path consumes the return values". True of
+  `compareTraces`; **FALSE of `compareCheckpoints`**, which all three
+  `test:determinism` files (evaluation-determinism, evaluation-golden,
+  population-determinism) and both Chromium gates call. Published across
+  five files without grepping the call sites — the project's signature
+  failure (unenforced prose read as an audited guarantee), committed inside
+  a deferral rationale, where the prose IS the justification. The honest
+  reason is narrower and stronger and does not depend on which gate calls
+  what: **BoxCar3D has no untrusted input.** Every argument reaching these
+  comparators is module-owned (TraceWriter output, committed lock literals,
+  codec-decoded structures, structured-clone worker payloads), so
+  exploiting the class means writing an accessor into this repo's own
+  source to deceive this repo's own gates. Real bug, nil exposure, and a
+  32-call-site migration to close it. **Explicit expiry: Phase 1B persists
+  evolution history and reloads it — the first moment a trace crosses a
+  trust boundary. Revisit there, not before.**
+- **Three follow-up fixes, all cheap, all mutation-verified:**
+  `runRealizedEvaluationLoop` checks `Array.isArray(realized)` before
+  reading `.length` (measured: `{length: 0}` returned a clean `vehicles: []`
+  while the world stepped `maxSteps`; `null` leaked a foreign TypeError —
+  fixing the ELEMENT walk had left the COLLECTION the only unguarded input;
+  a genuine empty array stays legal); `compareTraces` does a realm-neutral
+  `ArrayBuffer.isView` check before the plain-record path; and the
+  cross-realm storage-battery row, whose regex accepted `invalid`/`unknown
+  key` and was therefore **vacuous for `compareTraces`** (the foreign view
+  missed the byte branch, fell to the record path, died on "unknown key" —
+  a wrong-reason rejection scored as a storage-gate pass), now demands the
+  storage diagnosis. Tightening it immediately exposed a second site
+  (`deserializeGenotype`'s generic message), now aligned. *A test that
+  passes for the wrong reason is worse than no test.*
 - **The generalization.** Round 11 said "enforcement scoped to a round's
   MECHANISM is still enforcement written to the fix." Round 12 said it
   again about round-11 claims. Round 13 said it about round-12's storage

@@ -475,11 +475,15 @@ export class TraceWriter {
     // the writer's LIVE private arrays, and nothing downstream re-verifies
     // caller-held records against the digest/counts/checkpoints — a caller
     // can mutate evidence AFTER attestation and offline forensics will
-    // describe bytes the digest never attested. Deliberate: this surface is
-    // diagnostic-only (no lock, fitness, or selection path consumes it), and
-    // the fix (value model vs verified-evidence model) belongs to Phase 1B's
-    // persisted-history format. Freezing the outer arrays would NOT close
-    // it — Uint8Array contents stay mutable.
+    // describe bytes the digest never attested. Deliberate, and the rationale
+    // is the corrected one (see compareTraces below): not "diagnostic-only"
+    // — `analyzeTrace` is diagnostic but `compareCheckpoints` is on the
+    // determinism gates — but that BoxCar3D has no untrusted input, so every
+    // trace here is module-owned from writer to comparison. The fix (value
+    // model vs verified-evidence model) belongs to Phase 1B's
+    // persisted-history format, the first point at which a trace crosses a
+    // trust boundary. Freezing the outer arrays would NOT close it —
+    // Uint8Array contents stay mutable.
     return {
       version: EVALUATION_TRACE_VERSION,
       mode: this.#mode,
@@ -587,12 +591,28 @@ function normalizeRecords(side, label) {
  * total deep pre-scan refusing accessor descriptors on every nested key of
  * both sides before comparison. Both belong to the Phase-1B persisted-
  * history milestone alongside the round-13 mutable-trace-evidence and
- * strong-digest deferrals: this surface is DIAGNOSTIC-only (no lock,
- * fitness, or selection path consumes the return value; a false-identical
- * deceives only its caller — the same reasoning that made round 13's
- * deferral sound). Test tooling that must trust a comparison is expected
- * to encode both sides via `encodeTraceRecord()` before calling this, which
- * mechanically closes the class for that caller.
+ * strong-digest deferrals.
+ *
+ * WHY DEFERRAL IS SOUND — corrected (round 14 follow-up). The first version
+ * of this note said "no lock, fitness, or selection path consumes the return
+ * value". That is TRUE of compareTraces and FALSE of compareCheckpoints,
+ * which all three `test:determinism` files and both Chromium gates call — the
+ * claim was published without grepping the call sites, and a reviewer was
+ * right to reject it. The honest rationale is narrower and stronger:
+ * BOXCAR3D HAS NO UNTRUSTED INPUT. Every argument these comparators receive
+ * is module-owned — traces from TraceWriter, checkpoint states from committed
+ * lock literals, decoded artifacts from the byte codecs (which emit
+ * module-owned structures), worker payloads through structured clone (which
+ * drops accessors). Exploiting this class means writing an accessor into this
+ * repo's own code to deceive this repo's own gates. The bug is real and the
+ * exposure is nil, and that — not "diagnostic-only" — is why it waits.
+ * The expiry condition is explicit: Phase 1B persists evolution history to
+ * disk and reloads it, which is the first moment a trace crosses a trust
+ * boundary. Revisit there, not before.
+ *
+ * Test tooling that wants the guarantee today can encode both sides via
+ * `encodeTraceRecord()` before calling, which mechanically closes the class
+ * for that caller (option A applied per-caller).
  */
 export function compareTraces(expected, actual) {
   const exp = normalizeRecords(expected, 'expected');
@@ -611,6 +631,16 @@ export function compareTraces(expected, actual) {
     };
   }
   const toBytes = (entry, index, label) => {
+    // Realm-neutral byte-container check FIRST (round 14 follow-up).
+    // `instanceof` is same-realm, so a cross-realm Uint8Array missed the byte
+    // branch entirely and fell through to the plain-record path, where its 128
+    // indexed properties failed as "unknown key" — a rejection for the WRONG
+    // reason, which a storage-battery regex then counted as a storage-gate
+    // pass. `ArrayBuffer.isView` sees any typed-array/DataView regardless of
+    // realm, so a foreign byte container is now diagnosed as what it is.
+    if (ArrayBuffer.isView(entry) && !(entry instanceof Uint8Array)) {
+      fail(`${label} record ${index} bytes`, 'not an ordinary same-realm Uint8Array');
+    }
     if (entry instanceof Uint8Array) {
       // Ordinary storage only (round 13): fancy backing is invalid INPUT, not
       // a trace divergence, so it THROWS rather than reporting. Ungated, a

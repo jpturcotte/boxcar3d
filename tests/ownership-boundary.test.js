@@ -783,14 +783,19 @@ describe('(0b) the byte-storage intake surface is derived and closed', () => {
   // axes stayed green. Node `vm` produces a genuinely cross-realm Uint8Array
   // (its constructor is a different function from this realm's). The
   // pattern targets the same-realm brand message the current gates fail on.
-  // Cross-realm rejection is implicit at most gates (a cross-realm Uint8Array
-  // is not `instanceof Uint8Array` in this realm, so `instanceof` fails), but
-  // each seam uses its own dialect. Accept any of them: the point of the
-  // battery is that no gated seam SILENTLY absorbs cross-realm bytes. A drift
-  // from `instanceof` to a broader brand check would then need to swap to
-  // active cross-realm rejection to keep this green.
+  // Cross-realm. The FIRST version of this row accepted a regex broad enough
+  // to include `invalid` and `unknown key`, and that made it VACUOUS for
+  // compareTraces: a cross-realm view is not `instanceof Uint8Array`, so it
+  // missed the byte branch entirely, fell through to the plain-record path,
+  // and died on its 128 indexed properties as "unknown key" — a rejection for
+  // the WRONG reason that the broad regex scored as a storage-gate pass. That
+  // is the "test written to the fix, not the rule" failure, committed inside a
+  // battery whose whole point is to prove the rule. `compareTraces` now does a
+  // realm-neutral `ArrayBuffer.isView` check before selecting the record path,
+  // and this row demands the STORAGE diagnosis — the seam must reject it AS
+  // foreign bytes, not merely fail somehow.
   const CROSS_REALM_STORE = ['cross-realm', () => vmRunInNewContext('new Uint8Array(128)'),
-    /not an ordinary same-realm Uint8Array|Uint8Array required|invalid|unknown key|not a Uint8Array|not an Uint8Array/i];
+    /not an ordinary same-realm Uint8Array|Uint8Array required/];
 
   const FANCY_STORES = [
     ['detached', () => { const u = new Uint8Array(RECORD_BYTES); u.buffer.transfer(); return u; }, /detached/],
@@ -832,11 +837,26 @@ describe('(0b) the byte-storage intake surface is derived and closed', () => {
 // keys the pre-scan does not cover.
 //
 // JP's ruling (see the codec doc §Round 14): DEFER, with the failure shape
-// stated at both call sites. This surface is diagnostic-only — no lock,
-// no fitness, no selection path consumes `compareTraces` / `compareCheckpoints`
-// return values, so a silent false-identical deceives only its own caller
-// (the same reasoning that made round 13's mutable-trace-evidence deferral
-// sound). Two candidate atomic architectural fixes are recorded for Phase 1B's
+// stated at both call sites.
+//
+// THE RATIONALE, CORRECTED (round-14 follow-up). This block first said the
+// surface is "diagnostic-only — no lock, no fitness, no selection path
+// consumes the return values". That is true of `compareTraces` and FALSE of
+// `compareCheckpoints`: all three `test:determinism` files
+// (evaluation-determinism, evaluation-golden, population-determinism) and both
+// Chromium gates call it, and a lock gate is exactly a caller whose deception
+// would matter. The claim was written without grepping the call sites — the
+// same unverified-prose failure this suite exists to prevent, committed while
+// documenting a deferral. The honest rationale is narrower and stronger:
+// BOXCAR3D HAS NO UNTRUSTED INPUT. Every argument reaching these comparators
+// is module-owned (TraceWriter output, committed lock literals, codec-decoded
+// structures, structured-clone worker payloads), so exploiting the class means
+// writing an accessor into this repo's own code to deceive this repo's own
+// gates. Real bug, nil exposure. The expiry condition is explicit: Phase 1B
+// persists evolution history and reloads it, the first moment a trace crosses
+// a trust boundary.
+//
+// Two candidate atomic architectural fixes are recorded for Phase 1B's
 // persisted-history milestone:
 //   (A) hard API boundary — accept only pre-encoded Uint8Array records so no
 //       caller code runs while both sides are live;

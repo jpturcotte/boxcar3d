@@ -431,10 +431,20 @@ export function runRealizedEvaluationLoop(world, realized, {
   // outer arrays via the probe/test contract, so the outer walk defends
   // itself while trusting the inner Rapier body/joint handles as
   // realizeVehicle-shaped.
+  //
+  // The top-level shape is checked FIRST (round 14 follow-up): reading
+  // `.length` off an unvalidated argument accepted any array-LIKE — measured,
+  // `{ length: 0 }` produced a clean `vehicles: []` result while the world
+  // stepped `maxSteps`, and `null` leaked a foreign
+  // "Cannot read properties of null" TypeError instead of this module's
+  // dialect. An empty genuine array stays LEGAL (a zero-vehicle run is a
+  // real case: the probe's static-only arms use it).
+  if (!Array.isArray(realized)) fail('runRealizedEvaluationLoop.realized', realized);
+  // Captured once. No integer/range guard follows: `Array.isArray` above makes
+  // `length` a non-negative integer by the language, so such a check would be
+  // dead code defending an unconstructable shape (the standing ruling that
+  // rejected the u32 fitness-vector member count and the u8 category count).
   const realizedCount = realized.length;
-  if (!Number.isInteger(realizedCount) || realizedCount < 0) {
-    fail('runRealizedEvaluationLoop.realized.length', realizedCount);
-  }
   const tracked = [];
   for (let vi = 0; vi < realizedCount; vi += 1) {
     const rec = realized[vi];

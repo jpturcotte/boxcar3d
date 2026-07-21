@@ -1136,7 +1136,12 @@ const AB_SHARED = typeof SharedArrayBuffer !== 'undefined' ? SharedArrayBuffer :
 
 /** Canonical bytes -> genotype. The exact inverse of serializeGenotype. */
 export function deserializeGenotype(bytes) {
-  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', bytes);
+  // Same diagnosis as bytes.js requireOrdinaryBytes: `instanceof` is
+  // same-realm, so this rejects a cross-realm view too — and must SAY that,
+  // not print the caller's value. (A round-14 follow-up: the storage battery's
+  // cross-realm row was tightened to demand the storage diagnosis, and this
+  // seam's generic message was the one that did not say why.)
+  if (!(bytes instanceof Uint8Array)) decodeFail('bytes', 'not an ordinary same-realm Uint8Array');
   const buffer = U8_BUFFER.call(bytes);
   if (AB_SHARED !== null && buffer instanceof AB_SHARED) decodeFail('bytes', 'SharedArrayBuffer-backed — pass ordinary bytes');
   if (AB_RESIZABLE !== null && AB_RESIZABLE.call(buffer) === true) decodeFail('bytes', 'resizable ArrayBuffer — must be fixed-size');

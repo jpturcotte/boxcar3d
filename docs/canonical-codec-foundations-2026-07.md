@@ -893,17 +893,59 @@ without ever having to enumerate specific descriptor locations:
   enumerating "what counts as caller-reachable" (Symbol properties,
   prototype-chain edge cases).
 
-**Why deferral is sound.** This surface is DIAGNOSTIC-only. No lock, no
-fitness path, and no selection path consumes `compareTraces` /
-`compareCheckpoints` return values; production traces are produced and
-compared inside one process's test tooling. A silent false-identical
-deceives only its own caller. Same reasoning as the round-13
-mutable-trace-evidence deferral, and the fix belongs to the same Phase-1B
-persisted-history milestone. The failure shape is now stated at both call
-sites so the deferral cannot silently rot into forgotten prose. Test
-tooling that must trust a comparison is expected to encode both sides via
-`encodeTraceRecord()` before calling, which mechanically closes the class
-for that caller (option A applied per-caller).
+**Why deferral is sound — and the first rationale was wrong.** This section
+originally read: *"This surface is DIAGNOSTIC-only. No lock, no fitness path,
+and no selection path consumes `compareTraces` / `compareCheckpoints` return
+values."* The first sentence is true of `compareTraces`. **The second is false
+of `compareCheckpoints`**, which is called by all three `test:determinism`
+files (`evaluation-determinism`, `evaluation-golden`,
+`population-determinism`) and by both Chromium gates. A reviewer caught it,
+and the correction matters more than the finding: the claim was published
+across five files without grepping the call sites, which is the project's own
+signature failure — unenforced prose reading as an audited guarantee — and it
+happened *inside a deferral rationale*, where the prose is the entire
+justification. A deferral is only as good as the reason attached to it.
+
+The honest rationale is narrower and stronger, and it does not depend on which
+gates call what: **BoxCar3D has no untrusted input.** Every argument these
+comparators receive is module-owned — traces from `TraceWriter`, checkpoint
+states from committed lock literals, decoded artifacts from the byte codecs
+(which emit module-owned structures), worker payloads through structured clone
+(which drops accessors entirely). To exploit this class, someone must write an
+accessor into this repo's own source in order to deceive this repo's own test
+gates. That is not an attack; it is self-sabotage. The bug is real, the
+exposure is nil, and the cost of the atomic fix is a 32-call-site API
+migration across six files.
+
+The deferral therefore carries an **explicit expiry condition** rather than an
+open end: Phase 1B persists evolution history to disk and reloads it, which is
+the first moment a trace crosses a trust boundary — the same milestone the
+strong-digest and mutable-trace-evidence deferrals already point at. Revisit
+there, not before. The failure shape is stated at both call sites so the
+deferral cannot rot into forgotten prose, and test tooling that wants the
+guarantee today can encode both sides via `encodeTraceRecord()` first, which
+mechanically closes the class for that caller (option A applied per-caller).
+
+**Three follow-up fixes landed with this correction**, all cheap and all
+mutation-verified:
+
+- `runRealizedEvaluationLoop` now checks `Array.isArray(realized)` before
+  reading `.length`. Measured before the fix: `{ length: 0 }` — an ordinary
+  array-*like* — produced a clean `vehicles: []` result while the world stepped
+  `maxSteps`, and `null` leaked a foreign `TypeError` instead of the module's
+  dialect. Fixing the element walk without checking the collection had left the
+  outermost input the only unguarded one. A genuine empty array stays legal.
+- `compareTraces` does a realm-neutral `ArrayBuffer.isView` check before
+  selecting the plain-record path, so a cross-realm byte container is diagnosed
+  as foreign bytes instead of dying later as an "unknown key" record.
+- The cross-realm storage-battery row demanded far too little. Its regex
+  accepted `invalid` and `unknown key`, which made it **vacuous for
+  `compareTraces`**: the foreign view missed the byte branch, fell through to
+  the record path, and failed on its 128 indexed properties — a rejection for
+  the wrong reason, scored as a storage-gate pass. The row now demands the
+  storage diagnosis, and tightening it immediately exposed a second site
+  (`deserializeGenotype` rejected cross-realm with a generic message), now
+  aligned. A test that passes for the wrong reason is worse than no test.
 
 **The generalization the round produced.** Round 11 said "enforcement
 scoped to a round's MECHANISM is still enforcement written to the fix."

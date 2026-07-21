@@ -1800,6 +1800,65 @@ defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
   recreation, spawn-capture propagation) matched the independent churn audit;
   its "should not be reopened" list is adopted as stable.
 
+**Round 14 — two real fixes and one honest deferral (avoiding the whack-a-mole trap).** A second external review after the round-13 push reported three findings; verified two blockers by direct execution at HEAD, then asked "are we sure we're not playing whack-a-mole?" — a fair question, so I attacked the first candidate fix and it fell over one level down. That fix was reverted and replaced with an explicit deferral. Net result: one commit, zero lock movement; 51 files, 1199 tests.**
+- **runRealizedEvaluationLoop caller-collection ownership — FIXED (real,
+  structural).** The seam consumed `realized.map` / `.flatMap` / for-of, and
+  its ownership classification declared `callerCollections: []` on the
+  reasoning "usually called with module output" — which effectively exempted
+  it from every hostile-collection battery. Executed at HEAD: a genuine
+  Array with an own no-op `.map` returned `vehicles.length === 0` while the
+  world stepped maxSteps and `counts.staticColliders` matched — silent
+  contradiction of every documented ownership rule. Fixed by
+  captured-length integer walks over BOTH `realized` and each `rec.wheels`
+  (the codebase-wide rule from round 8+); classification updated honestly
+  to `callerCollections: ['realized', 'realized[].wheels']`. Two
+  regressions in `tests/evaluation-core.test.js` mutation-verified against
+  the pre-fix walks (outer `.map` and inner `.flatMap` shadows both bite).
+  Not whack-a-mole: replacing method calls with indexed loops closes the
+  class structurally at that seam.
+- **Cross-realm coverage (P2 finding) — FIXED.** Round 13's storage battery
+  ran detached / SAB / resizable but not cross-realm — the fourth named
+  policy axis. A Node `vm.runInNewContext('new Uint8Array(128)')` view now
+  runs through the (0b) FANCY_STORES matrix against all 12 gated seams, and
+  a same-origin iframe view runs through the pinned Chromium codec smoke.
+  A drift from `instanceof Uint8Array` to a broader brand check would need
+  active cross-realm rejection to keep both green.
+- **THE COMPARE-CLASS DEFERRAL (JP's ruling) — the meta-point of the round.**
+  compareTraces silently returned `null` for streams that genuinely differed
+  when an ordinary accessor descriptor on `records[i]` — no Proxy, no
+  exotic storage — mutated the opposing side to match. Same shape reproduced
+  in `compareCheckpoints` via field accessors. A first fix installed accessor-
+  descriptor pre-scans on both sides; JP asked "are we sure this isn't
+  whack-a-mole?" and I attacked my own fix — an accessor one level down
+  (getter on `records[i].translation.x`, or on `envelope.version`, or on
+  `envelope.records`) still ran during capture and reproduced the silent
+  false-identical. Refusing accessors at each discovered location is by
+  definition site-by-site, not class closure. The candidate fix was
+  REVERTED and the class DEFERRED, with the failure shape stated at both
+  call sites and the two candidate atomic architectural fixes recorded for
+  Phase-1B persisted history: (A) accept only pre-encoded Uint8Array
+  records (hard API boundary), or (B) total deep pre-scan of nested
+  descriptors. Deferral is sound because this surface is DIAGNOSTIC-only —
+  no lock, no fitness, no selection path consumes `compareTraces` /
+  `compareCheckpoints` return values, so a silent false-identical deceives
+  only its own caller. Same reasoning as the round-13 mutable-trace-evidence
+  deferral, in the same milestone. Test tooling that must trust a
+  comparison is expected to encode both sides via `encodeTraceRecord()`
+  before calling, which mechanically closes the class for that caller.
+- **The generalization.** Round 11 said "enforcement scoped to a round's
+  MECHANISM is still enforcement written to the fix." Round 12 said it
+  again about round-11 claims. Round 13 said it about round-12's storage
+  claim. Round 14 caught round-14's own compareTraces fix falsifying it —
+  the pattern the review was warning about, reproduced live inside the fix
+  meant to close it. The escape from the ladder is not "one more clever
+  check"; it is to recognize when a class needs a real architectural
+  boundary (defer to when it can be made) versus a site-level guarantee
+  (fix now). This round did both.
+- **No format or lock movement.** Every version constant unchanged; every
+  committed fingerprint byte-identical. Lint clean, full suite 51 files /
+  1199 tests, determinism gate 4/23, build clean, pinned Chromium 3 files /
+  15 tests (up 1 for the cross-realm iframe smoke).
+
 Next — **GA Phase 1B: Mutation-Only Evolution** (selection, elitism,
 deterministic mutation, generational replacement, champion history — a
 generational loop over `evaluatePopulation`, sim-time pure), now UNBLOCKED (the

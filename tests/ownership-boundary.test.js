@@ -59,6 +59,7 @@ import {
 } from '../src/sim/trace-forensics.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import { Rng } from '../src/sim/prng.js';
+import { runInNewContext as vmRunInNewContext } from 'node:vm';
 
 const {
   bytesToHex, createByteReader, requireOrdinaryBytes, typedArrayByteLength,
@@ -548,7 +549,14 @@ const EXPORT_ROLES = Object.freeze({
     },
     // Takes ALREADY-REALIZED bodies and a module-owned option object from
     // runEvaluation; the investigation seam passes its own literals.
-    { name: 'runRealizedEvaluationLoop', kind: 'orchestrator', callerCollections: [], callerNumbers: ['requestedDt', 'maxSteps'] },
+    // ROUND 14 — the classification WAS the defect. Documenting the seam as
+    // taking no caller collections effectively exempted it from the
+    // hostile-collection battery, and `realized.map`/`.flatMap`/for-of let a
+    // hostile own `.map` produce vehicles.length === 0 while the world still
+    // stepped `maxSteps` — silent contradiction. The seam is now walked by
+    // captured integer index over BOTH `realized` and each `realized[].wheels`;
+    // classify honestly so the battery actually exercises it.
+    { name: 'runRealizedEvaluationLoop', kind: 'orchestrator', callerCollections: ['realized', 'realized[].wheels'], callerNumbers: ['requestedDt', 'maxSteps'] },
   ]),
   'fnv1a.js': Object.freeze([
     { name: 'FNV_OFFSET_BASIS', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -769,13 +777,29 @@ describe('(0b) the byte-storage intake surface is derived and closed', () => {
     }
   });
 
+  // Cross-realm was named in the ruling but never in the battery — an
+  // implementation drift from `instanceof Uint8Array` to a broader brand
+  // check would silently reopen cross-realm acceptance while the other three
+  // axes stayed green. Node `vm` produces a genuinely cross-realm Uint8Array
+  // (its constructor is a different function from this realm's). The
+  // pattern targets the same-realm brand message the current gates fail on.
+  // Cross-realm rejection is implicit at most gates (a cross-realm Uint8Array
+  // is not `instanceof Uint8Array` in this realm, so `instanceof` fails), but
+  // each seam uses its own dialect. Accept any of them: the point of the
+  // battery is that no gated seam SILENTLY absorbs cross-realm bytes. A drift
+  // from `instanceof` to a broader brand check would then need to swap to
+  // active cross-realm rejection to keep this green.
+  const CROSS_REALM_STORE = ['cross-realm', () => vmRunInNewContext('new Uint8Array(128)'),
+    /not an ordinary same-realm Uint8Array|Uint8Array required|invalid|unknown key|not a Uint8Array|not an Uint8Array/i];
+
   const FANCY_STORES = [
     ['detached', () => { const u = new Uint8Array(RECORD_BYTES); u.buffer.transfer(); return u; }, /detached/],
     ['SharedArrayBuffer-backed', () => new Uint8Array(new SharedArrayBuffer(RECORD_BYTES)), /SharedArrayBuffer/],
     ['resizable', () => new Uint8Array(new ArrayBuffer(RECORD_BYTES, { maxByteLength: RECORD_BYTES * 2 })), /resizable/],
+    CROSS_REALM_STORE,
   ];
 
-  test('every gated seam rejects all three fancy stores loud', () => {
+  test('every gated seam rejects all four fancy stores loud (round 14 adds cross-realm)', () => {
     for (const [file, rows] of Object.entries(BYTE_STORAGE_INTAKE)) {
       for (const [name, row] of Object.entries(rows)) {
         if (row.intake !== 'gated') continue;
@@ -786,6 +810,44 @@ describe('(0b) the byte-storage intake surface is derived and closed', () => {
     }
   });
 });
+
+// ============================================================================
+// (0c) THE CROSS-SIDE COMPARE-MUTATION CLASS — DOCUMENTED-NOT-DEFENDED (round 14)
+// ============================================================================
+//
+// The class: any exported compare/diff function that walks two caller-owned
+// collections while both sides are simultaneously live can be tricked by an
+// ordinary caller-owned accessor (not a Proxy, no exotic storage) into
+// rewriting the OPPOSING side's still-unread evidence to match, producing a
+// silent false-identical for genuinely divergent streams.
+//
+// Round 11 I6 closed one exit (byte-content mutation via a plain-record
+// entry — `copy.set(entry)`). The external round-14 review executed a
+// different exit through an accessor descriptor on `records[i]`. A first
+// attempt to fix the class installed accessor-descriptor pre-scans on both
+// sides — which passed the reviewer's exact attack, and then FELL OVER
+// against an accessor one level down (`records[i].translation.x`, envelope
+// property getters). Refusing accessors at each discovered location is
+// site-by-site enumeration, not class closure: there are always more nested
+// keys the pre-scan does not cover.
+//
+// JP's ruling (see the codec doc §Round 14): DEFER, with the failure shape
+// stated at both call sites. This surface is diagnostic-only — no lock,
+// no fitness, no selection path consumes `compareTraces` / `compareCheckpoints`
+// return values, so a silent false-identical deceives only its own caller
+// (the same reasoning that made round 13's mutable-trace-evidence deferral
+// sound). Two candidate atomic architectural fixes are recorded for Phase 1B's
+// persisted-history milestone:
+//   (A) hard API boundary — accept only pre-encoded Uint8Array records so no
+//       caller code runs while both sides are live;
+//   (B) total deep pre-scan — recursively refuse accessor descriptors on
+//       every nested key of both sides before comparison begins.
+// Freezing the outer envelopes alone is insufficient (Uint8Array contents
+// stay mutable, and nested objects retain their own descriptors).
+//
+// This block deliberately holds NO test — a documented deferral. Adding a
+// site-specific accessor-descriptor tooth here would re-enable the whack-a-
+// mole pattern the deferral rejects.
 
 describe('(1) export-surface conformance — nothing ships unclassified', () => {
   for (const [module, expected] of Object.entries(EXPECTED_EXPORTS)) {
@@ -1241,6 +1303,9 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   offlineIntegrityView: 'ownedCopy',
   // evaluation.js — physics; its behaviour is owned by tests/evaluation.test.js
   runEvaluation: 'notExercised',
+  // Round 14 — reclassified to reflect the actual defense; the ownership
+  // regressions live in tests/evaluation-core.test.js (they need a live world).
+  runRealizedEvaluationLoop: 'notExercised',
   // fnv1a.js
   fnv1aFold: 'scalar',
 });

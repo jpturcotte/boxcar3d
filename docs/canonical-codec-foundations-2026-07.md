@@ -820,6 +820,103 @@ Freezing the outer arrays alone is insufficient — `Uint8Array` contents stay
 mutable. The deferral is marked at both sites (`finish()`, `analyzeTrace`)
 and in the (0b) classification (`TraceWriter`'s exemption row names it).
 
+## Round 14: two fixes and one honest deferral (avoiding the whack-a-mole trap)
+
+A second external review after the round-13 push reported three findings.
+Two closed as real structural fixes; the third — the P1 blocker — was
+initially attempted as a fix, adversarially checked, found to be
+whack-a-mole, and reverted in favor of an explicit deferral.
+
+**runRealizedEvaluationLoop caller-collection ownership (FIXED).** The seam
+consumed `realized.map` / `.flatMap` / for-of and declared
+`callerCollections: []` on the reasoning "usually called with module
+output" — which effectively exempted it from every hostile-collection
+battery. Executed at HEAD: a genuine Array with an own no-op `.map`
+returned `vehicles.length === 0` while the world stepped maxSteps and
+`counts.staticColliders` matched — silent contradiction of every documented
+ownership rule. Fixed by captured-length integer walks over both `realized`
+and each `rec.wheels`; classification updated honestly to
+`callerCollections: ['realized', 'realized[].wheels']`. Two regressions in
+`tests/evaluation-core.test.js` mutation-verified. Not whack-a-mole:
+replacing method calls with indexed loops closes the class structurally at
+that seam.
+
+**Cross-realm coverage (P2 finding, FIXED).** Round 13's storage battery
+ran detached / SAB / resizable but not cross-realm — the fourth named
+policy axis. A Node `vm.runInNewContext('new Uint8Array(128)')` view now
+runs through the (0b) FANCY_STORES matrix against all 12 gated seams, and a
+same-origin iframe view runs through the pinned Chromium codec smoke. A
+drift from `instanceof Uint8Array` to a broader brand check would need
+active cross-realm rejection to keep both green.
+
+**The compare-class attack: DEFERRED (JP's ruling).** `compareTraces`
+silently returned `null` for streams that genuinely differed when an
+ordinary accessor descriptor on `records[i]` — no Proxy, no exotic
+storage — mutated the opposing side to match. Same shape reproduced in
+`compareCheckpoints` via field accessors on entry objects. This is a real
+false-identical vulnerability, executed live against HEAD.
+
+**Why this was deferred rather than fixed.** A candidate fix installed
+accessor-descriptor pre-scans (`Object.getOwnPropertyDescriptor` never
+invokes getters by spec) on `records[i]` and on entry fields. The
+reviewer's specific attack was defeated. JP asked "are we sure this isn't
+whack-a-mole?" — and I attacked my own fix. An accessor one level down
+still worked:
+
+```js
+// Passes the round-14 pre-scan: records[0] is a plain data property.
+// records[0].translation.x is a getter that runs during encodeTraceRecord's
+// validateRecord walk, and mutates actEnv.records[1] to match exp[1].
+records[0] = { ...recA, translation: { get x() { actEnv.records[1] = recB; return 1; }, y: 0, z: 0 } };
+// Result: compareTraces returns null for streams that ORIGINALLY differed at 1.
+```
+
+Executed. Reproduced silent-null. Refusing accessors at each discovered
+location is by definition site-by-site enumeration, not class closure —
+there are always more nested keys the pre-scan does not cover. The
+candidate fix was reverted in the same PR.
+
+**Two candidate atomic architectural fixes, recorded for Phase 1B.** Either
+one closes the class structurally at compareTraces / compareCheckpoints,
+without ever having to enumerate specific descriptor locations:
+
+- **(A) Hard API boundary** — `compareTraces` accepts only pre-encoded
+  Uint8Array records (no plain records, no envelope accessors). All
+  caller-code-triggering conversion happens BEFORE both sides are live in
+  the same call. The test API convenience of hand-writing plain records is
+  migrated to a pre-encoding helper the caller runs first. Mechanically
+  precludes cross-side mutation because no caller code from either side
+  runs while both are in scope.
+- **(B) Total deep pre-scan** — recursively refuse accessor descriptors on
+  every nested key of both sides before comparison begins. Heavier
+  discipline, but preserves the plain-record convenience. Still relies on
+  enumerating "what counts as caller-reachable" (Symbol properties,
+  prototype-chain edge cases).
+
+**Why deferral is sound.** This surface is DIAGNOSTIC-only. No lock, no
+fitness path, and no selection path consumes `compareTraces` /
+`compareCheckpoints` return values; production traces are produced and
+compared inside one process's test tooling. A silent false-identical
+deceives only its own caller. Same reasoning as the round-13
+mutable-trace-evidence deferral, and the fix belongs to the same Phase-1B
+persisted-history milestone. The failure shape is now stated at both call
+sites so the deferral cannot silently rot into forgotten prose. Test
+tooling that must trust a comparison is expected to encode both sides via
+`encodeTraceRecord()` before calling, which mechanically closes the class
+for that caller (option A applied per-caller).
+
+**The generalization the round produced.** Round 11 said "enforcement
+scoped to a round's MECHANISM is still enforcement written to the fix."
+Rounds 12 and 13 each repeated that lesson one notch up. Round 14 caught
+its own compareTraces fix falsifying it — the pattern the review was
+warning about, reproduced live inside the fix meant to close it. The
+escape from the ladder is not "one more clever check"; it is to recognize
+when a class needs a real architectural boundary (defer to when it can be
+made) versus a site-level guarantee (fix now). This round did both — the
+runRealizedEvaluationLoop fix is structural at its seam, and the compare
+class is deferred with two named candidate architectures for the milestone
+that will need them.
+
 ## Binary identity vs the JSON envelope
 
 The canonical bytes **are** the identity. FNV digests are folded over them and

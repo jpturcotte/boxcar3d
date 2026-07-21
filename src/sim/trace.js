@@ -569,6 +569,30 @@ function normalizeRecords(side, label) {
  * versionMismatch | recordSizeMismatch | fieldMismatch | orderingMismatch |
  * missingRecord | extraRecord. Comparison is byte-first, so −0 vs +0 and
  * differing quaternion signs ARE divergences.
+ *
+ * DEFERRED (round 14, explicit ruling — codec doc §Round 14): the class
+ * "cross-side accessor rewrites opposing evidence before the compare loop
+ * reads it" is NOT closed. Round 12 I6 closed byte-content mutation via the
+ * OPPOSING side's plain-record entry (copy-on-intake below). Round 14 first
+ * closed accessor descriptors on `records[i]` — but that fix was
+ * whack-a-mole: an accessor one level down (a getter on
+ * `records[i].translation.x`, or on the envelope's `version`/`records`
+ * itself) still runs during capture and can rewrite the opposing side to
+ * match, producing a silent `null` for genuinely divergent streams
+ * (executed at HEAD against the round-14 fix — false-identical
+ * reproduced). Refusing descriptors at each discovered location is by
+ * definition site-by-site, not class-closure. The atomic fixes are
+ * architectural: EITHER accept ONLY pre-encoded Uint8Array records so no
+ * caller code runs while both sides are live (hard API boundary), OR do a
+ * total deep pre-scan refusing accessor descriptors on every nested key of
+ * both sides before comparison. Both belong to the Phase-1B persisted-
+ * history milestone alongside the round-13 mutable-trace-evidence and
+ * strong-digest deferrals: this surface is DIAGNOSTIC-only (no lock,
+ * fitness, or selection path consumes the return value; a false-identical
+ * deceives only its caller — the same reasoning that made round 13's
+ * deferral sound). Test tooling that must trust a comparison is expected
+ * to encode both sides via `encodeTraceRecord()` before calling this, which
+ * mechanically closes the class for that caller.
  */
 export function compareTraces(expected, actual) {
   const exp = normalizeRecords(expected, 'expected');
@@ -700,6 +724,14 @@ function snapshotCheckpoints(side, label) {
   return rows;
 }
 
+// DEFERRED (round 14, explicit ruling — codec doc §Round 14): same class as
+// compareTraces above, one level down (accessor descriptors on entry FIELDS
+// instead of `records[i]`). Executed at HEAD: `exp[0].state` getter mutating
+// `act[1].state` to match `exp[1].state` returned null for genuinely
+// divergent streams. `snapshotCheckpoints(expected)` runs first and reads
+// exp entry fields, giving exp's getters a window to mutate act BEFORE
+// snapshotCheckpoints(actual) captures it. Diagnostic-only surface; fix
+// belongs to the same Phase-1B milestone.
 export function compareCheckpoints(expected, actual) {
   const exp = snapshotCheckpoints(expected, 'expected');
   const act = snapshotCheckpoints(actual, 'actual');

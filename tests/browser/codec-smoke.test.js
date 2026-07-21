@@ -124,3 +124,26 @@ describe('canonical codecs (Chromium)', () => {
     }
   });
 });
+
+describe('cross-realm rejection (Chromium, round 14)', () => {
+  // Same-origin iframe = a genuine cross-realm Uint8Array. `instanceof
+  // Uint8Array` is false in the parent realm, so every gate short-circuits
+  // through its own dialect. The point is no gate silently accepts it — a
+  // drift from `instanceof` to a broader brand check would need active
+  // cross-realm rejection to keep this green.
+  test('a same-origin iframe Uint8Array is rejected by bytesToHex and the decoders', async () => {
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+    try {
+      const foreignU8 = new iframe.contentWindow.Uint8Array(4);
+      expect(foreignU8 instanceof Uint8Array).toBe(false); // sanity: cross-realm
+      // bytesToHex has a gated `requireOrdinaryBytes` (same-realm brand).
+      expect(() => bytesToHex(foreignU8)).toThrow();
+      // A decoder likewise refuses the cross-realm view.
+      expect(() => deserializeGenotype(foreignU8)).toThrow();
+    } finally {
+      iframe.remove();
+    }
+  });
+});

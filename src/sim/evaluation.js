@@ -418,17 +418,53 @@ export function runRealizedEvaluationLoop(world, realized, {
   // Canonical body order falls out of iterating the realizeVehicle return
   // shape: vehicles in input order → chassis → stations axle-then-wheel,
   // hub before wheel. No sorting, no handles.
-  const tracked = realized.map((rec) => {
-    const joints = rec.wheels.flatMap((st) => (st.suspensionJoint === null
-      ? [st.driveJoint] : [st.suspensionJoint, st.driveJoint]));
+  //
+  // OWNERSHIP (round 14, external-review Major): both this seam's caller
+  // collections (`realized` and each `rec.wheels`) are walked by CAPTURED
+  // integer index. Round 12's own boundary called caller collections a bug
+  // class; this loop used `realized.map` and `rec.wheels.flatMap`/for-of, so
+  // a genuine Array with an own no-op `.map` returned zero vehicles while
+  // the world still stepped `maxSteps` — a silent contradiction of every
+  // documented ownership rule (reproduced by the reviewer, then here).
+  // Compiler-owned IRs stayed the standing ruling; realized vehicles from
+  // realizeVehicle likewise, but this seam is public and accepts hostile
+  // outer arrays via the probe/test contract, so the outer walk defends
+  // itself while trusting the inner Rapier body/joint handles as
+  // realizeVehicle-shaped.
+  const realizedCount = realized.length;
+  if (!Number.isInteger(realizedCount) || realizedCount < 0) {
+    fail('runRealizedEvaluationLoop.realized.length', realizedCount);
+  }
+  const tracked = [];
+  for (let vi = 0; vi < realizedCount; vi += 1) {
+    const rec = realized[vi];
+    if (typeof rec !== 'object' || rec === null) {
+      fail(`runRealizedEvaluationLoop.realized[${vi}]`, rec);
+    }
+    const wheels = rec.wheels;
+    if (!Array.isArray(wheels)) fail(`runRealizedEvaluationLoop.realized[${vi}].wheels`, wheels);
+    const wheelCount = wheels.length;
+    const joints = [];
     const bodies = [{
       role: 'chassis', axleIndex: null, wheelIndex: null, body: rec.chassis.body,
       jointState: () => {
         if (joints.length === 0) return 'notApplicable'; // a zero-joint sled
-        return joints.every((j) => j.isValid()) ? 'valid' : 'invalid';
+        for (let i = 0; i < joints.length; i += 1) {
+          if (!joints[i].isValid()) return 'invalid';
+        }
+        return 'valid';
       },
     }];
-    for (const st of rec.wheels) {
+    for (let si = 0; si < wheelCount; si += 1) {
+      const st = wheels[si];
+      if (typeof st !== 'object' || st === null) {
+        fail(`runRealizedEvaluationLoop.realized[${vi}].wheels[${si}]`, st);
+      }
+      if (st.suspensionJoint === null) {
+        joints.push(st.driveJoint);
+      } else {
+        joints.push(st.suspensionJoint, st.driveJoint);
+      }
       if (st.hub !== null) {
         bodies.push({
           role: 'hub', axleIndex: st.axleIndex, wheelIndex: st.wheelIndex,
@@ -440,7 +476,7 @@ export function runRealizedEvaluationLoop(world, realized, {
         body: st.wheel.body, jointState: () => (st.driveJoint.isValid() ? 'valid' : 'invalid'),
       });
     }
-    return {
+    tracked.push({
       rec, joints, bodies,
       origin: { ...rec.chassis.body.translation() },
       latched: null,
@@ -449,8 +485,8 @@ export function runRealizedEvaluationLoop(world, realized, {
       // per-capture thresholds scale from the EFFECTIVE dt (the f32 engine
       // readback), never the f64 request — the pinned captureDt convention.
       integrity: integrity ? createIntegrityState(bodies.length, effectiveDt) : null,
-    };
-  });
+    });
+  }
 
   const writer = traceMode === 'none'
     ? null

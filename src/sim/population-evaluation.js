@@ -94,6 +94,9 @@ import { FNV_OFFSET_BASIS, fnv1aFold, fnv1aHexOf } from './fnv1a.js';
 import { INTEGRITY_POLICY_VERSION, INTEGRITY_STATUS } from './integrity.js';
 
 export const FITNESS_POLICY_VERSION = 2; // v2: the numerical-integrity gate (see the ruling above)
+// This is deliberately an in-memory selection view, not a new wire format.
+// A later generation/replacement layer owns any persisted evolution history.
+export const SELECTION_POOL_VERSION = 1;
 export const FITNESS_VECTOR_VERSION = 2; // v2: +integrityPolicyVersion header, +integrityStatus byte
 export const EVALUATION_SPEC_VERSION = 1;
 export const POPULATION_WORLD_MODE = 'isolatedWorlds'; // see the world-mode ruling above
@@ -1027,6 +1030,7 @@ export async function evaluatePopulation(population, evaluationSpec) {
     effectiveDt,
     executedSteps: spec.maxSteps,
     spec,
+    fitnessPolicyVersion: FITNESS_POLICY_VERSION,
     populationSnapshotDigestState: snapshotState, // captured pre-hook (see above)
     individuals,
   };
@@ -1343,10 +1347,9 @@ function championCandidates(evaluation) {
     fail('evaluation.individuals', evaluation);
   }
   const individuals = evaluation.individuals;
-  if (!Array.isArray(individuals) || individuals.length === 0) {
-    fail('evaluation.individuals', individuals);
-  }
+  if (!Array.isArray(individuals)) fail('evaluation.individuals', individuals);
   const count = individuals.length;
+  if (count === 0) fail('evaluation.individuals', individuals);
   const seen = new Set();
   const rows = [];
   for (let i = 0; i < count; i += 1) {
@@ -1358,6 +1361,52 @@ function championCandidates(evaluation) {
     rows.push(row);
   }
   return rows;
+}
+
+function freezeSelectionPool(value) {
+  for (let i = 0; i < value.individuals.length; i += 1) Object.freeze(value.individuals[i]);
+  Object.freeze(value.evaluatedIndividualIds);
+  Object.freeze(value.individuals);
+  return Object.freeze(value);
+}
+
+/**
+ * Capture the eligible portion of one evaluation into an owned, immutable
+ * selection pool. The snapshot state is captured before championCandidates
+ * touches a row, so the pool cannot bind row data to a later digest reading.
+ */
+export function selectablePoolFromEvaluation(evaluation) {
+  if (typeof evaluation !== 'object' || evaluation === null) {
+    fail('evaluation', evaluation);
+  }
+  const fitnessPolicyVersion = evaluation.fitnessPolicyVersion;
+  if (fitnessPolicyVersion !== FITNESS_POLICY_VERSION) {
+    fail('evaluation.fitnessPolicyVersion', fitnessPolicyVersion);
+  }
+  const populationSnapshotDigestState = evaluation.populationSnapshotDigestState;
+  if (!isCanonicalUint32(populationSnapshotDigestState)) {
+    fail('evaluation.populationSnapshotDigestState', populationSnapshotDigestState);
+  }
+  // Exactly one evaluation-row capture. It validates row shape, ids,
+  // fitness, validity and integrity coherence before we retain any value.
+  const rows = championCandidates(evaluation);
+  rows.sort((a, b) => a.individualId - b.individualId);
+  const evaluatedIndividualIds = [];
+  const individuals = [];
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    evaluatedIndividualIds.push(row.individualId);
+    if (row.valid && row.integrityStatus === 'ok') {
+      individuals.push({ individualId: row.individualId, fitness: row.fitness });
+    }
+  }
+  return freezeSelectionPool({
+    selectionPoolVersion: SELECTION_POOL_VERSION,
+    fitnessPolicyVersion,
+    populationSnapshotDigestState,
+    evaluatedIndividualIds,
+    individuals,
+  });
 }
 
 /**

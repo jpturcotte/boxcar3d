@@ -17,9 +17,13 @@ import {
   deserializePopulationSnapshot, serializePopulationSnapshot, bytesEqual,
 } from '../../src/sim/population.js';
 import {
-  SPAWN_CLEARANCE, deserializeEvaluationSpec, deserializeFitnessVector,
+  SPAWN_CLEARANCE, deserializeEvaluationSpec, deserializeFitnessVector, selectablePoolFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector,
 } from '../../src/sim/population-evaluation.js';
+import {
+  mutateContinuousGenotype, selectElites, selectTournamentParent,
+} from '../../src/sim/evolution-operators.js';
+import { FNV_OFFSET_BASIS, fnv1aFold } from '../../src/sim/fnv1a.js';
 import {
   deserializePopulationInitialization, serializePopulationInitialization,
 } from '../../src/sim/population-initializer.js';
@@ -39,6 +43,61 @@ const resolvedSpec = () => ({
 });
 
 describe('canonical codecs (Chromium)', () => {
+  test('Phase-1B operators agree on nonzero mutation bytes, tournament, and elites', () => {
+    const { population } = populationEvaluationInputsFor(POPULATION_FIXTURE_A);
+    const state = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population));
+    const evaluation = {
+      fitnessPolicyVersion: 2,
+      populationSnapshotDigestState: state,
+      individuals: population.individuals.map((member, i) => ({
+        individualId: member.individualId,
+        valid: true,
+        integrityStatus: 'ok',
+        fitness: i,
+      })),
+    };
+    const pool = selectablePoolFromEvaluation(evaluation);
+    expect(selectTournamentParent(pool, { nextUint32: () => 0 })).toBe(pool.individuals[0].individualId);
+    expect(selectElites(population, pool)).toHaveLength(2);
+    const mutationRng = () => {
+      let draw = 0;
+      return { nextFloat() { draw += 1; return draw % 2 === 1 ? 0 : 0.75; } };
+    };
+    const options = { probability: 1, magnitude: 0.02 };
+    const a = mutateContinuousGenotype(population.individuals[0].genotype, mutationRng(), options);
+    const b = mutateContinuousGenotype(population.individuals[0].genotype, mutationRng(), options);
+    expect(bytesEqual(serializeGenotype(a.rawGenotype), serializeGenotype(b.rawGenotype))).toBe(true);
+    expect(bytesEqual(serializeGenotype(a.genotype), serializeGenotype(b.genotype))).toBe(true);
+    expect(a.accounting).toEqual(b.accounting);
+    expect(a.accounting.eligibleContinuousLeafCount).toBe(108);
+    expect(a.accounting.selectedLeafCount).toBe(108);
+    expect(a.rawGenotype.hue).toBe(population.individuals[0].genotype.hue + 0.01);
+    expect(a.accounting.finalByteDeltaCount).toBeGreaterThan(0);
+
+    let targetedDraw = 0;
+    const targeted = mutateContinuousGenotype(population.individuals[0].genotype, {
+      nextFloat() {
+        targetedDraw += 1;
+        if (targetedDraw === 1) return 0;
+        if (targetedDraw === 2) return 0.75;
+        return 0.75;
+      },
+    }, { probability: 0.5, magnitude: 0.02 });
+    const expectedBytes = serializeGenotype(population.individuals[0].genotype);
+    const expectedHue = population.individuals[0].genotype.hue + 0.01;
+    new DataView(expectedBytes.buffer, expectedBytes.byteOffset, expectedBytes.byteLength)
+      .setFloat64(2, expectedHue, true);
+    expect(serializeGenotype(targeted.rawGenotype)).toEqual(expectedBytes);
+    expect(serializeGenotype(targeted.genotype)).toEqual(expectedBytes);
+    expect(targeted.accounting).toMatchObject({
+      eligibleContinuousLeafCount: 108,
+      selectedLeafCount: 1,
+      rawChangedLeafCount: 1,
+      repairChangedLeafCount: 0,
+      finalChangedLeafCount: 1,
+    });
+  });
+
   test('genotype: the seeded corpus round-trips bit-exactly', () => {
     console.log(`codec browser gate on: ${navigator.userAgent}`);
     // A slice of the seed-20260710 corpus — enough axle-count variety to

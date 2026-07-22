@@ -42,6 +42,7 @@ import * as AssemblyNS from '../src/sim/assembly.js';
 import * as PopulationNS from '../src/sim/population.js';
 import * as InitializerNS from '../src/sim/population-initializer.js';
 import * as EvaluationNS from '../src/sim/population-evaluation.js';
+import * as EvolutionNS from '../src/sim/evolution-operators.js';
 import * as IntegrityNS from '../src/sim/integrity.js';
 import * as TraceNS from '../src/sim/trace.js';
 import * as ForensicsNS from '../src/sim/trace-forensics.js';
@@ -266,11 +267,16 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   'population-evaluation.js': Object.freeze([
     'EVALUATION_SPEC_VERSION', 'FITNESS_POLICY_VERSION', 'FITNESS_VECTOR_VERSION',
-    'POPULATION_WORLD_MODE', 'REALIZABLE_SUSPENSION_TYPES', 'SPAWN_CLEARANCE',
+    'POPULATION_WORLD_MODE', 'REALIZABLE_SUSPENSION_TYPES', 'SELECTION_POOL_VERSION', 'SPAWN_CLEARANCE',
     'championFromEvaluation', 'deserializeEvaluationSpec', 'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'isVehicleResultSelectable',
-    'isVehicleResultValid', 'selectableChampionFromEvaluation',
+    'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
+  ]),
+  'evolution-operators.js': Object.freeze([
+    'ELITE_COUNT', 'ELITISM_VERSION', 'PARAMETRIC_MUTATION_DEFAULTS', 'PARAMETRIC_MUTATION_VERSION',
+    'SELECTION_POOL_VERSION', 'TOURNAMENT_SELECTION_VERSION', 'TOURNAMENT_SIZE',
+    'mutateContinuousGenotype', 'selectElites', 'selectTournamentParent',
   ]),
   // Round 11: these five were UNPINNED while tests/single-read.test.js:250-252
   // cited this file as the backstop that forces a new export into its table
@@ -311,6 +317,7 @@ const EXPECTED_EXPORTS = Object.freeze({
 // become cover for two modules exporting different values under one name.
 const RE_EXPORTS = Object.freeze({
   'evaluation.js': Object.freeze(['EVALUATION_TRACE_VERSION', 'TERMINATION_REASONS']),
+  'evolution-operators.js': Object.freeze(['SELECTION_POOL_VERSION']),
 });
 
 const NAMESPACES = Object.freeze({
@@ -319,6 +326,7 @@ const NAMESPACES = Object.freeze({
   'population.js': PopulationNS,
   'population-initializer.js': InitializerNS,
   'population-evaluation.js': EvaluationNS,
+  'evolution-operators.js': EvolutionNS,
   'integrity.js': IntegrityNS,
   'trace.js': TraceNS,
   'trace-forensics.js': ForensicsNS,
@@ -451,6 +459,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'EVALUATION_SPEC_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'POPULATION_WORLD_MODE', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'REALIZABLE_SUSPENSION_TYPES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'SELECTION_POOL_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'SPAWN_CLEARANCE', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'isVehicleResultValid', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'isVehicleResultSelectable', kind: 'validator', callerCollections: [], callerNumbers: [] },
@@ -483,6 +492,19 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'championFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
     { name: 'selectableChampionFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
+    { name: 'selectablePoolFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitnessPolicyVersion', 'fitness', 'individualId', 'populationSnapshotDigestState'] },
+  ]),
+  'evolution-operators.js': Object.freeze([
+    { name: 'SELECTION_POOL_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TOURNAMENT_SELECTION_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'ELITISM_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'PARAMETRIC_MUTATION_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TOURNAMENT_SIZE', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'ELITE_COUNT', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'PARAMETRIC_MUTATION_DEFAULTS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'selectTournamentParent', kind: 'pure', callerCollections: ['pool.evaluatedIndividualIds', 'pool.individuals'], callerNumbers: ['pool.populationSnapshotDigestState', 'fitness', 'individualId'] },
+    { name: 'selectElites', kind: 'pure', callerCollections: ['population.individuals', 'pool.evaluatedIndividualIds', 'pool.individuals'], callerNumbers: ['pool.populationSnapshotDigestState', 'fitness', 'individualId'] },
+    { name: 'mutateContinuousGenotype', kind: 'pure', callerCollections: ['parent'], callerNumbers: ['options.probability', 'options.magnitude'] },
   ]),
   'integrity.js': Object.freeze([
     { name: 'INTEGRITY_POLICY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -595,6 +617,7 @@ const BYTE_FAMILY_EXEMPT = Object.freeze({
   'src/sim/evaluation-locks.js': 'golden literals only, zero imports',
   'src/sim/population-fixtures.js': 'declared fixture literals',
   'src/sim/population-locks.js': 'golden literals only, zero imports',
+  'src/sim/evolution-operators.js': 'plain population/pool/genotype inputs; serializes only module-owned canonical data',
   'src/sim/lock-markers.js': 'message-format constants',
   'src/sim/physics/adapter.js': 'the Rapier seam; trusts compiler-owned IRs by standing ruling',
 });
@@ -745,6 +768,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     isVehicleResultSelectable: { intake: 'no-byte-intake', why: 'vehicle result record in' },
     isVehicleResultValid: { intake: 'no-byte-intake', why: 'vehicle result record in' },
     selectableChampionFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
+    selectablePoolFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in; returns owned immutable pool' },
     serializeEvaluationSpec: { intake: 'no-byte-intake', why: 'spec object in; returns fresh module-owned bytes' },
     serializeFitnessVector: { intake: 'no-byte-intake', why: 'evaluation object in; returns fresh module-owned bytes' },
     spawnPoseOnFlatStart: { intake: 'no-byte-intake', why: 'IR + options in, pose out' },
@@ -906,7 +930,9 @@ describe('(1) export-surface conformance — nothing ships unclassified', () => 
     // contract, so the exclusion above is paid for with an identity check.
     for (const [module, names] of Object.entries(RE_EXPORTS)) {
       for (const name of names) {
-        expect(NAMESPACES[module][name], `${module}:${name}`).toBe(TraceNS[name]);
+        expect(NAMESPACES[module][name], `${module}:${name}`).toBe(
+          module === 'evolution-operators.js' ? EvaluationNS[name] : TraceNS[name],
+        );
       }
     }
   });
@@ -1311,6 +1337,11 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   deserializeFitnessVector: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
+  selectablePoolFromEvaluation: 'ownedCopy',
+  // evolution-operators.js
+  selectTournamentParent: 'scalar',
+  selectElites: 'ownedCopy',
+  mutateContinuousGenotype: 'ownedCopy',
   // integrity.js
   foldIntegrity: 'callerElements', // returns the caller's own state object, by contract (chaining)
   // trace.js
@@ -1403,6 +1434,27 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    ...(() => {
+      const evaluation = {
+        fitnessPolicyVersion: 2,
+        populationSnapshotDigestState: 7,
+        individuals: [{ individualId: 0, valid: true, integrityStatus: 'ok', fitness: 1 }],
+      };
+      const elitePopulation = twoMemberPopulation();
+      const state = fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(elitePopulation));
+      const elitePool = {
+        selectionPoolVersion: 1,
+        fitnessPolicyVersion: 2,
+        populationSnapshotDigestState: state,
+        evaluatedIndividualIds: [3, 9],
+        individuals: [{ individualId: 3, fitness: 2 }, { individualId: 9, fitness: 1 }],
+      };
+      return [
+        { name: 'selectablePoolFromEvaluation', result: EvaluationNS.selectablePoolFromEvaluation(evaluation), roots: [evaluation] },
+        { name: 'selectElites', result: EvolutionNS.selectElites(elitePopulation, elitePool), roots: [elitePopulation, elitePool] },
+        { name: 'mutateContinuousGenotype', result: EvolutionNS.mutateContinuousGenotype(g, { nextFloat: () => 0.5 }, { probability: 0, magnitude: 0 }), roots: [g] },
+      ];
+    })(),
     // Round-11 additions: the diagnostic/forensic family, previously unpinned.
     ...(() => {
       const recBytes = encodeTraceRecord(baseTraceRecord());

@@ -112,6 +112,12 @@ export const WORLD_MODES = Object.freeze([POPULATION_WORLD_MODE]);
 // reordering runtime flavors must never reinterpret an existing history byte.
 const PHYSICS_FLAVORS = Object.freeze(['deterministicCompat']);
 
+const MAX_WIRE_STRING_BYTES = 0xff;
+const HEADER_FIXED_BYTES = 8 * 2 + 3 + 1 + 1 + 4 + 4 + 8 + 8 + 4 + 4;
+const GENERATION_PAYLOAD_FIXED_BYTES = 2 + 4 + 1
+  + COMPONENT_KINDS.length * (4 + SHA256_DIGEST_BYTES);
+const OUTER_FIXED_BYTES = 8 + 2 + 4 + SHA256_DIGEST_BYTES + 4 + SHA256_DIGEST_BYTES;
+
 const TEXT_ENCODER = new TextEncoder();
 // `fatal: true` rejects malformed and overlong sequences, so a decoded string
 // is canonical UTF-8 by construction rather than by a later re-encode check.
@@ -146,6 +152,84 @@ function decodeFail(path, value) {
 function limitFail(path, value, limit) {
   evolutionFail('resourceLimitExceeded',
     `evolution-history: ${path} ${value} exceeds ${limit}`, { path, value, limit });
+}
+
+/**
+ * Project the largest v1 artifact a run configuration can produce without
+ * allocating it. Runtime identity strings use their full legal u8 lengths;
+ * callers provide conservative component lengths for any generation.
+ */
+export function projectEvolutionHistoryCapacity({
+  initializationManifestByteLength,
+  evaluationSpecByteLength,
+  generationCount,
+  componentByteLengths,
+}) {
+  const lengths = [
+    ['initializationManifestByteLength', initializationManifestByteLength],
+    ['evaluationSpecByteLength', evaluationSpecByteLength],
+  ];
+  for (const [path, value] of lengths) {
+    if (!Number.isSafeInteger(value) || value < 0) encodeFail(path, value);
+    if (value > MAX_EVOLUTION_COMPONENT_BYTES) limitFail(path, value, MAX_EVOLUTION_COMPONENT_BYTES);
+  }
+  if (!Number.isInteger(generationCount) || generationCount < 1) {
+    encodeFail('generationCount', generationCount);
+  }
+  if (generationCount > MAX_EVOLUTION_GENERATIONS) {
+    limitFail('generationCount', generationCount, MAX_EVOLUTION_GENERATIONS);
+  }
+  if (typeof componentByteLengths !== 'object' || componentByteLengths === null) {
+    encodeFail('componentByteLengths', componentByteLengths);
+  }
+
+  let generationPayloadBytes = GENERATION_PAYLOAD_FIXED_BYTES;
+  for (let i = 0; i < COMPONENT_KINDS.length; i += 1) {
+    const kind = COMPONENT_KINDS[i];
+    const length = componentByteLengths[kind];
+    if (!Number.isSafeInteger(length) || length < 0) {
+      encodeFail(`componentByteLengths.${kind}`, length);
+    }
+    if (length > MAX_EVOLUTION_COMPONENT_BYTES) {
+      limitFail(`componentByteLengths.${kind}`, length, MAX_EVOLUTION_COMPONENT_BYTES);
+    }
+    generationPayloadBytes = checkedAdd(generationPayloadBytes, length, 'projected generation payload');
+  }
+  if (generationPayloadBytes > MAX_EVOLUTION_RECORD_BYTES) {
+    limitFail('projected generation payload', generationPayloadBytes, MAX_EVOLUTION_RECORD_BYTES);
+  }
+
+  const headerBytes = checkedAdd(
+    checkedAdd(
+      checkedAdd(HEADER_FIXED_BYTES, MAX_WIRE_STRING_BYTES * 2, 'projected header'),
+      initializationManifestByteLength,
+      'projected header',
+    ),
+    evaluationSpecByteLength,
+    'projected header',
+  );
+  const generationFrameBytes = checkedAdd(
+    checkedAdd(4, generationPayloadBytes, 'projected generation frame'),
+    SHA256_DIGEST_BYTES,
+    'projected generation frame',
+  );
+  const fixedBytes = checkedAdd(OUTER_FIXED_BYTES, headerBytes, 'projected history');
+  const projectedBytes = checkedAdd(
+    fixedBytes,
+    checkedMultiply(generationFrameBytes, generationCount, 'projected history generations'),
+    'projected history',
+  );
+  const maximumFeasibleGenerations = Math.max(0, Math.min(
+    MAX_EVOLUTION_GENERATIONS,
+    Math.floor((MAX_EVOLUTION_HISTORY_BYTES - fixedBytes) / generationFrameBytes),
+  ));
+  return Object.freeze({
+    projectedBytes,
+    maximumFeasibleGenerations,
+    headerBytes,
+    generationPayloadBytes,
+    generationFrameBytes,
+  });
 }
 
 // --- Digests -----------------------------------------------------------------

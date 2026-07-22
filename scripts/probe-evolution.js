@@ -147,7 +147,7 @@ export async function runEvolutionProbe(config = { mode: 'identity', json: false
   return {
     schema: EVOLUTION_PROBE_SCHEMA,
     mode: config.mode,
-    generatedAtMs: Date.now() - startedAt,
+    elapsedMs: Date.now() - startedAt,
     fixture: {
       name: fixture.name,
       version: fixture.version,

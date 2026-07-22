@@ -309,7 +309,8 @@ npm run lint             # includes the determinism ban on src/sim
 npm run build            # production bundle in dist/
 ```
 
-Requires Node 20.19+ (built and verified on Node 22).
+Requires Node >=22.12 and <23, matching `package.json`; the repository pins
+npm 10.9.3 through its `packageManager` field.
 
 ## CI and deployment
 

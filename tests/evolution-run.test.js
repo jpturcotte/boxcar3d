@@ -238,6 +238,30 @@ describe('run creation validates the complete configuration', () => {
     );
   });
 
+  test('a legal but history-infeasible configuration is rejected before physics', () => {
+    const probe = startProbe();
+    const err = expectCode(
+      () => createEvolutionRun(config({
+        initialization: { populationSize: MAX_EVOLUTION_POPULATION_SIZE },
+        evolution: { maxGenerations: MAX_EVOLUTION_GENERATIONS },
+      })),
+      'resourceLimitExceeded', /history.*MAX_EVOLUTION_HISTORY_BYTES/i,
+    );
+    expect(err.context.projectedBytes).toBeGreaterThan(err.context.limit);
+    expect(err.context.maximumFeasibleGenerations).toBeLessThan(MAX_EVOLUTION_GENERATIONS);
+    expect(probe.populations).toHaveLength(0);
+  });
+
+  test('a practical 20-member campaign remains legal at the generation ceiling', () => {
+    const run = createEvolutionRun(config({
+      initialization: { populationSize: 20 },
+      evolution: { maxGenerations: MAX_EVOLUTION_GENERATIONS },
+    }));
+    expect(run.status()).toMatchObject({
+      phase: 'ready', populationSize: 20, maxGenerations: MAX_EVOLUTION_GENERATIONS,
+    });
+  });
+
   test('the population × step compute budget rejects before initialization or physics', () => {
     const populationSize = 6;
     const maxSteps = Math.floor(MAX_EVOLUTION_EVALUATION_WORK / populationSize) + 1;

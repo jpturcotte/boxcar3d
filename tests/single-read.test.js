@@ -609,6 +609,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   canonicalizeEvaluationSpec: 'CASES row',
   deserializeLineage: 'exempt: TypedArray input',
   lineageByteLength: 'exempt: one number arg',
+  fitnessVectorByteLength: 'exempt: one number arg',
   zeroLineageAccounting: 'exempt: no args',
   EvolutionError: 'exempt: copies its scalar context by key enumeration (ownership-boundary ownedCopy case)',
   evolutionFail: 'exempt: same as EvolutionError',
@@ -627,6 +628,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   digestHistoryBody: 'exempt: TypedArray input',
   digestsEqual: 'exempt: two TypedArray inputs',
   assembleHistory: 'exempt: module-owned byte rows; round-tripped in tests/evolution-history.test.js',
+  projectEvolutionHistoryCapacity: 'exempt: module-private scalar length record; exercised through createEvolutionRun capacity tests',
   sha256: 'exempt: TypedArray input (tests/sha256.test.js owns its battery)',
   // evolution-replay.js
   firstByteDifference: 'exempt: two TypedArray inputs',

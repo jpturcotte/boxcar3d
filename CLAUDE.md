@@ -2045,7 +2045,10 @@ history, replay, and strong artifact identity. Full contract:
   deterministic replay stopping at the first byte divergence (reporting `stage`,
   `generationIndex`, `byteOffset`, `expectedByte`/`actualByte`, and
   `lastAgreedGenerationIndex`). Twelve stable error codes; lower-level module
-  errors ride as `cause` and callers branch on `code`, never on text. A valid
+  errors ride as `cause` and callers branch on `code`, never on text. Resume
+  mirrors creation's `deterministic: true` invariant before physics; invalid
+  artifact storage/spec/manifest bytes are `malformedHistory`, while invalid
+  expected-identity option bytes are `invalidConfig`. A valid
   OLDER artifact verifies perfectly — that is the point, and it is why
   `staleOrWrongArtifact` exists and is only reachable when the caller supplies
   what it expected. **Peak retention:** append can hold roughly five
@@ -2054,6 +2057,11 @@ history, replay, and strong artifact identity. Full contract:
   populations, physics, and opaque WebCrypto allocation. Verification decodes
   one payload at a time; append remains O(G²) copy work and must become
   segmented before current maximums are treated as routine campaign sizes.
+  Creation and resume project the worst legal fixed-geometry artifact first
+  (largest starting genotype concentrated into every row, fixed component
+  widths, maximum wire-string lengths) and reject an infeasible generation
+  count with `maximumFeasibleGenerations`, so no accepted run can wedge at the
+  64 MiB ceiling.
 - **Locks:** fixture `evolution-a-small-flat` v1 (seeds **20260742** population /
   **20260743** terrain; 6 individuals × 3 generations × 45 steps on the flat pad,
   terminating on the generation limit) — header `6b872cad…bfcce51b`, history
@@ -2098,13 +2106,13 @@ history, replay, and strong artifact identity. Full contract:
   checks ran over an empty collection. It now filters `continuousMutation`,
   requires real children, and checks `(p,m) = (0,1), (1,0), (1,1)` through the
   run/history/resume boundary. Composition also covers population sizes
-  1/2/3/6 with tied selectable pools. Full suite green (59 files, 1534 tests),
+  1/2/3/6 with tied selectable pools. Full suite green (59 files, 1541 tests),
   determinism 6 files / 50 tests, pinned Chromium 4 files / 20 tests.
 - **Zero lock movement, zero version movement elsewhere.** Every terrain, noise,
   boulder, assembly (`24cd0dd5`/`39bcd6c4`), A–D evaluation and population
   digest is byte-identical; `GENOTYPE_VERSION`, `ASSEMBLY_IR_VERSION`,
   `EVALUATION_TRACE_VERSION`, snapshot/initializer/spec/fitness-vector/integrity
-  versions all unchanged. Full suite green (59 files, 1515 tests), determinism
+  versions all unchanged. Full suite green (59 files, 1541 tests), determinism
   6 files, pinned Chromium 4 files, lint + build clean.
 - **Seeds allocated:** 20260740 engine unit-test population · 20260741 engine
   unit-test terrain · 20260742 committed fixture population · 20260743 committed

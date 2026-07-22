@@ -176,6 +176,11 @@ describe('resume and continuation', () => {
 
     const control = createEvolutionRun(INTEROP_CONFIG);
     await control.advance();
+    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
+    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
+    expect(controlHeader.rapierVersion,
+      'engine changed — re-lock the independent evolution artifact deliberately')
+      .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
 
@@ -428,6 +433,36 @@ describe('ordered verification localizes the failure', () => {
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
+  test('a malformed embedded evaluation spec is classified before physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateHeader: (header) => ({ ...header, evaluationSpecBytes: Uint8Array.of(0, 0) }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /evaluation spec/,
+    );
+    expect(err.cause).toBeInstanceOf(Error);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a malformed embedded initialization manifest is classified before physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateHeader: (header) => ({
+        ...header, initializationManifestBytes: Uint8Array.of(0, 0),
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /initialization manifest/,
+    );
+    expect(err.cause).toBeInstanceOf(Error);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
   test('NO PHYSICS runs before the structural, identity and runtime gates pass', async () => {
     const artifact = await runGenerations(1);
     const broken = new Uint8Array(artifact);
@@ -460,6 +495,25 @@ describe('the runtime gate runs before physics', () => {
       mutateHeader: (h) => ({ ...h, packageName: '@dimforge/rapier3d-compat' }),
     });
     await expectCodeAsync(() => resumeEvolutionRun(foreign), 'runtimeVersionMismatch', /packageName/);
+  });
+
+  test('a non-deterministic embedded spec is rejected before physics', async () => {
+    const artifact = await runGenerations(1);
+    const foreign = await reforge(artifact, {
+      mutateHeader: (header) => ({
+        ...header,
+        evaluationSpecBytes: serializeEvaluationSpec({
+          ...deserializeEvaluationSpec(header.evaluationSpecBytes),
+          deterministic: false,
+        }),
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+
+    await expectCodeAsync(
+      () => resumeEvolutionRun(foreign), 'malformedHistory', /deterministic/,
+    );
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
   test('a non-v1 physics flavor is malformed history, never silently replayed', async () => {
@@ -679,6 +733,10 @@ describe('the external expected-identity contract', () => {
   test('an expected digest of the wrong length is refused as invalidConfig', async () => {
     const artifact = await runGenerations(1);
     expectCodeSync(
+      () => resumeEvolutionRun(artifact, { expectedHistoryDigestBytes: 'not bytes' }),
+      'invalidConfig', /option/,
+    );
+    expectCodeSync(
       () => resumeEvolutionRun(artifact, { expectedHistoryDigestBytes: new Uint8Array(16) }),
       'invalidConfig', /exactly 32 bytes/,
     );
@@ -706,7 +764,7 @@ describe('the resume intake seam', () => {
     // Synchronous because everything decidable about the caller's bytes is
     // decided before an await exists — which is also why a caller that forgets
     // to await gets a throw rather than an unhandled rejection.
-    expect(() => resumeEvolutionRun(make())).toThrow(pattern);
+    expectCodeSync(() => resumeEvolutionRun(make()), 'malformedHistory', pattern);
   });
 
   test('an over-ceiling artifact is refused BEFORE the copy', () => {

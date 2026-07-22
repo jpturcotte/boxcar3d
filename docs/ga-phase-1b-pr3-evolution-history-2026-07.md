@@ -217,7 +217,8 @@ would collapse every corruption class into "the history digest is wrong":
 6. the generation chain, from the header digest forward
 7. the whole-history digest
 8. external expected identity (staleness, *not* corruption)
-9. deterministic flavor + exact Rapier version — **before physics**
+9. decoded spec requires `deterministic: true`, then deterministic flavor +
+   exact Rapier version — **before physics**
 10. deterministic replay, stopping at the first byte divergence
 
 `resumeEvolutionRun` is **not** an `async function`: the artifact and any
@@ -232,8 +233,10 @@ convention. The same ruling applies to `sha256`, `assembleHistory` and
 `componentDigestMismatch` · `generationChainMismatch` · `historyDigestMismatch` ·
 `staleOrWrongArtifact` · `runtimeVersionMismatch` · `replayDivergence`
 
-Lower-level module errors ride along as `cause`; callers branch on `code`, never
-on text. A `replayDivergence` reports `stage`, `generationIndex`, `byteOffset`,
+Lower-level storage/codec/initializer errors ride along as `cause`; callers
+branch on `code`, never on text. Invalid artifact bytes are `malformedHistory`,
+while invalid expected-identity option bytes are `invalidConfig`. A
+`replayDivergence` reports `stage`, `generationIndex`, `byteOffset`,
 `expectedByte`/`actualByte`, and `lastAgreedGenerationIndex`.
 
 ### Freshness
@@ -252,6 +255,14 @@ Verification itself decodes one payload at a time and discards it, but append
 rebuilds the aggregate each generation and is O(G²) copying across a long run.
 Segmented append storage and an advisory performance probe are explicit follow-up
 work before treating the current maximums as normal campaign sizes.
+
+Creation and resume also project the largest artifact permitted by the run's
+fixed v1 geometry before any physics. The projection uses the largest starting
+genotype for every future population row (selection may concentrate it), fixed
+fitness/metadata/lineage widths, and maximum legal runtime-identity string
+lengths. A configuration whose requested generation count cannot fit returns
+`resourceLimitExceeded` with `maximumFeasibleGenerations`; it cannot enter a
+permanently-ready run that fails every later `advance()` at the history ceiling.
 
 ---
 
@@ -416,7 +427,7 @@ gene.
 
 ```bash
 npm run lint
-npm test                  # 59 files, 1534 tests
+npm test                  # 59 files, 1541 tests
 npm run test:determinism  # 6 files, 50 tests incl. evolution identity
 npm run test:browser      # pinned Chromium 149.0.7827.55, 4 files, 20 tests
 npm run build

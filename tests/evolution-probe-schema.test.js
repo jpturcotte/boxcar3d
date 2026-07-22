@@ -68,8 +68,13 @@ describe('evolution probe: report schema and hard identity', () => {
       expect(typeof report.runtime[key], `runtime.${key}`).toBe('string');
       expect(report.runtime[key].length).toBeGreaterThan(0);
     }
+    expect(report.runtime.rapierVersion, 'engine changed — re-lock evolution deliberately')
+      .toBe(LOCK.rapierVersion);
     expect(Number.isFinite(report.runtime.effectiveDt)).toBe(true);
     expect(Number.isInteger(report.runtime.executedSteps)).toBe(true);
+    expect(Number.isFinite(report.elapsedMs)).toBe(true);
+    expect(report.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(report).not.toHaveProperty('generatedAtMs');
     for (const [key, value] of Object.entries(report.versions)) {
       expect(Number.isInteger(value), `versions.${key}`).toBe(true);
     }

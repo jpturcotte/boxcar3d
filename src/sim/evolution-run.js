@@ -46,6 +46,7 @@
 // accounting, and nothing else.
 
 import { Rng } from './prng.js';
+import { serializeGenotype } from './assembly.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_DEFAULTS, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE, mutateContinuousGenotype, selectElites,
@@ -55,7 +56,8 @@ import { copyOrdinaryBytes, typedArrayByteLength } from './bytes.js';
 import {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION,
   assembleHistory, digestComponent, digestGeneration, digestHeader,
-  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
+  encodeEvolutionHeader, encodeGenerationPayload, projectEvolutionHistoryCapacity,
+  serializeEvaluationMetadata,
 } from './evolution-history.js';
 import {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, serializePopulationSnapshot,
@@ -66,7 +68,8 @@ import {
 } from './population-initializer.js';
 import {
   POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, deserializeEvaluationSpec,
-  deserializeFitnessVector, evaluatePopulation, selectablePoolFromEvaluation,
+  deserializeFitnessVector, evaluatePopulation, fitnessVectorByteLength,
+  selectablePoolFromEvaluation,
 } from './population-evaluation.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import { readDeterministicRuntimeIdentity } from './physics/adapter.js';
@@ -77,8 +80,8 @@ import {
   isEvolutionUint32,
 } from './evolution-contract.js';
 import {
-  EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage, serializeLineage,
-  zeroLineageAccounting,
+  EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage, lineageByteLength,
+  serializeLineage, zeroLineageAccounting,
 } from './evolution-lineage.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
@@ -100,6 +103,11 @@ function invalid(message, context = {}, cause = undefined) {
 /** The byte-layer fail idiom, routed through this module's error taxonomy. */
 function bytesFail(path, value) {
   evolutionFail('malformedHistory', `evolution-run: invalid ${path} (${String(value)})`, { path });
+}
+
+/** Caller-supplied option bytes are configuration, never persisted-history corruption. */
+function configBytesFail(path, value) {
+  evolutionFail('invalidConfig', `evolution-run: invalid option ${path} (${String(value)})`, { path });
 }
 
 /**
@@ -780,6 +788,61 @@ class EvolutionRun {
 }
 
 /**
+ * Refuse a run whose legal generation count cannot fit its retained v1
+ * history. Continuous mutation cannot change genotype geometry, but selection
+ * can concentrate the largest starting genotype into every row, so the
+ * projection uses that worst-case population rather than generation 0's sum.
+ */
+function assertHistoryCapacity({
+  population,
+  populationSize,
+  maxGenerations,
+  initializationBytes,
+  specBytes,
+  spec,
+}) {
+  let maximumGenotypeBytes = 0;
+  for (let i = 0; i < population.individuals.length; i += 1) {
+    maximumGenotypeBytes = Math.max(
+      maximumGenotypeBytes,
+      serializeGenotype(population.individuals[i].genotype).length,
+    );
+  }
+  const maximumPopulationBytes = checkedAdd(
+    2 + 2 + 4,
+    checkedMultiply(populationSize, 4 + 4 + maximumGenotypeBytes, 'projected population snapshot'),
+    'projected population snapshot',
+  );
+  const metadataBytes = serializeEvaluationMetadata({
+    worldMode: POPULATION_WORLD_MODE,
+    effectiveDt: 1,
+    executedSteps: spec.maxSteps,
+  }).length;
+  const projection = projectEvolutionHistoryCapacity({
+    initializationManifestByteLength: initializationBytes.length,
+    evaluationSpecByteLength: specBytes.length,
+    generationCount: maxGenerations,
+    componentByteLengths: {
+      population: maximumPopulationBytes,
+      evaluationMetadata: metadataBytes,
+      fitnessVector: fitnessVectorByteLength(populationSize),
+      lineage: lineageByteLength(populationSize),
+    },
+  });
+  if (projection.projectedBytes > MAX_EVOLUTION_HISTORY_BYTES) {
+    evolutionFail('resourceLimitExceeded',
+      `projected evolution history ${projection.projectedBytes} exceeds MAX_EVOLUTION_HISTORY_BYTES (${MAX_EVOLUTION_HISTORY_BYTES})`,
+      {
+        projectedBytes: projection.projectedBytes,
+        limit: MAX_EVOLUTION_HISTORY_BYTES,
+        maximumFeasibleGenerations: projection.maximumFeasibleGenerations,
+        requestedGenerations: maxGenerations,
+        generationFrameBytes: projection.generationFrameBytes,
+      });
+  }
+}
+
+/**
  * Build the private state record for a fresh run: generation 0's population
  * and lineage, both normalized through their codecs, plus the next free id.
  */
@@ -802,6 +865,14 @@ function initialRunState(captured) {
   }
   const pendingLineageBytes = serializeLineage(initialLineage(ids));
   crossCheckLineage(deserializeLineage(pendingLineageBytes), 0, ids, null);
+  assertHistoryCapacity({
+    population: decoded,
+    populationSize,
+    maxGenerations: captured.evolution.maxGenerations,
+    initializationBytes,
+    specBytes: captured.specBytes,
+    spec: captured.spec,
+  });
   return {
     seed,
     populationSize,
@@ -846,14 +917,15 @@ export function createEvolutionRun(config) {
  * as the price of finding out it is too big.
  */
 export function resumeEvolutionRun(historyBytes, options = undefined) {
-  const declaredLength = typedArrayByteLength(historyBytes);
+  const declaredLength = translate('malformedHistory', 'historyBytes are not valid persisted bytes',
+    () => typedArrayByteLength(historyBytes));
   if (declaredLength > MAX_EVOLUTION_HISTORY_BYTES) {
     evolutionFail('resourceLimitExceeded',
       `history byte length ${declaredLength} exceeds MAX_EVOLUTION_HISTORY_BYTES (${MAX_EVOLUTION_HISTORY_BYTES})`,
       { byteLength: declaredLength, limit: MAX_EVOLUTION_HISTORY_BYTES });
   }
   const owned = copyOrdinaryBytes(historyBytes, bytesFail);
-  const expected = captureExpectedIdentity(options, (b) => copyOrdinaryBytes(b, bytesFail));
+  const expected = captureExpectedIdentity(options, (b) => copyOrdinaryBytes(b, configBytesFail));
   return resumeFromOwnedBytes(owned, expected);
 }
 
@@ -864,8 +936,15 @@ async function resumeFromOwnedBytes(owned, expected) {
   // Stage 8: external expected identity — staleness, distinct from corruption.
   checkExpectedIdentity(verified, expected);
   const header = verified.header;
-  const spec = deserializeEvaluationSpec(header.evaluationSpecBytes);
-  const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+  const spec = translate('malformedHistory', 'history evaluation spec is malformed',
+    () => deserializeEvaluationSpec(header.evaluationSpecBytes));
+  if (spec.deterministic !== true) {
+    evolutionFail('malformedHistory',
+      'history evaluation spec is not deterministic — evolution binds one engine identity',
+      { deterministic: String(spec.deterministic) });
+  }
+  const manifest = translate('malformedHistory', 'history initialization manifest is malformed',
+    () => deserializePopulationInitialization(header.initializationManifestBytes));
   const mutation = Object.freeze({
     probability: header.mutationProbability, magnitude: header.mutationMagnitude,
   });
@@ -886,7 +965,17 @@ async function resumeFromOwnedBytes(owned, expected) {
   // Stage 10a: recreate generation 0 from the decoded manifest and compare its
   // population and lineage BYTES. This is the only stage that can fail with
   // stage 'initialization' — everything later is a derived generation.
-  const initialization = createInitialPopulation(manifest.config);
+  const initialization = translate('malformedHistory',
+    'history initialization manifest cannot recreate generation zero',
+    () => createInitialPopulation(manifest.config));
+  assertHistoryCapacity({
+    population: initialization.population,
+    populationSize,
+    maxGenerations: header.maxGenerations,
+    initializationBytes: header.initializationManifestBytes,
+    specBytes: header.evaluationSpecBytes,
+    spec,
+  });
   let populationBytes = serializePopulationSnapshot(initialization.population);
   let lineageBytes = serializeLineage(initialLineage(populationIds(
     deserializePopulationSnapshot(populationBytes),

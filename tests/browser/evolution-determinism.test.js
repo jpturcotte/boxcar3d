@@ -133,6 +133,11 @@ describe('evolution golden locks (Chromium)', () => {
 
     const control = createEvolutionRun(INTEROP_CONFIG);
     await control.advance();
+    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
+    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
+    expect(controlHeader.rapierVersion,
+      'engine changed — re-lock the independent evolution artifact deliberately')
+      .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
     while (control.status().phase !== 'terminal') {

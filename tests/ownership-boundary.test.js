@@ -71,7 +71,7 @@ import {
   assembleHistory, decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata, digestComponent, digestGeneration, digestHeader,
   digestHistoryBody, digestsEqual, encodeEvolutionHeader, encodeGenerationPayload,
-  serializeEvaluationMetadata,
+  projectEvolutionHistoryCapacity, serializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import { sha256 } from '../src/platform/sha256.js';
 import {
@@ -293,7 +293,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'POPULATION_WORLD_MODE', 'REALIZABLE_SUSPENSION_TYPES', 'SELECTION_POOL_VERSION', 'SPAWN_CLEARANCE',
     'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
     'deserializeFitnessVector',
-    'evaluatePopulation', 'fitnessFromVehicleResult', 'isVehicleResultSelectable',
+    'evaluatePopulation', 'fitnessFromVehicleResult', 'fitnessVectorByteLength', 'isVehicleResultSelectable',
     'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
@@ -334,7 +334,8 @@ const EXPECTED_EXPORTS = Object.freeze({
     'assembleHistory', 'decodeEvolutionHeader', 'decodeGenerationPayload',
     'decodeHistoryFraming', 'deserializeEvaluationMetadata', 'digestComponent',
     'digestGeneration', 'digestHeader', 'digestHistoryBody', 'digestsEqual',
-    'encodeEvolutionHeader', 'encodeGenerationPayload', 'serializeEvaluationMetadata',
+    'encodeEvolutionHeader', 'encodeGenerationPayload', 'projectEvolutionHistoryCapacity',
+    'serializeEvaluationMetadata',
   ]),
   // The platform adapter is INSIDE this family by ruling, not beside it: it is
   // a byte seam whose output is persisted artifact identity.
@@ -548,6 +549,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'isVehicleResultValid', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'isVehicleResultSelectable', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'fitnessFromVehicleResult', kind: 'pure', callerCollections: [], callerNumbers: ['vehicleResult.maxForwardDistance'] },
+    { name: 'fitnessVectorByteLength', kind: 'pure', callerCollections: [], callerNumbers: ['count'] },
     {
       name: 'spawnPoseOnFlatStart',
       kind: 'pure',
@@ -659,6 +661,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'MAX_EVOLUTION_HEADER_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_RECORD_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_HISTORY_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'projectEvolutionHistoryCapacity', kind: 'pure', callerCollections: ['componentByteLengths'], callerNumbers: ['initializationManifestByteLength', 'evaluationSpecByteLength', 'generationCount'] },
     { name: 'serializeEvaluationMetadata', kind: 'encoder', callerCollections: [], callerNumbers: ['metadata.effectiveDt', 'metadata.executedSteps'] },
     { name: 'deserializeEvaluationMetadata', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'encodeEvolutionHeader', kind: 'encoder', callerCollections: ['header.initializationManifestBytes', 'header.evaluationSpecBytes'], callerNumbers: ['header.populationSize', 'header.maxGenerations'] },
@@ -966,6 +969,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
     evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
     fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
+    fitnessVectorByteLength: { intake: 'no-byte-intake', why: 'member count in, number out' },
     isVehicleResultSelectable: { intake: 'no-byte-intake', why: 'vehicle result record in' },
     isVehicleResultValid: { intake: 'no-byte-intake', why: 'vehicle result record in' },
     selectableChampionFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
@@ -1037,6 +1041,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
         generations: [{ payloadBytes: Uint8Array.of(1), generationDigestBytes: new Uint8Array(32) }],
       }),
     },
+    projectEvolutionHistoryCapacity: { intake: 'no-byte-intake', why: 'scalar lengths in, frozen scalar projection out' },
     serializeEvaluationMetadata: { intake: 'no-byte-intake', why: 'metadata record in; returns fresh module-owned bytes' },
   },
   'src/platform/sha256.js': {
@@ -1690,6 +1695,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   digestHistoryBody: 'notExercised',
   digestsEqual: 'scalar',
   assembleHistory: 'notExercised', // async; round-tripped in tests/evolution-history.test.js
+  projectEvolutionHistoryCapacity: 'ownedCopy',
   // The ONE declared aliasing seam in the evolution family: its returned views
   // are windows into the module-owned buffer it was handed, by contract.
   decodeHistoryFraming: 'sharedWindow',
@@ -1828,10 +1834,28 @@ function ownedCopyCases() {
         components: { ...HISTORY_COMPONENTS_FIXTURE },
       };
       const payloadBytes = encodeGenerationPayload(payloadSource, HISTORY_DIGESTS_FIXTURE);
+      const componentByteLengths = {
+        population: HISTORY_COMPONENTS_FIXTURE.population.length,
+        evaluationMetadata: HISTORY_COMPONENTS_FIXTURE.evaluationMetadata.length,
+        fitnessVector: HISTORY_COMPONENTS_FIXTURE.fitnessVector.length,
+        lineage: HISTORY_COMPONENTS_FIXTURE.lineage.length,
+      };
+      const projectionSource = {
+        initializationManifestByteLength:
+          HISTORY_HEADER_FIXTURE.initializationManifestBytes.length,
+        evaluationSpecByteLength: HISTORY_HEADER_FIXTURE.evaluationSpecBytes.length,
+        generationCount: 3,
+        componentByteLengths,
+      };
       return [
         { name: 'deserializeEvaluationMetadata', result: deserializeEvaluationMetadata(metadataBytes), roots: [metadataBytes] },
         { name: 'decodeEvolutionHeader', result: decodeEvolutionHeader(headerBytes), roots: [headerBytes] },
         { name: 'decodeGenerationPayload', result: decodeGenerationPayload(payloadBytes), roots: [payloadBytes] },
+        {
+          name: 'projectEvolutionHistoryCapacity',
+          result: projectEvolutionHistoryCapacity(projectionSource),
+          roots: [projectionSource, componentByteLengths],
+        },
       ];
     })(),
     // PR 3's evolution family.

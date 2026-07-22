@@ -56,11 +56,11 @@ const EVAL_FIX = ['eval-a-s0-flat', 'eval-b-mixed-composite', 'eval-c-max-s1', '
 const passed = (fullName) => ({ fullName, status: 'passed', failureMessages: [] });
 const failed = (fullName, message) => ({ fullName, status: 'failed', failureMessages: [message] });
 
-// The candidate's expected Node report: 12 reds with their real failure
+// The candidate's expected Node report: 15 reds with their real failure
 // signatures + every must-pass assertion present and passed.
 function nodeCandidateReport({ fvMeasured = 'ee605286', fvLock = FV_LOCK, champState = '0000dcba' } = {}) {
   return {
-    numFailedTests: 12,
+    numFailedTests: 15,
     testResults: [
       {
         name: '/w/tests/evaluation-determinism.test.js',
@@ -129,6 +129,27 @@ function nodeCandidateReport({ fvMeasured = 'ee605286', fvLock = FV_LOCK, champS
           passed('parametric jitter preserves discrete-decode genes > every declared discrete gene is preserved bit-exactly; continuous leaves actually move'),
         ],
       },
+      {
+        name: '/w/tests/evolution-determinism.test.js',
+        assertionResults: [
+          failed('evolution golden locks (Node) > the committed artifact reproduces EXACTLY',
+            "engine changed — re-lock deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+        ],
+      },
+      {
+        name: '/w/tests/evolution-probe-schema.test.js',
+        assertionResults: [
+          failed('evolution probe: report schema and hard identity > the report is well-formed, versioned, and every hard check passes',
+            "engine changed — re-lock evolution deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+        ],
+      },
+      {
+        name: '/w/tests/evolution-replay.test.js',
+        assertionResults: [
+          failed('resume and continuation > an independently produced Kimi artifact resumes and continues byte-identically',
+            "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+        ],
+      },
     ],
   };
 }
@@ -137,7 +158,7 @@ function browserCandidateReport({
   evalActual = '6b83729e', fvMeasured = 'ee605286', fvLock = FV_LOCK, champStateUnpadded = 'dcba',
 } = {}) {
   return {
-    numFailedTests: 6,
+    numFailedTests: 8,
     testResults: [
       {
         name: '/w/tests/browser/evaluation-determinism.test.js',
@@ -156,6 +177,15 @@ function browserCandidateReport({
             `expected 'first divergent step 1 (state ${champStateUnpadded}) — capture the full record in Node for forensics' to be null`),
         ],
       },
+      {
+        name: '/w/tests/browser/evolution-determinism.test.js',
+        assertionResults: [
+          failed('evolution golden locks (Chromium) > the committed artifact reproduces exactly in the browser',
+            "engine changed — re-lock deliberately via the Node gate: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+          failed('evolution golden locks (Chromium) > Chromium continues the independent Kimi artifact byte-identically',
+            "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+        ],
+      },
     ],
   };
 }
@@ -165,7 +195,7 @@ const reproJson = (dt = 0.01666666753590107) => ({ engine: { rapierVersion: '0.1
 // --- classify: assertion-level enforcement ---------------------------------------
 
 describe('classify — assertion-level candidate-red enforcement (node)', () => {
-  test('the expected 12-red report passes all four layers', () => {
+  test('the expected 15-red report passes all four layers', () => {
     const r = classify({ testJsonPath: writeJson('c-ok.json', nodeCandidateReport()), expectedPath: EXPECTED, label: 'node' });
     expect(r.ok).toBe(true);
   });

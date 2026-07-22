@@ -1124,7 +1124,7 @@ const FITNESS_VECTOR_HEADER_BYTES = 2 + 2 + 2 + 2 + 4 + 2 + 4 + 4; // 22
 const FITNESS_VECTOR_MEMBER_BYTES = 4 + 1 + 1 + 8; // 14
 
 /** Exact byte length of a canonical fitness vector carrying `count` members. */
-function fitnessVectorByteLength(count) {
+export function fitnessVectorByteLength(count) {
   return FITNESS_VECTOR_HEADER_BYTES + FITNESS_VECTOR_MEMBER_BYTES * count;
 }
 

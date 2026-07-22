@@ -29,7 +29,8 @@ import {
   SHA256_DIGEST_BYTES, WORLD_MODES, assembleHistory, decodeEvolutionHeader,
   decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
-  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
+  encodeEvolutionHeader, encodeGenerationPayload, projectEvolutionHistoryCapacity,
+  serializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import { EvolutionError, MAX_EVOLUTION_GENERATIONS, TERMINAL_REASONS } from '../src/sim/evolution-contract.js';
 import { sha256 } from '../src/platform/sha256.js';
@@ -184,6 +185,41 @@ describe('the framing geometry is declared, not derived', () => {
     const headerLength = view.getUint32(10, true);
     expect(headerLength).toBe(artifact.headerBytes.length);
     expect(view.getUint32(14 + headerLength + SHA256_DIGEST_BYTES, true)).toBe(1);
+  });
+
+  test('capacity projection equals an assembled worst-case-string artifact byte-for-byte', async () => {
+    const generationCount = 3;
+    const sourceHeader = header({
+      packageName: 'p'.repeat(255),
+      rapierVersion: 'r'.repeat(255),
+      maxGenerations: generationCount,
+    });
+    const headerBytes = encodeEvolutionHeader(sourceHeader);
+    const headerDigestBytes = await digestHeader(headerBytes);
+    const cs = components(17);
+    const payloadBytes = encodeGenerationPayload({
+      generationIndex: 0,
+      terminalReason: 'none',
+      components: cs,
+    }, await digestsFor(cs));
+    const generationDigestBytes = await digestGeneration(headerDigestBytes, payloadBytes);
+    const generations = Array.from({ length: generationCount }, () => ({
+      payloadBytes,
+      generationDigestBytes,
+    }));
+    const artifact = await assembleHistory({ headerBytes, headerDigestBytes, generations });
+
+    const projection = projectEvolutionHistoryCapacity({
+      initializationManifestByteLength: sourceHeader.initializationManifestBytes.length,
+      evaluationSpecByteLength: sourceHeader.evaluationSpecBytes.length,
+      generationCount,
+      componentByteLengths: Object.fromEntries(
+        COMPONENT_KINDS.map((kind) => [kind, cs[kind].length]),
+      ),
+    });
+    expect(projection.projectedBytes).toBe(artifact.bytes.length);
+    expect(projection.headerBytes).toBe(headerBytes.length);
+    expect(projection.generationPayloadBytes).toBe(payloadBytes.length);
   });
 
   test('the evaluation metadata is exactly 15 bytes, at the declared offsets', () => {

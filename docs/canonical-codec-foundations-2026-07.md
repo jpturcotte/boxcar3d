@@ -921,7 +921,12 @@ The deferral therefore carries an **explicit expiry condition** rather than an
 open end: Phase 1B persists evolution history to disk and reloads it, which is
 the first moment a trace crosses a trust boundary — the same milestone the
 strong-digest and mutable-trace-evidence deferrals already point at. Revisit
-there, not before. The failure shape is stated at both call sites so the
+there, not before. **(SUPERSEDED — see §Round 15: PR 3 Commit 0 narrows this
+chronological trigger to the semantic one it always meant. PR 3's history is
+byte-only and forces trace mode `none`, so persisting evolution bytes does NOT
+move a trace across any boundary. The expiry is now: when a NON-NULL trace
+crosses a persistence, replay, determinism-lock, or artifact-identity trust
+boundary.)** The failure shape is stated at both call sites so the
 deferral cannot rot into forgotten prose, and test tooling that wants the
 guarantee today can encode both sides via `encodeTraceRecord()` first, which
 mechanically closes the class for that caller (option A applied per-caller).
@@ -1028,6 +1033,82 @@ The browser codec smoke (`tests/browser/codec-smoke.test.js`) exists because
 of the codec family would ever execute in Chromium, and "usable in Node and the
 pinned browser" would be an untested claim. It carries no golden lock of its
 own.
+
+## Round 15: the trace-deferral supersession (GA Phase 1B PR 3, Commit 0)
+
+This section is a POLICY DECISION RECORD, not an implementation note. It is the
+first commit of GA Phase 1B PR 3 and it lands **before** any history code,
+because the wording it replaces is load-bearing: rounds 13 and 14 both attached
+an expiry condition to the mutable-trace-evidence and compare-class deferrals,
+and both phrased that expiry chronologically.
+
+**The superseded wording.** Rounds 13 and 14 wrote, at five sites
+(`src/sim/trace.js` twice, `src/sim/trace-forensics.js`,
+`tests/ownership-boundary.test.js` (0c), and §Round 13/§Round 14 above), that
+the deferral expires when *"Phase 1B persists evolution history to disk and
+reloads it, which is the first moment a trace crosses a trust boundary."*
+
+**The approved supersession** (JP, 2026-07-22):
+
+> PR 3 persists byte-only evolution history. Evaluation is forced to trace mode
+> `none`; trace records, trace checkpoints, live diagnostics, and comparator
+> evidence are structurally absent from the history format. Mutable-trace
+> hardening therefore expires when a non-null trace crosses a persistence,
+> replay, determinism-lock, or artifact-identity trust boundary — not merely
+> when unrelated evolution bytes are persisted.
+
+**The technical proof the narrowing rests on.** The chronological wording
+assumed "history exists" implies "a trace crossed a boundary". For PR 3's
+format that implication is false, and the reason is structural rather than
+behavioural:
+
+1. `evaluatePopulation` already evaluates at `trace: { mode: 'none' }`, which is
+   a literal no-work path — `TraceWriter` retains nothing and the result carries
+   no records or checkpoints. PR 3 never widens that.
+2. The v1 generation record has a FIXED component order and exactly four
+   component kinds — population snapshot, evaluation metadata, fitness vector,
+   lineage — each a length-prefixed byte array with its own digest domain.
+   There is no property bag, no optional component, and no
+   diagnostics/trace/comparator field. A trace has no byte walk to enter
+   through; excluding it is not a rule someone must remember to apply.
+3. The evaluation-metadata component is three scalars
+   (`worldMode`/`effectiveDt`/`executedSteps`) at a fixed geometry, chosen
+   precisely so that normalizing the evaluation does not require carrying an
+   open-ended diagnostics record.
+4. Replay compares component BYTES; it never constructs a trace envelope, and
+   it never calls `compareTraces` or `analyzeTrace`.
+
+So the class rounds 13/14 deferred — post-attestation mutation of caller-held
+trace evidence, and the cross-side compare-mutation class — remains exactly as
+exposed as it was: not at all, because BoxCar3D still has no untrusted input on
+that surface.
+
+**Why the wording could not simply be reinterpreted.** The repo's own standing
+lesson (rounds 8–14) is that unenforced prose reads as an audited guarantee. A
+deferral whose expiry has silently passed is worse than one with no expiry at
+all, and "we decided it did not really mean that" is the failure mode this
+document exists to prevent. The narrowing is therefore an explicit, approved
+supersession recorded at every site that carried the old wording, and the
+premise it rests on is EXECUTABLE: `tests/evolution-run.test.js` carries the
+static and runtime trace-exclusion teeth (the evolution modules import no trace
+module, and a run's evaluation seam is asserted to receive `mode: 'none'` and to
+produce a null trace). If the premise ever stops being true, a build fails
+rather than a paragraph quietly rotting.
+
+**The split trigger, stated so it cannot be argued away later.** If any PR 3
+implementation begins accepting, retaining, encoding, comparing, or deriving
+identity from non-null trace evidence, PR 3 stops and trace hardening lands
+first, as its own PR or as a prerequisite commit. The remaining recorded
+decision space is unchanged (value model vs verified-evidence model for
+`finish()`; hard-API-boundary vs total deep pre-scan for the comparators).
+
+**The strong-digest deferral is DISCHARGED by this PR, not narrowed.** §Round 12
+deferred a collision-resistant digest "to Phase 1B, introduced only when
+artifact identity is actually needed". PR 3 is that moment: `src/platform/sha256.js`
+provides domain-separated SHA-256 over persisted history components, the
+generation chain, and the whole artifact. FNV-1a32 keeps its unchanged role —
+drift/lock digests and the same-input cross-environment determinism comparator —
+and no evolution artifact identity is ever established by FNV.
 
 ## Follow-ups (recorded, not fixed here)
 

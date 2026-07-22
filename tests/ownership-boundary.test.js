@@ -43,6 +43,12 @@ import * as PopulationNS from '../src/sim/population.js';
 import * as InitializerNS from '../src/sim/population-initializer.js';
 import * as EvaluationNS from '../src/sim/population-evaluation.js';
 import * as EvolutionNS from '../src/sim/evolution-operators.js';
+import * as EvolutionContractNS from '../src/sim/evolution-contract.js';
+import * as EvolutionLineageNS from '../src/sim/evolution-lineage.js';
+import * as EvolutionRunNS from '../src/sim/evolution-run.js';
+import * as EvolutionHistoryNS from '../src/sim/evolution-history.js';
+import * as EvolutionReplayNS from '../src/sim/evolution-replay.js';
+import * as Sha256NS from '../src/platform/sha256.js';
 import * as IntegrityNS from '../src/sim/integrity.js';
 import * as TraceNS from '../src/sim/trace.js';
 import * as ForensicsNS from '../src/sim/trace-forensics.js';
@@ -58,12 +64,28 @@ import { createIntegrityState, foldIntegrity } from '../src/sim/integrity.js';
 import {
   analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView,
 } from '../src/sim/trace-forensics.js';
+import {
+  deserializeLineage, serializeLineage, zeroLineageAccounting,
+} from '../src/sim/evolution-lineage.js';
+import {
+  assembleHistory, decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
+  deserializeEvaluationMetadata, digestComponent, digestGeneration, digestHeader,
+  digestHistoryBody, digestsEqual, encodeEvolutionHeader, encodeGenerationPayload,
+  serializeEvaluationMetadata,
+} from '../src/sim/evolution-history.js';
+import { sha256 } from '../src/platform/sha256.js';
+import {
+  captureExpectedIdentity, failReplayDivergence, firstByteDifference,
+  verifyHistoryArtifact,
+} from '../src/sim/evolution-replay.js';
+import { resumeEvolutionRun } from '../src/sim/evolution-run.js';
+import { EvolutionError, evolutionFail } from '../src/sim/evolution-contract.js';
 import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
 import { Rng } from '../src/sim/prng.js';
 import { runInNewContext as vmRunInNewContext } from 'node:vm';
 
 const {
-  bytesToHex, createByteReader, requireOrdinaryBytes, typedArrayByteLength,
+  bytesToHex, copyOrdinaryBytes, createByteReader, requireOrdinaryBytes, typedArrayByteLength,
 } = BytesNS;
 const {
   compileAssembly, deserializeGenotype, forEachGenotypeField, randomGenotype,
@@ -78,7 +100,7 @@ const {
   sampleInitialGenotype, serializePopulationInitialization,
 } = InitializerNS;
 const {
-  SPAWN_CLEARANCE, championFromEvaluation, deserializeEvaluationSpec,
+  SPAWN_CLEARANCE, canonicalizeEvaluationSpec, championFromEvaluation, deserializeEvaluationSpec,
   deserializeFitnessVector, selectableChampionFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } = EvaluationNS;
@@ -244,7 +266,8 @@ const baseTraceRecord = () => ({
 
 const EXPECTED_EXPORTS = Object.freeze({
   'bytes.js': Object.freeze([
-    'bytesToHex', 'createByteReader', 'hexToBytes', 'requireOrdinaryBytes', 'typedArrayByteLength',
+    'bytesToHex', 'copyOrdinaryBytes', 'createByteReader', 'hexToBytes',
+    'requireOrdinaryBytes', 'typedArrayByteLength',
   ]),
   'assembly.js': Object.freeze([
     'ASSEMBLY_DEFAULTS', 'ASSEMBLY_IR_VERSION', 'ASSEMBLY_RULES', 'DISCRETE_GENE_KEYS',
@@ -268,7 +291,8 @@ const EXPECTED_EXPORTS = Object.freeze({
   'population-evaluation.js': Object.freeze([
     'EVALUATION_SPEC_VERSION', 'FITNESS_POLICY_VERSION', 'FITNESS_VECTOR_VERSION',
     'POPULATION_WORLD_MODE', 'REALIZABLE_SUSPENSION_TYPES', 'SELECTION_POOL_VERSION', 'SPAWN_CLEARANCE',
-    'championFromEvaluation', 'deserializeEvaluationSpec', 'deserializeFitnessVector',
+    'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
+    'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'isVehicleResultSelectable',
     'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
@@ -278,6 +302,42 @@ const EXPECTED_EXPORTS = Object.freeze({
     'SELECTION_POOL_VERSION', 'TOURNAMENT_SELECTION_VERSION', 'TOURNAMENT_SIZE',
     'mutateContinuousGenotype', 'selectElites', 'selectTournamentParent',
   ]),
+  // PR 3's evolution family. `evolution-contract.js` is the leaf every other
+  // evolution module binds (error taxonomy, terminal enum, caps); it has no
+  // imports of its own, which is what keeps the family cycle-free.
+  'evolution-contract.js': Object.freeze([
+    'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_ERROR_CODES', 'EVOLUTION_POLICY_VERSION',
+    'EvolutionError', 'MAX_EVOLUTION_GENERATIONS', 'MAX_EVOLUTION_POPULATION_SIZE',
+    'TERMINAL_REASONS', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
+    'isEvolutionUint32',
+  ]),
+  'evolution-lineage.js': Object.freeze([
+    'EVOLUTION_LINEAGE_VERSION', 'LINEAGE_ACCOUNTING_KEYS', 'LINEAGE_NO_PARENT',
+    'LINEAGE_ORIGINS', 'crossCheckLineage', 'deserializeLineage', 'lineageByteLength',
+    'serializeLineage', 'validateLineage', 'zeroLineageAccounting',
+  ]),
+  'evolution-run.js': Object.freeze([
+    'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_POLICY_VERSION', 'TERMINAL_REASONS',
+    'createEvolutionRun', 'resumeEvolutionRun',
+  ]),
+  'evolution-replay.js': Object.freeze([
+    'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
+    'checkExpectedIdentity', 'checkRuntimeIdentity', 'failReplayDivergence',
+    'firstByteDifference', 'verifyHistoryArtifact',
+  ]),
+  'evolution-history.js': Object.freeze([
+    'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
+    'EVOLUTION_HISTORY_MAGIC', 'EVOLUTION_HISTORY_VERSION', 'GENERATION_RECORD_VERSION',
+    'MAX_EVOLUTION_COMPONENT_BYTES', 'MAX_EVOLUTION_HISTORY_BYTES',
+    'MAX_EVOLUTION_RECORD_BYTES', 'SHA256_DIGEST_BYTES', 'WORLD_MODES',
+    'assembleHistory', 'decodeEvolutionHeader', 'decodeGenerationPayload',
+    'decodeHistoryFraming', 'deserializeEvaluationMetadata', 'digestComponent',
+    'digestGeneration', 'digestHeader', 'digestHistoryBody', 'digestsEqual',
+    'encodeEvolutionHeader', 'encodeGenerationPayload', 'serializeEvaluationMetadata',
+  ]),
+  // The platform adapter is INSIDE this family by ruling, not beside it: it is
+  // a byte seam whose output is persisted artifact identity.
+  'sha256.js': Object.freeze(['SHA256_DIGEST_BYTES', 'sha256']),
   // Round 11: these five were UNPINNED while tests/single-read.test.js:250-252
   // cited this file as the backstop that forces a new export into its table
   // ("an unlisted export fails there first"). For 47 exports across five
@@ -318,6 +378,22 @@ const EXPECTED_EXPORTS = Object.freeze({
 const RE_EXPORTS = Object.freeze({
   'evaluation.js': Object.freeze(['EVALUATION_TRACE_VERSION', 'TERMINATION_REASONS']),
   'evolution-operators.js': Object.freeze(['SELECTION_POOL_VERSION']),
+  'evolution-run.js': Object.freeze([
+    'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_POLICY_VERSION', 'TERMINAL_REASONS',
+  ]),
+  'evolution-history.js': Object.freeze(['SHA256_DIGEST_BYTES']),
+  'evolution-replay.js': Object.freeze(['MAX_EVOLUTION_HISTORY_BYTES']),
+});
+
+// Which module OWNS each re-exported binding. Declared rather than inferred:
+// the identity check below used a hard-coded ternary over two modules, which
+// silently stopped scaling the moment a third re-exporting module shipped.
+const RE_EXPORT_OWNER = Object.freeze({
+  'evaluation.js': 'trace.js',
+  'evolution-operators.js': 'population-evaluation.js',
+  'evolution-run.js': 'evolution-contract.js',
+  'evolution-history.js': 'sha256.js',
+  'evolution-replay.js': 'evolution-history.js',
 });
 
 const NAMESPACES = Object.freeze({
@@ -327,6 +403,12 @@ const NAMESPACES = Object.freeze({
   'population-initializer.js': InitializerNS,
   'population-evaluation.js': EvaluationNS,
   'evolution-operators.js': EvolutionNS,
+  'evolution-contract.js': EvolutionContractNS,
+  'evolution-lineage.js': EvolutionLineageNS,
+  'evolution-run.js': EvolutionRunNS,
+  'evolution-history.js': EvolutionHistoryNS,
+  'evolution-replay.js': EvolutionReplayNS,
+  'sha256.js': Sha256NS,
   'integrity.js': IntegrityNS,
   'trace.js': TraceNS,
   'trace-forensics.js': ForensicsNS,
@@ -356,6 +438,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'requireOrdinaryBytes', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'typedArrayByteLength', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'bytesToHex', kind: 'encoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'copyOrdinaryBytes', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
     // hex is a STRING: no caller collection, no caller number.
     { name: 'hexToBytes', kind: 'decoder', callerCollections: [], callerNumbers: [] },
   ]),
@@ -490,6 +573,14 @@ const EXPORT_ROLES = Object.freeze({
       callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
     },
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // Resolves the caller's spec once and returns the bytes PLUS the record
+    // decoded from them; the returned spec shares nothing with the input.
+    {
+      name: 'canonicalizeEvaluationSpec',
+      kind: 'encoder',
+      callerCollections: ['spec.terrain.<range>'],
+      callerNumbers: ['spec.maxSteps', 'spec.spawn.*', 'spec.terrain.*'],
+    },
     { name: 'championFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
     { name: 'selectableChampionFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitness', 'individualId'] },
     { name: 'selectablePoolFromEvaluation', kind: 'pure', callerCollections: ['evaluation.individuals'], callerNumbers: ['fitnessPolicyVersion', 'fitness', 'individualId', 'populationSnapshotDigestState'] },
@@ -505,6 +596,86 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'selectTournamentParent', kind: 'pure', callerCollections: ['pool.evaluatedIndividualIds', 'pool.individuals'], callerNumbers: ['pool.populationSnapshotDigestState', 'fitness', 'individualId'] },
     { name: 'selectElites', kind: 'pure', callerCollections: ['population.individuals', 'pool.evaluatedIndividualIds', 'pool.individuals'], callerNumbers: ['pool.populationSnapshotDigestState', 'fitness', 'individualId'] },
     { name: 'mutateContinuousGenotype', kind: 'pure', callerCollections: ['parent'], callerNumbers: ['options.probability', 'options.magnitude'] },
+  ]),
+  'evolution-contract.js': Object.freeze([
+    { name: 'EVOLUTION_ENGINE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVOLUTION_POLICY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVOLUTION_ERROR_CODES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TERMINAL_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_POPULATION_SIZE', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_GENERATIONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    // The error type COPIES its context by key enumeration and coerces every
+    // non-scalar to a string, so no caller object — and no history buffer —
+    // can be retained by a thrown diagnostic.
+    { name: 'EvolutionError', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
+    { name: 'evolutionFail', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
+    { name: 'isEvolutionUint32', kind: 'validator', callerCollections: [], callerNumbers: ['v'] },
+    { name: 'checkedAdd', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
+    { name: 'checkedMultiply', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
+  ]),
+  'evolution-lineage.js': Object.freeze([
+    { name: 'EVOLUTION_LINEAGE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'LINEAGE_ORIGINS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'LINEAGE_NO_PARENT', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'LINEAGE_ACCOUNTING_KEYS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'lineageByteLength', kind: 'pure', callerCollections: [], callerNumbers: ['count'] },
+    { name: 'zeroLineageAccounting', kind: 'pure', callerCollections: [], callerNumbers: [] },
+    { name: 'validateLineage', kind: 'validator', callerCollections: ['lineage.individuals'], callerNumbers: [] },
+    { name: 'serializeLineage', kind: 'encoder', callerCollections: ['lineage.individuals'], callerNumbers: [] },
+    { name: 'deserializeLineage', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'crossCheckLineage', kind: 'validator', callerCollections: ['individualIds', 'previousIndividualIds'], callerNumbers: [] },
+  ]),
+  'evolution-run.js': Object.freeze([
+    { name: 'EVOLUTION_ENGINE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVOLUTION_POLICY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'TERMINAL_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    // The config's own array (initialSuspensionTypes) is copied by index at
+    // intake; nothing caller-owned survives into run state.
+    { name: 'createEvolutionRun', kind: 'orchestrator', callerCollections: ['initialization.initialSuspensionTypes'], callerNumbers: [] },
+    { name: 'resumeEvolutionRun', kind: 'orchestrator', callerCollections: ['historyBytes', 'options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
+  ]),
+  'evolution-replay.js': Object.freeze([
+    { name: 'REPLAY_STAGES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_HISTORY_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'firstByteDifference', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: [] },
+    { name: 'failReplayDivergence', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: [] },
+    { name: 'verifyHistoryArtifact', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'checkExpectedIdentity', kind: 'validator', callerCollections: [], callerNumbers: ['expected.generationIndex'] },
+    { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
+  ]),
+  'evolution-history.js': Object.freeze([
+    { name: 'EVOLUTION_HISTORY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'GENERATION_RECORD_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVALUATION_METADATA_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVOLUTION_HISTORY_MAGIC', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'EVOLUTION_DIGEST_DOMAINS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'COMPONENT_KINDS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'WORLD_MODES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'SHA256_DIGEST_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_COMPONENT_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_RECORD_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_HISTORY_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'serializeEvaluationMetadata', kind: 'encoder', callerCollections: [], callerNumbers: ['metadata.effectiveDt', 'metadata.executedSteps'] },
+    { name: 'deserializeEvaluationMetadata', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'encodeEvolutionHeader', kind: 'encoder', callerCollections: ['header.initializationManifestBytes', 'header.evaluationSpecBytes'], callerNumbers: ['header.populationSize', 'header.maxGenerations'] },
+    { name: 'decodeEvolutionHeader', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'encodeGenerationPayload', kind: 'encoder', callerCollections: ['record.components', 'componentDigests'], callerNumbers: ['record.generationIndex'] },
+    { name: 'decodeGenerationPayload', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'digestHeader', kind: 'pure', callerCollections: ['headerBytes'], callerNumbers: [] },
+    { name: 'digestComponent', kind: 'pure', callerCollections: ['componentBytes'], callerNumbers: [] },
+    { name: 'digestGeneration', kind: 'pure', callerCollections: ['previousDigestBytes', 'payloadBytes'], callerNumbers: [] },
+    { name: 'digestHistoryBody', kind: 'pure', callerCollections: ['bodyBytes'], callerNumbers: [] },
+    { name: 'digestsEqual', kind: 'pure', callerCollections: ['a', 'b'], callerNumbers: [] },
+    { name: 'assembleHistory', kind: 'encoder', callerCollections: ['headerBytes', 'headerDigestBytes', 'generations'], callerNumbers: [] },
+    // DELIBERATE EXCEPTION, documented on the function: the returned header and
+    // payload views ALIAS the input, which is what keeps the 64 MiB peak-memory
+    // model honest. Its contract is "module-owned bytes only".
+    { name: 'decodeHistoryFraming', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+  ]),
+  'sha256.js': Object.freeze([
+    { name: 'SHA256_DIGEST_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'sha256', kind: 'pure', callerCollections: ['bytes'], callerNumbers: [] },
   ]),
   'integrity.js': Object.freeze([
     { name: 'INTEGRITY_POLICY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -618,25 +789,46 @@ const BYTE_FAMILY_EXEMPT = Object.freeze({
   'src/sim/population-fixtures.js': 'declared fixture literals',
   'src/sim/population-locks.js': 'golden literals only, zero imports',
   'src/sim/evolution-operators.js': 'plain population/pool/genotype inputs; serializes only module-owned canonical data',
+  'src/sim/evolution-contract.js': 'error taxonomy, terminal enum, caps and checked arithmetic; no byte buffers, no caller collections beyond a scalar-copied error context',
+  'src/sim/evolution-fixtures.js': 'declared fixture literals',
+  'src/sim/evolution-locks.js': 'golden literals only, zero imports',
   'src/sim/lock-markers.js': 'message-format constants',
   'src/sim/physics/adapter.js': 'the Rapier seam; trusts compiler-owned IRs by standing ruling',
 });
 
-describe('(0) the byte-family lint scope covers every src/sim module', () => {
+// The byte-family scope is derived from the RULES, not from one block's name.
+// Round 13 found it by `files.includes('src/sim/bytes.js')` — a single-block
+// lookup that silently stopped covering the family the moment PR 3 split the
+// platform adapter into its own block (same rules, different determinism
+// policy). Matching on the shared selector means any future block that spreads
+// BYTE_SAFETY_SYNTAX joins the enforced surface automatically.
+const BYTE_SAFETY_MARKER = 'subarray is banned here';
+
+async function byteFamilyFiles() {
+  const { default: config } = await import('../eslint.config.js');
+  const blocks = config.filter((b) => Array.isArray(b.files)
+    && b.rules && Array.isArray(b.rules['no-restricted-syntax'])
+    && b.rules['no-restricted-syntax'].some((r) => typeof r === 'object' && r !== null
+      && typeof r.message === 'string' && r.message.includes(BYTE_SAFETY_MARKER)));
+  expect(blocks.length, 'at least one block must carry the byte-safety rules').toBeGreaterThan(0);
+  return blocks.flatMap((b) => [...b.files]);
+}
+
+describe('(0) the byte-family lint scope covers every byte-owning module', () => {
   test('each module is either linted by the byte family or exempt with a reason', async () => {
     const { readdirSync } = await import('node:fs');
-    const { default: config } = await import('../eslint.config.js');
-    const byteBlock = config.find((b) => Array.isArray(b.files)
-      && b.files.includes('src/sim/bytes.js'));
-    expect(byteBlock, 'the byte-family lint block must exist').toBeTruthy();
+    const files = await byteFamilyFiles();
 
     const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (
       e.isDirectory() ? walk(`${dir}/${e.name}`) : (e.name.endsWith('.js') ? [`${dir}/${e.name}`] : [])
     ));
-    const modules = walk('src/sim').sort();
+    // src/platform joins the walk with PR 3: the SHA-256 adapter is a byte seam
+    // whose output is persisted artifact identity, so leaving it outside the
+    // derivation would exempt it by directory rather than by decision.
+    const modules = [...walk('src/sim'), ...walk('src/platform')].sort();
     expect(modules.length).toBeGreaterThan(15); // the enumeration is not vacuous
 
-    const linted = new Set(byteBlock.files);
+    const linted = new Set(files);
     const exempt = new Set(Object.keys(BYTE_FAMILY_EXEMPT));
     const unclassified = modules.filter((m) => !linted.has(m) && !exempt.has(m));
     expect(unclassified, 'classify these in BYTE_FAMILY_EXEMPT or add them to the lint block').toEqual([]);
@@ -699,6 +891,11 @@ const BYTE_FAMILY_NAMESPACES = Object.freeze({
   'src/sim/population.js': PopulationNS,
   'src/sim/population-initializer.js': InitializerNS,
   'src/sim/population-evaluation.js': EvaluationNS,
+  'src/sim/evolution-lineage.js': EvolutionLineageNS,
+  'src/sim/evolution-run.js': EvolutionRunNS,
+  'src/sim/evolution-history.js': EvolutionHistoryNS,
+  'src/sim/evolution-replay.js': EvolutionReplayNS,
+  'src/platform/sha256.js': Sha256NS,
 });
 
 const storageProbeFail = (path, value) => {
@@ -715,6 +912,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     requireOrdinaryBytes: { intake: 'gated', invoke: (u) => requireOrdinaryBytes(u, storageProbeFail) },
     createByteReader: { intake: 'gated', invoke: (u) => createByteReader(u, storageProbeFail) },
     bytesToHex: { intake: 'gated', invoke: (u) => bytesToHex(u) },
+    copyOrdinaryBytes: { intake: 'gated', invoke: (u) => copyOrdinaryBytes(u) },
     typedArrayByteLength: { intake: 'gated', invoke: (u) => typedArrayByteLength(u) },
     hexToBytes: { intake: 'no-byte-intake', why: 'string in; returns fresh module-owned bytes' },
   },
@@ -729,7 +927,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     encodeTraceRecord: { intake: 'gated', invoke: (u) => encodeTraceRecord({}, u) },
     compareTraces: { intake: 'gated', invoke: (u) => compareTraces(storageEnvelope([u]), storageEnvelope([u])) },
     compareCheckpoints: { intake: 'no-byte-intake', why: 'checkpoint rows are numbers (uint32 states), no byte buffers' },
-    TraceWriter: { intake: 'no-byte-intake', why: 'record() takes plain records; emits module-owned bytes only (finish() output mutability: the DEFERRED round-13 ruling, see the codec doc)' },
+    TraceWriter: { intake: 'no-byte-intake', why: 'record() takes plain records; emits module-owned bytes only (finish() output mutability: the DEFERRED round-13 ruling, expiry narrowed to the semantic non-null-trace trigger by PR 3 Commit 0 — see the codec doc §Round 15)' },
   },
   'src/sim/assembly.js': {
     deserializeGenotype: { intake: 'gated', invoke: (u) => deserializeGenotype(u) },
@@ -772,15 +970,118 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     serializeEvaluationSpec: { intake: 'no-byte-intake', why: 'spec object in; returns fresh module-owned bytes' },
     serializeFitnessVector: { intake: 'no-byte-intake', why: 'evaluation object in; returns fresh module-owned bytes' },
     spawnPoseOnFlatStart: { intake: 'no-byte-intake', why: 'IR + options in, pose out' },
+    canonicalizeEvaluationSpec: { intake: 'no-byte-intake', why: 'spec object in; returns fresh module-owned bytes + the record decoded from them' },
   },
+  'src/sim/evolution-lineage.js': {
+    deserializeLineage: { intake: 'gated', invoke: (u) => deserializeLineage(u) },
+    serializeLineage: { intake: 'no-byte-intake', why: 'lineage object in; returns fresh module-owned bytes' },
+    validateLineage: { intake: 'no-byte-intake', why: 'lineage object in' },
+    crossCheckLineage: { intake: 'no-byte-intake', why: 'decoded lineage + two id arrays in' },
+    lineageByteLength: { intake: 'no-byte-intake', why: 'count in, number out' },
+    zeroLineageAccounting: { intake: 'no-byte-intake', why: 'no args' },
+  },
+  'src/sim/evolution-run.js': {
+    createEvolutionRun: { intake: 'no-byte-intake', why: 'config object in, opaque run out' },
+    // The resume seam validates and copies in its SYNCHRONOUS prologue, which
+    // is why a fancy artifact throws here rather than rejecting later.
+    resumeEvolutionRun: { intake: 'gated', invoke: (u) => resumeEvolutionRun(u) },
+  },
+  'src/sim/evolution-replay.js': {
+    verifyHistoryArtifact: { intake: 'gated', invoke: (u) => verifyHistoryArtifact(u) },
+    firstByteDifference: { intake: 'gated', invoke: (u) => firstByteDifference(u, Uint8Array.of(1)) },
+    failReplayDivergence: {
+      intake: 'gated',
+      invoke: (u) => failReplayDivergence({
+        stage: 'population', generationIndex: 0, expected: u, actual: Uint8Array.of(1), lastAgreedGenerationIndex: null,
+      }),
+    },
+    captureExpectedIdentity: {
+      intake: 'gated',
+      invoke: (u) => captureExpectedIdentity({ expectedHistoryDigestBytes: u }, (b) => copyOrdinaryBytes(b)),
+    },
+    checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
+    checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
+  },
+  'src/sim/evolution-history.js': {
+    // Every one of these accepts caller bytes, and every one refuses fancy
+    // storage SYNCHRONOUSLY — which is why `assembleHistory` is not an `async
+    // function` (a rejected promise would make this battery untestable).
+    deserializeEvaluationMetadata: { intake: 'gated', invoke: (u) => deserializeEvaluationMetadata(u) },
+    decodeEvolutionHeader: { intake: 'gated', invoke: (u) => decodeEvolutionHeader(u) },
+    decodeGenerationPayload: { intake: 'gated', invoke: (u) => decodeGenerationPayload(u) },
+    decodeHistoryFraming: { intake: 'gated', invoke: (u) => decodeHistoryFraming(u) },
+    digestHeader: { intake: 'gated', invoke: (u) => digestHeader(u) },
+    digestComponent: { intake: 'gated', invoke: (u) => digestComponent('population', u) },
+    digestGeneration: { intake: 'gated', invoke: (u) => digestGeneration(u, Uint8Array.of(1)) },
+    digestHistoryBody: { intake: 'gated', invoke: (u) => digestHistoryBody(u) },
+    digestsEqual: { intake: 'gated', invoke: (u) => digestsEqual(u, Uint8Array.of(1)) },
+    encodeEvolutionHeader: {
+      intake: 'gated',
+      invoke: (u) => encodeEvolutionHeader({ ...HISTORY_HEADER_FIXTURE, initializationManifestBytes: u }),
+    },
+    encodeGenerationPayload: {
+      intake: 'gated',
+      invoke: (u) => encodeGenerationPayload(
+        { generationIndex: 0, terminalReason: 'none', components: { ...HISTORY_COMPONENTS_FIXTURE, population: u } },
+        HISTORY_DIGESTS_FIXTURE,
+      ),
+    },
+    assembleHistory: {
+      intake: 'gated',
+      invoke: (u) => assembleHistory({
+        headerBytes: u,
+        headerDigestBytes: new Uint8Array(32),
+        generations: [{ payloadBytes: Uint8Array.of(1), generationDigestBytes: new Uint8Array(32) }],
+      }),
+    },
+    serializeEvaluationMetadata: { intake: 'no-byte-intake', why: 'metadata record in; returns fresh module-owned bytes' },
+  },
+  'src/platform/sha256.js': {
+    sha256: { intake: 'gated', invoke: (u) => sha256(u) },
+  },
+});
+
+// Minimal module-owned fixtures for the two history encoders whose byte intake
+// is a FIELD rather than the whole argument.
+const HISTORY_HEADER_FIXTURE = Object.freeze({
+  evolutionEngineVersion: 1,
+  evolutionPolicyVersion: 1,
+  generationRecordVersion: 1,
+  lineageVersion: 1,
+  evaluationMetadataVersion: 1,
+  tournamentSelectionVersion: 1,
+  elitismVersion: 1,
+  parametricMutationVersion: 1,
+  tournamentSize: 3,
+  eliteCount: 2,
+  physicsFlavor: 'deterministicCompat',
+  packageName: '@dimforge/rapier3d-deterministic-compat',
+  rapierVersion: '0.19.3',
+  populationSize: 2,
+  maxGenerations: 2,
+  mutationProbability: 0.05,
+  mutationMagnitude: 0.05,
+  initializationManifestBytes: Uint8Array.of(1, 2),
+  evaluationSpecBytes: Uint8Array.of(3, 4),
+});
+
+const HISTORY_COMPONENTS_FIXTURE = Object.freeze({
+  population: Uint8Array.of(1),
+  evaluationMetadata: serializeEvaluationMetadata({ worldMode: 'isolatedWorlds', effectiveDt: 1 / 60, executedSteps: 1 }),
+  fitnessVector: Uint8Array.of(2),
+  lineage: Uint8Array.of(3),
+});
+
+const HISTORY_DIGESTS_FIXTURE = Object.freeze({
+  population: new Uint8Array(32),
+  evaluationMetadata: new Uint8Array(32),
+  fitnessVector: new Uint8Array(32),
+  lineage: new Uint8Array(32),
 });
 
 describe('(0b) the byte-storage intake surface is derived and closed', () => {
   test('the classified module set IS the byte-family lint set, and every function export is classified', async () => {
-    const { default: config } = await import('../eslint.config.js');
-    const byteBlock = config.find((b) => Array.isArray(b.files)
-      && b.files.includes('src/sim/bytes.js'));
-    const families = [...byteBlock.files].sort();
+    const families = (await byteFamilyFiles()).sort();
     // A file added to the lint block must join BOTH maps here — the storage
     // surface cannot lag the lint surface.
     expect(Object.keys(BYTE_FAMILY_NAMESPACES).sort()).toEqual(families);
@@ -876,9 +1177,17 @@ describe('(0b) the byte-storage intake surface is derived and closed', () => {
 // is module-owned (TraceWriter output, committed lock literals, codec-decoded
 // structures, structured-clone worker payloads), so exploiting the class means
 // writing an accessor into this repo's own code to deceive this repo's own
-// gates. Real bug, nil exposure. The expiry condition is explicit: Phase 1B
-// persists evolution history and reloads it, the first moment a trace crosses
-// a trust boundary.
+// gates. Real bug, nil exposure. The expiry condition is explicit — and PR 3
+// Commit 0 NARROWED it (approved; codec doc §Round 15) from the chronological
+// "Phase 1B persists evolution history and reloads it" to the semantic trigger
+// it always meant: this hardening expires when a NON-NULL trace crosses a
+// persistence, replay, determinism-lock, or artifact-identity trust boundary.
+// PR 3's evolution history is byte-only — evaluation is forced to trace mode
+// 'none' and the record geometry admits exactly four component kinds
+// (population snapshot, evaluation metadata, fitness vector, lineage) — so a
+// trace has no byte walk to enter through. The narrowing is not prose-only:
+// tests/evolution-run.test.js holds the static + runtime trace-exclusion
+// teeth, so the premise fails a build if it ever stops being true.
 //
 // Two candidate atomic architectural fixes are recorded for Phase 1B's
 // persisted-history milestone:
@@ -928,11 +1237,15 @@ describe('(1) export-surface conformance — nothing ships unclassified', () => 
     // consumers". That is only safe if they are identical — a second module
     // exporting its own EVALUATION_TRACE_VERSION would be a silently forkable
     // contract, so the exclusion above is paid for with an identity check.
+    // Every re-exporting module declares its OWNER, and the owner must itself
+    // be a classified module — so a re-export cannot point at a namespace this
+    // suite does not pin.
+    expect(Object.keys(RE_EXPORT_OWNER).sort()).toEqual(Object.keys(RE_EXPORTS).sort());
     for (const [module, names] of Object.entries(RE_EXPORTS)) {
+      const owner = RE_EXPORT_OWNER[module];
+      expect(NAMESPACES[owner], `${module} declares an unclassified owner ${owner}`).toBeTruthy();
       for (const name of names) {
-        expect(NAMESPACES[module][name], `${module}:${name}`).toBe(
-          module === 'evolution-operators.js' ? EvaluationNS[name] : TraceNS[name],
-        );
+        expect(NAMESPACES[module][name], `${module}:${name}`).toBe(NAMESPACES[owner][name]);
       }
     }
   });
@@ -1310,6 +1623,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   requireOrdinaryBytes: 'callerElements', // a pass-through validator: returns its input array unchanged
   typedArrayByteLength: 'scalar',
   bytesToHex: 'scalar',
+  copyOrdinaryBytes: 'freshBytes',
   // assembly.js
   validateGenotype: 'scalar',
   repairGenotype: 'ownedCopy',
@@ -1338,10 +1652,53 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
   selectablePoolFromEvaluation: 'ownedCopy',
+  canonicalizeEvaluationSpec: 'ownedCopy',
   // evolution-operators.js
   selectTournamentParent: 'scalar',
   selectElites: 'ownedCopy',
   mutateContinuousGenotype: 'ownedCopy',
+  // evolution-contract.js
+  // The error's `context` is copied key by key with every non-scalar coerced
+  // to a string, so a thrown diagnostic can never retain a caller object or a
+  // history buffer — asserted in the ownedCopy battery below.
+  EvolutionError: 'ownedCopy',
+  evolutionFail: 'ownedCopy',
+  // evolution-lineage.js
+  validateLineage: 'scalar',
+  serializeLineage: 'freshBytes',
+  deserializeLineage: 'ownedCopy',
+  crossCheckLineage: 'scalar',
+  // evolution-run.js — the run is opaque; `createEvolutionRun` returns an
+  // object with no property reachable from the caller's config, and the
+  // engine's behaviour under a mutated config is owned by
+  // tests/evolution-run.test.js (it needs physics).
+  createEvolutionRun: 'notExercised',
+  // evolution-history.js
+  // (serializeEvaluationMetadata reads only scalars — no callerCollections row,
+  // so it declares no verdict, by the table's own rule.)
+  deserializeEvaluationMetadata: 'ownedCopy',
+  encodeEvolutionHeader: 'freshBytes',
+  decodeEvolutionHeader: 'ownedCopy',
+  encodeGenerationPayload: 'freshBytes',
+  decodeGenerationPayload: 'ownedCopy',
+  digestHeader: 'notExercised', // async; the freshness battery lives in tests/sha256.test.js
+  digestComponent: 'notExercised',
+  digestGeneration: 'notExercised',
+  digestHistoryBody: 'notExercised',
+  digestsEqual: 'scalar',
+  assembleHistory: 'notExercised', // async; round-tripped in tests/evolution-history.test.js
+  // The ONE declared aliasing seam in the evolution family: its returned views
+  // are windows into the module-owned buffer it was handed, by contract.
+  decodeHistoryFraming: 'sharedWindow',
+  // src/platform/sha256.js
+  sha256: 'notExercised', // async; freshness + copy-before-await in tests/sha256.test.js
+  // evolution-replay.js — verification and reporting; owned by
+  // tests/evolution-replay.test.js, which needs real artifacts (and physics).
+  firstByteDifference: 'scalar',
+  failReplayDivergence: 'notExercised', // always throws; its context is scalar-copied by EvolutionError
+  verifyHistoryArtifact: 'notExercised',
+  captureExpectedIdentity: 'ownedCopy',
+  resumeEvolutionRun: 'notExercised',
   // integrity.js
   foldIntegrity: 'callerElements', // returns the caller's own state object, by contract (chaining)
   // trace.js
@@ -1455,6 +1812,51 @@ function ownedCopyCases() {
         { name: 'mutateContinuousGenotype', result: EvolutionNS.mutateContinuousGenotype(g, { nextFloat: () => 0.5 }, { probability: 0, magnitude: 0 }), roots: [g] },
       ];
     })(),
+    // PR 3's history codecs.
+    ...(() => {
+      const metadataBytes = serializeEvaluationMetadata(
+        { worldMode: 'isolatedWorlds', effectiveDt: 1 / 60, executedSteps: 3 },
+      );
+      const headerSource = { ...HISTORY_HEADER_FIXTURE };
+      const headerBytes = encodeEvolutionHeader(headerSource);
+      const payloadSource = {
+        generationIndex: 0,
+        terminalReason: 'none',
+        components: { ...HISTORY_COMPONENTS_FIXTURE },
+      };
+      const payloadBytes = encodeGenerationPayload(payloadSource, HISTORY_DIGESTS_FIXTURE);
+      return [
+        { name: 'deserializeEvaluationMetadata', result: deserializeEvaluationMetadata(metadataBytes), roots: [metadataBytes] },
+        { name: 'decodeEvolutionHeader', result: decodeEvolutionHeader(headerBytes), roots: [headerBytes] },
+        { name: 'decodeGenerationPayload', result: decodeGenerationPayload(payloadBytes), roots: [payloadBytes] },
+      ];
+    })(),
+    // PR 3's evolution family.
+    ...(() => {
+      const cSpec = { ...resolvedFlat(), terrain: { ...resolvedFlat().terrain } };
+      const lineageBytes = serializeLineage(sampleLineage());
+      const context = { generationIndex: 1, offender: { live: 'object' } };
+      let thrownByFail = null;
+      try { evolutionFail('malformedHistory', 'probe', context); } catch (e) { thrownByFail = e; }
+      return [
+        { name: 'canonicalizeEvaluationSpec', result: canonicalizeEvaluationSpec(cSpec), roots: [cSpec] },
+        { name: 'deserializeLineage', result: deserializeLineage(lineageBytes), roots: [lineageBytes] },
+        // The error must not retain the caller's context object: every
+        // non-scalar is coerced to a string on the way in, so a diagnostic can
+        // never become a back door to live run state.
+        { name: 'EvolutionError', result: new EvolutionError('invalidConfig', 'probe', context), roots: [context] },
+        { name: 'evolutionFail', result: thrownByFail, roots: [context] },
+        ...(() => {
+          const digest = new Uint8Array(32);
+          const options = { expectedHistoryDigestBytes: digest, expectedGenerationIndex: 3 };
+          return [{
+            name: 'captureExpectedIdentity',
+            result: captureExpectedIdentity(options, (b) => copyOrdinaryBytes(b)),
+            roots: [options, digest],
+          }];
+        })(),
+      ];
+    })(),
     // Round-11 additions: the diagnostic/forensic family, previously unpinned.
     ...(() => {
       const recBytes = encodeTraceRecord(baseTraceRecord());
@@ -1516,8 +1918,38 @@ function freshBytesCases() {
     { name: 'serializePopulationInitialization', result: serializePopulationInitialization(init), roots: [init] },
     { name: 'serializeEvaluationSpec', result: serializeEvaluationSpec(spec), roots: [spec] },
     { name: 'serializeFitnessVector', result: serializeFitnessVector(evaluation), roots: [evaluation] },
+    ...(() => {
+      const lineage = sampleLineage();
+      const headerSource = { ...HISTORY_HEADER_FIXTURE };
+      const payloadSource = {
+        generationIndex: 0,
+        terminalReason: 'none',
+        components: { ...HISTORY_COMPONENTS_FIXTURE },
+      };
+      const source = Uint8Array.of(1, 2, 3, 4);
+      return [
+        { name: 'serializeLineage', result: serializeLineage(lineage), roots: [lineage] },
+        { name: 'copyOrdinaryBytes', result: copyOrdinaryBytes(source), roots: [source] },
+        { name: 'encodeEvolutionHeader', result: encodeEvolutionHeader(headerSource), roots: [headerSource] },
+        {
+          name: 'encodeGenerationPayload',
+          result: encodeGenerationPayload(payloadSource, HISTORY_DIGESTS_FIXTURE),
+          roots: [payloadSource, HISTORY_DIGESTS_FIXTURE],
+        },
+      ];
+    })(),
   ];
 }
+
+// The smallest lineage that carries both a sentinel row and real accounting.
+const sampleLineage = () => ({
+  lineageVersion: 1,
+  generationIndex: 0,
+  individuals: [
+    { individualId: 0, parentIndividualId: null, origin: 'initialized', accounting: { ...zeroLineageAccounting() } },
+    { individualId: 1, parentIndividualId: null, origin: 'initialized', accounting: { ...zeroLineageAccounting() } },
+  ],
+});
 
 describe('(4) copy-on-intake — the module owns what it hands back', () => {
   test('every export that reads a caller collection declares an ownership verdict', () => {

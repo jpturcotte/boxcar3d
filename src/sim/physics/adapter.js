@@ -97,14 +97,60 @@ export const SOFT_CCD_PREDICTION = 1;
 // loud at the call site — never silently omit the policy.
 export const ADDITIONAL_SOLVER_ITERATIONS = 4;
 
-export async function createPhysics({ deterministic = false } = {}) {
+// Package specifiers stay beside the one loader that resolves them. The
+// persisted codec owns its own flavor-byte mapping; the adapter reports the
+// symbolic identity and must not lend runtime enum ordering to a wire format.
+const DETERMINISTIC_PACKAGE = '@dimforge/rapier3d-deterministic-compat';
+
+// THE ONE loader. Extracted so `createPhysics` and the runtime-identity
+// readback below cannot drift into two ambient import paths — a second
+// `await import(...)` elsewhere in the tree would be a second answer to "which
+// engine is this?", which is precisely what a persisted history header must
+// not have. Statements are the original createPhysics prologue, verbatim.
+async function loadRapier(deterministic) {
   const RAPIER = deterministic
     ? (await import('@dimforge/rapier3d-deterministic-compat')).default
     : (await import('@dimforge/rapier3d-compat')).default;
   await RAPIER.init(); // note: compat pkg prints an upstream deprecation warning internally — cosmetic
+  return RAPIER;
+}
+
+export async function createPhysics({ deterministic = false } = {}) {
+  const RAPIER = await loadRapier(deterministic);
   const world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
   world.timestep = FIXED_DT;
   return { RAPIER, world };
+}
+
+/**
+ * The runtime identity of the deterministic engine evolution is allowed to
+ * load: `{ physicsFlavor, packageName, rapierVersion }`, frozen and owned.
+ *
+ * Why this exists at the adapter seam rather than in the consumer: persisted
+ * evolution history binds the exact engine it was produced by, and resume
+ * validates that identity BEFORE any physics runs — a dependency bump must
+ * report as `runtimeVersionMismatch`, never as deterministic divergence
+ * discovered halfway through a replay. Reading it anywhere but here would mean
+ * a second import path (see loadRapier).
+ *
+ * `RAPIER.version()` is a wasm readback and needs `init()`, which loadRapier
+ * already performs; it is validated as a non-empty string here so a
+ * source-built or patched package cannot write an empty identity into a
+ * header. It is an OBSERVATION, not proof of provenance — the standing
+ * probe:package-smoke ruling (a source build can truthfully misreport) — which
+ * is why history treats it as a compatibility gate, never as authenticity.
+ */
+export async function readDeterministicRuntimeIdentity() {
+  const RAPIER = await loadRapier(true);
+  const rapierVersion = RAPIER.version();
+  if (typeof rapierVersion !== 'string' || rapierVersion.length === 0) {
+    throw new Error(`adapter: RAPIER.version() returned ${String(rapierVersion)} — a non-empty string is required to bind runtime identity`);
+  }
+  return Object.freeze({
+    physicsFlavor: 'deterministicCompat',
+    packageName: DETERMINISTIC_PACKAGE,
+    rapierVersion,
+  });
 }
 
 // --- Terrain realization: the ONLY place that constructs Rapier terrain

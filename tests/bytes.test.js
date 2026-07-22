@@ -7,7 +7,9 @@
 // lowercased is the class of bug that makes two "identical" artifacts differ).
 
 import { describe, test, expect } from 'vitest';
-import { bytesToHex, createByteReader, hexToBytes, typedArrayByteLength } from '../src/sim/bytes.js';
+import {
+  bytesToHex, copyOrdinaryBytes, createByteReader, hexToBytes, typedArrayByteLength,
+} from '../src/sim/bytes.js';
 
 const fail = (path, value) => {
   throw new Error(`probe: invalid at ${path} (${String(value)})`);
@@ -320,5 +322,94 @@ describe('the fail-callback backstop — a returning fail can never resume the w
     };
     const r = createByteReader(new Uint8Array(2), moduleFail);
     expect(() => r.u32('x')).toThrow(/^mod: invalid at x/);
+  });
+});
+
+// ============================================================================
+// copyOrdinaryBytes — the one intake move for bytes that must outlive the call
+// ============================================================================
+//
+// Every seam that holds a caller's buffer across time — or, worse, across an
+// `await` — needs this. `new Uint8Array(bytes)` is NOT equivalent: it reads the
+// caller's shadowable `length`, and it says nothing about backing-store
+// lifetime. Both failure modes are measured below.
+
+describe('copyOrdinaryBytes', () => {
+  test('returns a fresh, exact, aliasing-free copy', () => {
+    const source = Uint8Array.of(1, 2, 3, 4, 5);
+    const copy = copyOrdinaryBytes(source);
+    expect(copy).not.toBe(source);
+    expect(copy.buffer).not.toBe(source.buffer);
+    expect([...copy]).toEqual([1, 2, 3, 4, 5]);
+    expect(copy.byteOffset).toBe(0);
+    expect(copy.byteLength).toBe(copy.buffer.byteLength); // its OWN buffer, exactly sized
+  });
+
+  test('mutating either side afterwards cannot affect the other', () => {
+    const source = Uint8Array.of(9, 9, 9);
+    const copy = copyOrdinaryBytes(source);
+    source[0] = 1;
+    copy[2] = 7;
+    expect([...source]).toEqual([1, 9, 9]);
+    expect([...copy]).toEqual([9, 9, 7]);
+  });
+
+  test('an empty input copies to an empty owned array', () => {
+    const copy = copyOrdinaryBytes(new Uint8Array(0));
+    expect(copy.length).toBe(0);
+    expect(copy.buffer.byteLength).toBe(0);
+  });
+
+  test('a view over a larger buffer copies ONLY its own window', () => {
+    const backing = Uint8Array.of(0, 0, 1, 2, 3, 0, 0);
+    const window = new Uint8Array(backing.buffer, 2, 3);
+    expect([...copyOrdinaryBytes(window)]).toEqual([1, 2, 3]);
+  });
+
+  test('a SHADOWED length cannot make the copy a prefix', () => {
+    // The whole reason this is not `new Uint8Array(bytes)`: `length` is an
+    // inherited accessor, and the constructor path reads the caller's claim.
+    const liar = Uint8Array.of(0xde, 0xad, 0xbe, 0xef);
+    Object.defineProperty(liar, 'length', { value: 2, configurable: true });
+    expect(bytesToHex(copyOrdinaryBytes(liar))).toBe('deadbeef');
+    // …and the naive hand-written copy — the idiom this helper exists to
+    // replace, and the exact shape `bytesToHex` itself once had — really does
+    // truncate, so the tooth is not vacuous.
+    const naive = [];
+    for (let i = 0; i < liar.length; i += 1) naive.push(liar[i]);
+    expect(bytesToHex(Uint8Array.from(naive))).toBe('dead');
+  });
+
+  test('a shadowed buffer/byteOffset cannot redirect the copy outside the window', () => {
+    const backing = Uint8Array.of(1, 2, 3, 4, 5, 6, 7, 8);
+    const window = new Uint8Array(backing.buffer, 4, 4);
+    const decoy = Uint8Array.of(9, 9, 9, 9, 9, 9, 9, 9);
+    Object.defineProperty(window, 'buffer', { value: decoy.buffer, configurable: true });
+    Object.defineProperty(window, 'byteOffset', { value: 0, configurable: true });
+    expect([...copyOrdinaryBytes(window)]).toEqual([5, 6, 7, 8]);
+  });
+
+  test.each([
+    ['detached', () => { const u = Uint8Array.of(1, 2, 3); u.buffer.transfer(); return u; }, /detached/],
+    ['SharedArrayBuffer-backed', () => new Uint8Array(new SharedArrayBuffer(4)), /SharedArrayBuffer/],
+    ['resizable', () => new Uint8Array(new ArrayBuffer(4, { maxByteLength: 8 })), /resizable/],
+  ])('%s storage is refused at the door', (_name, make, pattern) => {
+    expect(() => copyOrdinaryBytes(make())).toThrow(pattern);
+  });
+
+  test.each([
+    ['a plain array', [1, 2, 3]],
+    ['null', null],
+    ['a DataView', new DataView(new ArrayBuffer(4))],
+    ['an Int8Array', new Int8Array(4)],
+  ])('%s is refused (only ordinary Uint8Array bytes)', (_name, value) => {
+    expect(() => copyOrdinaryBytes(value)).toThrow(/not an ordinary same-realm Uint8Array/);
+  });
+
+  test('rejections route through the CALLING module dialect when one is supplied', () => {
+    const moduleFail = (path, value) => {
+      throw new Error(`mod: invalid ${path} (${String(value)})`);
+    };
+    expect(() => copyOrdinaryBytes([1, 2], moduleFail)).toThrow(/^mod: invalid bytes/);
   });
 });

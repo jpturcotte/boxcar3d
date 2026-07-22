@@ -33,6 +33,71 @@ const DETERMINISM_SYNTAX = [
   },
 ];
 
+// THE BYTE-SAFETY SELECTORS, extracted so the SAME rules apply to the sim byte
+// family and to src/platform/sha256.js. The two blocks differ in exactly one
+// way and it is deliberate: the platform adapter does NOT inherit the src/sim
+// determinism block, because it must reach the `crypto` global. Sharing the
+// byte rules while splitting the determinism ban is the whole reason this array
+// exists — a second hand-maintained copy in the platform block is how the
+// adapter would drift out of the family it belongs to.
+const BYTE_SAFETY_SYNTAX = [
+  {
+    // `length`/`byteLength`/`byteOffset`/`buffer` are INHERITED ACCESSORS
+    // on %TypedArray%.prototype, so an own data property on a genuine
+    // Uint8Array shadows them with ordinary defineProperty — no Proxy
+    // needed. Legal reads go through a cached prototype getter
+    // (`TA_BYTE_LENGTH.call(x)`), which is a CallExpression and does not
+    // match this selector.
+    selector: 'MemberExpression[computed=false][property.name=/^(byteLength|byteOffset|buffer)$/]',
+    message: 'Byte geometry must come from a cached %TypedArray%.prototype getter (TA_BYTE_LENGTH.call(x) / typedArrayByteLength(x)), never a property read — an own data property on a genuine Uint8Array shadows the inherited accessor. If the receiver is provably module-owned, disable this line with a comment NAMING the receiver.',
+  },
+  {
+    // Round-11: `MemberExpression[computed=false]` sees NEITHER computed
+    // access NOR destructuring, both measured clean against the previous
+    // selector — and `const { byteLength } = bytes` is the IDIOMATIC way
+    // the shadowable read comes back. A computed access through a
+    // variable key is not statically visible; that residue is recorded,
+    // not claimed closed.
+    selector: 'MemberExpression[computed=true][property.value=/^(byteLength|byteOffset|buffer|subarray)$/]',
+    message: 'Computed access is the same read: byte geometry must come from a cached %TypedArray%.prototype getter, and subarray is banned outright.',
+  },
+  {
+    selector: 'ObjectPattern > Property[key.name=/^(byteLength|byteOffset|buffer|subarray)$/]',
+    message: 'Destructuring performs the same shadowable property read. Use the cached %TypedArray%.prototype getters.',
+  },
+  {
+    // Reflect.get(bytes, 'byteLength') is a third spelling of the same
+    // read and has no legitimate use in this family.
+    selector: 'MemberExpression[object.name="Reflect"]',
+    message: 'Reflect.* is banned in the byte family: it reaches caller-shadowable properties past the geometry rules.',
+  },
+  {
+    // `subarray` is banned OUTRIGHT in this family, with no
+    // module-owned exception, because it is unsafe even when borrowed
+    // from the prototype: %TypedArray%.prototype.subarray performs
+    // species dispatch, reading the receiver's `constructor` and
+    // `constructor[Symbol.species]` and CONSTRUCTING the result. The
+    // previous round replaced `bytes.subarray(...)` with
+    // `TA_SUBARRAY.call(bytes, ...)` believing the intrinsic made it
+    // safe; it did not, and the snapshot decoder returned a genotype
+    // that was never in the stream. Use
+    // `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)`.
+    selector: 'MemberExpression[computed=false][property.name="subarray"]',
+    message: 'subarray is banned here: it is SPECIES-AWARE, so it runs caller code and can return a foreign array even when called as TA_SUBARRAY.call(x). Build the window with new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + offset, n).',
+  },
+  // DELIBERATELY NOT LINTED, recorded so the gap reads as a decision:
+  // the broader "never invoke caller-owned code" rule (.map/.forEach/
+  // .indexOf/.slice/iterators on caller values). A selector wide enough
+  // to catch it flags ~50 sites in these files, essentially all of them
+  // module-owned constants (WEIGHT_KEYS.every, SUSPENSION_TYPES.indexOf,
+  // ASSEMBLY_OPTION_KEYS.join), and a wall of disable comments obscures
+  // the audit trail it is meant to create. That rule is enforced
+  // BEHAVIOURALLY instead, in tests/ownership-boundary.test.js, which
+  // feeds hostile-but-plain data to every public export and asserts the
+  // RESULT — a stronger check than a shape ban, since it caught the
+  // species defect that a `.subarray` shape ban alone would have missed.
+];
+
 export default [
   {
     ignores: ['dist/**', 'node_modules/**', 'docs/**', 'legacy/**', 'rapier-upstream/**'],
@@ -50,6 +115,11 @@ export default [
         requestAnimationFrame: 'readonly',
         URLSearchParams: 'readonly',
         process: 'readonly',
+        // UTF-8 transcoding is fully specified and byte-deterministic across
+        // Node and every browser (unlike the D7-banned transcendentals), so
+        // the history codec's length-prefixed strings may use it.
+        TextEncoder: 'readonly',
+        TextDecoder: 'readonly',
       },
     },
     rules: {
@@ -115,71 +185,51 @@ export default [
       'src/sim/bytes.js', 'src/sim/assembly.js', 'src/sim/population.js',
       'src/sim/population-initializer.js', 'src/sim/population-evaluation.js',
       'src/sim/trace.js', 'src/sim/fnv1a.js',
+      // PR 3's evolution byte family. evolution-lineage.js decodes caller
+      // bytes; evolution-run.js is the seam that accepts a caller's history
+      // artifact at resume, which is precisely where copy-before-await and the
+      // storage gate have to hold.
+      'src/sim/evolution-lineage.js', 'src/sim/evolution-run.js',
+      'src/sim/evolution-history.js', 'src/sim/evolution-replay.js',
     ],
     rules: {
       'no-restricted-syntax': [
         'error',
         // The D7/F3 determinism bans MUST be repeated here: flat-config replaces
         // `no-restricted-syntax` rather than merging it, so without this spread
-        // the seven byte-family files (a subset of src/sim) would lose the
+        // the byte-family files (a subset of src/sim) would lose the
         // globalThis / Math-aliasing / ** bans the src/sim block declares (F2).
         ...DETERMINISM_SYNTAX,
-        {
-          // `length`/`byteLength`/`byteOffset`/`buffer` are INHERITED ACCESSORS
-          // on %TypedArray%.prototype, so an own data property on a genuine
-          // Uint8Array shadows them with ordinary defineProperty — no Proxy
-          // needed. Legal reads go through a cached prototype getter
-          // (`TA_BYTE_LENGTH.call(x)`), which is a CallExpression and does not
-          // match this selector.
-          selector: 'MemberExpression[computed=false][property.name=/^(byteLength|byteOffset|buffer)$/]',
-          message: 'Byte geometry must come from a cached %TypedArray%.prototype getter (TA_BYTE_LENGTH.call(x) / typedArrayByteLength(x)), never a property read — an own data property on a genuine Uint8Array shadows the inherited accessor. If the receiver is provably module-owned, disable this line with a comment NAMING the receiver.',
-        },
-        {
-          // Round-11: `MemberExpression[computed=false]` sees NEITHER computed
-          // access NOR destructuring, both measured clean against the previous
-          // selector — and `const { byteLength } = bytes` is the IDIOMATIC way
-          // the shadowable read comes back. A computed access through a
-          // variable key is not statically visible; that residue is recorded,
-          // not claimed closed.
-          selector: 'MemberExpression[computed=true][property.value=/^(byteLength|byteOffset|buffer|subarray)$/]',
-          message: 'Computed access is the same read: byte geometry must come from a cached %TypedArray%.prototype getter, and subarray is banned outright.',
-        },
-        {
-          selector: 'ObjectPattern > Property[key.name=/^(byteLength|byteOffset|buffer|subarray)$/]',
-          message: 'Destructuring performs the same shadowable property read. Use the cached %TypedArray%.prototype getters.',
-        },
-        {
-          // Reflect.get(bytes, 'byteLength') is a third spelling of the same
-          // read and has no legitimate use in this family.
-          selector: 'MemberExpression[object.name="Reflect"]',
-          message: 'Reflect.* is banned in the byte family: it reaches caller-shadowable properties past the geometry rules.',
-        },
-        {
-          // `subarray` is banned OUTRIGHT in this family, with no
-          // module-owned exception, because it is unsafe even when borrowed
-          // from the prototype: %TypedArray%.prototype.subarray performs
-          // species dispatch, reading the receiver's `constructor` and
-          // `constructor[Symbol.species]` and CONSTRUCTING the result. The
-          // previous round replaced `bytes.subarray(...)` with
-          // `TA_SUBARRAY.call(bytes, ...)` believing the intrinsic made it
-          // safe; it did not, and the snapshot decoder returned a genotype
-          // that was never in the stream. Use
-          // `new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + o, n)`.
-          selector: 'MemberExpression[computed=false][property.name="subarray"]',
-          message: 'subarray is banned here: it is SPECIES-AWARE, so it runs caller code and can return a foreign array even when called as TA_SUBARRAY.call(x). Build the window with new Uint8Array(TA_BUFFER.call(x), TA_BYTE_OFFSET.call(x) + offset, n).',
-        },
-        // DELIBERATELY NOT LINTED, recorded so the gap reads as a decision:
-        // the broader "never invoke caller-owned code" rule (.map/.forEach/
-        // .indexOf/.slice/iterators on caller values). A selector wide enough
-        // to catch it flags ~50 sites in these files, essentially all of them
-        // module-owned constants (WEIGHT_KEYS.every, SUSPENSION_TYPES.indexOf,
-        // ASSEMBLY_OPTION_KEYS.join), and a wall of disable comments obscures
-        // the audit trail it is meant to create. That rule is enforced
-        // BEHAVIOURALLY instead, in tests/ownership-boundary.test.js, which
-        // feeds hostile-but-plain data to every public export and asserts the
-        // RESULT — a stronger check than a shape ban, since it caught the
-        // species defect that a `.subarray` shape ban alone would have missed.
+        ...BYTE_SAFETY_SYNTAX,
       ],
+    },
+  },
+  {
+    // THE PLATFORM ADAPTER. Same byte rules, NO determinism block — the one
+    // documented exception in this repo, and the reason src/platform exists as
+    // a directory at all: SHA-256 affects persisted artifact identity, never
+    // simulation state or randomness, so it may reach `crypto` while src/sim
+    // may not. Registering it here is what puts it inside the derived
+    // enforcement surface (tests/ownership-boundary.test.js takes the
+    // byte-family module set FROM this block's `files` list).
+    // Listed as a CONCRETE PATH, not a glob: tests/ownership-boundary.test.js
+    // derives the byte-family module set from every block carrying these rules
+    // and checks it against the real directory listing, which a glob would make
+    // impossible to compare.
+    files: ['src/platform/sha256.js'],
+    rules: {
+      'no-restricted-syntax': ['error', ...BYTE_SAFETY_SYNTAX],
+    },
+  },
+  {
+    // The documented platform exception: `crypto` is readable HERE and nowhere
+    // in src/sim. Separate from the rules block above so the exception is a
+    // visible, single-purpose entry rather than a clause inside a rule list.
+    files: ['src/platform/**/*.js'],
+    languageOptions: {
+      globals: {
+        crypto: 'readonly',
+      },
     },
   },
 ];

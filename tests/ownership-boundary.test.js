@@ -307,7 +307,8 @@ const EXPECTED_EXPORTS = Object.freeze({
   // imports of its own, which is what keeps the family cycle-free.
   'evolution-contract.js': Object.freeze([
     'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_ERROR_CODES', 'EVOLUTION_POLICY_VERSION',
-    'EvolutionError', 'MAX_EVOLUTION_GENERATIONS', 'MAX_EVOLUTION_POPULATION_SIZE',
+    'EvolutionError', 'MAX_EVOLUTION_EVALUATION_WORK', 'MAX_EVOLUTION_GENERATIONS',
+    'MAX_EVOLUTION_POPULATION_SIZE',
     'TERMINAL_REASONS', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
     'isEvolutionUint32',
   ]),
@@ -328,7 +329,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   'evolution-history.js': Object.freeze([
     'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
     'EVOLUTION_HISTORY_MAGIC', 'EVOLUTION_HISTORY_VERSION', 'GENERATION_RECORD_VERSION',
-    'MAX_EVOLUTION_COMPONENT_BYTES', 'MAX_EVOLUTION_HISTORY_BYTES',
+    'MAX_EVOLUTION_COMPONENT_BYTES', 'MAX_EVOLUTION_HEADER_BYTES', 'MAX_EVOLUTION_HISTORY_BYTES',
     'MAX_EVOLUTION_RECORD_BYTES', 'SHA256_DIGEST_BYTES', 'WORLD_MODES',
     'assembleHistory', 'decodeEvolutionHeader', 'decodeGenerationPayload',
     'decodeHistoryFraming', 'deserializeEvaluationMetadata', 'digestComponent',
@@ -604,6 +605,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'TERMINAL_REASONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_POPULATION_SIZE', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_GENERATIONS', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_EVALUATION_WORK', kind: 'policy', callerCollections: [], callerNumbers: [] },
     // The error type COPIES its context by key enumeration and coerces every
     // non-scalar to a string, so no caller object — and no history buffer —
     // can be retained by a thrown diagnostic.
@@ -654,6 +656,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'WORLD_MODES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'SHA256_DIGEST_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_COMPONENT_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
+    { name: 'MAX_EVOLUTION_HEADER_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_RECORD_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_HISTORY_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'serializeEvaluationMetadata', kind: 'encoder', callerCollections: [], callerNumbers: ['metadata.effectiveDt', 'metadata.executedSteps'] },

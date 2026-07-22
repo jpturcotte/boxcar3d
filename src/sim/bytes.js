@@ -264,6 +264,40 @@ export function typedArrayByteLength(bytes) {
   return TA_BYTE_LENGTH.call(bytes);
 }
 
+/**
+ * A fresh, module-owned copy of ordinary caller bytes. The one intake move for
+ * any seam that must hold a caller's buffer across time or across an `await`.
+ *
+ * WHY A DEDICATED HELPER rather than `new Uint8Array(bytes)` at each seam. Two
+ * reasons, both measured elsewhere in this family:
+ *
+ *  - the constructor copy reads the CALLER's `length` (an inherited accessor an
+ *    own data property shadows on a genuine Uint8Array), so a 4-byte array
+ *    claiming `length: 2` copies a PREFIX and everything downstream attests
+ *    less than it was handed. Geometry here comes from the intrinsic getters,
+ *    which report the real window; and
+ *  - the storage-lifetime axis (JP's ruling) is checked FIRST, so a detached
+ *    buffer cannot copy as empty, a SharedArrayBuffer cannot be rewritten
+ *    mid-copy by another thread, and a resizable buffer cannot shrink between
+ *    the length read and the copy.
+ *
+ * The result aliases nothing: a fresh ArrayBuffer of the exact length, so a
+ * caller mutating its own bytes afterwards — including across the `await` of an
+ * async digest — cannot change what was copied. `fail(path, value)` is the
+ * calling module's fail-loud helper and defaults to this module's dialect.
+ */
+export function copyOrdinaryBytes(bytes, fail = bytesFail) {
+  requireOrdinaryBytes(bytes, fail);
+  const length = TA_BYTE_LENGTH.call(bytes);
+  // The caller's real window, constructed by this module from the intrinsic
+  // buffer/offset — never `subarray`, which is species-aware.
+  const source = new Uint8Array(TA_BUFFER.call(bytes), TA_BYTE_OFFSET.call(bytes), length);
+  const out = new Uint8Array(length);
+  // receiver `out` is the module-owned array allocated on the line above.
+  out.set(source, 0);
+  return out;
+}
+
 /** Bytes -> the canonical lowercase-hex JSON-safe representation. */
 export function bytesToHex(bytes) {
   // Ordinary storage only (I7): a detached buffer used to hex-encode as "" — a

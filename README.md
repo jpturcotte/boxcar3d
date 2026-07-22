@@ -283,6 +283,10 @@ digests — remains byte-identical. Full contracts in
 [`docs/canonical-codec-foundations-2026-07.md`](docs/canonical-codec-foundations-2026-07.md)
 and
 [`docs/ga-phase-1b-pr3-evolution-history-2026-07.md`](docs/ga-phase-1b-pr3-evolution-history-2026-07.md).
+That durable contract also records the adversarial test-evidence audit,
+independent Kimi interoperability fixture, resource ceilings, known O(G²)
+append cost, and deferred extensibility/runtime roadmap. The reproducible
+sabotage harness and its 12/12 result live under `scripts/adversarial/`.
 Next: **GA Phase 1B PR 4 — the empirical experiment**: a real population over
 many generations, the fitness and diversity report, runtime cost, and the
 validation or deliberate tuning of the provisional mutation defaults, which PR 3

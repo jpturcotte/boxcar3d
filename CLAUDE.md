@@ -1982,7 +1982,7 @@ history, replay, and strong artifact identity. Full contract:
 - **New modules:** `evolution-contract.js` (error taxonomy + `EvolutionError`
   with a scalar-copied context, the terminal enum in wire order, engine/policy
   versions, caps, checked arithmetic — a leaf with no imports, which is what
-  keeps the family cycle-free; a deliberate addition to the plan's file list,
+  keeps the family cycle-free; a deliberate implementation module,
   reason recorded in its header), `evolution-lineage.js`, `evolution-history.js`,
   `evolution-replay.js` (private; ordered verification, not a public seam),
   `evolution-fixtures.js`, `evolution-locks.js`, `src/platform/sha256.js`, and
@@ -2048,14 +2048,16 @@ history, replay, and strong artifact identity. Full contract:
   errors ride as `cause` and callers branch on `code`, never on text. A valid
   OLDER artifact verifies perfectly — that is the point, and it is why
   `staleOrWrongArtifact` exists and is only reachable when the caller supplies
-  what it expected. **Peak retention:** the artifact, at most one history-sized
-  append/SHA input, ONE decoded payload (≤16 MiB), and the current/next working
-  populations — verification decodes one payload at a time and discards it,
-  never a second parsed copy and never decoded objects for all generations.
+  what it expected. **Peak retention:** append can hold roughly five
+  history-sized JavaScript buffers (segmented payloads, old aggregate, new
+  aggregate, domain-framed input, SHA defensive copy), plus scratch,
+  populations, physics, and opaque WebCrypto allocation. Verification decodes
+  one payload at a time; append remains O(G²) copy work and must become
+  segmented before current maximums are treated as routine campaign sizes.
 - **Locks:** fixture `evolution-a-small-flat` v1 (seeds **20260742** population /
   **20260743** terrain; 6 individuals × 3 generations × 45 steps on the flat pad,
-  terminating on the generation limit) — header `015f2747…5ccf3ea9`, history
-  `2e084233…cca497f9`, plus every generation's four component digests, its
+  terminating on the generation limit) — header `6b872cad…bfcce51b`, history
+  `da573ca5…1ef20e55`, plus every generation's four component digests, its
   chained digest, and every lineage row. `test:determinism` gained
   `tests/evolution-determinism.test.js`; pinned Chromium
   (`tests/browser/evolution-determinism.test.js`) reproduced every literal —
@@ -2063,6 +2065,15 @@ history, replay, and strong artifact identity. Full contract:
   **on the first run**. The gate also asserts STRUCTURAL coverage (elites exist,
   both mutation branches occur incl. a zero-selection child, the last record is
   terminal), so a fixture change cannot quietly narrow what the locks prove.
+- **Independent interoperability oracle:**
+  `tests/fixtures/evolution-v1-kimi-k3max.base64` is a static 4,024-byte
+  one-generation artifact produced by the isolated Kimi implementation, with
+  provenance and literal digests in the adjacent Markdown file. Node and
+  Chromium reproduce its generation 0 bytes, resume it, and continue it to the
+  same terminal digest. The final cross-worktree check also established
+  byte-identical headers/components and mutual Claude/Kimi resume. This is the
+  independent oracle for codec genesis; the repository's own golden fixture is
+  a regression lock, not circular proof of its original semantics.
 - **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
   comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
   selectors (it was a single-block lookup by filename, which would have silently
@@ -2082,6 +2093,13 @@ history, replay, and strong artifact identity. Full contract:
   property. That is round 10's lesson (*a test written to the fix is not
   enforcement of the rule*) recurring inside this PR, caught by running the
   sabotage checklist rather than by assuming it.
+- **Test-oracle skeptic finding:** a new mutation-boundary test originally
+  filtered on the nonexistent lineage origin `mutated`, so its accounting
+  checks ran over an empty collection. It now filters `continuousMutation`,
+  requires real children, and checks `(p,m) = (0,1), (1,0), (1,1)` through the
+  run/history/resume boundary. Composition also covers population sizes
+  1/2/3/6 with tied selectable pools. Full suite green (59 files, 1534 tests),
+  determinism 6 files / 50 tests, pinned Chromium 4 files / 20 tests.
 - **Zero lock movement, zero version movement elsewhere.** Every terrain, noise,
   boulder, assembly (`24cd0dd5`/`39bcd6c4`), A–D evaluation and population
   digest is byte-identical; `GENOTYPE_VERSION`, `ASSEMBLY_IR_VERSION`,

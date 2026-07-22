@@ -109,7 +109,24 @@ evidence notes. Reference only; never import from `legacy/`.
   spec + fitness-vector encodings, champion selection, selection-pool capture),
   `population-fixtures.js` + `population-locks.js` (the committed population/
   fitness contract, literals only), `evolution-operators.js` (the pure Phase 1B
-  tournament, elitism, and continuous-mutation operators).
+  tournament, elitism, and continuous-mutation operators),
+  `evolution-contract.js` (the PR 3 leaf every evolution module binds: the
+  stable error taxonomy + `EvolutionError`, the terminal enum in wire order,
+  engine/policy versions, the v1 caps, checked arithmetic — no imports of its
+  own), `evolution-lineage.js` (canonical lineage v1 + cross-generation
+  agreement), `evolution-history.js` (the fixed byte-only history codec, the
+  seven domain-separated SHA-256 formulas, the evaluation-metadata component,
+  and the byte ceilings), `evolution-replay.js` (private ordered verification,
+  the runtime/freshness gates, first-divergence reporting),
+  `evolution-run.js` (THE deep module: the opaque run and the one private
+  generation transition that `advance()` and replay share),
+  `evolution-fixtures.js` + `evolution-locks.js` (the committed evolution
+  identity contract, literals only).
+- `src/platform/` — the ONE documented exception to the D7 ambient-global ban:
+  `sha256.js`, the WebCrypto adapter behind persisted artifact identity. It is
+  inside the byte-family lint scope and every derived ownership inventory; it is
+  outside the determinism block because SHA-256 is a pure function of its bytes
+  and affects artifact identity, never simulation state or randomness.
   Must run headless in Node (tests and CI depend on it).
 - `scripts/` — Node-only instruments OUTSIDE the sim ESLint ban (wall clock
   allowed): `probe-rapier-timing.js`, `bench-physics.js`,
@@ -1861,7 +1878,22 @@ defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
   source to deceive this repo's own gates. Real bug, nil exposure, and a
   32-call-site migration to close it. **Explicit expiry: Phase 1B persists
   evolution history and reloads it — the first moment a trace crosses a
-  trust boundary. Revisit there, not before.**
+  trust boundary. Revisit there, not before.** **[SUPERSEDED by PR 3
+  Commit 0 — approved policy decision, codec doc §Round 15: the expiry is
+  SEMANTIC, not chronological. PR 3 persists BYTE-ONLY evolution history and
+  forces evaluation to trace mode `none`; the generation record's fixed
+  geometry admits exactly four component kinds (population snapshot,
+  evaluation metadata, fitness vector, lineage), so trace records,
+  checkpoints, live diagnostics and comparator evidence have no byte walk to
+  enter through. The hardening therefore expires when a NON-NULL trace
+  crosses a persistence, replay, determinism-lock, or artifact-identity trust
+  boundary — not merely when unrelated evolution bytes are persisted. The
+  premise is executable, not prose: `tests/evolution-run.test.js` holds the
+  static (no trace import anywhere in the evolution module family) and
+  runtime (`mode: 'none'`, null trace) exclusion teeth, and the split
+  trigger stands — if any evolution code starts accepting, retaining,
+  encoding, comparing, or deriving identity from non-null trace evidence,
+  trace hardening lands first.]**
 - **Three follow-up fixes, all cheap, all mutation-verified:**
   `runRealizedEvaluationLoop` checks `Array.isArray(realized)` before
   reading `.length` (measured: `{length: 0}` returned a clean `vehicles: []`
@@ -1892,10 +1924,7 @@ defer Blocker 2. Two commits; zero lock movement; 51 files, 1196 tests.**
 
 **GA Phase 1B PR 2 landed — Pure Evolution Operators:** immutable selectable
 pools, deterministic tournament selection, owned elites, and continuous
-parametric mutation with repair accounting. Next — **PR 3: the deterministic
-engine, history, codecs, and determinism layer** (generation/replacement, child
-IDs, lineage, persisted history with strong digests, replay/determinism gates,
-and the evolution probe, all sim-time pure). PR 4 owns the full experiment,
+parametric mutation with repair accounting. PR 4 owns the full experiment,
 empirical report, and validation or tuning of the provisional mutation defaults.
 **PR 3 consumes the Phase-1A + policy-v2 contracts**:
 `createInitialPopulation`, the snapshot/initialization/spec/fitness-vector(v2)
@@ -1929,6 +1958,165 @@ residual-overlap rulings. Open ruling question carried from PR #10 review:
 are visually-overlapping wheels acceptable for evolution? Physics ignores
 them (collision-inert, stable, no detach), but they read as one thick wheel
 on screen.
+
+**GA Phase 1B PR 3 landed — the deterministic evolution engine, byte-only
+history, replay, and strong artifact identity. Full contract:
+`docs/ga-phase-1b-pr3-evolution-history-2026-07.md`:**
+- **The deep module (`src/sim/evolution-run.js`):** `createEvolutionRun(config)`
+  (SYNCHRONOUS — validation and generation 0 are pure), `await run.advance()`,
+  `run.status()` (frozen scalars), `run.historyBytes()` (a FRESH copy every
+  call; `historyUnavailable` before the first commit), and
+  `await resumeEvolutionRun(historyBytes, {expectedHistoryDigestBytes?,
+  expectedGenerationIndex?})`. **There is deliberately NO public
+  `advanceGeneration(population, evaluation)`:** a stateless transition would
+  have to decide whether an independently supplied population and fitness result
+  belong together, and the only binding available is the fitness vector's FNV-32
+  snapshot-digest state — which PR 2 ruled a same-source in-process mismatch
+  SENTINEL, never equality between independently supplied artifacts. The
+  transition is therefore PRIVATE to an opaque run: it decodes the population
+  from bytes it owns, evaluates exactly that population, and derives the vector
+  from the same owned transition; the FNV state is still checked, as the
+  sentinel it is. `advance()` and replay call the SAME free transition function,
+  which is what makes replay a replay rather than a second implementation kept
+  in agreement by hand.
+- **New modules:** `evolution-contract.js` (error taxonomy + `EvolutionError`
+  with a scalar-copied context, the terminal enum in wire order, engine/policy
+  versions, caps, checked arithmetic — a leaf with no imports, which is what
+  keeps the family cycle-free; a deliberate implementation module,
+  reason recorded in its header), `evolution-lineage.js`, `evolution-history.js`,
+  `evolution-replay.js` (private; ordered verification, not a public seam),
+  `evolution-fixtures.js`, `evolution-locks.js`, `src/platform/sha256.js`, and
+  `scripts/probe-evolution.js`.
+- **Transition rulings:** elites FIRST in `selectElites` rank order, each with a
+  FRESH id (the previous id survives only as `parentIndividualId`), then mutated
+  children in ascending new-id order; all N ids allocated as one CHECKED
+  contiguous interval BEFORE any randomness is drawn; each child derives
+  `new Rng(seed).fork(childId)` and consumes exactly the PR 2 budget
+  (3 `nextUint32` + 1 `nextFloat` per eligible continuous leaf + 1 more per
+  selected leaf). No generation-global RNG exists — evaluation order, array
+  order, diagnostics, wall clock, an exception after a draft, and sibling draws
+  cannot reach a child's stream (proven by rebuilding every generation-1 child
+  OUTSIDE the engine and requiring byte identity). Terminal precedence
+  `noSelectableParents` → `generationLimitReached` → `individualIdExhausted` →
+  `none`, decided ONCE before the record is encoded; a terminal run repeats its
+  result and appends nothing. `individualIdExhausted` is unreachable under the
+  v1 caps (256 × 1024 ≪ 2³²) — the enum and the checked arithmetic stay so a
+  future cap change fails SAFE. Draft/commit atomicity: a failure leaves the
+  committed artifact BYTE-IDENTICAL and a retry reproduces the same generation;
+  a concurrent `advance()` throws `advanceInProgress` SYNCHRONOUSLY, before any
+  microtask.
+- **History v1 (byte-only):** `BC3DEVO1` magic, versioned framing, a header
+  binding runtime identity + every operator version + the RESOLVED mutation
+  NUMBERS (never "the defaults") + the initialization manifest + the evaluation
+  spec, then per generation a payload with EXACTLY FOUR components in fixed
+  order — population snapshot, evaluation metadata, fitness vector, lineage —
+  each length-prefixed with its own SHA-256 digest. Domain-separated digests
+  (seven literal NUL-terminated domains); generation 0 chains from the HEADER
+  digest so the chain covers configuration and runtime identity, not only
+  records; the history digest covers the body and excludes its own trailer. The
+  embedded digest proves FRAMING AND SELF-CONSISTENCY — not freshness, not
+  authenticity, not "newest save" (no signatures, MACs or encryption anywhere).
+  **The evaluation-metadata component exists because fitness normalization drops
+  determinism evidence:** the fitness vector carries no world mode, no
+  effective timestep and no executed step count, so replay compares metadata
+  BEFORE fitness — a drifted timestep EXPLAINS a fitness difference and
+  reporting the fitness first would bury the cause.
+- **`src/platform/sha256.js` — the one collision-resistant digest seam, and the
+  §Round 12 strong-digest deferral DISCHARGED** (not narrowed). It lives outside
+  `src/sim` so the D7 ambient-global ban stays absolute: SHA-256 is a pure
+  function of its input with no state or entropy, and it affects PERSISTED
+  ARTIFACT IDENTITY rather than simulation state. FNV-1a32 keeps its unchanged
+  role (drift/lock digests + the same-input cross-environment comparator); no
+  evolution artifact identity is ever established by FNV. `sha256` is NOT an
+  `async function` — the caller's bytes are validated and COPIED in a
+  synchronous prologue, so copy-before-await is structural, and a fancy storage
+  shape is refused with a THROW rather than a rejected promise (the same ruling
+  now applies to `assembleHistory`, `verifyHistoryArtifact` and
+  `resumeEvolutionRun`).
+- **`copyOrdinaryBytes` (bytes.js)** — the one intake move for bytes that must
+  outlive a call: storage-lifetime gate first, then geometry from the intrinsic
+  getters, then a fresh exactly-sized array. NOT `new Uint8Array(bytes)`, which
+  reads the caller's shadowable `length` (measured: a 4-byte array claiming
+  `length: 2` copies a PREFIX).
+- **Ordered replay (10 stages, each with its own code):** storage + the 64 MiB
+  ceiling BEFORE the copy → copy BEFORE any await → framing → header digest +
+  version agreement → every component digest in generation order → the chain →
+  the whole-history digest → external expected identity → the runtime gate →
+  deterministic replay stopping at the first byte divergence (reporting `stage`,
+  `generationIndex`, `byteOffset`, `expectedByte`/`actualByte`, and
+  `lastAgreedGenerationIndex`). Twelve stable error codes; lower-level module
+  errors ride as `cause` and callers branch on `code`, never on text. Resume
+  mirrors creation's `deterministic: true` invariant before physics; invalid
+  artifact storage/spec/manifest bytes are `malformedHistory`, while invalid
+  expected-identity option bytes are `invalidConfig`. A valid
+  OLDER artifact verifies perfectly — that is the point, and it is why
+  `staleOrWrongArtifact` exists and is only reachable when the caller supplies
+  what it expected. **Peak retention:** append can hold roughly five
+  history-sized JavaScript buffers (segmented payloads, old aggregate, new
+  aggregate, domain-framed input, SHA defensive copy), plus scratch,
+  populations, physics, and opaque WebCrypto allocation. Verification decodes
+  one payload at a time; append remains O(G²) copy work and must become
+  segmented before current maximums are treated as routine campaign sizes.
+  Creation and resume project the worst legal fixed-geometry artifact first
+  (largest starting genotype concentrated into every row, fixed component
+  widths, maximum wire-string lengths) and reject an infeasible generation
+  count with `maximumFeasibleGenerations`, so no accepted run can wedge at the
+  64 MiB ceiling.
+- **Locks:** fixture `evolution-a-small-flat` v1 (seeds **20260742** population /
+  **20260743** terrain; 6 individuals × 3 generations × 45 steps on the flat pad,
+  terminating on the generation limit) — header `6b872cad…bfcce51b`, history
+  `da573ca5…1ef20e55`, plus every generation's four component digests, its
+  chained digest, and every lineage row. `test:determinism` gained
+  `tests/evolution-determinism.test.js`; pinned Chromium
+  (`tests/browser/evolution-determinism.test.js`) reproduced every literal —
+  including the SHA-256 seam, PR 3's one genuinely new cross-runtime dependency —
+  **on the first run**. The gate also asserts STRUCTURAL coverage (elites exist,
+  both mutation branches occur incl. a zero-selection child, the last record is
+  terminal), so a fixture change cannot quietly narrow what the locks prove.
+- **Independent interoperability oracle:**
+  `tests/fixtures/evolution-v1-kimi-k3max.base64` is a static 4,024-byte
+  one-generation artifact produced by the isolated Kimi implementation, with
+  provenance and literal digests in the adjacent Markdown file. Node and
+  Chromium reproduce its generation 0 bytes, resume it, and continue it to the
+  same terminal digest. The final cross-worktree check also established
+  byte-identical headers/components and mutual Claude/Kimi resume. This is the
+  independent oracle for codec genesis; the repository's own golden fixture is
+  a regression lock, not circular proof of its original semantics.
+- **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
+  comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
+  selectors (it was a single-block lookup by filename, which would have silently
+  stopped covering the family the moment the platform adapter got its own
+  block), and the module walk covers `src/platform` as well as `src/sim`. Two
+  real defects were found by the standing instruments and fixed AT SOURCE rather
+  than exempted: `crossCheckLineage` read its rows twice, and
+  `encodeGenerationPayload` read `record.components` once per component kind.
+- **Deliberate sabotage: 12 mutations, ALL BITE** (terminal precedence, one RNG
+  draw, child-ID order, one lineage parent, one digest domain, verification
+  order, the runtime version check, a component-length ceiling,
+  copy-before-await, the fresh history copy, the trace-mode-`none` seam, the
+  generation chain). **The verification-order mutation was SILENT on the first
+  attempt** — the component-corruption tests reassembled the artifact, so they
+  recomputed the outer digest and would have stayed green if the whole-history
+  check ran first. Two in-place corruption tests now enforce the ordering
+  property. That is round 10's lesson (*a test written to the fix is not
+  enforcement of the rule*) recurring inside this PR, caught by running the
+  sabotage checklist rather than by assuming it.
+- **Test-oracle skeptic finding:** a new mutation-boundary test originally
+  filtered on the nonexistent lineage origin `mutated`, so its accounting
+  checks ran over an empty collection. It now filters `continuousMutation`,
+  requires real children, and checks `(p,m) = (0,1), (1,0), (1,1)` through the
+  run/history/resume boundary. Composition also covers population sizes
+  1/2/3/6 with tied selectable pools. Full suite green (59 files, 1541 tests),
+  determinism 6 files / 50 tests, pinned Chromium 4 files / 20 tests.
+- **Zero lock movement, zero version movement elsewhere.** Every terrain, noise,
+  boulder, assembly (`24cd0dd5`/`39bcd6c4`), A–D evaluation and population
+  digest is byte-identical; `GENOTYPE_VERSION`, `ASSEMBLY_IR_VERSION`,
+  `EVALUATION_TRACE_VERSION`, snapshot/initializer/spec/fitness-vector/integrity
+  versions all unchanged. Full suite green (59 files, 1541 tests), determinism
+  6 files, pinned Chromium 4 files, lint + build clean.
+- **Seeds allocated:** 20260740 engine unit-test population · 20260741 engine
+  unit-test terrain · 20260742 committed fixture population · 20260743 committed
+  fixture terrain.
 
 ### Phase 1B PR 2 operator boundary
 

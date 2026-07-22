@@ -844,6 +844,53 @@ export function serializeEvaluationSpec(resolvedSpec) {
   return new Uint8Array(view.buffer);
 }
 
+/**
+ * Resolve an evaluation spec ONCE and return its canonical form as BOTH bytes
+ * and the decoded record those bytes describe: `{ bytes, spec }`.
+ *
+ * WHY THIS EXISTS. `resolveSpec` is private, and it must stay that way — it is
+ * the execution gate. But a caller that must EVALUATE THE THING IT ATTESTED
+ * (the evolution engine: its history binds spec bytes, and replay must rerun
+ * exactly the run those bytes describe) otherwise has to either duplicate the
+ * resolver or evaluate a spec object that is merely believed to correspond to
+ * the bytes it stored. Here the correspondence is constructive: the returned
+ * `spec` is DECODED FROM the returned `bytes`, so "what was attested" and
+ * "what will run" are one value, and the codec's exact-inverse property is
+ * load-bearing in production rather than only in its own tests.
+ *
+ * HOOKS ARE REFUSED, not dropped. `hooks` is execution plumbing that the spec
+ * encoding deliberately excludes from identity, so a canonical spec carrying
+ * one would mean the original run and any replay could differ in side effects
+ * and failure behaviour while presenting the same digest. The check is on
+ * own-KEY presence (`hasOwnProperty`), so `{ hooks: undefined }` and
+ * `{ hooks: {} }` fail exactly like a live hook — an empty hooks object is
+ * still a caller asserting a capability this seam does not have.
+ *
+ * The RESOLVER-IDEMPOTENCE tooth runs here, once per canonicalization: the
+ * decoded spec is re-resolved and re-encoded, and the two byte streams must be
+ * identical. That is what makes a decoded spec directly replayable (the
+ * `termination`-as-input ruling above), asserted on the real value rather than
+ * assumed from the committed test.
+ */
+export function canonicalizeEvaluationSpec(spec) {
+  if (typeof spec !== 'object' || spec === null) fail('spec', spec);
+  if (Object.prototype.hasOwnProperty.call(spec, 'hooks')) {
+    fail('hooks', 'a canonical evaluation spec is hook-free — hooks are execution plumbing and are excluded from spec identity, so they must not select what runs');
+  }
+  const bytes = serializeEvaluationSpec(resolveSpec(spec));
+  const decoded = deserializeEvaluationSpec(bytes);
+  const reEncoded = serializeEvaluationSpec(resolveSpec(decoded));
+  if (reEncoded.length !== bytes.length) {
+    fail('spec', 'the resolver is not idempotent on its own canonical output (length changed)');
+  }
+  for (let i = 0; i < bytes.length; i += 1) {
+    if (reEncoded[i] !== bytes[i]) {
+      fail('spec', `the resolver is not idempotent on its own canonical output (byte ${i})`);
+    }
+  }
+  return Object.freeze({ bytes, spec: decoded });
+}
+
 function specDecodeFail(path, value) {
   throw new Error(`population-evaluation: invalid encoded evaluation spec at ${path} (${String(value)})`);
 }
@@ -1077,7 +1124,7 @@ const FITNESS_VECTOR_HEADER_BYTES = 2 + 2 + 2 + 2 + 4 + 2 + 4 + 4; // 22
 const FITNESS_VECTOR_MEMBER_BYTES = 4 + 1 + 1 + 8; // 14
 
 /** Exact byte length of a canonical fitness vector carrying `count` members. */
-function fitnessVectorByteLength(count) {
+export function fitnessVectorByteLength(count) {
   return FITNESS_VECTOR_HEADER_BYTES + FITNESS_VECTOR_MEMBER_BYTES * count;
 }
 

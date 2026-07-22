@@ -91,6 +91,20 @@ import {
 import {
   analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView, scaledThresholds,
 } from '../src/sim/trace-forensics.js';
+import * as EvolutionContractNS from '../src/sim/evolution-contract.js';
+import * as EvolutionLineageNS from '../src/sim/evolution-lineage.js';
+import * as EvolutionRunNS from '../src/sim/evolution-run.js';
+import {
+  crossCheckLineage, deserializeLineage, serializeLineage, validateLineage,
+  zeroLineageAccounting,
+} from '../src/sim/evolution-lineage.js';
+import { createEvolutionRun } from '../src/sim/evolution-run.js';
+import * as EvolutionHistoryNS from '../src/sim/evolution-history.js';
+import * as Sha256NS from '../src/platform/sha256.js';
+import * as EvolutionReplayNS from '../src/sim/evolution-replay.js';
+import {
+  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
+} from '../src/sim/evolution-history.js';
 
 // --- The instrument ---------------------------------------------------------
 
@@ -267,6 +281,65 @@ const fullTrace = () => ({
 // that asserts a malformed input is refused rather than silently absorbed.
 const MODULE_DIALECT = /^(assembly|population|population-initializer|population-evaluation|trace|trace-forensics|integrity):/;
 
+// A two-row generation-0 lineage: the smallest input that exercises both the
+// sentinel rule and the accounting walk.
+const sampleLineage = () => ({
+  lineageVersion: 1,
+  generationIndex: 0,
+  individuals: [0, 1].map((individualId) => ({
+    individualId, parentIndividualId: null, origin: 'initialized', accounting: { ...zeroLineageAccounting() },
+  })),
+});
+
+// Module-owned history fixtures for the encoder rows above.
+const historyHeader = () => ({
+  evolutionEngineVersion: 1,
+  evolutionPolicyVersion: 1,
+  generationRecordVersion: 1,
+  lineageVersion: 1,
+  evaluationMetadataVersion: 1,
+  tournamentSelectionVersion: 1,
+  elitismVersion: 1,
+  parametricMutationVersion: 1,
+  tournamentSize: 3,
+  eliteCount: 2,
+  physicsFlavor: 'deterministicCompat',
+  packageName: '@dimforge/rapier3d-deterministic-compat',
+  rapierVersion: '0.19.3',
+  populationSize: 2,
+  maxGenerations: 2,
+  mutationProbability: 0.05,
+  mutationMagnitude: 0.05,
+  initializationManifestBytes: Uint8Array.of(1, 2, 3),
+  evaluationSpecBytes: Uint8Array.of(4, 5, 6),
+});
+
+const historyComponents = () => ({
+  population: Uint8Array.of(1),
+  evaluationMetadata: serializeEvaluationMetadata({ worldMode: 'isolatedWorlds', effectiveDt: 1 / 60, executedSteps: 1 }),
+  fitnessVector: Uint8Array.of(2),
+  lineage: Uint8Array.of(3),
+});
+
+const historyDigests = () => ({
+  population: new Uint8Array(32),
+  evaluationMetadata: new Uint8Array(32),
+  fitnessVector: new Uint8Array(32),
+  lineage: new Uint8Array(32),
+});
+
+// The smallest legal evolution config (no physics runs at creation).
+const evolutionConfig = () => ({
+  initialization: { seed: 20260740, populationSize: 2 },
+  evaluationSpec: {
+    terrain: { seed: 20260741, startFlatLength: 30, startBlendLength: 6 },
+    maxSteps: 10,
+    deterministic: true,
+    spawn: { x: -44, z: 0 },
+  },
+  evolution: { maxGenerations: 2 },
+});
+
 // A full-trace analysis with TWO bodies, the second catastrophic (|v| ≫ 1000),
 // so offlineIntegrityView returns a non-'ok' status derived from perBody[1].
 const catastrophicAnalysis = () => {
@@ -335,6 +408,14 @@ const CASES = [
     (ir, opts) => spawnPoseOnFlatStart(ir, opts)],
   ['population-evaluation.serializeEvaluationSpec', () => [resolvedSpec()],
     (s) => serializeEvaluationSpec(s)],
+  // The hook-free canonicalizer resolves a caller's spec exactly once; the
+  // resolver, the encoder, and the returned decoded record must all be that
+  // one reading (the resolveSpec `spawn.x` regression, one seam up).
+  // …and unlike its sibling encoder, this one runs the EXECUTION gate, so its
+  // fixture must satisfy the flat-pad guard (a longer start pad).
+  ['population-evaluation.canonicalizeEvaluationSpec',
+    () => [{ ...resolvedSpec(), terrain: { ...TERRAIN_DEFAULTS, seed: 20260741, startFlatLength: 30 } }],
+    (s) => EvaluationNS.canonicalizeEvaluationSpec(s)],
   ['population-evaluation.serializeFitnessVector (digest-state path)', () => [fitnessEvaluation()],
     (e) => serializeFitnessVector(e)],
   // EVERY presence-selected optional input needs its own row: the row above
@@ -425,6 +506,29 @@ const CASES = [
   ['trace-forensics.offlineIntegrityView',
     () => [analyzeTrace(fullTrace())],
     (a) => offlineIntegrityView(a)],
+  // PR 3's evolution family. The lineage codec walks a caller's rows and the
+  // run's config capture walks three caller containers — both are exactly the
+  // shape this instrument exists for.
+  ['evolution-lineage.validateLineage', () => [sampleLineage()], (l) => validateLineage(l)],
+  ['evolution-lineage.serializeLineage', () => [sampleLineage()], (l) => serializeLineage(l)],
+  ['evolution-lineage.crossCheckLineage',
+    () => [deserializeLineage(serializeLineage(sampleLineage())), [0, 1], null],
+    (l, ids, previous) => crossCheckLineage(l, 0, ids, previous)],
+  ['evolution-run.createEvolutionRun', () => [evolutionConfig()], (c) => createEvolutionRun(c)],
+  ['evolution-replay.captureExpectedIdentity',
+    () => [{ expectedHistoryDigestBytes: new Uint8Array(32), expectedGenerationIndex: 2 }],
+    (o) => EvolutionReplayNS.captureExpectedIdentity(o, (b) => new Uint8Array(b))],
+  ['evolution-history.serializeEvaluationMetadata',
+    () => [{ worldMode: 'isolatedWorlds', effectiveDt: 1 / 60, executedSteps: 45 }],
+    (m) => serializeEvaluationMetadata(m)],
+  ['evolution-history.encodeEvolutionHeader', () => [historyHeader()],
+    (h) => encodeEvolutionHeader(h)],
+  ['evolution-history.encodeGenerationPayload',
+    () => [
+      { generationIndex: 0, terminalReason: 'none', components: historyComponents() },
+      historyDigests(),
+    ],
+    (record, digests) => encodeGenerationPayload(record, digests)],
   ['integrity.foldIntegrity', () => [integrityReads()], (reads) => {
     const state = createIntegrityState(2, 1 / 60);
     return foldIntegrity(state, 0, reads);
@@ -447,7 +551,9 @@ describe('single-read invariant over the public surface', () => {
 // reason. A new export fails here until classified — closing the "21 exports
 // unrowed" gap the break-it sweep named.
 const NS = { assembly: AssemblyNS, population: PopulationNS, initializer: InitializerNS,
-  evaluation: EvaluationNS, evolution: EvolutionNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS };
+  evaluation: EvaluationNS, evolution: EvolutionNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS,
+  evolutionContract: EvolutionContractNS, evolutionLineage: EvolutionLineageNS, evolutionRun: EvolutionRunNS,
+  evolutionHistory: EvolutionHistoryNS, sha256: Sha256NS, evolutionReplay: EvolutionReplayNS };
 
 // Function exports that consume caller DATA but are covered outside the CASES
 // table (a dedicated describe block above) or need no single-read coverage.
@@ -499,6 +605,39 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   wheelMass: 'exempt: three scalar args (radius, width, density)',
   isCanonicalUint32: 'exempt: one scalar arg',
   bytesEqual: 'exempt: two TypedArrays (byte family, ownership-boundary battery)',
+  // PR 3's evolution family
+  canonicalizeEvaluationSpec: 'CASES row',
+  deserializeLineage: 'exempt: TypedArray input',
+  lineageByteLength: 'exempt: one number arg',
+  fitnessVectorByteLength: 'exempt: one number arg',
+  zeroLineageAccounting: 'exempt: no args',
+  EvolutionError: 'exempt: copies its scalar context by key enumeration (ownership-boundary ownedCopy case)',
+  evolutionFail: 'exempt: same as EvolutionError',
+  isEvolutionUint32: 'exempt: one scalar arg',
+  checkedAdd: 'exempt: two scalar args',
+  checkedMultiply: 'exempt: two scalar args',
+  copyOrdinaryBytes: 'exempt: TypedArray input',
+  // evolution-history.js / src/platform/sha256.js
+  deserializeEvaluationMetadata: 'exempt: TypedArray input',
+  decodeEvolutionHeader: 'exempt: TypedArray input',
+  decodeGenerationPayload: 'exempt: TypedArray input',
+  decodeHistoryFraming: 'exempt: TypedArray input',
+  digestHeader: 'exempt: TypedArray input',
+  digestComponent: 'exempt: kind string + TypedArray input',
+  digestGeneration: 'exempt: two TypedArray inputs',
+  digestHistoryBody: 'exempt: TypedArray input',
+  digestsEqual: 'exempt: two TypedArray inputs',
+  assembleHistory: 'exempt: module-owned byte rows; round-tripped in tests/evolution-history.test.js',
+  projectEvolutionHistoryCapacity: 'exempt: module-private scalar length record; exercised through createEvolutionRun capacity tests',
+  sha256: 'exempt: TypedArray input (tests/sha256.test.js owns its battery)',
+  // evolution-replay.js
+  firstByteDifference: 'exempt: two TypedArray inputs',
+  failReplayDivergence: 'exempt: scalars + TypedArray inputs; always throws',
+  verifyHistoryArtifact: 'exempt: TypedArray input',
+  checkExpectedIdentity: 'exempt: module-owned capture in',
+  checkRuntimeIdentity: 'exempt: two string records in',
+  captureExpectedIdentity: 'CASES row',
+  resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',
 });
 
 const casesCovered = new Set(CASES.map(([name]) => name.split(' ')[0].split('.').pop()));

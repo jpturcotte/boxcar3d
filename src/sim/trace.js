@@ -484,6 +484,22 @@ export class TraceWriter {
     // persisted-history format, the first point at which a trace crosses a
     // trust boundary. Freezing the outer arrays would NOT close it —
     // Uint8Array contents stay mutable.
+    //
+    // EXPIRY, NARROWED AND MADE PRECISE (PR 3 Commit 0, approved — codec doc
+    // §Round 15). The round-13/14 wording said the deferral expires when
+    // "Phase 1B persists evolution history and reloads it". PR 3 persists
+    // BYTE-ONLY evolution history: evaluation is forced to trace mode 'none',
+    // and the history format's fixed geometry admits exactly four component
+    // kinds (population snapshot, evaluation metadata, fitness vector,
+    // lineage) — trace records, trace checkpoints, live diagnostics, and
+    // comparator evidence have NO byte walk to enter through, so no trace ever
+    // reaches a persisted artifact, a replay comparison, a determinism lock,
+    // or an artifact digest. The trigger is therefore SEMANTIC, not
+    // chronological: this hardening expires when a NON-NULL trace crosses a
+    // persistence, replay, determinism-lock, or artifact-identity trust
+    // boundary — not merely because unrelated evolution bytes are now
+    // persisted. Trace mode 'none' is what makes that true, and
+    // tests/evolution-run.test.js asserts it structurally.
     return {
       version: EVALUATION_TRACE_VERSION,
       mode: this.#mode,
@@ -606,9 +622,16 @@ function normalizeRecords(side, label) {
  * drops accessors). Exploiting this class means writing an accessor into this
  * repo's own code to deceive this repo's own gates. The bug is real and the
  * exposure is nil, and that — not "diagnostic-only" — is why it waits.
- * The expiry condition is explicit: Phase 1B persists evolution history to
- * disk and reloads it, which is the first moment a trace crosses a trust
- * boundary. Revisit there, not before.
+ * The expiry condition is explicit — and PR 3 Commit 0 NARROWED it from
+ * "Phase 1B persists evolution history to disk and reloads it" to the
+ * semantic trigger it always meant (codec doc §Round 15, approved): this
+ * hardening expires when a NON-NULL trace crosses a persistence, replay,
+ * determinism-lock, or artifact-identity trust boundary. PR 3's evolution
+ * history is byte-only and forces trace mode 'none', so its persisted
+ * artifacts, its replay comparisons, its determinism locks, and its SHA-256
+ * artifact identity contain no trace evidence at all — the fixed component
+ * geometry gives one nowhere to enter. Revisit at the semantic trigger, not
+ * at "history exists".
  *
  * Test tooling that wants the guarantee today can encode both sides via
  * `encodeTraceRecord()` before calling, which mechanically closes the class

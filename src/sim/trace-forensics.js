@@ -284,6 +284,13 @@ export function analyzeTrace(traceResult, {
   // post-attestation-mutated result describes bytes the digest never
   // attested. Diagnostic-only surface; the verification model is a Phase 1B
   // persisted-history decision.
+  //
+  // EXPIRY (PR 3 Commit 0, approved — codec doc §Round 15): narrowed from
+  // "when Phase 1B persists history" to the semantic trigger — when a NON-NULL
+  // trace crosses a persistence, replay, determinism-lock, or
+  // artifact-identity trust boundary. PR 3's evolution history is byte-only
+  // and evaluates at trace mode 'none', so no trace reaches any of those
+  // boundaries and this surface stays purely local diagnostics.
   const recordCount = records.length;
   if (recordCount === 0) fail('traceResult.records', records);
   if (typeof captureDt !== 'number' || !Number.isFinite(captureDt) || captureDt <= 0) {

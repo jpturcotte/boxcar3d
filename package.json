@@ -3,20 +3,25 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Evolving 3D vehicles in a corridor world — a genetic algorithm sandbox inspired by BoxCar2D.",
+  "packageManager": "npm@10.9.3",
+  "engines": {
+    "node": ">=22.12 <23"
+  },
+  "description": "Evolving 3D vehicles in a corridor world \u2014 a genetic algorithm sandbox inspired by BoxCar2D.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:determinism": "vitest run tests/evaluation-determinism.test.js tests/evaluation-golden.test.js tests/cohort-determinism.test.js tests/population-determinism.test.js tests/evolution-operators.test.js",
+    "test:determinism": "vitest run tests/evaluation-determinism.test.js tests/evaluation-golden.test.js tests/cohort-determinism.test.js tests/population-determinism.test.js tests/evolution-operators.test.js tests/evolution-determinism.test.js",
     "test:browser": "vitest run --config vitest.browser.config.js",
     "probe:s1": "node tests/s1-calibration-probe.js",
     "probe:timing": "node scripts/probe-rapier-timing.js",
     "probe:population": "node scripts/characterize-population.js",
     "probe:physics-explosion": "node scripts/probe-physics-explosion.js",
     "probe:integrity": "node scripts/probe-integrity.js",
+    "probe:evolution": "node scripts/probe-evolution.js",
     "probe:package-smoke": "node scripts/probe-rapier-package-smoke.js",
     "bench:physics": "node scripts/bench-physics.js",
     "lint": "eslint ."

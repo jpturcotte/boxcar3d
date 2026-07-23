@@ -55,12 +55,18 @@ import {
   deserializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import { deserializeLineage, LINEAGE_ACCOUNTING_KEYS, LINEAGE_ORIGINS } from '../src/sim/evolution-lineage.js';
-import { deserializeFitnessVector } from '../src/sim/population-evaluation.js';
+import {
+  deserializeFitnessVector, spawnPoseOnFlatStart,
+} from '../src/sim/population-evaluation.js';
+import { runEvaluation } from '../src/sim/evaluation.js';
 import { deserializePopulationSnapshot } from '../src/sim/population.js';
+import { createInitialPopulation } from '../src/sim/population-initializer.js';
 import {
   compileAssembly, genotypeFieldWalk, serializeGenotype,
 } from '../src/sim/assembly.js';
 import { bytesToHex } from '../src/sim/bytes.js';
+import { TERRAIN_DEFAULTS } from '../src/sim/terrain.js';
+import { MOTOR_TARGET_WHEEL_SURFACE_SPEED } from '../src/sim/physics/adapter.js';
 import { sha256 } from '../src/platform/sha256.js';
 
 export const EXPERIMENT_SCHEMA = 'boxcar3d.evolution-experiment/1';
@@ -68,7 +74,47 @@ export const EXPERIMENT_RUN_SCHEMA = 'boxcar3d.evolution-experiment-run/1';
 export const EXPERIMENT_PROTOCOL_VERSION = 1;
 
 /** The phases the CLI accepts. `report` executes nothing; it reads and decides. */
-export const EXPERIMENT_PHASES = Object.freeze(['smoke', 'screen', 'confirm', 'report']);
+export const EXPERIMENT_PHASES = Object.freeze([
+  'smoke', 'screen', 'confirm', 'report', 'forensics', 'escalation-cost',
+]);
+
+/**
+ * The declared forensic sample: (replicate index, arm) pairs whose champions are
+ * re-evaluated through the PRODUCTION runner so their integrity OBSERVATIONS
+ * (peak body speed, first alert step) can be read directly.
+ *
+ * WHY THIS PHASE EXISTS. The persisted fitness vector stores an integrity
+ * STATUS, not the observations behind it, so a history cannot answer "was this
+ * champion locomotion or divergence?". Re-evaluation can. Without this phase the
+ * report's central claim would rest on numbers produced by a throwaway script —
+ * and this repo's standing rule is that every figure in an empirical report must
+ * regenerate from a committed arm.
+ *
+ * The sample is DECLARED, not chosen after the fact: three replicates that
+ * exhibited over-ceiling champions and three that did not, each sampled at its
+ * lowest, median and highest selectable champion. That spread is what makes the
+ * result falsifiable in both directions — it can show a high-fitness champion is
+ * healthy, or a low-fitness one is not.
+ */
+export const FORENSIC_SAMPLE = Object.freeze([
+  // Screening: three replicates that showed over-ceiling champions, three that
+  // did not.
+  Object.freeze({ phase: 'screen', replicateIndex: 1, armId: 'p0.025-m0.025' }),
+  Object.freeze({ phase: 'screen', replicateIndex: 2, armId: 'p0.200-m0.100' }),
+  Object.freeze({ phase: 'screen', replicateIndex: 3, armId: 'p0.200-m0.200' }),
+  Object.freeze({ phase: 'screen', replicateIndex: 0, armId: 'p0.200-m0.200' }),
+  Object.freeze({ phase: 'screen', replicateIndex: 4, armId: 'p0.200-m0.200' }),
+  Object.freeze({ phase: 'screen', replicateIndex: 5, armId: 'p0.050-m0.200' }),
+  // CONFIRMATION. The first draft could not express these at all — every case
+  // resolved against `protocol.screen` and `runForensicCase` hard-coded
+  // `phase: 'screen'` — so the phase carrying the report's strongest positive
+  // claim had no re-evaluation evidence whatsoever. Replicate 2 is the
+  // zero-mutation CONTROL's contaminated replicate, whose generation-0 champion
+  // is already over the ceiling; replicate 0 is clean.
+  Object.freeze({ phase: 'confirm', replicateIndex: 2, armId: 'control' }),
+  Object.freeze({ phase: 'confirm', replicateIndex: 2, armId: 'p0.050-m0.050' }),
+  Object.freeze({ phase: 'confirm', replicateIndex: 0, armId: 'p0.050-m0.050' }),
+]);
 
 /** Phases that produce citable evidence, and therefore require a clean tree. */
 const CITABLE_PHASES = Object.freeze(['screen', 'confirm']);
@@ -1276,6 +1322,324 @@ export async function executeExperimentPhase({
   return { phase: phaseName, planned: schedule.length, executed, skipped: schedule.length - todo.length };
 }
 
+// --- Forensics ---------------------------------------------------------------
+
+/**
+ * Re-run one declared case and re-evaluate its lowest, median and highest
+ * selectable champion through the production runner.
+ *
+ * Every number this returns is an OBSERVATION of the physics, exactly like the
+ * explosion and integrity probes: no threshold here gates anything, and no
+ * committed test asserts a magnitude. The `plausible` flag compares against the
+ * DERIVED ceiling and is reported so the ceiling's own false-negative rate is
+ * visible rather than assumed.
+ */
+/**
+ * The PURE half of a forensic case: which replicate, which seeds, how many
+ * generations. Separated from the physics so the phase ROUTING is testable
+ * without a 30-generation run — the first version hard-coded `phase: 'screen'`
+ * here, and no test could see it because every test that touched forensics read
+ * a committed artifact rather than exercising this code.
+ */
+export function forensicCasePlan(protocol, replicate, arm, phaseName = 'screen') {
+  const phase = phaseFor(protocol, phaseName);
+  return {
+    runId: `forensics:${phaseName}:${arm.armId}:r${replicate.replicateIndex}`,
+    phase: phaseName,
+    armId: arm.armId,
+    probability: arm.probability,
+    magnitude: arm.magnitude,
+    replicateIndex: replicate.replicateIndex,
+    populationSeed: replicate.populationSeed,
+    terrainSeed: replicate.terrainSeed,
+    generations: phase.generations,
+  };
+}
+
+/**
+ * Run one forensic case from an ALREADY-RESOLVED plan.
+ *
+ * It deliberately takes no phase argument. When it took one, the routing existed
+ * in two places — here and in `forensicSamplePlans` — and a sabotage pass could
+ * hard-code `'screen'` at the call site while the tested resolver stayed
+ * correct. One source of routing, so there is nothing to disagree with.
+ */
+export async function runForensicCase(protocol, plan) {
+  const run = createEvolutionRun(runConfigFor(protocol, plan));
+  let result;
+  do { result = await run.advance(); } while (result.kind !== 'terminal');
+  const framing = decodeHistoryFraming(run.historyBytes());
+
+  const champions = [];
+  for (let gi = 0; gi < framing.generations.length; gi += 1) {
+    const payload = decodeGenerationPayload(framing.generations[gi].payloadBytes);
+    const vector = deserializeFitnessVector(payload.components.fitnessVector);
+    const snapshot = deserializePopulationSnapshot(payload.components.population);
+    const best = summarizeFitnessRows(vector.individuals).champion;
+    if (best === null) continue;
+    const members = snapshot.individuals;
+    let genotype = null;
+    for (let i = 0; i < members.length; i += 1) {
+      if (members[i].individualId === best.individualId) { genotype = members[i].genotype; break; }
+    }
+    if (genotype === null) fail(`champion ${best.individualId} is absent from its own population snapshot`);
+    champions.push({ generationIndex: payload.generationIndex, fitness: best.fitness, genotype });
+  }
+  if (champions.length === 0) return [];
+  champions.sort((a, b) => a.fitness - b.fitness);
+  const picks = [
+    { label: 'lowest', champion: champions[0] },
+    { label: 'median', champion: champions[Math.floor(champions.length / 2)] },
+    { label: 'highest', champion: champions[champions.length - 1] },
+  ];
+
+  const ceiling = fitnessPlausibilityCeiling(protocol).conservativeCeiling;
+  const rows = [];
+  for (const pick of picks) {
+    const ir = compileAssembly(pick.champion.genotype);
+    const evaluation = await runEvaluation({
+      deterministic: protocol.workload.deterministic,
+      terrain: { seed: plan.terrainSeed, ...protocol.workload.terrain },
+      vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, { ...protocol.workload.spawn }) }],
+      maxSteps: protocol.workload.maxSteps,
+      termination: 'maxSteps',
+      trace: { mode: 'none' },
+    });
+    const vehicle = evaluation.vehicles[0];
+    const observations = vehicle.integrity.observations;
+    rows.push({
+      phase: plan.phase,
+      armId: plan.armId,
+      replicateIndex: plan.replicateIndex,
+      populationSeed: plan.populationSeed,
+      terrainSeed: plan.terrainSeed,
+      pick: pick.label,
+      generationIndex: pick.champion.generationIndex,
+      fitness: pick.champion.fitness,
+      reevaluatedMaxForwardDistance: vehicle.maxForwardDistance,
+      finalX: vehicle.finalPose.translation.x,
+      integrityStatus: vehicle.integrity.status,
+      peakBodySpeed: observations.peakBodySpeed,
+      firstAlertStep: observations.firstAlertStep,
+      firstCatastrophicStep: observations.firstCatastrophicStep,
+      plausible: pick.champion.fitness <= ceiling,
+    });
+  }
+  return rows;
+}
+
+/** Run every declared forensic case and summarize what the sample shows. */
+/**
+ * Resolve every declared forensic case to its (replicate, arm, phase) triple.
+ *
+ * PURE, and separated from the physics for one reason: the phase routing lives
+ * HERE, and when it was inline in the runner a sabotage pass could replace
+ * `entry.phase` with a hard-coded `'screen'` and every test stayed green,
+ * because the only tests that touched forensics read a committed artifact.
+ */
+export function forensicSamplePlans(protocol) {
+  const plans = [];
+  for (const entry of FORENSIC_SAMPLE) {
+    const phase = phaseFor(protocol, entry.phase);
+    const replicate = phase.replicates[entry.replicateIndex];
+    const arm = protocol.screen.arms.find((a) => a.armId === entry.armId);
+    if (replicate === undefined || arm === undefined) {
+      fail(`forensic case ${entry.phase}:${entry.armId}:r${entry.replicateIndex} is not in the protocol`);
+    }
+    plans.push({ entry, replicate, arm, plan: forensicCasePlan(protocol, replicate, arm, entry.phase) });
+  }
+  return plans;
+}
+
+/** The PURE forensic report: provenance, ceiling and the derived summary. */
+export function buildForensicReport({ protocolDigest, ceiling, rows }) {
+  const ordered = rows.slice().sort((a, b) => a.fitness - b.fitness);
+  const over = ordered.filter((r) => !r.plausible);
+  const under = ordered.filter((r) => r.plausible);
+  return {
+    schema: 'boxcar3d.evolution-experiment-forensics/1',
+    // PROVENANCE. Without these the artifact was checked only for internal
+    // consistency, so a stale file from an earlier sample or protocol stayed
+    // green.
+    protocolDigest,
+    declaredSample: FORENSIC_SAMPLE,
+    ceiling,
+    rows: ordered,
+    summary: {
+      sampled: ordered.length,
+      // DISTINCT individuals, not rows: the lowest/median/highest picks of one
+      // run can be the same elite, and the first report turned a row count into
+      // a claim about that many sampled champions.
+      distinctOverCeilingIndividuals: new Set(over.map((r) => `${r.armId}:r${r.replicateIndex}:${r.generationIndex}:${r.fitness}`)).size,
+      overCeiling: over.length,
+      // NOTE: this field CANNOT come back false while the ceiling exceeds
+      // alertSpeed x runSeconds, so it is entailed by arithmetic rather than
+      // measured. Kept because its absence would be conspicuous, and documented
+      // so nobody cites it as evidence.
+      overCeilingAllAlertBand: over.length > 0 && over.every((r) => r.firstAlertStep !== null),
+      overCeilingAnyCatastrophic: over.some((r) => r.firstCatastrophicStep !== null),
+      // THE FALSE-NEGATIVE RATE OF THE CEILING — the number that turns the
+      // prevalence figures into a LOWER BOUND rather than an estimate.
+      underCeilingAlertBand: under.filter((r) => r.firstAlertStep !== null).length,
+      underCeiling: under.length,
+    },
+  };
+}
+
+export async function runForensicSample(protocol, log = () => {}) {
+  const protocolDigest = await canonicalDigest(protocol);
+  const rows = [];
+  for (const { plan } of forensicSamplePlans(protocol)) {
+    log(`  ${plan.phase} ${plan.armId} r${plan.replicateIndex} …`);
+    rows.push(...await runForensicCase(protocol, plan));
+  }
+  return buildForensicReport({
+    protocolDigest,
+    ceiling: fitnessPlausibilityCeiling(protocol).conservativeCeiling,
+    rows,
+  });
+}
+
+/**
+ * The maintainer's disposition of the gate verdict, declared in code so it
+ * travels with the artifact instead of living only in prose.
+ *
+ * `gateVerdictAdopted: false` is not a bug and not an oversight: the gate ranks
+ * on selectable fitness, and this campaign measured that the signal it ranks on
+ * is contaminated by constraint-solver divergence which policy v2 reports as
+ * `ok`. The gate could not see that and was never asked to. Changing the gate
+ * after seeing its answer would be the reverse-fitting the protocol exists to
+ * prevent; recording that its premise failed is not.
+ */
+export const ADOPTION_RULING = Object.freeze({
+  gateVerdictAdopted: false,
+  adoptedDefaults: Object.freeze({ probability: 0.05, magnitude: 0.05 }),
+  reasonCode: 'fitnessSignalContaminated',
+  reason: 'The selectable-fitness signal is contaminated by integrity alert-band '
+    + 'constraint-solver divergence that fitness policy v2 classifies as selectable. '
+    + 'The candidate is additionally on the grid boundary, and its identity is not '
+    + 'robust to the contamination in screening. Retune deferred, not refuted.',
+  prerequisite: 'Resolve the alert band (see the escalation-cost arm), then re-run this protocol.',
+});
+
+// --- Escalation cost ---------------------------------------------------------
+
+/**
+ * What would ALERT-AS-FAILURE actually remove?
+ *
+ * PR-B left the integrity alert band as an observation and named escalation a
+ * policy-v2 trigger. This campaign supplies the evidence that the trigger is
+ * met — but "escalate" is only a responsible recommendation if the COST of
+ * escalating has been measured, and the first draft of the report recommended it
+ * without measuring anything.
+ *
+ * This arm evaluates every GENERATION-0 population in the protocol — unmutated,
+ * so what it measures is a property of the initializer and the realization, not
+ * of any arm — and records the integrity OBSERVATIONS the production fold
+ * already computes but the fitness vector does not persist. From those it
+ * derives exactly one number that matters: how many individuals would newly
+ * become unselectable, and what their peak speeds are.
+ *
+ * IT CHANGES NO POLICY. Escalation itself is a production change (an
+ * `INTEGRITY_POLICY_VERSION` / `FITNESS_POLICY_VERSION` bump and a deliberate
+ * re-lock) and belongs to the PR that owns that seam. This measures; it does not
+ * decide. It also measures only the FALSE-POSITIVE side (healthy vehicles
+ * wrongly removed); PR-B's acceptance test also requires the false-negative side
+ * (divergence that still passes), which is out of scope here and stated as such.
+ */
+export async function runEscalationCost(protocol, log = () => {}) {
+  const replicates = [
+    ...protocol.screen.replicates.map((r) => ({ phase: 'screen', ...r })),
+    ...protocol.confirm.replicates.map((r) => ({ phase: 'confirm', ...r })),
+  ];
+  const rows = [];
+  for (const replicate of replicates) {
+    log(`  ${replicate.phase} population ${replicate.populationSeed} …`);
+    const { population } = createInitialPopulation({
+      seed: replicate.populationSeed,
+      populationSize: protocol.workload.populationSize,
+    });
+    const terrain = { seed: replicate.terrainSeed, ...protocol.workload.terrain };
+    const members = population.individuals;
+    for (let i = 0; i < members.length; i += 1) {
+      const ir = compileAssembly(members[i].genotype);
+      const evaluation = await runEvaluation({
+        deterministic: protocol.workload.deterministic,
+        terrain,
+        vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, { ...protocol.workload.spawn }) }],
+        maxSteps: protocol.workload.maxSteps,
+        termination: 'maxSteps',
+        trace: { mode: 'none' },
+      });
+      const vehicle = evaluation.vehicles[0];
+      const o = vehicle.integrity.observations;
+      rows.push({
+        phase: replicate.phase,
+        populationSeed: replicate.populationSeed,
+        terrainSeed: replicate.terrainSeed,
+        individualId: members[i].individualId,
+        maxForwardDistance: vehicle.maxForwardDistance,
+        integrityStatus: vehicle.integrity.status,
+        peakBodySpeed: o.peakBodySpeed,
+        firstAlertStep: o.firstAlertStep,
+        firstCatastrophicStep: o.firstCatastrophicStep,
+      });
+    }
+  }
+
+  return summarizeEscalationRows(rows);
+}
+
+/**
+ * The PURE accounting behind the escalation-cost arm. Separated from the physics
+ * so every count is testable on synthetic rows — the first version computed
+ * these inline, and the only test read a committed artifact, so a miscount in
+ * this arithmetic could not be caught.
+ *
+ * `newlyUnselectable` is deliberately NOT "everything alert-band": an individual
+ * that policy v2 already refuses is not a NEW cost of escalating.
+ */
+export function summarizeEscalationRows(rows) {
+  const total = rows.length;
+  const currentlyUnselectable = rows.filter((r) => r.integrityStatus !== 'ok');
+  const alertBand = rows.filter((r) => r.firstAlertStep !== null);
+  const newlyUnselectable = rows.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep !== null);
+  const peaks = newlyUnselectable.map((r) => r.peakBodySpeed).sort((a, b) => a - b);
+
+  // Would the generation-0 CHAMPION change? That is what sets selection pressure.
+  const byPopulation = new Map();
+  for (const r of rows) {
+    const key = `${r.phase}:${r.populationSeed}`;
+    if (!byPopulation.has(key)) byPopulation.set(key, []);
+    byPopulation.get(key).push(r);
+  }
+  let championChanges = 0;
+  for (const [, members] of byPopulation) {
+    const best = (xs) => {
+      let top = null;
+      for (const x of xs) if (top === null || x.maxForwardDistance > top.maxForwardDistance) top = x;
+      return top;
+    };
+    const now = best(members.filter((r) => r.integrityStatus === 'ok'));
+    const after = best(members.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep === null));
+    if (now === null || after === null || now.individualId !== after.individualId) championChanges += 1;
+  }
+
+  return {
+    schema: 'boxcar3d.evolution-experiment-escalation-cost/1',
+    scope: 'generation-0 populations only (unmutated); FALSE-POSITIVE side only',
+    individuals: total,
+    populations: byPopulation.size,
+    currentlyUnselectable: currentlyUnselectable.length,
+    alertBand: alertBand.length,
+    newlyUnselectable: newlyUnselectable.length,
+    newlyUnselectablePeakSpeed: peaks.length === 0 ? null : quartiles(peaks),
+    newlyUnselectableBelow50: peaks.filter((p) => p < 50).length,
+    generationZeroChampionChanges: championChanges,
+    rows,
+  };
+}
+
 // --- Report ------------------------------------------------------------------
 
 /**
@@ -1331,24 +1695,13 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
   // source commit are deliberately outside it — the first three are properties
   // of the machine and the last would make the digest change when this very
   // document is committed.
-  const evidence = {
+  const evidence = evidenceSubset({
     protocol: activeProtocol,
     protocolDigest,
-    runs: records.map((r) => ({
-      runId: r.runId,
-      phase: r.phase,
-      armId: r.armId,
-      probability: r.probability,
-      magnitude: r.magnitude,
-      replicateIndex: r.replicateIndex,
-      populationSeed: r.populationSeed,
-      terrainSeed: r.terrainSeed,
-      plannedGenerations: r.plannedGenerations,
-      summary: r.summary,
-    })),
+    runs: records.map(projectRunForEvidence),
     screening,
     confirmation,
-  };
+  });
   const evidenceDigest = await canonicalDigest(evidence);
 
   return {
@@ -1358,6 +1711,16 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
     citable,
     decision: confirmation === null ? null : confirmation.decision,
     resolvedDefaults: confirmation === null ? null : confirmation.resolvedDefaults,
+    // WHAT THE MAINTAINER ACTUALLY DID WITH THE GATE'S VERDICT.
+    //
+    // The first draft shipped a digest-signed, citable artifact whose `decision`
+    // field read `retune` while every prose handoff said the retune was
+    // declined. A tool or a reader taking the machine-readable file at face
+    // value would have adopted parameters the PR deliberately refused. The gate
+    // verdict above is untouched — this records the disposition beside it, and
+    // sits OUTSIDE the evidence digest because it is a human ruling, not a
+    // measurement.
+    adoption: ADOPTION_RULING,
     ...evidence,
     coherence,
     // OBSERVATIONS ONLY — never an input to any gate above.
@@ -1365,7 +1728,16 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
       source: manifest.createdSource,
       runSources: [...new Set(records.map((r) => r.source.commit))],
       performance: performanceObservations(records),
+      // Raw per-run timing, OUTSIDE the digest, so the envelope figures quoted
+      // in the report are re-derivable from the committed artifact.
+      perRunTiming: records.map((r) => ({
+        runId: r.runId,
+        generationCount: r.summary.generationCount,
+        evolveMs: r.performance.evolveMs,
+        summarizeMs: r.performance.summarizeMs,
+      })),
       historyGrowth: historyGrowthObservations(records),
+      fitnessPlausibility: fitnessPlausibilityObservations(activeProtocol, records),
     },
   };
 }
@@ -1405,6 +1777,252 @@ export function pairingCoherence(records) {
   return out;
 }
 
+/**
+ * The DETERMINISTIC SUBSET the evidence digest is computed over.
+ *
+ * Exactly these five keys, in one place, so the digest's scope is a definition
+ * rather than a field list repeated at every call site. Everything a re-run on
+ * another machine must reproduce byte-for-byte is inside; timing, machine
+ * identity, execution order and the source commit are outside — the first three
+ * are properties of the machine, and the last would make the digest change when
+ * this very document is committed.
+ *
+ * A caller that adds a key gets a loud failure rather than a silently different
+ * digest, and `tests/evolution-experiment.test.js` pins the key set against a
+ * copy-declared literal so a scope change cannot pass unnoticed.
+ */
+export const EVIDENCE_DIGEST_KEYS = Object.freeze([
+  'protocol', 'protocolDigest', 'runs', 'screening', 'confirmation',
+]);
+
+export function evidenceSubset(source) {
+  const keys = Object.keys(source).slice().sort();
+  const expected = EVIDENCE_DIGEST_KEYS.slice().sort();
+  if (keys.length !== expected.length || keys.some((k, i) => k !== expected[i])) {
+    fail(`the evidence subset must carry exactly [${expected}] (got [${keys}])`);
+  }
+  const out = {};
+  for (const key of EVIDENCE_DIGEST_KEYS) out[key] = source[key];
+  return out;
+}
+
+/**
+ * The per-generation fields the committed evidence keeps for EVERY generation.
+ *
+ * WHY THE EVIDENCE IS PROJECTED AT ALL. The workspace record holds the full
+ * summary — per-generation morphology histograms, lineage accounting, integrity
+ * counts and fitness quartiles. Across 204 runs and ~7,500 generations that is
+ * 17 MB of JSON, which is not a reviewable artifact. The projection keeps every
+ * field any consumer READS: the decision layer reads only the first and last
+ * generation (via `runScore` and `finalGeneration`), and the plausibility
+ * observation reads every generation's champion.
+ *
+ * THE RULE THE PROJECTION MUST SATISFY: every figure quoted in the committed
+ * report must be recomputable from the committed evidence alone. So the first
+ * and last generation are kept in FULL (they carry the morphology, lineage and
+ * integrity detail the report discusses), and every generation in between keeps
+ * the five quantities the trajectory and the observations are built from.
+ * Nothing is rounded — the gates compare exact f64 medians.
+ */
+const TRAJECTORY_FIELDS = Object.freeze([
+  'generationIndex', 'champion', 'selectableCount', 'uniqueGenotypeCount', 'geneSpaceDispersion',
+]);
+
+function projectRunForEvidence(record) {
+  const gens = record.summary.generations;
+  const lastIndex = gens.length - 1;
+  const generations = [];
+  for (let i = 0; i < gens.length; i += 1) {
+    if (i === 0 || i === lastIndex) { generations.push(gens[i]); continue; }
+    const compact = {};
+    for (const key of TRAJECTORY_FIELDS) compact[key] = gens[i][key];
+    generations.push(compact);
+  }
+  return {
+    runId: record.runId,
+    phase: record.phase,
+    armId: record.armId,
+    probability: record.probability,
+    magnitude: record.magnitude,
+    replicateIndex: record.replicateIndex,
+    populationSeed: record.populationSeed,
+    terrainSeed: record.terrainSeed,
+    plannedGenerations: record.plannedGenerations,
+    // PROVENANCE SURVIVES THE PROJECTION. The report claims "every run from the
+    // single clean commit X" and marks the artifact citable; the first draft
+    // dropped both fields here, so that claim rested on data the committed
+    // artifact no longer carried and no test could re-derive it.
+    sourceCommit: record.source.commit,
+    sourceClean: record.source.clean,
+    citable: record.citable,
+    // TIMING IS DELIBERATELY ABSENT HERE. It belongs to the machine, not to the
+    // experiment, and `runs` is inside the evidence digest — putting per-run
+    // milliseconds here made a resumed campaign produce a different digest from
+    // an uninterrupted one, which the resume test caught immediately. Per-run
+    // timing lives in `observations.perRunTiming`, outside the digest.
+    summary: {
+      historyByteLength: record.summary.historyByteLength,
+      historyDigest: record.summary.historyDigest,
+      headerDigest: record.summary.headerDigest,
+      generationCount: record.summary.generationCount,
+      terminalReason: record.summary.terminalReason,
+      header: record.summary.header,
+      evaluation: record.summary.evaluation,
+      generations,
+    },
+  };
+}
+
+/**
+ * Two bounds on the forward distance a vehicle could reach by LOCOMOTION.
+ *
+ * THE FIRST DRAFT OF THIS FUNCTION WAS ANALYTICALLY WRONG, AND THE ERROR IS
+ * INSTRUCTIVE. It returned `corridorForwardDistance + noLoadSpeed × runSeconds`
+ * (104 + 25 = 129 m) and described it as the distance a vehicle "could reach".
+ * That adds a SPATIAL EXTENT to a TIME-INTEGRAL. Displacement in T seconds is
+ * bounded by v_max × T and by nothing else; the corridor's length constrains
+ * WHERE a vehicle can be, not HOW FAR it can travel. At 5 m/s the corridor's own
+ * 104 m would take 20.8 s, four times the whole run — so the two terms cannot
+ * both be realized and their sum bounds nothing. The consequence was a ceiling
+ * ~5× too generous, which is exactly why the report then discovered
+ * "false negatives" and reported them as a surprise.
+ *
+ * So this returns both, named for what they are:
+ *   kinematicCeiling    = noLoadSurfaceSpeed × runSeconds — the real bound.
+ *   conservativeCeiling = corridorForwardDistance + kinematicCeiling — an
+ *                         unarguable envelope, retained ONLY because a count
+ *                         taken against it is a strict LOWER bound on
+ *                         contamination and the first report quoted it.
+ *
+ * BOTH ARE HEURISTICS AND OBSERVATIONS, NEVER GATES. Terrain slopes can push a
+ * vehicle past its no-load speed, so a champion moderately over the kinematic
+ * ceiling is not proof of anything; what carries the finding is the integrity
+ * OBSERVATION (peak body speed), measured by `--phase forensics`. No threshold
+ * here feeds any eligibility rule, any confirmation gate, or the decision —
+ * adding one after seeing results is the reverse-fitting this protocol exists to
+ * avoid.
+ *
+ * The terrain length comes from the RESOLVED workload when it declares one, not
+ * unconditionally from `TERRAIN_DEFAULTS`: a protocol that overrode
+ * `terrain.length` would otherwise have its ceiling silently computed from 120 m.
+ */
+export function fitnessPlausibilityCeiling(protocol, dt = 1 / 60) {
+  const w = protocol.workload;
+  const terrainLength = w.terrain.length === undefined ? TERRAIN_DEFAULTS.length : w.terrain.length;
+  const corridorEnd = terrainLength / 2 - w.spawn.x;
+  const runSeconds = w.maxSteps * dt;
+  const kinematic = MOTOR_TARGET_WHEEL_SURFACE_SPEED * runSeconds;
+  return {
+    terrainLength,
+    spawnX: w.spawn.x,
+    corridorForwardDistance: corridorEnd,
+    noLoadSurfaceSpeed: MOTOR_TARGET_WHEEL_SURFACE_SPEED,
+    runSeconds,
+    // THE bound: displacement in T seconds cannot exceed v_max x T.
+    kinematicCeiling: kinematic,
+    // A deliberately unarguable envelope, kept only so a count taken against it
+    // is a strict lower bound. It is NOT a displacement bound (see above).
+    conservativeCeiling: corridorEnd + kinematic,
+  };
+}
+
+/**
+ * Contamination counts, broken down so the report's CAUSAL claims are backed by
+ * data rather than by prose.
+ *
+ * THE FIRST DRAFT AGGREGATED BY PHASE ONLY, and that is precisely how a false
+ * claim shipped: the report asserted "the (0,0) control produced zero
+ * over-ceiling champions in any replicate" and concluded that mutation, not the
+ * initial draw, discovers divergence. Both were wrong — the confirmation control
+ * has 60 over-ceiling generations, and the individual responsible is present at
+ * GENERATION 0, before any operator has acted. Neither fact could redden
+ * anything, because nothing counted per arm or at generation 0.
+ *
+ * So the breakdown now carries `perArm` (the control is an arm like any other)
+ * and `generationZero` (pre-treatment, shared by every arm at a replicate by the
+ * pairing identity). A claim about what mutation does is now checkable against
+ * the artifact that is supposed to support it.
+ *
+ * Counts are reported two ways because they answer different questions:
+ *   championGenerations   — generation-SLOTS whose champion is over the ceiling.
+ *                           Elitism re-counts one surviving individual every
+ *                           generation, so this is an exposure measure.
+ *   distinctChampionIds   — DISTINCT individual ids, which is what "one champion
+ *                           in five" would have to mean to be a prevalence.
+ */
+export function fitnessPlausibilityObservations(protocol, records) {
+  if (records.length === 0) return null;
+  const basis = fitnessPlausibilityCeiling(protocol);
+
+  const blank = () => ({
+    runs: 0,
+    generations: 0,
+    championGenerationsOverKinematic: 0,
+    championGenerationsOverConservative: 0,
+    finalChampionsOverConservative: 0,
+    distinctChampionsOverConservative: 0,
+    maxChampion: 0,
+    contaminatedReplicates: [],
+  });
+  const phases = {};
+  const perArm = {};
+  const generationZero = {};
+  const distinctIds = new Map();
+
+  for (const record of records) {
+    const buckets = [];
+    if (phases[record.phase] === undefined) phases[record.phase] = blank();
+    buckets.push(phases[record.phase]);
+    const armKey = `${record.phase}:${record.armId}`;
+    if (perArm[armKey] === undefined) perArm[armKey] = blank();
+    buckets.push(perArm[armKey]);
+    for (const b of buckets) {
+      b.runs += 1;
+      if (distinctIds.get(b) === undefined) distinctIds.set(b, new Set());
+    }
+
+    const gens = record.summary.generations;
+    for (let i = 0; i < gens.length; i += 1) {
+      const champion = gens[i].champion;
+      const value = champion === null ? 0 : champion.fitness;
+      for (const b of buckets) {
+        b.generations += 1;
+        if (value > b.maxChampion) b.maxChampion = value;
+        if (value > basis.kinematicCeiling) b.championGenerationsOverKinematic += 1;
+        if (value > basis.conservativeCeiling) {
+          b.championGenerationsOverConservative += 1;
+          if (!b.contaminatedReplicates.includes(record.replicateIndex)) {
+            b.contaminatedReplicates.push(record.replicateIndex);
+          }
+          if (champion !== null) distinctIds.get(b).add(`r${record.replicateIndex}:${champion.fitness}`);
+        }
+      }
+    }
+    const last = gens[gens.length - 1].champion;
+    if (last !== null && last.fitness > basis.conservativeCeiling) {
+      for (const b of buckets) b.finalChampionsOverConservative += 1;
+    }
+
+    // Generation 0 is PRE-TREATMENT: drawn before mutation acts, and identical
+    // across every arm at a replicate. Recorded once per (phase, replicate).
+    const zeroKey = `${record.phase}:r${record.replicateIndex}`;
+    const zero = gens[0].champion;
+    if (generationZero[zeroKey] === undefined) {
+      generationZero[zeroKey] = {
+        championFitness: zero === null ? null : zero.fitness,
+        overKinematic: zero !== null && zero.fitness > basis.kinematicCeiling,
+        overConservative: zero !== null && zero.fitness > basis.conservativeCeiling,
+      };
+    }
+  }
+
+  for (const bucket of [...Object.values(phases), ...Object.values(perArm)]) {
+    bucket.contaminatedReplicates.sort((a, b) => a - b);
+    bucket.distinctChampionsOverConservative = distinctIds.get(bucket).size;
+  }
+  return { basis, phases, perArm, generationZero };
+}
+
 function performanceObservations(records) {
   if (records.length === 0) return null;
   const evolve = records.map((r) => r.performance.evolveMs).sort((a, b) => a - b);
@@ -1412,12 +2030,31 @@ function performanceObservations(records) {
     .map((r) => r.performance.advanceMsMean)
     .filter((v) => v !== null)
     .sort((a, b) => a - b);
+  // SPLIT BY GENERATION COUNT. A pooled median over 30- and 60-generation runs
+  // is a number describing neither, and quoting it as "the 30-generation median"
+  // was a confirmed defect in the first report.
+  const byGenerations = {};
+  for (const record of records) {
+    const key = String(record.summary.generationCount);
+    if (byGenerations[key] === undefined) byGenerations[key] = { evolveMs: [], summarizeMs: [] };
+    byGenerations[key].evolveMs.push(record.performance.evolveMs);
+    byGenerations[key].summarizeMs.push(record.performance.summarizeMs);
+  }
+  for (const key of Object.keys(byGenerations)) {
+    const b = byGenerations[key];
+    byGenerations[key] = {
+      runCount: b.evolveMs.length,
+      evolveMs: quartiles(b.evolveMs.slice().sort((a, c) => a - c)),
+      summarizeMs: quartiles(b.summarizeMs.slice().sort((a, c) => a - c)),
+    };
+  }
   return {
     runCount: records.length,
     totalEvolveMs: evolve.reduce((s, v) => s + v, 0),
     evolveMs: quartiles(evolve),
     meanMsPerGeneration: quartiles(perGeneration),
     summarizeMsTotal: records.reduce((s, r) => s + r.performance.summarizeMs, 0),
+    byGenerationCount: byGenerations,
   };
 }
 
@@ -1529,10 +2166,60 @@ async function main() {
 
   const protocol = buildExperimentProtocol('full');
   const workspace = config.workspace ?? DEFAULT_WORKSPACE;
+  if (config.phase === 'forensics') {
+    log('forensics: re-running declared cases and re-evaluating their champions');
+    const report = await runForensicSample(protocol, log);
+    log('');
+    log(' fitness(m)  peak(m/s)  firstAlert  firstCat  status  finalX   pick     arm/replicate');
+    for (const r of report.rows) {
+      log(`${r.fitness.toFixed(1).padStart(11)}${r.peakBodySpeed.toFixed(1).padStart(11)}`
+        + `${String(r.firstAlertStep).padStart(12)}${String(r.firstCatastrophicStep).padStart(10)}`
+        + `${r.integrityStatus.padStart(8)}${r.finalX.toFixed(0).padStart(9)}  ${r.pick.padEnd(8)} `
+        + `${r.armId}/r${r.replicateIndex}`);
+    }
+    const s = report.summary;
+    log('');
+    log(`ceiling ${report.ceiling} m — over: ${s.overCeiling}/${s.sampled}`
+      + ` (all alert-band: ${s.overCeilingAllAlertBand}, any catastrophic: ${s.overCeilingAnyCatastrophic})`);
+    log(`under the ceiling: ${s.underCeilingAlertBand}/${s.underCeiling} were ALSO alert-band`
+      + ' — the ceiling under-counts, so prevalence is a LOWER BOUND');
+    if (config.out !== null) {
+      writeFileSync(config.out, `${canonicalJson(report)}\n`, 'utf8');
+      log(`written: ${config.out}`);
+    }
+    return;
+  }
+  if (config.phase === 'escalation-cost') {
+    log('escalation-cost: evaluating every generation-0 population (unmutated)');
+    const out = await runEscalationCost(protocol, log);
+    const pct = (k) => `${((100 * k) / out.individuals).toFixed(1)}%`;
+    log('');
+    log(`generation-0 individuals evaluated: ${out.individuals} (${out.populations} populations, UNMUTATED)`);
+    log(`  currently unselectable (policy v2): ${out.currentlyUnselectable}  ${pct(out.currentlyUnselectable)}`);
+    log(`  alert-band at any point:            ${out.alertBand}  ${pct(out.alertBand)}`);
+    log(`  WOULD NEWLY become unselectable:    ${out.newlyUnselectable}  ${pct(out.newlyUnselectable)}`);
+    if (out.newlyUnselectablePeakSpeed !== null) {
+      const q = out.newlyUnselectablePeakSpeed;
+      log(`  their peak body speed (m/s): min ${q.min.toFixed(1)} median ${q.median.toFixed(1)} max ${q.max.toFixed(1)}`);
+      log(`  of those, peaking below 50 m/s (near the 25 m/s alert line): ${out.newlyUnselectableBelow50}`);
+    }
+    log(`  generation-0 champion changes: ${out.generationZeroChampionChanges}/${out.populations} populations`);
+    if (config.out !== null) {
+      writeFileSync(config.out, `${canonicalJson(out)}
+`, 'utf8');
+      log(`written: ${config.out}`);
+    }
+    return;
+  }
   if (config.phase === 'report') {
     const report = await buildExperimentReport({ workspace, protocol });
     const out = config.out ?? join(workspace, 'evidence.json');
-    writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    // CANONICAL, not pretty-printed. Three reasons: the committed artifact is
+    // then byte-stable across rebuilds (a real git diff, not a whitespace
+    // reflow), it is the same spelling the evidence digest is computed over, and
+    // `JSON.stringify(_, null, 2)` tripled the file for indentation alone. Use
+    // `jq` to read it.
+    writeFileSync(out, `${canonicalJson(report)}\n`, 'utf8');
     log(`report: ${out}`);
     log(`  decision        ${report.decision}`);
     log(`  candidate       ${report.screening.candidateArmId}`);

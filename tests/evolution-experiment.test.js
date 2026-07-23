@@ -19,11 +19,15 @@
 
 import { describe, test, expect } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 import {
   BASELINE_ARM_ID, CONTROL_ARM_ID, EXPERIMENT_PHASES, EXPERIMENT_RUN_SCHEMA, EXPERIMENT_SCHEMA,
+  ADOPTION_RULING, EVIDENCE_DIGEST_KEYS, FORENSIC_SAMPLE, canonicalDigest, evidenceSubset,
+  fitnessPlausibilityCeiling, fitnessPlausibilityObservations, forensicCasePlan,
+  summarizeEscalationRows, forensicSamplePlans, buildForensicReport,
   readSourceIdentity, resetSmokeWorkspace, shouldRunAsScript,
   SYMMETRY_GENE_THRESHOLD, armIdFor, buildExecutionSchedule, buildExperimentProtocol,
   buildExperimentReport, canonicalJson, confirmDecision, configFromArgs, executeExperimentPhase,
@@ -984,6 +988,488 @@ describe('experiment: the CLI cannot destroy evidence or run on import', () => {
     // been true, a full smoke experiment would have run during collection.
     expect(shouldRunAsScript(process.argv[1])).toBe(false);
   });
+});
+
+// --- 6b2. The CODE that produces the observations, not just the artifact -----
+
+describe('experiment: the observation producers themselves', () => {
+  // WHY THIS BLOCK EXISTS. Every tooth written for the round-2 corrections read
+  // the COMMITTED JSON — and a committed file cannot change when the source
+  // does, so a sabotage pass found six of those fixes completely unenforced.
+  // Reading the artifact catches a stale or hand-edited artifact; it says
+  // nothing about the code. These exercise the producers directly.
+
+  const row = (over = {}) => ({
+    phase: 'screen',
+    armId: 'control',
+    replicateIndex: 0,
+    summary: {
+      generations: [
+        { champion: { individualId: 0, fitness: 5 } },
+        { champion: { individualId: 1, fitness: 500 } },
+      ],
+    },
+    ...over,
+  });
+
+  test('the ceiling reads the RESOLVED terrain length, not the module default', () => {
+    // With the real protocol both branches agree (its terrain declares no
+    // length), so this needs a protocol that overrides it — otherwise the
+    // mutation is unobservable, which is exactly what the sabotage pass found.
+    const base = buildExperimentProtocol();
+    const overridden = JSON.parse(JSON.stringify(base));
+    overridden.workload.terrain.length = 400;
+    expect(fitnessPlausibilityCeiling(overridden).terrainLength).toBe(400);
+    expect(fitnessPlausibilityCeiling(overridden).corridorForwardDistance)
+      .toBe(400 / 2 - overridden.workload.spawn.x);
+    // ...and the kinematic bound must NOT move with the corridor.
+    expect(fitnessPlausibilityCeiling(overridden).kinematicCeiling)
+      .toBe(fitnessPlausibilityCeiling(base).kinematicCeiling);
+  });
+
+  test('the kinematic ceiling is v*T and does NOT include the corridor', () => {
+    const protocol = buildExperimentProtocol();
+    const basis = fitnessPlausibilityCeiling(protocol);
+    expect(basis.kinematicCeiling).toBe(basis.noLoadSurfaceSpeed * basis.runSeconds);
+    expect(basis.kinematicCeiling).toBeLessThan(basis.corridorForwardDistance);
+  });
+
+  test('the observation fold PRODUCES a per-arm and generation-zero breakdown', () => {
+    const protocol = buildExperimentProtocol();
+    const out = fitnessPlausibilityObservations(protocol, [
+      row(),
+      row({ armId: 'p0.200-m0.200' }),
+      row({ replicateIndex: 1, summary: { generations: [{ champion: { individualId: 0, fitness: 5 } }] } }),
+    ]);
+    expect(Object.keys(out.perArm).sort()).toEqual(['screen:control', 'screen:p0.200-m0.200']);
+    expect(out.perArm['screen:control'].championGenerationsOverConservative).toBe(1);
+    expect(out.generationZero['screen:r0'].championFitness).toBe(5);
+    expect(out.generationZero['screen:r0'].overConservative).toBe(false);
+    expect(out.generationZero['screen:r1']).toBeDefined();
+  });
+
+  test('distinct champions COLLAPSE a surviving elite; ids would not', () => {
+    // A 3-generation run whose champion never changes is ONE individual, even
+    // though PR 3 gives every elite copy a fresh id.
+    const protocol = buildExperimentProtocol();
+    const survivor = {
+      phase: 'screen',
+      armId: 'control',
+      replicateIndex: 0,
+      summary: {
+        generations: [
+          { champion: { individualId: 7, fitness: 500 } },
+          { champion: { individualId: 21, fitness: 500 } }, // fresh id, same vehicle
+          { champion: { individualId: 34, fitness: 500 } },
+        ],
+      },
+    };
+    const out = fitnessPlausibilityObservations(protocol, [survivor]);
+    const arm = out.perArm['screen:control'];
+    expect(arm.championGenerationsOverConservative).toBe(3); // exposure
+    expect(arm.distinctChampionsOverConservative).toBe(1); // prevalence
+  });
+
+  test('the forensic case plan ROUTES to the phase it names', () => {
+    const protocol = buildExperimentProtocol();
+    const arm = protocol.screen.arms.find((a) => a.armId === CONTROL_ARM_ID);
+    const screenPlan = forensicCasePlan(protocol, protocol.screen.replicates[2], arm, 'screen');
+    const confirmPlan = forensicCasePlan(protocol, protocol.confirm.replicates[2], arm, 'confirm');
+    expect(screenPlan.generations).toBe(protocol.screen.generations);
+    expect(confirmPlan.generations).toBe(protocol.confirm.generations);
+    expect(screenPlan.generations).not.toBe(confirmPlan.generations);
+    expect(confirmPlan.populationSeed).toBe(protocol.confirm.replicates[2].populationSeed);
+    expect(confirmPlan.phase).toBe('confirm');
+    expect(screenPlan.runId).not.toBe(confirmPlan.runId);
+  });
+
+  test('the escalation accounting counts only NEWLY-failing individuals', () => {
+    const mk = (id, status, alert, peak, dist) => ({
+      phase: 'screen',
+      populationSeed: 1,
+      individualId: id,
+      integrityStatus: status,
+      firstAlertStep: alert,
+      firstCatastrophicStep: null,
+      peakBodySpeed: peak,
+      maxForwardDistance: dist,
+    });
+    const out = summarizeEscalationRows([
+      mk(0, 'ok', null, 4, 20), // healthy, best -> current champion
+      mk(1, 'ok', 12, 300, 50), // alert-band but currently selectable -> NEWLY fails
+      mk(2, 'numericalDivergence', 5, 2000, 0), // already unselectable -> NOT new
+      mk(3, 'ok', null, 3, 10),
+    ]);
+    expect(out.individuals).toBe(4);
+    expect(out.currentlyUnselectable).toBe(1);
+    expect(out.alertBand).toBe(2);
+    expect(out.newlyUnselectable).toBe(1); // NOT 2 — the already-failing one is not a new cost
+    expect(out.newlyUnselectableBelow50).toBe(0);
+  });
+
+  test('the escalation accounting detects a champion change', () => {
+    const mk = (id, alert, peak, dist) => ({
+      phase: 'screen',
+      populationSeed: 1,
+      individualId: id,
+      integrityStatus: 'ok',
+      firstAlertStep: alert,
+      firstCatastrophicStep: null,
+      peakBodySpeed: peak,
+      maxForwardDistance: dist,
+    });
+    // The top scorer is alert-band, so escalation hands the crown to id 1.
+    const changed = summarizeEscalationRows([mk(0, 9, 400, 900), mk(1, null, 4, 20)]);
+    expect(changed.generationZeroChampionChanges).toBe(1);
+    // Here the top scorer is healthy, so nothing changes.
+    const stable = summarizeEscalationRows([mk(0, null, 4, 900), mk(1, null, 4, 20)]);
+    expect(stable.generationZeroChampionChanges).toBe(0);
+  });
+
+  test('the forensic SAMPLE resolves each case against the phase it declares', () => {
+    // The routing at the CALL SITE, not just in the plan builder: a runner that
+    // hard-codes 'screen' must redden here.
+    const protocol = buildExperimentProtocol();
+    const plans = forensicSamplePlans(protocol);
+    expect(plans).toHaveLength(FORENSIC_SAMPLE.length);
+    for (let i = 0; i < plans.length; i += 1) {
+      const { entry, replicate, plan } = plans[i];
+      expect(entry).toBe(FORENSIC_SAMPLE[i]);
+      expect(plan.phase).toBe(entry.phase);
+      const declared = entry.phase === 'confirm' ? protocol.confirm : protocol.screen;
+      expect(plan.generations).toBe(declared.generations);
+      expect(replicate.populationSeed)
+        .toBe(declared.replicates[entry.replicateIndex].populationSeed);
+      expect(plan.terrainSeed).toBe(declared.replicates[entry.replicateIndex].terrainSeed);
+    }
+    // Confirmation cases must really carry the confirmation budget.
+    const confirmPlans = plans.filter((p) => p.entry.phase === 'confirm');
+    expect(confirmPlans.length).toBeGreaterThan(0);
+    for (const p of confirmPlans) expect(p.plan.generations).toBe(protocol.confirm.generations);
+  });
+
+  test('the forensic report BUILDER carries provenance and derives its summary', () => {
+    const protocol = buildExperimentProtocol();
+    const mk = (fitness, alert, plausible) => ({
+      armId: 'x', replicateIndex: 0, generationIndex: 1, fitness,
+      firstAlertStep: alert, firstCatastrophicStep: null, plausible,
+    });
+    const out = buildForensicReport({
+      protocolDigest: 'abc',
+      ceiling: 129,
+      rows: [mk(500, 10, false), mk(12, 39, true), mk(5, null, true)],
+    });
+    expect(out.protocolDigest).toBe('abc');
+    expect(out.declaredSample).toBe(FORENSIC_SAMPLE); // not an empty stand-in
+    expect(out.declaredSample.length).toBeGreaterThan(0);
+    expect(out.summary.overCeiling).toBe(1);
+    expect(out.summary.underCeiling).toBe(2);
+    expect(out.summary.underCeilingAlertBand).toBe(1); // the 12 m / alert@39 case
+    expect(out.rows.map((r) => r.fitness)).toEqual([5, 12, 500]); // sorted
+    expect(fitnessPlausibilityCeiling(protocol).conservativeCeiling).toBe(129);
+  });
+
+  test('the adoption ruling is pinned in CODE, not only in the committed file', () => {
+    expect(ADOPTION_RULING.gateVerdictAdopted).toBe(false);
+    expect(ADOPTION_RULING.adoptedDefaults).toEqual({ probability: 0.05, magnitude: 0.05 });
+    expect(ADOPTION_RULING.reasonCode).toBe('fitnessSignalContaminated');
+    expect(Object.isFrozen(ADOPTION_RULING)).toBe(true);
+  });
+});
+
+// --- 6c. The committed evidence recomputes to its own conclusions ------------
+
+describe('experiment: the committed evidence', () => {
+  const evidence = JSON.parse(readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '..', 'docs',
+      'ga-phase-1b-pr4-evolution-experiment-evidence.json'),
+    'utf8',
+  ));
+
+  test('is a well-formed, citable, single-commit artifact', () => {
+    expect(evidence.schema).toBe(EXPERIMENT_SCHEMA);
+    expect(evidence.protocolVersion).toBe(1);
+    expect(evidence.runs).toHaveLength(204); // 26x6 screening + 3x16 confirmation
+    expect(evidence.citable).toBe(true);
+    // Every run from ONE clean commit — the property that makes the arms
+    // comparable at all. Two commits would mean two experiments averaged.
+    expect(evidence.observations.runSources).toHaveLength(1);
+    expect(evidence.coherence.every((c) => c.pass)).toBe(true);
+  });
+
+  test('recomputes its OWN screening, confirmation and decision from the raw run rows',
+    async () => {
+      // The acceptance rule: the committed document must be derivable from its
+      // own raw rows. Nothing is carried forward from execution, so a hand-edited
+      // conclusion cannot survive here.
+      const protocol = evidence.protocol;
+      const screenRuns = evidence.runs.filter((r) => r.phase === 'screen');
+      const confirmRuns = evidence.runs.filter((r) => r.phase === 'confirm');
+
+      const screening = screenCandidates(protocol, screenRuns);
+      expect(canonicalJson(screening)).toBe(canonicalJson(evidence.screening));
+
+      const confirmation = confirmDecision(protocol, confirmRuns, screening.candidateArmId);
+      expect(canonicalJson(confirmation)).toBe(canonicalJson(evidence.confirmation));
+      expect(evidence.decision).toBe(confirmation.decision);
+      expect(evidence.resolvedDefaults).toEqual(confirmation.resolvedDefaults);
+
+      // And the digest over the declared deterministic subset.
+      const recomputed = await canonicalDigest(evidenceSubset({
+        protocol,
+        protocolDigest: evidence.protocolDigest,
+        runs: evidence.runs,
+        screening,
+        confirmation,
+      }));
+      expect(recomputed).toBe(evidence.evidenceDigest);
+    });
+
+  test('the digest scope is EXACTLY the declared five keys', () => {
+    // Copy-declared, so a change to EVIDENCE_DIGEST_KEYS reddens rather than
+    // silently redefining what the committed digest attests.
+    expect(EVIDENCE_DIGEST_KEYS.slice().sort())
+      .toEqual(['confirmation', 'protocol', 'protocolDigest', 'runs', 'screening']);
+    // Timing, machine identity and execution order must be OUTSIDE it.
+    for (const excluded of ['observations', 'coherence', 'citable', 'decision']) {
+      expect(EVIDENCE_DIGEST_KEYS).not.toContain(excluded);
+    }
+    expect(() => evidenceSubset({ protocol: 1 })).toThrow(/must carry exactly/);
+  });
+
+  test('the KINEMATIC ceiling is a displacement bound; the conservative one is not', () => {
+    // The first draft returned `corridor + v*T` and called it the distance a
+    // vehicle "could reach", which adds a spatial extent to a time-integral.
+    // Displacement in T seconds is bounded by v*T and nothing else. Both are
+    // asserted as arithmetic identities so a workload change moves them.
+    const basis = evidence.observations.fitnessPlausibility.basis;
+    expect(basis.kinematicCeiling).toBe(basis.noLoadSurfaceSpeed * basis.runSeconds);
+    expect(basis.conservativeCeiling)
+      .toBe(basis.corridorForwardDistance + basis.kinematicCeiling);
+    expect(basis.corridorForwardDistance).toBe(basis.terrainLength / 2 - basis.spawnX);
+    // The conservative bound is strictly weaker, so counts against it are LOWER
+    // bounds. If these ever coincide the distinction has been lost.
+    expect(basis.conservativeCeiling).toBeGreaterThan(basis.kinematicCeiling);
+    expect(fitnessPlausibilityCeiling(evidence.protocol)).toEqual(basis);
+  });
+
+  test('the plausibility counts recompute from the committed generation rows', () => {
+    const basis = evidence.observations.fitnessPlausibility.basis;
+    for (const [phase, observed] of Object.entries(evidence.observations.fitnessPlausibility.phases)) {
+      const runs = evidence.runs.filter((r) => r.phase === phase);
+      let generations = 0;
+      let overKinematic = 0;
+      let overConservative = 0;
+      let finalOver = 0;
+      for (const run of runs) {
+        const gens = run.summary.generations;
+        for (const g of gens) {
+          generations += 1;
+          if (g.champion === null) continue;
+          if (g.champion.fitness > basis.kinematicCeiling) overKinematic += 1;
+          if (g.champion.fitness > basis.conservativeCeiling) overConservative += 1;
+        }
+        const last = gens[gens.length - 1].champion;
+        if (last !== null && last.fitness > basis.conservativeCeiling) finalOver += 1;
+      }
+      expect(observed.runs).toBe(runs.length);
+      expect(observed.generations).toBe(generations);
+      expect(observed.championGenerationsOverKinematic).toBe(overKinematic);
+      expect(observed.championGenerationsOverConservative).toBe(overConservative);
+      expect(observed.finalChampionsOverConservative).toBe(finalOver);
+    }
+  });
+
+  test('contamination is broken down PER ARM, so a claim about the control is checkable', () => {
+    // THIS TEST EXISTS BECAUSE ITS ABSENCE SHIPPED A FALSE CLAIM. The report
+    // asserted "the (0,0) control produced zero over-ceiling champions in any
+    // replicate"; the confirmation control has 60. Nothing reddened, because
+    // counts existed only per PHASE. The per-arm breakdown is now required to be
+    // present and to recompute — the claim is enforced by data, not by prose.
+    const basis = evidence.observations.fitnessPlausibility.basis;
+    const perArm = evidence.observations.fitnessPlausibility.perArm;
+    const armKeys = new Set(evidence.runs.map((r) => `${r.phase}:${r.armId}`));
+    expect(new Set(Object.keys(perArm))).toEqual(armKeys);
+    for (const [key, observed] of Object.entries(perArm)) {
+      const runs = evidence.runs.filter((r) => `${r.phase}:${r.armId}` === key);
+      let over = 0;
+      const distinct = new Set();
+      for (const run of runs) {
+        for (const g of run.summary.generations) {
+          if (g.champion === null || g.champion.fitness <= basis.conservativeCeiling) continue;
+          over += 1;
+          distinct.add(`r${run.replicateIndex}:${g.champion.fitness}`);
+        }
+      }
+      expect(observed.championGenerationsOverConservative).toBe(over);
+      // Distinct champions collapse a surviving elite; ids do NOT (PR 3 gives
+      // every elite copy a fresh id), which is why this is keyed on fitness.
+      expect(observed.distinctChampionsOverConservative).toBe(distinct.size);
+      expect(observed.distinctChampionsOverConservative)
+        .toBeLessThanOrEqual(observed.championGenerationsOverConservative);
+    }
+  });
+
+  test('generation 0 is recorded PRE-TREATMENT and is shared by every arm', () => {
+    // The second half of the false claim was causal: "this is not a property of
+    // the initial population". Generation 0 is drawn before any operator acts,
+    // so recording it is what makes that claim checkable at all.
+    const zero = evidence.observations.fitnessPlausibility.generationZero;
+    const basis = evidence.observations.fitnessPlausibility.basis;
+    for (const [key, observed] of Object.entries(zero)) {
+      const [phase, rep] = key.split(':r');
+      const runs = evidence.runs.filter(
+        (r) => r.phase === phase && r.replicateIndex === Number(rep),
+      );
+      expect(runs.length).toBeGreaterThan(0);
+      // The pairing identity: every arm at a replicate shares generation 0.
+      const fitnesses = new Set(runs.map((r) => r.summary.generations[0].champion.fitness));
+      expect(fitnesses.size).toBe(1);
+      expect(observed.championFitness).toBe([...fitnesses][0]);
+      expect(observed.overKinematic).toBe(observed.championFitness > basis.kinematicCeiling);
+      expect(observed.overConservative).toBe(observed.championFitness > basis.conservativeCeiling);
+    }
+  });
+
+  test('the adoption ruling travels WITH the artifact, not only in prose', () => {
+    // The digest-signed citable file said `decision: retune` while every handoff
+    // said the retune was declined. A tool reading the machine-readable artifact
+    // would have adopted parameters the PR deliberately refused.
+    expect(evidence.decision).toBe(evidence.confirmation.decision); // gate verdict, untouched
+    expect(evidence.adoption.gateVerdictAdopted).toBe(false);
+    expect(evidence.adoption.adoptedDefaults).toEqual({ probability: 0.05, magnitude: 0.05 });
+    expect(evidence.adoption.reasonCode).toBe('fitnessSignalContaminated');
+    // The disposition is a human ruling, so it must sit OUTSIDE the digest.
+    expect(EVIDENCE_DIGEST_KEYS).not.toContain('adoption');
+  });
+
+  test('per-run provenance survives into the committed artifact', () => {
+    // `citable: true` asserts every run came from one clean commit. That must be
+    // re-derivable from the artifact rather than trusted.
+    const commits = new Set(evidence.runs.map((r) => r.sourceCommit));
+    expect(commits.size).toBe(1);
+    expect([...commits][0]).toMatch(/^[0-9a-f]{40}$/);
+    expect(evidence.runs.every((r) => r.sourceClean === true)).toBe(true);
+    expect(evidence.runs.every((r) => r.citable === true)).toBe(true);
+    expect(evidence.citable).toBe(true);
+  });
+
+  test('runtime is reported PER GENERATION COUNT, not pooled', () => {
+    // "median run 16.6 s (30 generations)" was a pooled median over 30- and
+    // 60-generation runs — a number describing neither.
+    const byCount = evidence.observations.performance.byGenerationCount;
+    const timing = evidence.observations.perRunTiming;
+    for (const [count, observed] of Object.entries(byCount)) {
+      const rows = timing.filter((t) => t.generationCount === Number(count));
+      expect(observed.runCount).toBe(rows.length);
+      const sorted = rows.map((t) => t.evolveMs).sort((a, b) => a - b);
+      expect(observed.evolveMs.min).toBe(sorted[0]);
+      expect(observed.evolveMs.max).toBe(sorted[sorted.length - 1]);
+      expect(observed.evolveMs.median)
+        .toBe(sorted.length % 2 ? sorted[(sorted.length - 1) / 2]
+          : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2);
+    }
+    expect(Object.keys(byCount).length).toBeGreaterThan(1);
+    // Timing must NOT be inside the digested subset: a resumed campaign
+    // re-executes runs and would otherwise produce a different digest.
+    expect(evidence.runs.every((r) => r.evolveMs === undefined)).toBe(true);
+  });
+
+  test('every declared forensic case names a real replicate and a real arm', () => {
+    // The forensic phase runs physics and is therefore NOT a CI gate — but its
+    // case list is pure data, and a case naming a replicate or arm the protocol
+    // does not have would fail only when someone ran a 2-minute instrument.
+    // Cheap to pin, so it is pinned.
+    const protocol = buildExperimentProtocol();
+    expect(FORENSIC_SAMPLE.length).toBeGreaterThan(0);
+    for (const entry of FORENSIC_SAMPLE) {
+      const phase = entry.phase === 'confirm' ? protocol.confirm : protocol.screen;
+      expect(['screen', 'confirm']).toContain(entry.phase);
+      expect(phase.replicates.some((r) => r.replicateIndex === entry.replicateIndex)).toBe(true);
+      expect(protocol.screen.arms.some((a) => a.armId === entry.armId)).toBe(true);
+    }
+    // BOTH phases must be sampled. The first draft could not express a
+    // confirmation case at all, so the phase carrying the strongest positive
+    // claim had no re-evaluation evidence.
+    expect(new Set(FORENSIC_SAMPLE.map((e) => e.phase))).toEqual(new Set(['screen', 'confirm']));
+    // And the zero-mutation control must be among them: it is the arm whose
+    // behaviour the report makes a causal claim about.
+    expect(FORENSIC_SAMPLE.some((e) => e.armId === CONTROL_ARM_ID)).toBe(true);
+    // The sample must span BOTH kinds of replicate, or it could only ever
+    // confirm what it was pointed at. The declared split is 3 contaminated and
+    // 3 clean; assert it covers more than one replicate either way.
+    expect(new Set(FORENSIC_SAMPLE.map((e) => e.replicateIndex)).size).toBeGreaterThanOrEqual(4);
+  });
+
+  test('the committed forensic output is internally consistent', () => {
+    const forensics = JSON.parse(readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'docs',
+        'ga-phase-1b-pr4-evolution-forensics.json'),
+      'utf8',
+    ));
+    expect(forensics.schema).toBe('boxcar3d.evolution-experiment-forensics/1');
+    expect(forensics.ceiling)
+      .toBe(fitnessPlausibilityCeiling(buildExperimentProtocol()).conservativeCeiling);
+    // PROVENANCE: the committed file must describe the sample and protocol it
+    // was actually produced from, or a stale artifact stays green forever.
+    expect(forensics.declaredSample).toEqual(FORENSIC_SAMPLE.map((e) => ({ ...e })));
+    expect(forensics.protocolDigest).toBe(evidence.protocolDigest);
+    const s = forensics.summary;
+    expect(s.sampled).toBe(forensics.rows.length);
+    // The counts recompute from the rows — no hand-entered summary.
+    const over = forensics.rows.filter((r) => !r.plausible);
+    const under = forensics.rows.filter((r) => r.plausible);
+    expect(s.overCeiling).toBe(over.length);
+    expect(s.underCeiling).toBe(under.length);
+    expect(s.underCeilingAlertBand).toBe(under.filter((r) => r.firstAlertStep !== null).length);
+    expect(s.overCeilingAllAlertBand).toBe(over.length > 0 && over.every((r) => r.firstAlertStep !== null));
+    // `plausible` must agree with the ceiling it claims to apply.
+    for (const row of forensics.rows) {
+      expect(row.plausible).toBe(row.fitness <= forensics.ceiling);
+    }
+    // NOT asserted: any peak speed, any alert step, any prevalence. Those are
+    // observations of one engine on declared seeds.
+  });
+
+  test('the committed escalation-cost measurement is internally consistent', () => {
+    const cost = JSON.parse(readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'docs',
+        'ga-phase-1b-pr4-escalation-cost.json'),
+      'utf8',
+    ));
+    expect(cost.schema).toBe('boxcar3d.evolution-experiment-escalation-cost/1');
+    // Scope is stated IN the artifact: this measures the false-POSITIVE side
+    // only, on unmutated generation-0 populations. PR-B's acceptance test also
+    // needs the false-negative side, which this does not attempt.
+    expect(cost.scope).toMatch(/FALSE-POSITIVE/);
+    expect(cost.scope).toMatch(/generation-0/);
+
+    const protocol = buildExperimentProtocol();
+    const expectedPopulations = protocol.screen.replicates.length + protocol.confirm.replicates.length;
+    expect(cost.populations).toBe(expectedPopulations);
+    expect(cost.individuals).toBe(expectedPopulations * protocol.workload.populationSize);
+    expect(cost.rows).toHaveLength(cost.individuals);
+
+    // Every headline count recomputes from the rows — no hand-entered summary.
+    const currently = cost.rows.filter((r) => r.integrityStatus !== 'ok');
+    const alert = cost.rows.filter((r) => r.firstAlertStep !== null);
+    const newly = cost.rows.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep !== null);
+    expect(cost.currentlyUnselectable).toBe(currently.length);
+    expect(cost.alertBand).toBe(alert.length);
+    expect(cost.newlyUnselectable).toBe(newly.length);
+    // "Newly" must be exactly the alert-band individuals policy v2 still passes.
+    expect(cost.newlyUnselectable).toBe(cost.alertBand - alert.filter((r) => r.integrityStatus !== 'ok').length);
+    expect(cost.newlyUnselectableBelow50)
+      .toBe(newly.filter((r) => r.peakBodySpeed < 50).length);
+    // NOT asserted: any peak speed, any percentage, any champion count. Those
+    // are observations of one engine on declared seeds.
+  });
+
+  // NOTE what is deliberately NOT asserted here: no fitness magnitude, no
+  // diversity magnitude, no timing, and no "the candidate won". Those are
+  // OBSERVATIONS of one campaign on declared seeds. This block checks that the
+  // committed document is internally consistent and self-derivable — a
+  // regression in the ANALYSIS, never a lock on the physics.
 });
 
 // --- 7. The filesystem workspace: execution, refusal, and resume -------------

@@ -1813,6 +1813,15 @@ describe('experiment: the committed evidence', () => {
     expect(s.underCeiling).toBe(under.length);
     expect(s.underCeilingAlertBand).toBe(under.filter((r) => r.firstAlertStep !== null).length);
     expect(s.overCeilingAllAlertBand).toBe(over.length > 0 && over.every((r) => r.firstAlertStep !== null));
+    // THE DISTINCTNESS FIELDS, which this test used to skip — which is exactly
+    // how a field that simply equalled the row count shipped. Every other
+    // summary field was recomputed here; these two were not.
+    expect(s.distinctOverCeilingIndividuals).toBe(new Set(over.map(forensicIndividualKey)).size);
+    expect(s.distinctSampledIndividuals).toBe(new Set(forensics.rows.map(forensicIndividualKey)).size);
+    // ...and they must actually DISTINGUISH: elitism carries individuals across
+    // generations, so a sample of this shape has fewer individuals than rows.
+    expect(s.distinctSampledIndividuals).toBeLessThan(s.sampled);
+    for (const row of forensics.rows) expect(row.genotypeDigest).toMatch(/^[0-9a-f]{64}$/);
     // `plausible` must agree with the ceiling it claims to apply.
     for (const row of forensics.rows) {
       expect(row.plausible).toBe(row.fitness <= forensics.ceiling);
@@ -1827,7 +1836,7 @@ describe('experiment: the committed evidence', () => {
         'ga-phase-1b-pr4-escalation-cost.json'),
       'utf8',
     ));
-    expect(cost.schema).toBe('boxcar3d.evolution-experiment-escalation-cost/1');
+    expect(cost.schema).toBe('boxcar3d.evolution-experiment-escalation-cost/2');
     // Scope is stated IN the artifact: this measures the false-POSITIVE side
     // only, on unmutated generation-0 populations. PR-B's acceptance test also
     // needs the false-negative side, which this does not attempt.
@@ -1840,17 +1849,42 @@ describe('experiment: the committed evidence', () => {
     expect(cost.individuals).toBe(expectedPopulations * protocol.workload.populationSize);
     expect(cost.rows).toHaveLength(cost.individuals);
 
+    // PROVENANCE. Its forensic sibling has bound itself to the protocol since it
+    // shipped; this one was provenance-free, so a stale artifact from another
+    // protocol — different seeds, different terrain — passed every check below
+    // and was quoted against the wrong experiment.
+    expect(cost.protocolDigest).toBe(evidence.protocolDigest);
+    const declared = new Map();
+    for (const r of [...protocol.screen.replicates, ...protocol.confirm.replicates]) {
+      declared.set(`${r.populationSeed}:${r.terrainSeed}`, 0);
+    }
+    for (const row of cost.rows) {
+      const key = `${row.populationSeed}:${row.terrainSeed}`;
+      expect(declared.has(key)).toBe(true);
+      declared.set(key, declared.get(key) + 1);
+    }
+    // Every declared replicate contributes exactly one full population.
+    for (const [, count] of declared) expect(count).toBe(protocol.workload.populationSize);
+
     // Every headline count recomputes from the rows — no hand-entered summary.
-    const currently = cost.rows.filter((r) => r.integrityStatus !== 'ok');
+    // THE PREDICATE IS FITNESS POLICY v2, both conjuncts. This test previously
+    // re-implemented `integrityStatus !== 'ok'` verbatim, so it was a third copy
+    // of the very defect it was auditing and could never have reddened on it.
+    const selectableNow = (r) => r.valid === true && r.integrityStatus === 'ok';
+    for (const row of cost.rows) expect(typeof row.valid).toBe('boolean');
+    const currently = cost.rows.filter((r) => !selectableNow(r));
     const alert = cost.rows.filter((r) => r.firstAlertStep !== null);
-    const newly = cost.rows.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep !== null);
+    const newly = cost.rows.filter((r) => selectableNow(r) && r.firstAlertStep !== null);
     expect(cost.currentlyUnselectable).toBe(currently.length);
     expect(cost.alertBand).toBe(alert.length);
     expect(cost.newlyUnselectable).toBe(newly.length);
     // "Newly" must be exactly the alert-band individuals policy v2 still passes.
-    expect(cost.newlyUnselectable).toBe(cost.alertBand - alert.filter((r) => r.integrityStatus !== 'ok').length);
+    expect(cost.newlyUnselectable).toBe(cost.alertBand - alert.filter((r) => !selectableNow(r)).length);
     expect(cost.newlyUnselectableBelow50)
       .toBe(newly.filter((r) => r.peakBodySpeed < 50).length);
+    // The two escalation outcomes stay distinguishable in the artifact.
+    expect(typeof cost.generationZeroChampionChanges).toBe('number');
+    expect(typeof cost.populationsLosingEveryChampion).toBe('number');
     // NOT asserted: any peak speed, any percentage, any champion count. Those
     // are observations of one engine on declared seeds.
   });

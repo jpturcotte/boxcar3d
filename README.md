@@ -22,18 +22,27 @@ ALERT band, which fitness policy v2 reports as `ok` and therefore selectable. A
 witness scored **1450 m in a 120 m corridor** at a peak body speed of **818 m/s**
 — 82 % of the catastrophic threshold, never crossing it. This is **not a new
 physics bug**: it is the divergence class PR #17 diagnosed, in the
-sub-catastrophic band policy v2 consciously left open. **It is a property of the
-representation, not of mutation** — 6.6 % of all 440 unmutated generation-0
+sub-catastrophic band policy v2 consciously left open. **Divergence capability is
+present in unmutated populations** — 6.6 % of all 440 unmutated generation-0
 individuals are already alert-band, and the zero-mutation control inherits one
-such individual and carries it for 60 generations by elitism. A committed
+such individual and carries it for 60 generations by elitism — **but whether
+mutation also creates it is not settled by this campaign**, and at least one
+screening replicate became contaminated from a generation-0 population with no
+alert-band member at all. (An earlier version of this paragraph said divergence
+was "a property of the representation, not of mutation"; the by-magnitude null
+behind that is underpowered, and the control cannot answer the question at all —
+with zero mutation and elitism it is a fixed point, so the comparison is
+one-directional by construction. See §1.1 of the report.) A committed
 `--phase escalation-cost` arm measures what fixing it would cost: making an alert
 crossing unselectable removes **2.5 %** of unmutated individuals, all peaking
 **≥142 m/s** with none near the 25 m/s line, and corrects the generation-0
 champion in **27 %** of populations — so the false-positive risk is effectively
 nil. That is the evidence PR-B's alert-as-failure escalation trigger was waiting
 for; landing it (plus PR-B's false-negative half) is the declared prerequisite
-before any tuning decision. Full report, including two headline claims this PR
-corrected in itself after adversarial review:
+before any tuning decision. Full report, including the headline claims this PR
+corrected in itself across three adversarial review rounds — and one external
+finding it REFUTED by executing the mutation the reviewer predicted would
+survive:
 [`docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md`](docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md);
 committed evidence
 [`docs/ga-phase-1b-pr4-evolution-experiment-evidence.json`](docs/ga-phase-1b-pr4-evolution-experiment-evidence.json)

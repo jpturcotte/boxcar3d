@@ -80,7 +80,43 @@ draw**, before any operator has acted.
 
 What mutation does is **amplify the reward**: once such a morphology exists,
 selection climbs it because in a 120 m corridor it outscores real locomotion by
-one to two orders of magnitude. Mutation is not the source.
+one to two orders of magnitude.
+
+**What this campaign does *not* establish — a second correction, from a later
+review.** The bullets above were originally summarised as *"mutation is not the
+source."* That is stronger than the evidence, in two directions:
+
+- **The dose-response null is underpowered, and it is not monotone in the
+  direction the summary implied.** The by-magnitude counts 7, 7, 8, 9, 9 are
+  monotone *non-decreasing*; at n = 30 per cell, separating a 23 % rate from a
+  30 % one needs several hundred runs per cell. This is an absence of evidence,
+  not evidence of absence.
+- **The control cannot answer the question at all, and it is important to say
+  why.** It is tempting to compare the control against the mutating arms: 49
+  discordant arm × replicate pairs, every one of them with the mutating arm
+  contaminated and its paired control clean. That is **an algebraic identity,
+  not a measurement.** With zero mutation and elitism the control is a fixed
+  point, so it is contaminated exactly when its generation-0 champion is — and
+  by the pairing identity every arm at that replicate *shares* that champion.
+  A "control contaminated, mutating arm clean" pair is therefore impossible by
+  construction, and the committed evidence confirms it: 0 such pairs exist.
+  This is the same trap as "baseline beats control 16/16" (§5); the one-sided
+  count carries no information.
+
+And there is direct evidence pointing the *other* way, which the first summary
+missed: **screening replicate 3 became contaminated from a generation-0
+population containing no alert-band individual at all** (seeds 20260747 /
+20260753; 0 of 20 rows alert-band in the escalation-cost artifact, generation-0
+champion 10.6 m). Confirmation replicate 10 is a second case with no *selectable*
+alert-band individual at generation 0. Whatever the divergent morphologies in
+those runs are, mutation produced them.
+
+So the defensible statement is: **divergence capability is present in unmutated
+populations, and the seed predicts contamination far better than the arm does;
+whether mutation also creates it is not settled here, and there is at least one
+replicate where it plainly did.** That matters for §10 step 4 — extending the
+grid *upward* may raise the artifact rate in the very campaign meant to produce
+a clean signal.
 
 ### 1.2 The forensic witness
 
@@ -133,9 +169,16 @@ with a sparse gap between them:
 
 | champion band | count (screening) |
 |---|---|
-| 0–30 m | 3,584 (76.6 %) |
-| 30–120 m | 195 (4.2 %) — the gap |
-| 150–2000 m | 846 (18.1 %) |
+| below the 25 m kinematic ceiling | 3,574 (76.4 %) |
+| 25–150 m — the transition region | 250 (5.3 %) |
+| 150 m and above | 846 (18.1 %) |
+
+*(These three bands **partition** the 4,680 screening generations. An earlier
+version of this table listed 0–30 / 30–120 / 150–2000 and omitted the 55
+champions in [120, 150) — an interval straddling the 129 m conservative ceiling,
+i.e. precisely the region that decides how empty the trough is. It made the gap
+read 28 % emptier than the data: 195 (4.2 %) rather than 250 (5.3 %). The
+bimodality finding stands; the table did not support it as printed.)*
 
 Quantiles across all 4,680 screening champions: p50 **12.7 m**, p75 19.4, p90
 **322.7**, p95 546.1, p99 1137.8.
@@ -167,13 +210,19 @@ That is fixed, and the sample now includes the control.)*
 | 1203.9 | 798.0 | 20 | null | ok | confirm baseline r2 |
 | 1450.0 | 818.8 | 16 | null | ok | screen p0.025-m0.025 r1 |
 
-27 champions sampled; the JSON has all of them.
+27 rows sampled — **23 distinct individuals**; the JSON has all of them. The
+distinction is not pedantry: the lowest/median/highest picks of one run can be
+the same elite, and paired arms share generation 0, so a row count overstates how
+much independent evidence the sample carries. The artifact reports both
+(`sampled`, `distinctSampledIndividuals`), keyed on the champion's genotype
+digest rather than on its fitness or its id — elitism gives one surviving
+individual a fresh id every generation.
 
 **Three results:**
 
-1. **Every over-ceiling champion sampled is divergence: 12 of 12, none
-   catastrophic, all `ok`.** But note the sharp limitation below — this check
-   *cannot fail*.
+1. **Every over-ceiling row sampled is divergence: 12 of 12 rows — 8 distinct
+   individuals — none catastrophic, all `ok`.** But note the sharp limitation
+   below: this check *cannot fail*.
 2. **The control's contaminated champion is real divergence** (609.0 m/s,
    alert@23) and is a generation-0 individual. This is the measurement behind
    §1.1.
@@ -186,9 +235,15 @@ That is fixed, and the sample now includes the control.)*
 run lasts 5 s, so 25 × 5 = 125 m < the 129 m conservative ceiling — anything past
 the ceiling *must* have crossed the alert threshold at some point. So "12/12 are
 alert-band" is entailed by arithmetic, not evidence. What *does* carry
-information is the **peak magnitudes** (142–855 m/s, orders of magnitude past the
-25 m/s line, with no cluster near it) and the **absence of catastrophic
-crossings** — neither of which is entailed.
+information is the **peak magnitudes** — **372–855 m/s** across the twelve
+over-ceiling rows, orders of magnitude past the 25 m/s line with no cluster near
+it — and the **absence of catastrophic crossings**; neither is entailed.
+
+*(An earlier version quoted this range as "142–855 m/s". 142.4 m/s is the single
+**under**-ceiling false negative discussed two bullets above — a 12.9 m champion
+— not a member of the over-ceiling group. Mixing it in understated that group's
+floor by 2.6× and blurred the report's own strongest point, which is that no
+over-ceiling champion comes anywhere near the alert line.)*
 
 ### 1.5 What escalating the alert band would cost
 
@@ -347,6 +402,29 @@ uncontaminated replicates `[0, 4, 5]`:
 The selected candidate **flips** from `p0.200-m0.200` to `p0.100-m0.200`. The
 arm that entered confirmation was chosen partly on artifacts.
 
+**But that flip is a property of the ranking STATISTIC, not of the comparison —
+a correction from a later review.** Screening is a fully crossed paired design:
+both arms ran all six replicates against the same starting populations and the
+same terrain, which is the comparison unit CONTEXT.md defines. Run the project's
+own `pairedComparison` on them and the ordering reverses:
+
+| comparison | wins | median paired score difference |
+|---|---:|---:|
+| p0.200-m0.200 vs p0.100-m0.200, all 6 replicates | **5 / 6** | **+0.1191** |
+| the same, on the clean `[0, 4, 5]` | **2 / 3** | **+0.0790** |
+
+On the very data that is said to reject it, the paired comparator **prefers**
+`p0.200-m0.200`. The median-of-three disagrees because the two arms' clean scores
+are (0.8178, 1.2442, 0.9480) and (0.7388, 1.0850, 1.0239): `p0.200-m0.200` has
+both the higher minimum and the higher maximum and loses only on which value
+lands in the middle. Over all twenty three-replicate subsets of the six screening
+replicates, median-of-three ranks `p0.200-m0.200` above `p0.100-m0.200` in
+**17**; the clean set is one of the three exceptions.
+
+So the honest statement is narrower: **at n = 3 the median-of-k ranking statistic
+is unstable**, which is a good reason to defer a retune and a poor reason to
+prefer a specific alternative arm.
+
 **Confirmation — the comparison against baseline IS robust.** On the ten
 uncontaminated replicates `[0, 3, 5, 6, 7, 8, 9, 12, 13, 14]`:
 
@@ -382,8 +460,10 @@ against a 5 m/s drive law:
 **This cuts both ways, and both directions are reported.** The contamination does
 not manufacture the candidate's advantage over baseline — it survives on clean
 data, on every clean replicate. What the contamination does undermine is the
-*selection* of that particular arm: on clean screening data a different arm wins,
-and no campaign has ever compared those two head to head.
+*selection* of that particular arm: on clean screening data the median-of-three
+ranking puts a different arm first, though the paired comparison on the same data
+does not, and neither arm has ever been compared against the other on **held-out
+confirmation seeds**.
 
 ---
 
@@ -395,10 +475,21 @@ Three independent reasons, none of which the predeclared gate could see:
    locomotion. On a quarter of the values it reads, it does not. A tuning
    decision made on that signal is partly a decision about which parameters find
    solver exploits fastest.
-2. **The candidate's identity is not robust** (§5): clean screening data selects
-   `p0.100-m0.200` instead, and that arm has never been confirmed.
+2. **The candidate's identity is not robust** (§5): on the clean replicates the
+   median-of-three ranking selects `p0.100-m0.200` instead. This is the weakest
+   of the three reasons and is stated as such — the paired comparator, which is
+   the design's declared comparison unit, prefers `p0.200-m0.200` on that same
+   clean data (2/3, +0.0790). What the disagreement establishes is that the
+   ranking statistic is unstable at n = 3, not that another arm is better.
 3. **The candidate is on the grid boundary**, so "0.20/0.20 is best" is not
    something this campaign can support even on clean data.
+
+Reason 3 is unarguable; reason 1 is measured but is a caveat rather than a
+refutation, since §5 shows the candidate's advantage survives on clean data; and
+reason 2 is the weak one. **The decision is therefore best read as a deferral
+resting on the contaminated signal and the grid boundary** — not as evidence that
+0.05/0.05 is right. No clean comparison in this campaign supports 0.05/0.05 over
+either candidate arm, and the report says so below.
 
 What *is* supported, robustly and on clean data: **mutation-only evolution works
 at the current defaults** (baseline beats control 16/16, and 10/10 on clean
@@ -464,6 +555,33 @@ running `tests/evolution-determinism.test.js` leaves it **green** (5/5). Lock
 stability across a default change is the expected behaviour, and it is a
 deliberate property of the fixture, which says so in its own comment.
 
+### 8.1 The two digests, and a stale figure in the handoff
+
+The evidence artifact carries **two** identities, because they answer different
+questions:
+
+| field | scope | answers |
+|---|---|---|
+| `evidenceDigest` | protocol, runs **including per-run provenance**, screening, confirmation | "is this exact artifact, with its citability claim, intact?" |
+| `resultDigest` | the same, with per-run provenance projected away | "did two campaigns produce the same science?" |
+
+The split exists because an earlier docblock claimed the source commit was
+"deliberately outside" the digest while the run projection put it *in*, and a
+committed test required it there — two correct intents and one false summary
+sentence, with nothing able to falsify it because the scope test inspected
+top-level keys only. Per-run provenance belongs inside: the artifact's headline
+claim is that every run came from one clean commit, and a digest that excluded it
+would let provenance be swapped under a still-valid digest. `resultDigest` gives
+the cross-commit comparison that motivated the objection.
+
+**CLAUDE.md quoted `1e9614c8…24fc0e32` as this artifact's digest; the artifact's
+`evidenceDigest` is `75c849ce…8ff99d6e`.** That figure was not wrong when it was
+written — it is the digest of the evidence subset *before* per-run provenance was
+added to the projection, and the report was updated while the handoff was not. It
+is now exactly this artifact's `resultDigest`, which is a proof that the new
+`resultDigest` strips precisely the fields that were added and nothing else.
+Corrected in CLAUDE.md; the report's figure was right throughout.
+
 ---
 
 ## 9. Limitations
@@ -486,9 +604,9 @@ deliberate property of the fixture, which says so in its own comment.
 - **Contamination is measured at the CHAMPION only.** Tournament selection samples
   the whole selectable pool, so the champion is not the selection mechanism. How
   far the artifact mode penetrates the breeding pool is unmeasured.
-- **The forensic sample is 27 champions from 9 of 22 replicates**, and the
-  escalation-cost measurement covers **generation 0 only** and only the
-  false-positive side.
+- **The forensic sample is 27 rows — 23 distinct individuals — from 9 of 22
+  replicates**, and the escalation-cost measurement covers **generation 0 only**
+  and only the false-positive side.
 - **Multiple comparisons are not corrected for.** Screening takes the best of 26
   arms on 6 shared replicates; the confirmation margin (13/16 against a threshold
   of 12) is thin for a candidate chosen that way. This is one more reason the
@@ -510,9 +628,11 @@ deliberate property of the fixture, which says so in its own comment.
    re-evaluation. A versioned encoding change.
 3. **Re-run this exact protocol afterwards** (~70 minutes, committed and
    resumable) and take the tuning decision on a clean signal.
-4. **Extend the grid past 0.20** and add `p0.100-m0.200` — the clean-screening
-   candidate — to the confirmation arms, so the boundary and the alternative are
-   both covered.
+4. **Extend the grid past 0.20** and add `p0.100-m0.200` — the arm the clean
+   median-of-three ranks first, though *not* the one the paired comparator
+   prefers (§5) — to the confirmation arms, so the boundary and the alternative
+   are both covered. Note the caution in §1.1: extending the grid *upward* may
+   also raise the artifact rate.
 5. **Bind `ELITE_COUNT` and `TOURNAMENT_SIZE` into the protocol** in a v2, so the
    digest covers every constant the conclusions depend on.
 6. **Measure contamination in the breeding POOL, not just at the champion**, since
@@ -534,11 +654,17 @@ npm run experiment:evolution -- --phase forensics --out docs/ga-phase-1b-pr4-evo
 npm run experiment:evolution -- --phase escalation-cost --out docs/ga-phase-1b-pr4-escalation-cost.json
 ```
 
-Both broad phases require a clean tree and refuse to run otherwise; they resume
-by exact run id after an interruption, and the resulting evidence is
-byte-identical apart from timing. CI runs only
-`tests/evolution-experiment.test.js` (98 tests, ~6 s) — structure, arithmetic and
-decision logic, never a magnitude.
+Both broad phases require a clean tree and refuse to run otherwise; provenance is
+re-read **per run**, so a tree edited or a HEAD moved mid-phase is refused rather
+than silently attested. `--phase report` also requires a clean tree to mark its
+output citable, because it recomputes screening, confirmation and both digests
+with the *current* analysis code — `observations.reportSource` records the commit
+it was built from, which legitimately differs from the commit the runs executed
+at. Phases resume by exact run id after an interruption, and every loaded record
+is checked against the declared schedule and against its own persisted history,
+so a workspace that is not this experiment is refused rather than averaged in.
+CI runs only `tests/evolution-experiment.test.js` (129 tests, ~10 s) — structure,
+arithmetic and decision logic, never a magnitude.
 
 **Seeds allocated by this PR:** 20260744–20260749 (screening population),
 20260750–20260755 (screening terrain), 20260756–20260771 (confirmation

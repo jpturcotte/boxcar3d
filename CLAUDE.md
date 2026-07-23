@@ -2138,8 +2138,9 @@ history, replay, and strong artifact identity. Full contract:
 lock movement, no version movement. Full report:
 `docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md`; committed evidence
 `docs/ga-phase-1b-pr4-evolution-experiment-evidence.json`
-(`boxcar3d.evolution-experiment/1`, 204 runs, digest `1e9614c8…24fc0e32`, every
-run from the single clean commit `9c5f24c`):**
+(`boxcar3d.evolution-experiment/1`, 204 runs, `evidenceDigest`
+`75c849ce…8ff99d6e` / `resultDigest` `1e9614c8…24fc0e32`, every run from the
+single clean commit `9c5f24c`):**
 - **THE HEADLINE FINDING, and the reason the retune was refused: mutation-only
   evolution on the composite corridor produces a selection signal in which
   ~1 champion in 5 is NOT locomotion but Rapier constraint-solver divergence
@@ -2266,19 +2267,27 @@ run from the single clean commit `9c5f24c`):**
   protocol digest, a corrupt/mislabelled record, a filename/runId mismatch, an
   incomplete prior phase, and a dirty tree for a citable phase),
   `buildExperimentReport` (recomputes EVERY conclusion from the raw run rows, so
-  the committed document is self-derivable). The evidence digest covers exactly
-  `EVIDENCE_DIGEST_KEYS` — protocol/protocolDigest/runs/screening/confirmation —
-  and EXCLUDES timing, machine identity, execution order and the source commit
-  (the last would change the digest when the document is committed). The
+  the committed document is self-derivable). TWO digests, because they answer
+  different questions: `evidenceDigest` covers `EVIDENCE_DIGEST_KEYS` —
+  protocol/protocolDigest/runs/screening/confirmation, and `runs` carries per-run
+  provenance, so it attests the citability claim; `resultDigest` is the same
+  subset with `RUN_PROVENANCE_KEYS` projected away, so two campaigns from
+  different commits can be compared for experimental equality. Both EXCLUDE
+  timing, machine identity, execution order and the BUILD-time source. The real
+  scope is transitive and pinned by `PROJECTED_RUN_KEYS` — the old top-level-only
+  scope test is how a docblock came to claim the source commit was outside a
+  digest that contained it. The
   committed JSON is CANONICAL (sorted keys, compact): byte-stable across
   rebuilds, the same spelling the digest is taken over, and a third the size of
   the pretty-printed form. Per-generation morphology/lineage/integrity detail is
   projected away for the middle generations (17 MB → 1.9 MB) with first and last
   kept in FULL, under the rule that every figure quoted in the report must be
   recomputable from the committed evidence alone.
-- **`tests/evolution-experiment.test.js`** is the ONLY CI touchpoint (98 tests,
-  ~6 s): protocol structure, metric arithmetic, decision logic over hand-authored
-  matrices, one real tiny history, a filesystem interrupt/resume proof, and the
+- **`tests/evolution-experiment.test.js`** is the ONLY CI touchpoint (129 tests,
+  ~10 s): protocol structure, metric arithmetic, decision logic over hand-authored
+  matrices, one real tiny history, a filesystem interrupt/resume proof, the
+  workspace-integrity refusals, smoke-scale runs of the escalation and forensic
+  arms (so their teeth bind SOURCE, not a committed artifact), and the
   committed evidence recomputing to its own screening/confirmation/decision/
   digest. **No empirical magnitude is asserted anywhere** (regression asymmetry).
 - **THE CORRECTION TO PR #25's HANDOFF (§9), verified by execution:** a
@@ -2324,6 +2333,81 @@ run from the single clean commit `9c5f24c`):**
   precisely the failure this project keeps relearning (round 8: *a test written
   to the fix is not enforcement of the rule*; here it was worse — no test at
   all). A tooth was added and verified to bite. All 23 bite now.
+- **Round 3 — EXTERNAL REVIEW (three reviewers, ten findings; nine confirmed by
+  execution, one REFUTED by execution). No committed experimental figure moved
+  except one that was wrong; zero production/lock/version movement.**
+  Every claim was reproduced or refuted at HEAD before anything changed.
+  - **The refutation matters as much as the fixes.** "The confirmation-gate tests
+    mirror the production formula, so a `/100`→`/10` mutation stays green" — four
+    such mutations were executed and ALL FOUR reddened. The assertions are
+    STRADDLES: a loosening mutation flips the mandatory-FAIL leg. The reviewer
+    read only the pass leg. One genuine instance of the class was nearby (the
+    25 m kinematic ceiling was anchored only transitively through the 129 m
+    literal) and now has its own literal.
+  - **I also refuted my own red team's lead evidence, and it is the same trap
+    this PR already documented.** A completeness critic reported "49 discordant
+    control-vs-mutating pairs, all favouring mutation" as evidence that mutation
+    DOES create divergence. It is an ALGEBRAIC IDENTITY: with zero mutation and
+    elitism the control is a fixed point, so it is contaminated iff its
+    generation-0 champion is — and every arm SHARES generation 0 by the pairing
+    identity, so the reverse discordance is impossible (measured: 0 such pairs).
+    Exactly the shape of "baseline beats control 16/16". **What survives is a
+    direct counterexample** — screening replicate 3 became contaminated from a
+    generation-0 population with ZERO alert-band members — so §1.1's
+    "mutation is not the source" is now stated as unsettled, with the
+    underpowered by-magnitude null (7,7,8,9,9, monotone non-decreasing, n=30/cell)
+    labelled as absence of evidence.
+  - **Wrong committed figures, corrected:** the forensic
+    `distinctOverCeilingIndividuals` read **12** where the truth is **8** (its key
+    included `generationIndex`, so one surviving elite counted once per
+    generation — defeating the de-duplication its own docstring promised, and the
+    ONE summary field the artifact test never recomputed); the §1.3 band table
+    omitted 55 champions in [120,150) and made the bimodal trough read 28%
+    emptier than the data; "peaks 142–855 m/s" attributed the single
+    UNDER-ceiling false negative to the over-ceiling group, whose real range is
+    372–855; the CI test count read 98 against a real 129. Identity is now the
+    champion's GENOTYPE DIGEST — elitism gives an elite a fresh id every
+    generation, and fitness is a proxy that can merge two vehicles.
+  - **`evidenceDigest` vs `resultDigest`.** Two docblocks (copied into CLAUDE.md)
+    said the source commit was "deliberately outside" the digest while
+    `projectRunForEvidence` put it in and a committed test REQUIRED it there. The
+    prose was the wrong half. Per-run provenance stays inside — the artifact's
+    headline claim is that every run came from one clean commit — and the new
+    `resultDigest` strips it for cross-commit comparison. **The stale
+    `1e9614c8…` figure in this handoff turned out to BE that digest**, which
+    proves `resultDigest` removes exactly the three fields that were added.
+  - **Workspace integrity was self-consistency only.** Reproduced on a copy of the
+    real 204-run workspace: deleting one replicate's records and rewriting
+    another's under the missing runIds kept the count, kept every coherence group
+    green, and produced a CITABLE report with moved confirmation numbers; editing
+    ONE metadata field made the report announce `resolvedDefaults {0.9,0.9}` while
+    that file's own history header still read 0.2. Every record is now bound to
+    its scheduled plan AND to its own persisted physics, with set equality against
+    the schedule; the confirmation arm set comes from the protocol, not from the
+    records being checked.
+  - **Provenance was captured once per phase** and stamped on every record for
+    24–46 minutes; now re-read per run, comparing COMMIT as well as cleanliness
+    (re-reading alone still passed a run executed at a different clean commit).
+    `buildExperimentReport` never checked the tree IT ran from, though it
+    recomputes every conclusion — a dirty checkout is no longer citable.
+  - **Also:** the escalation arm used half of fitness policy v2 (integrity without
+    validity — REACHABLE in principle, measured unreachable on this runner, 0
+    disagreements in 440+7,560 evaluations, so no figure moved); the escalation
+    artifact had no protocol binding while its forensic sibling did;
+    `geneSpaceDispersion` re-parsed genotypes 380× instead of 20× (bit-identical
+    after the fix, verified with `Object.is`); `shouldRunAsScript` matched a
+    BASENAME, so any same-named entrypoint started a real experiment on import.
+  - **Enforcement gaps found while fixing, also closed:** `medianScoreDifference`
+    was a confirmation gate NO test could fail; the per-generation dispersion and
+    uniqueness call sites were satisfied by constants; `runConfigFor` was not
+    bound to the declared workload; CONTEXT.md's `candidate` and `retune`
+    definitions contradicted the code.
+  - **Sabotage: 23 mutations, all bite. TWO survived the first pass** — the
+    escalation protocol binding and the forensic genotype-digest emission —
+    **because their only tests read committed artifacts, which cannot change when
+    source does.** The project's standing rule, hit again: an artifact test is not
+    source enforcement. Both now have source-level teeth that run the real arm at
+    smoke scale in ~0.25 s.
 - **Recommended next steps (recorded, NOT implemented):** (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;

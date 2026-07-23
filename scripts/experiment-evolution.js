@@ -908,6 +908,16 @@ function withinFloorFraction(value, reference, fraction) {
  * NON-wins by declaration — a tie is not evidence of superiority, and with an
  * exactly-shared generation 0 the control arm ties baseline on any replicate
  * where neither improves.
+ *
+ * A NOTE ON WHAT IS AND IS NOT TESTABLE HERE. Judging the win on the run SCORE
+ * instead of the final fitness is EQUIVALENT on this protocol's data: every arm
+ * at a replicate shares generation 0 by the pairing identity, and `log1p` is
+ * monotone, so the two orderings coincide. A mutation swapping one for the other
+ * therefore cannot be caught by any paired test — measured, not assumed. The
+ * declared rule is the fitness comparison, and it is written that way because it
+ * stays correct if the pairing identity is ever broken (a protocol that gave
+ * arms different starting populations would make the two rules disagree, and the
+ * coherence check would then be the thing that fires).
  */
 export function pairedComparison(armRuns, referenceRuns) {
   const byReplicate = new Map();

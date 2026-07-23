@@ -306,6 +306,38 @@ describe('experiment: gene-space distance', () => {
     expect(geneDistance(two, one)).toBe((union - shared) / union);
   });
 
+  test('the distance is a SUMMED L1, not a max-norm — pinned on multi-gene deltas', () => {
+    // THIS TEST EXISTS BECAUSE ITS ABSENCE WAS FOUND BY A PLAUSIBLE-BUT-WRONG
+    // MUTATION. Replacing `sum += |a-b|` with `sum = max(sum, |a-b|)` left the
+    // whole suite green: every other distance test compares genotypes whose
+    // SHARED genes are identical (topology mismatch) or wholly identical, and
+    // sum and max agree on all of those. So the declared metric — mean pairwise
+    // normalized L1 — was not enforced anywhere.
+    //
+    // Two genes are perturbed by DIFFERENT amounts, which is the only shape that
+    // separates a sum from a max. The expectation is computed from the values
+    // the genotype actually round-trips to, not from the values written in.
+    const base = genotypeFor(20260732);
+    const edited = deserializeGenotype(serializeGenotype(base));
+    edited.hue = 0.25;
+    edited.power = 0.75;
+    const other = deserializeGenotype(serializeGenotype(edited));
+
+    const deltaHue = Math.abs(other.hue - base.hue);
+    const deltaPower = Math.abs(other.power - base.power);
+    // Guard the premise: the two deltas must differ, or max == sum trivially.
+    expect(deltaHue).toBeGreaterThan(0);
+    expect(deltaPower).toBeGreaterThan(0);
+    expect(deltaHue).not.toBe(deltaPower);
+
+    const leaves = genotypeFieldWalk(base.axles.length).filter((e) => e.type === 'f64').length;
+    const expectedL1 = (deltaHue + deltaPower) / leaves;
+    const wouldBeMax = Math.max(deltaHue, deltaPower) / leaves;
+    expect(expectedL1).not.toBeCloseTo(wouldBeMax, 12); // the two rules disagree here
+
+    expect(geneDistance(base, other)).toBeCloseTo(expectedL1, 12);
+  });
+
   test('dispersion is 0 for a population of identical genotypes', () => {
     const clone = () => ({ individualId: 0, genotype: a });
     const members = [0, 1, 2, 3].map((id) => ({ ...clone(), individualId: id }));

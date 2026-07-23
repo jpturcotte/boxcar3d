@@ -670,7 +670,7 @@ it was built from, which legitimately differs from the commit the runs executed
 at. Phases resume by exact run id after an interruption, and every loaded record
 is checked against the declared schedule and against its own persisted history,
 so a workspace that is not this experiment is refused rather than averaged in.
-CI runs only `tests/evolution-experiment.test.js` (129 tests, ~10 s) — structure,
+CI runs only `tests/evolution-experiment.test.js` (131 tests, ~10 s) — structure,
 arithmetic and decision logic, never a magnitude.
 
 **Seeds allocated by this PR:** 20260744–20260749 (screening population),

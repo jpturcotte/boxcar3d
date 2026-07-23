@@ -2286,7 +2286,7 @@ single clean commit `9c5f24c`):**
   projected away for the middle generations (17 MB → 1.9 MB) with first and last
   kept in FULL, under the rule that every figure quoted in the report must be
   recomputable from the committed evidence alone.
-- **`tests/evolution-experiment.test.js`** is the ONLY CI touchpoint (129 tests,
+- **`tests/evolution-experiment.test.js`** is the ONLY CI touchpoint (131 tests,
   ~10 s): protocol structure, metric arithmetic, decision logic over hand-authored
   matrices, one real tiny history, a filesystem interrupt/resume proof, the
   workspace-integrity refusals, smoke-scale runs of the escalation and forensic
@@ -2411,6 +2411,51 @@ single clean commit `9c5f24c`):**
     source does.** The project's standing rule, hit again: an artifact test is not
     source enforcement. Both now have source-level teeth that run the real arm at
     smoke scale in ~0.25 s.
+- **Round 4 — SECOND EXTERNAL REVIEW (five findings, all reproduced or refuted by
+  execution). Scoped by a maintainer ruling: this is an OFFLINE developer
+  instrument for a game, so harden what can bite (a mislabelled or stray record,
+  a self-contradictory report) — NOT hand-forgery of a workspace the author owns.
+  evidenceDigest UNCHANGED at 75c849ce; the run/summarize/physics path untouched.**
+  - **A record's persisted physics is now bound to the seed it is filed under
+    (P1a).** The schedule labels are caller-written; the generation-0 population
+    snapshot is not. `verifyPersistedPopulations` recomputes the expected gen-0
+    population component digest from `plan.populationSeed` — a physics-free
+    function already stored in every summary — and rejects a record whose
+    persisted population is a DIFFERENT one. No re-run, no engine, milliseconds.
+    It covers the terrain seed transitively: `runConfigFor` draws BOTH seeds from
+    one plan row, so a record with the right gen-0 population necessarily ran the
+    paired terrain; a wrong terrain needs hand-editing, i.e. forgery, explicitly
+    out of scope. Runs before candidate selection in the confirm phase and in the
+    report. Reproduced both directions on a copy of the real workspace.
+  - **A record under an unknown phase is refused (P1b)** — it was skipped by both
+    schedule checks yet still entered coherence, the digest and observations. The
+    report now rejects any phase outside {screen, confirm} and requires every
+    runId to be in the declared screen+confirm schedule UNION (set equality, not a
+    count). Reproduced: a `phase:"other"` record used to reach citable evidence.
+  - **The report no longer states a causal claim it then retracts (P1c).** §1.1's
+    bullet said flatly "divergence is a property of the representation, not of
+    mutation" twenty lines above the block calling that too strong. The bullets
+    now state only what holds (capability exists pre-mutation; seed predicts
+    contamination far better than arm) and mark the magnitude question unresolved.
+  - **The machine-readable adoption reason dropped the superseded "candidate
+    identity is not robust" clause (P2a)** — it reversed under the paired
+    comparator in Round 3; `ADOPTION_RULING.reason` now matches the prose.
+  - **The fitness-keyed distinct-champion field is renamed
+    `distinctChampionFitnessValuesOverConservative` and documented as a LOWER
+    BOUND (P2b)** — it keys on `(replicate, fitness)`, so a retained elite
+    collapses but equal-fitness distinct genotypes merge. The honest fix is the
+    rename, not a per-generation genotype digest (that needs a re-run; these are
+    observations). The forensic sample, which does re-run, keeps its digest.
+  - **The one REFUTATION was the reviewer's literal terrain-forgery binding** —
+    ruled out by the maintainer's scope: an offline dev tool's author produces
+    its own evidence, so defending against a determined workspace forger is not
+    the threat model; the mislabel/stray-record class is.
+  - **Two new workspace-integrity teeth (wrong-seed, unknown-phase),
+    mutation-verified. Bounded reproduction (maintainer-chosen over a 70-min
+    re-run): four representative runs — including both contaminated cases,
+    the 1156 m screen r3 and the 363.4 m confirm-control r2 — re-executed
+    BYTE-IDENTICAL to the committed records, so the divergence itself reproduces
+    deterministically across every review change.**
 - **Recommended next steps (recorded, NOT implemented):** (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;

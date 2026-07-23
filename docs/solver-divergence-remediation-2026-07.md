@@ -24,10 +24,14 @@ PR #17). PR-B (`docs/numerical-integrity-policy-2026-07.md`) made the
 
 PR 4 then showed that this open band is not a corner case under **selection**:
 ~18.7 % of screening and ~22.9 % of confirmation generation-slots, and roughly a
-quarter of final champions, are divergence rather than locomotion — fully
-selectable, `integrity.status: 'ok'`. This is why PR 4 could not responsibly
-tune the mutation defaults: the signal the gate ranks on is contaminated. **The
-tuning decision stays blocked until this band is resolved.**
+quarter of final champions, are **over the plausibility ceiling** — implausibly
+far for locomotion, fully selectable, `integrity.status: 'ok'`. Those are
+over-threshold *exposure* rates (an implausibility proxy), not measured divergence
+rates; the forensic arm confirmed actual divergence on every over-ceiling champion
+it re-evaluated, which is what makes the contamination real even though the
+whole-campaign rate is a proxy. Either way the signal the gate ranks on is
+contaminated, which is why PR 4 could not responsibly tune the mutation defaults.
+**The tuning decision stays blocked until this band is resolved.**
 
 Two ways to resolve it. They are not mutually exclusive; A unblocks now, B fixes
 the cause.
@@ -43,8 +47,16 @@ Make an alert-band crossing a selection failure: bump `INTEGRITY_POLICY_VERSION`
 **What it costs (measured, PR 4 `--phase escalation-cost`, over all 440
 generation-0 individuals):** 18 already unselectable (4.1 %), 29 alert-band
 (6.6 %), **11 newly unselectable (2.5 %)** — peaks 142–994 m/s, **none below
-50 m/s**, no cluster near the 25 m/s line, so the false-positive risk is
-effectively nil. In 6 of 22 populations (27 %) the generation-0 champion changes.
+50 m/s**, no cluster near the 25 m/s line. In 6 of 22 populations (27 %) the
+generation-0 champion changes.
+
+**Scope of that measurement (it bounds the claim):** this is **generation 0 only**
+(unmutated), false-**positive** side only, on this one campaign's terrain. On that
+sample the false-positive risk is favourable — nothing near the threshold — but it
+is **not** established for evolved / breeding-pool populations, other terrains, or
+the false-negative side. Option A stays conditional on the breeding-pool and
+false-negative measurements listed below; the "no false positives" reading is a
+*limited-sample* result, not a general property.
 
 **What it does NOT do:** it removes divergent vehicles from *selection*; it does
 not stop them from diverging. The physics defect is unchanged — an ordinary
@@ -139,8 +151,10 @@ maintenance and supply-chain cost, not a one-off.
 **Do A now; scope B as a parallel, evidence-gated track — do not block the GA on
 it.**
 
-- A is cheap, measured, and unblocks mutation tuning, which is the critical path
-  to a working GA. Its false-positive cost is nil at the measured threshold.
+- A is cheap, unblocks mutation tuning (the critical path to a working GA), and
+  its false-positive cost was favourable **on the generation-0 sample measured**
+  (§2) — a limited result, not a general guarantee, so A ships only after the
+  breeding-pool and false-negative measurements below.
 - B is the honest fix and is more tractable than PR #19 implied, but it is
   unproven for the driven case and adds a source-build dependency. Betting the GA
   timeline on speculative upstream/representation work would repeat the

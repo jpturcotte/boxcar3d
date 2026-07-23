@@ -359,6 +359,15 @@ export function validateProtocol(protocol) {
   if (confirmSeeds.size !== confirmPop.length + confirmTer.length) {
     fail('the confirmation set reuses a seed between its population and terrain lists');
   }
+  // The per-replicate terrain seed is THE terrain identity. A `seed` on the
+  // shared workload terrain would silently be the seed every replicate runs
+  // (belt-and-braces with the seed-spread-last order in runConfigFor), making
+  // the disjointness checks above vacuous — every "distinct" replicate the same
+  // world. Reject it outright. Reported by external review.
+  if (protocol.workload?.terrain && Object.hasOwn(protocol.workload.terrain, 'seed')) {
+    fail('the workload terrain must not carry a `seed` — the seed is per-replicate '
+      + '(plan.terrainSeed); a workload-level seed would override every replicate');
+  }
   const ids = protocol.screen.arms.map((a) => a.armId);
   if (new Set(ids).size !== ids.length) fail('duplicate armId in the screening arm list');
   if (!ids.includes(protocol.baselineArmId)) fail(`the screening arms omit the baseline ${protocol.baselineArmId}`);
@@ -1365,7 +1374,11 @@ export function runConfigFor(protocol, plan) {
   return {
     initialization: { seed: plan.populationSeed, populationSize: w.populationSize },
     evaluationSpec: {
-      terrain: { seed: plan.terrainSeed, ...w.terrain },
+      // The scheduled seed is spread LAST so a stray `workload.terrain.seed`
+      // cannot override the per-replicate seed (validateProtocol also rejects
+      // that key). The committed protocol carries no such key, so this is
+      // byte-identical for it — it closes a latent override in caller protocols.
+      terrain: { ...w.terrain, seed: plan.terrainSeed },
       maxSteps: w.maxSteps,
       deterministic: w.deterministic,
       spawn: { ...w.spawn },
@@ -1442,6 +1455,22 @@ export async function executeExperimentPhase({
     if (!ws.source.clean) {
       fail('the working tree is dirty — a citable phase must run from a clean commit '
         + '(pass allowDirty to run anyway; the evidence is then marked non-citable)');
+    }
+    // THE "ONE CLEAN COMMIT" BOUNDARY IS THE WORKSPACE'S, NOT THE PROCESS'S.
+    // Records already in the workspace (a resumption prefix, or the screen phase
+    // a confirm phase reads) must share THIS invocation's commit — otherwise a
+    // campaign started under commit A, interrupted, and resumed under a
+    // recommitted B would select a candidate and burn a confirmation run on
+    // mixed A+B data, and only the final report would notice (via the
+    // multiple-commit check) after the compute was already spent. Refuse it here,
+    // before anything is consumed. Reported by external review.
+    for (const record of loadRunRecords(workspace, ws.protocolDigest).values()) {
+      if (record.source?.commit !== ws.source.commit || record.citable !== true) {
+        fail('the workspace already holds records from a different commit — a citable phase '
+          + 'must resume under the SAME clean commit that produced its existing runs (use a fresh '
+          + 'workspace, or pass allowDirty to continue non-citably)',
+          { runId: record.runId, existingSource: record.source, currentSource: ws.source });
+      }
     }
   }
 
@@ -1621,7 +1650,7 @@ export async function runForensicCase(protocol, plan) {
     const ir = compileAssembly(pick.champion.genotype);
     const evaluation = await runEvaluation({
       deterministic: protocol.workload.deterministic,
-      terrain: { seed: plan.terrainSeed, ...protocol.workload.terrain },
+      terrain: { ...protocol.workload.terrain, seed: plan.terrainSeed }, // seed LAST — see runConfigFor
       vehicles: [{ ir, spawn: spawnPoseOnFlatStart(ir, { ...protocol.workload.spawn }) }],
       maxSteps: protocol.workload.maxSteps,
       termination: 'maxSteps',
@@ -1812,7 +1841,7 @@ export async function runEscalationCost(protocol, log = () => {}) {
       seed: replicate.populationSeed,
       populationSize: protocol.workload.populationSize,
     });
-    const terrain = { seed: replicate.terrainSeed, ...protocol.workload.terrain };
+    const terrain = { ...protocol.workload.terrain, seed: replicate.terrainSeed }; // seed LAST — see runConfigFor
     const members = population.individuals;
     for (let i = 0; i < members.length; i += 1) {
       const ir = compileAssembly(members[i].genotype);

@@ -572,6 +572,18 @@ describe('experiment: summarizing a real evolution history', () => {
     expect(config.evolution.mutation).toEqual({ probability: plan.probability, magnitude: plan.magnitude });
   });
 
+  test('the per-replicate terrain seed WINS over a workload-level seed (spread order)', () => {
+    // `{ seed: plan.terrainSeed, ...w.terrain }` let a `workload.terrain.seed`
+    // override the replicate seed — every "distinct" replicate the same world.
+    // The seed is spread last, so the replicate seed always wins.
+    const protocol = buildExperimentProtocol();
+    const poisoned = JSON.parse(JSON.stringify(protocol));
+    poisoned.workload.terrain.seed = 999999; // must NOT reach the run
+    const plan = buildExecutionSchedule(poisoned, 'screen', poisoned.screen.arms)[0];
+    expect(runConfigFor(poisoned, plan).evaluationSpec.terrain.seed).toBe(plan.terrainSeed);
+    expect(plan.terrainSeed).not.toBe(999999);
+  });
+
   test('a ONE-generation history summarizes: first and last are the same record',
     { timeout: 240000 }, async () => {
       const config = evolutionRunConfigFor(EVOLUTION_FIXTURE_A);
@@ -697,6 +709,14 @@ describe('experiment: the predeclared protocol', () => {
     const broken = JSON.parse(JSON.stringify(protocol));
     broken.confirm.replicates[0].populationSeed = protocol.screen.replicates[0].populationSeed;
     expect(() => validateProtocol(broken)).toThrow(/BOTH the screening and confirmation sets/);
+  });
+
+  test('validateProtocol REFUSES a workload-level terrain seed', () => {
+    // A `workload.terrain.seed` would be the seed EVERY replicate runs, making
+    // the disjointness checks vacuous — belt-and-braces with the spread order.
+    const broken = JSON.parse(JSON.stringify(protocol));
+    broken.workload.terrain.seed = 12345;
+    expect(() => validateProtocol(broken)).toThrow(/must not carry a `seed`/);
   });
 
   test('validateProtocol REFUSES a gate that could never pass', () => {
@@ -2253,6 +2273,50 @@ describe('experiment: the resumable workspace', () => {
         } finally {
           rmSync(ws, { recursive: true, force: true });
         }
+      }
+    });
+
+  test('a citable phase resumed under a DIFFERENT commit is refused before consuming records',
+    { timeout: 300000 }, async () => {
+      // The "one clean commit" boundary is the WORKSPACE's, not the process's.
+      // Start screening under commit A, interrupt, recommit to B, resume: the A
+      // records would be skipped and B records written, selecting a candidate on
+      // mixed data — only the final report would notice. The guard refuses it up
+      // front, so no confirmation compute is wasted. Reported by external review.
+      const A = { commit: 'a'.repeat(40), clean: true, available: true };
+      const B = { commit: 'b'.repeat(40), clean: true, available: true };
+      const citableProtocol = { ...smoke, citable: true };
+
+      const workspace = tempWorkspace();
+      try {
+        // Full screen under A, then drop two records to simulate an interruption.
+        await executeExperimentPhase({
+          phase: 'screen', workspace, protocol: citableProtocol, readSource: () => A,
+        });
+        const runsDir = join(workspace, 'runs');
+        const files = readdirSync(runsDir).sort();
+        rmSync(join(runsDir, files[0]));
+        rmSync(join(runsDir, files[files.length - 1]));
+
+        // Resume under B — refused, because the surviving records are from A.
+        await expect(executeExperimentPhase({
+          phase: 'screen', workspace, protocol: citableProtocol, readSource: () => B,
+        })).rejects.toThrow(/from a different commit/);
+
+        // Resuming under the SAME commit A succeeds and completes the phase — the
+        // guard must not over-reject a legitimate same-commit resume.
+        const resumed = await executeExperimentPhase({
+          phase: 'screen', workspace, protocol: citableProtocol, readSource: () => A,
+        });
+        expect(resumed.executed).toBe(2);
+
+        // Now the confirm phase under B is refused BEFORE it selects a candidate
+        // (the screen records are all A) — the expensive path the reviewer named.
+        await expect(executeExperimentPhase({
+          phase: 'confirm', workspace, protocol: citableProtocol, readSource: () => B,
+        })).rejects.toThrow(/from a different commit/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
       }
     });
 

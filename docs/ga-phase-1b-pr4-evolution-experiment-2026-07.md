@@ -145,16 +145,25 @@ terms cannot both be realised. The ceiling was roughly 5× too generous — whic
 precisely why the report then "discovered" false negatives and reported them as a
 surprise.
 
-Both bounds are now named for what they are:
+Both bounds are now named for what they are — bounds on plausible **locomotion**
+distance, **not divergence detectors**:
 
 ```
-kinematicCeiling    = noLoadSurfaceSpeed × runSeconds   = 5 × 5   =  25 m   (the real bound)
-conservativeCeiling = corridorForwardDistance + kinematic = 104 + 25 = 129 m (an unarguable envelope)
+kinematicCeiling    = noLoadSurfaceSpeed × runSeconds   = 5 × 5   =  25 m
+conservativeCeiling = corridorForwardDistance + kinematic = 104 + 25 = 129 m
 ```
 
-Counts against the conservative ceiling are **strict lower bounds**; counts
-against the kinematic ceiling are the honest measure. Neither feeds any
-eligibility rule, gate or decision.
+25 m is the real **displacement** bound: a wheel rolling without slip at the
+no-load surface speed cannot carry the chassis further in the run. 129 m is a
+deliberately over-generous envelope. A champion past either is **implausible for
+locomotion** — a proxy that flags a slot for suspicion — **not confirmed
+divergence.** Only the integrity re-evaluation in §1.2 / §1.4 confirms divergence,
+and it does so for the *sampled* champions, not for all 1,537 over-envelope slots.
+So the counts below are **over-threshold exposure (an implausibility proxy)**, and
+the over-conservative count is a strict lower bound on the over-kinematic one.
+Neither feeds any eligibility rule, gate or decision. The contamination is real —
+the forensic arm confirms it on every champion it re-evaluated — but "18.7 %" is
+an over-threshold rate, not a measured divergence rate.
 
 | phase | generations | over kinematic (25 m) | over conservative (129 m) | distinct champion fitness values |
 |---|---:|---:|---:|---:|
@@ -479,9 +488,10 @@ confirmation seeds**.
 Three independent reasons, none of which the predeclared gate could see:
 
 1. **The premise is violated.** The gate assumes selectable fitness measures
-   locomotion. On a quarter of the values it reads, it does not. A tuning
-   decision made on that signal is partly a decision about which parameters find
-   solver exploits fastest.
+   locomotion. On roughly a quarter of the values it reads, the champion is over
+   the plausibility ceiling — implausible for locomotion, and confirmed divergence
+   wherever the forensic arm re-evaluated. A tuning decision made on that signal is
+   partly a decision about which parameters find solver exploits fastest.
 2. **The candidate's identity is not robust** (§5): on the clean replicates the
    median-of-three ranking selects `p0.100-m0.200` instead. This is the weakest
    of the three reasons and is stated as such — the paired comparator, which is

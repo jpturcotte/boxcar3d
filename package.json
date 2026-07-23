@@ -7,7 +7,7 @@
   "engines": {
     "node": ">=22.12 <23"
   },
-  "description": "Evolving 3D vehicles in a corridor world \u2014 a genetic algorithm sandbox inspired by BoxCar2D.",
+  "description": "Evolving 3D vehicles in a corridor world — a genetic algorithm sandbox inspired by BoxCar2D.",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -22,6 +22,7 @@
     "probe:physics-explosion": "node scripts/probe-physics-explosion.js",
     "probe:integrity": "node scripts/probe-integrity.js",
     "probe:evolution": "node scripts/probe-evolution.js",
+    "experiment:evolution": "node scripts/experiment-evolution.js",
     "probe:package-smoke": "node scripts/probe-rapier-package-smoke.js",
     "bench:physics": "node scripts/bench-physics.js",
     "lint": "eslint ."

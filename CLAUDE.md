@@ -2456,7 +2456,21 @@ single clean commit `9c5f24c`):**
     the 1156 m screen r3 and the 363.4 m confirm-control r2 — re-executed
     BYTE-IDENTICAL to the committed records, so the divergence itself reproduces
     deterministically across every review change.**
-- **Recommended next steps (recorded, NOT implemented):** (1) escalate the alert
+- **The escalate-vs-multibody fork is now a PROPOSED decision record:
+  `docs/solver-divergence-remediation-2026-07.md`.** It costs both options against
+  the evidence — Option A (escalate the alert band, a band-aid: makes the
+  divergence non-selectable, does NOT fix the physics) vs Option B (re-express
+  S0/S1 as reduced-coordinate multibody joints, the root cause). The
+  feasibility layer PR #19 named but never costed is captured there and in the
+  `rapier-multibody-motor-binding` memory: core 0.34 already honors the 1-DoF
+  revolute/prismatic motor+limit+spring path, a near-complete binding patch
+  already exists upstream (rapier.js#235, stranded/unmigrated ~3 yrs), so B is a
+  binding-revival + source-build, NOT a from-scratch effort — but the DRIVEN
+  multibody island's stability is unverified (PR #19's quiescence result is
+  undriven only). Recommendation: A now (unblocks tuning), B as a parallel
+  evidence-gated track, ratification is JP's.
+- **Recommended next steps (recorded, NOT implemented; sequenced in the decision
+  record §5):** (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert

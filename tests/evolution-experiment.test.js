@@ -18,12 +18,13 @@
 // experiment module must NOT start an experiment.
 
 import { describe, test, expect } from 'vitest';
-import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
   BASELINE_ARM_ID, CONTROL_ARM_ID, EXPERIMENT_PHASES, EXPERIMENT_RUN_SCHEMA, EXPERIMENT_SCHEMA,
+  readSourceIdentity, resetSmokeWorkspace, shouldRunAsScript,
   SYMMETRY_GENE_THRESHOLD, armIdFor, buildExecutionSchedule, buildExperimentProtocol,
   buildExperimentReport, canonicalJson, confirmDecision, configFromArgs, executeExperimentPhase,
   finalGeneration, geneDistance, geneSpaceDispersion, medianOrNull, pairedComparison,
@@ -224,15 +225,48 @@ describe('experiment: medianOrNull', () => {
     expect(medianOrNull([4, 1, 3, 2])).toBe(2.5);
   });
 
-  test('nulls sort to the TAIL and do not shift a still-finite median', () => {
-    // Full list is [1, 2, 3, 4, 5, null]; positions 2 and 3 are 3 and 4.
-    expect(medianOrNull([5, 4, 3, 2, 1, null])).toBe(3.5);
+  test('a null ranks BELOW every finite value and drags the median DOWN', () => {
+    // The full ascending order is [null, 1, 2, 3, 4, 5]; positions 2 and 3 are
+    // 2 and 3, so the median is 2.5 — strictly BELOW the 3 that the same finite
+    // values give on their own. A failed replicate must never improve an arm.
+    //
+    // THE FIRST DRAFT ASSERTED 3.5 HERE, under the title "nulls sort to the TAIL
+    // and do not shift a still-finite median" — a title its own assertion
+    // falsified, since 3.5 is not 3. It locked in an implementation that ranked
+    // null as the LARGEST value. Both the rule and the direction are asserted
+    // now, so neither can drift without this failing.
+    expect(medianOrNull([5, 4, 3, 2, 1, null])).toBe(2.5);
+    expect(medianOrNull([5, 4, 3, 2, 1])).toBe(3);
+    expect(medianOrNull([5, 4, 3, 2, 1, null]))
+      .toBeLessThan(medianOrNull([5, 4, 3, 2, 1]));
+  });
+
+  test('adding a null never RAISES a median, for any finite list', () => {
+    // The property, not the example: this is the rule the first draft broke, and
+    // an example-only test is what let it through.
+    const lists = [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4], [0, 10, 20, 30, 40], [5, 5, 5]];
+    for (const list of lists) {
+      const withoutNull = medianOrNull(list);
+      const withNull = medianOrNull([...list, null]);
+      if (withNull !== null) expect(withNull).toBeLessThanOrEqual(withoutNull);
+    }
   });
 
   test('a null ON a median position makes the median null', () => {
-    // [1, 2, 3, null, null, null]; positions 2 and 3 are 3 and null.
+    // [null, null, null, 1, 2, 3]; positions 2 and 3 are null and 1.
     expect(medianOrNull([1, 2, 3, null, null, null])).toBeNull();
     expect(medianOrNull([null, null, null])).toBeNull();
+  });
+
+  test('medianOrNull and pairedComparison encode the SAME declared rule', () => {
+    // Two sites, one rule. They disagreed in the first draft: pairedComparison
+    // had it right ("null loses to any finite value") while medianOrNull had it
+    // backwards. Bind them together so a future edit to either is caught.
+    const arm = [runRecord({ armId: 'x', probability: 0.1, magnitude: 0.1, replicateIndex: 0, finalFitness: null })];
+    const ref = [runRecord({ armId: 'y', probability: 0.05, magnitude: 0.05, replicateIndex: 0, finalFitness: 1 })];
+    expect(pairedComparison(arm, ref).wins).toBe(0);          // null ranks below
+    expect(medianOrNull([1, null])).toBeNull();               // ...and so here
+    expect(medianOrNull([1, 2, null])).toBe(1);               // [null, 1, 2] -> 1
   });
 
   test('an empty list is null, and a non-finite input is refused', () => {
@@ -464,6 +498,74 @@ describe('experiment: the predeclared protocol', () => {
     expect(protocol.controlArmId).toBe('control');
     expect(protocol.screen.arms.map((a) => a.armId)).toContain(BASELINE_ARM_ID);
     expect(protocol.screen.arms.map((a) => a.armId)).toContain(CONTROL_ARM_ID);
+  });
+
+  test('every declared threshold is pinned to its EXACT value', () => {
+    // The experiment's whole claim to authority is that these NUMBERS were
+    // declared before any result was seen. A test that only proves a threshold
+    // exists would let it be quietly relaxed to fit an answer, which is the one
+    // way this instrument could lie while staying green.
+    expect(protocol.screen.eligibility).toEqual({
+      maxNoSelectableParentsTerminationsVsBaseline: 0,
+      selectableRateFloorPointsBelowBaseline: 10,
+      dispersionFloorFractionOfBaseline: 0.70,
+    });
+    expect(protocol.confirm.gates).toEqual({
+      minPairedWins: 12,
+      selectableRateFloorPointsBelowBaseline: 5,
+      uniquenessFloorPointsBelowBaseline: 10,
+      dispersionFloorFractionOfBaseline: 0.80,
+      maxNoSelectableParentsTerminationsVsBaseline: 0,
+    });
+    expect(protocol.schedulingSeed).toBe(20260788);
+    expect(protocol.screen.replicates.map((r) => r.populationSeed))
+      .toEqual([20260744, 20260745, 20260746, 20260747, 20260748, 20260749]);
+    expect(protocol.screen.replicates.map((r) => r.terrainSeed))
+      .toEqual([20260750, 20260751, 20260752, 20260753, 20260754, 20260755]);
+    expect(protocol.confirm.replicates[0]).toEqual({
+      replicateIndex: 0, populationSeed: 20260756, terrainSeed: 20260772,
+    });
+    expect(protocol.confirm.replicates[15]).toEqual({
+      replicateIndex: 15, populationSeed: 20260771, terrainSeed: 20260787,
+    });
+  });
+
+  test('each confirmation floor bites EXACTLY at its declared value', () => {
+    // Not "a bad value fails" — that only proves a floor exists somewhere. These
+    // straddle each declared threshold, so moving any of the three numbers turns
+    // one of these assertions red.
+    const R = protocol.confirm.replicates.length;
+    const gates = protocol.confirm.gates;
+    const mk = (armId, p, m, opts) => armRuns(armId, p, m, R, { phase: 'confirm', ...opts });
+    const decide = (opts) => confirmDecision(protocol, [
+      ...mk('p0.200-m0.200', 0.2, 0.2, { finalFitness: 20, ...opts }),
+      ...mk(BASELINE_ARM_ID, 0.05, 0.05, { finalFitness: 10 }),
+      ...mk(CONTROL_ARM_ID, 0, 0, { finalFitness: 2 }),
+    ], 'p0.200-m0.200');
+    const check = (out, name) => out.candidate.checks.find((c) => c.name === name).pass;
+
+    // Baseline sits at selectableRate 1.0; the floor is 5 points below it, i.e.
+    // 0.95. NOTE the quantization: the aggregate rate is selectable members over
+    // total members, so with a population of 20 it can only take multiples of
+    // 1/20. A sub-0.05 epsilon below the floor rounds straight back onto it —
+    // measured, and the reason this pair straddles by a whole step rather than
+    // by an epsilon. 0.95 is exactly the floor and must PASS; 0.90 is the next
+    // representable value below and must FAIL.
+    const eps = 1e-9;
+    expect(1 - gates.selectableRateFloorPointsBelowBaseline / 100).toBe(0.95);
+    expect(check(decide({ selectableRate: 0.95 }), 'aggregateSelectableRate')).toBe(true);
+    expect(check(decide({ selectableRate: 0.90 }), 'aggregateSelectableRate')).toBe(false);
+
+    // Baseline uniquenessRatio 1.0; the floor is 10 points below it.
+    expect(check(decide({ uniquenessRatio: 1 - gates.uniquenessFloorPointsBelowBaseline / 100 }),
+      'medianFinalUniqueness')).toBe(true);
+    expect(check(decide({ uniquenessRatio: 1 - gates.uniquenessFloorPointsBelowBaseline / 100 - 0.02 }),
+      'medianFinalUniqueness')).toBe(false);
+
+    // Baseline dispersion 0.2; the floor is a FRACTION of it.
+    const floor = 0.2 * gates.dispersionFloorFractionOfBaseline;
+    expect(check(decide({ dispersion: floor }), 'medianFinalDispersion')).toBe(true);
+    expect(check(decide({ dispersion: floor - eps }), 'medianFinalDispersion')).toBe(false);
   });
 
   test('the protocol is deeply frozen, so no consumer can retune it in place', () => {
@@ -790,6 +892,97 @@ describe('experiment: argument parsing', () => {
     // Documented-but-unwired options are a real defect class in this repo (the
     // PR #19 P2 finding), so the parser is tested rather than assumed.
     expect(() => configFromArgs(argv)).toThrow(/experiment-evolution/);
+  });
+});
+
+// --- 6b. The CLI's two dangerous edges ---------------------------------------
+
+describe('experiment: the CLI cannot destroy evidence or run on import', () => {
+  test('the smoke reset REFUSES any workspace it cannot prove is a smoke workspace',
+    { timeout: 300000 }, async () => {
+      // `configFromArgs` defaults the phase to `smoke`, so the first draft's
+      // unconditional `rmSync(config.workspace ?? SMOKE_WORKSPACE)` made
+      // `--workspace experiment-workspace` — with no --phase at all — a
+      // recursive delete of hours-old citable evidence.
+      const workspace = mkdtempSync(join(tmpdir(), 'boxcar3d-experiment-'));
+      try {
+        // A FULL-protocol workspace must survive.
+        await executeExperimentPhase({
+          phase: 'screen',
+          workspace,
+          protocol: buildExperimentProtocol('smoke'),
+          allowDirty: true,
+        });
+        const manifestFile = join(workspace, 'manifest.json');
+        const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'));
+        writeFileSync(manifestFile,
+          JSON.stringify({ ...manifest, protocol: { ...manifest.protocol, kind: 'full' } }), 'utf8');
+        expect(() => resetSmokeWorkspace(workspace)).toThrow(/refusing to clear/);
+        expect(existsSync(workspace)).toBe(true);
+
+        // A directory with no manifest at all is refused too: a delete that
+        // cannot prove what it is deleting is not one to run twice.
+        const bare = mkdtempSync(join(tmpdir(), 'boxcar3d-experiment-bare-'));
+        try {
+          expect(() => resetSmokeWorkspace(bare)).toThrow(/holds no manifest\.json/);
+          expect(existsSync(bare)).toBe(true);
+        } finally {
+          rmSync(bare, { recursive: true, force: true });
+        }
+
+        // A genuine smoke workspace IS cleared, so the smoke phase still works.
+        writeFileSync(manifestFile, JSON.stringify(manifest), 'utf8');
+        resetSmokeWorkspace(workspace);
+        expect(existsSync(workspace)).toBe(false);
+
+        // And a path that does not exist is a no-op, not an error.
+        expect(() => resetSmokeWorkspace(join(tmpdir(), 'boxcar3d-does-not-exist'))).not.toThrow();
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('the source identity describes THIS repository, whatever the cwd is', () => {
+    // The citability gate is "the working tree is clean", and it decides whether
+    // a phase may produce citable evidence. Running git without an explicit cwd
+    // answered for whatever directory the process was launched from, so the gate
+    // could describe — and pass on — a completely unrelated repository.
+    //
+    // This tooth exists because the sabotage checklist caught its ABSENCE: the
+    // fix was applied to the site and nothing enforced it, so reverting the fix
+    // left the whole suite green. Fixing an instance without writing the rule as
+    // a test is the failure mode CLAUDE.md rounds 8-14 name; it recurred here.
+    const original = process.cwd();
+    try {
+      process.chdir(tmpdir()); // not this repository (and typically not a repo)
+      const identity = readSourceIdentity();
+      expect(identity.available).toBe(true);
+      expect(identity.commit).toMatch(/^[0-9a-f]{40}$/);
+      expect(typeof identity.clean).toBe('boolean');
+    } finally {
+      process.chdir(original);
+    }
+  });
+
+  test('the run-as-script guard is a TESTED predicate, not an untested string compare', () => {
+    // The header claimed "importing must not start an experiment" and nothing
+    // asserted it — unenforced prose read as an audited guarantee, the failure
+    // mode CLAUDE.md rounds 8-14 name repeatedly. The guard was an inline
+    // `process.argv[1].endsWith(...)`, unreachable from a test. It is now a
+    // named predicate, so both of its answers are pinned.
+    expect(shouldRunAsScript('/repo/scripts/experiment-evolution.js')).toBe(true);
+    expect(shouldRunAsScript('C:\\repo\\scripts\\experiment-evolution.js')).toBe(true);
+    expect(shouldRunAsScript('/repo/node_modules/.bin/vitest')).toBe(false);
+    expect(shouldRunAsScript(undefined)).toBe(false);
+    expect(shouldRunAsScript('')).toBe(false);
+    // A path that merely CONTAINS the name must not trigger it.
+    expect(shouldRunAsScript('/repo/tests/experiment-evolution.js.snap')).toBe(false);
+  });
+
+  test('and under THIS runner the guard is false, so the import above was inert', () => {
+    // The import at the top of this file has already happened. Had the guard
+    // been true, a full smoke experiment would have run during collection.
+    expect(shouldRunAsScript(process.argv[1])).toBe(false);
   });
 });
 

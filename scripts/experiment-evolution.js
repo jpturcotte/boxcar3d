@@ -44,7 +44,8 @@
 // evidence digest by construction, not by convention.
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 import { Rng } from '../src/sim/prng.js';
@@ -389,10 +390,30 @@ function quartiles(sortedValues) {
 /**
  * Median of a list that may contain nulls.
  *
- * NULL RANKS BELOW EVERY FINITE VALUE (CONTEXT.md), so nulls sort last and, if
- * one lands on a median position, the median IS null. That is the conservative
- * reading: an arm half of whose runs produced no selectable individual at all
- * has not earned a finite median by averaging the half that survived.
+ * NULL RANKS BELOW EVERY FINITE VALUE (CONTEXT.md). The full ascending order is
+ * therefore `[null … null, smallest finite … largest finite]`, and the median
+ * positions index THAT list. A null landing on a median position makes the
+ * median null.
+ *
+ * THIS FUNCTION WAS WRONG IN THE FIRST COMMITTED DRAFT, AND THE WAY IT WAS WRONG
+ * IS WORTH KEEPING ON THE RECORD. The draft sorted the finite values ascending
+ * and then indexed the median positions straight into that array — which places
+ * the nulls at the TAIL, i.e. treats a run that produced no selectable
+ * individual as the LARGEST observation. Its docstring said "ranks below every
+ * finite value, so nulls sort last"; the "so" is a non-sequitur, and the code
+ * followed the clause rather than the rule. The effect was not cosmetic: it
+ * biased every median UPWARD by exactly the runs that failed outright, so an arm
+ * was rewarded for its failures. Measured on the real module,
+ * `[null, null, 0.095, 0.140, 0.182, 3.418]` scored 1.800 against a steady
+ * baseline's 1.011 and won screening — the median window had slid onto the one
+ * lucky long run, which is precisely the domination `runScore` uses log1p to
+ * prevent. The committed test locked the wrong value in under a title its own
+ * assertion falsified ("nulls … do not shift a still-finite median", asserting a
+ * value the null had in fact shifted). Found by adversarial review before any
+ * decision rested on it.
+ *
+ * The sibling rule in `pairedComparison` ("null loses to any finite value") was
+ * correct all along; these two are the same declared rule and must agree.
  */
 export function medianOrNull(values) {
   const n = values.length;
@@ -405,11 +426,13 @@ export function medianOrNull(values) {
     finite.push(v);
   }
   finite.sort((a, b) => a - b);
-  // Positions index the FULL list (length `n`) with the nulls at its tail, so a
-  // median position at or past `finite.length` has landed on a null.
-  const lo = Math.floor((n - 1) / 2);
-  const hi = Math.ceil((n - 1) / 2);
-  if (lo >= finite.length || hi >= finite.length) return null;
+  // Positions index the FULL ascending list, whose first `nullCount` entries are
+  // nulls. Subtracting the null count maps a position into `finite`; a negative
+  // index means the position landed on a null.
+  const nullCount = n - finite.length;
+  const lo = Math.floor((n - 1) / 2) - nullCount;
+  const hi = Math.ceil((n - 1) / 2) - nullCount;
+  if (lo < 0 || hi < 0) return null;
   return lo === hi ? finite[lo] : (finite[lo] + finite[hi]) / 2;
 }
 
@@ -1001,9 +1024,23 @@ function writeJsonAtomic(file, value) {
   renameSync(tmp, file);
 }
 
-/** The current source identity. Missing git is reported, never guessed. */
+/**
+ * The source identity OF THIS MODULE'S REPOSITORY. Missing git is reported,
+ * never guessed.
+ *
+ * The `cwd` is not optional and is not `process.cwd()`. Without it, git resolves
+ * against whatever directory the process happened to be launched from, so
+ * running the experiment from inside some other clean repository would report
+ * `clean: true` for a repository that is not the one whose code is executing —
+ * and `clean` is the hard gate that decides whether a phase may produce citable
+ * evidence. Anchoring on `import.meta.url` binds the answer to the file actually
+ * running. Found by adversarial review.
+ */
 export function readSourceIdentity() {
-  const run = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  const here = dirname(fileURLToPath(import.meta.url));
+  const run = (args) => execFileSync('git', args, {
+    cwd: here, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
   try {
     const commit = run(['rev-parse', 'HEAD']);
     const status = run(['status', '--porcelain']);
@@ -1435,6 +1472,40 @@ export function configFromArgs(argv) {
 const DEFAULT_WORKSPACE = 'experiment-workspace';
 const SMOKE_WORKSPACE = 'experiment-workspace-smoke';
 
+/**
+ * Clear a SMOKE workspace, and refuse to clear anything else.
+ *
+ * The smoke phase wants a fresh directory every time, and the first draft simply
+ * `rmSync(workspace, { recursive: true, force: true })`-ed whatever `--workspace`
+ * named. Since `configFromArgs` DEFAULTS the phase to `smoke`, that made
+ * `--workspace experiment-workspace` — with no `--phase` at all — a recursive
+ * delete of the real, possibly hours-old citable evidence, before any
+ * protocol-identity check could fire. Found by adversarial review.
+ *
+ * The rule now: an existing directory is cleared only if it is demonstrably a
+ * smoke workspace, i.e. its manifest declares `protocol.kind === 'smoke'`. A
+ * directory that does not exist is fine (nothing to lose). Anything else —
+ * a full-protocol workspace, or a directory with no readable manifest — is
+ * REFUSED, because a delete that cannot prove what it is deleting is not a
+ * delete anyone should run twice.
+ */
+export function resetSmokeWorkspace(workspace) {
+  if (!existsSync(workspace)) return;
+  const manifestFile = join(workspace, MANIFEST_FILE);
+  if (!existsSync(manifestFile)) {
+    fail(`refusing to clear '${workspace}': it exists but holds no ${MANIFEST_FILE}, `
+      + 'so it cannot be shown to be a smoke workspace', { workspace });
+  }
+  const manifest = readJson(manifestFile);
+  const kind = manifest === null || manifest.protocol === undefined || manifest.protocol === null
+    ? undefined : manifest.protocol.kind;
+  if (kind !== 'smoke') {
+    fail(`refusing to clear '${workspace}': its manifest declares protocol kind `
+      + `'${String(kind)}', not 'smoke' — pass a different --workspace`, { workspace, kind: String(kind) });
+  }
+  rmSync(workspace, { recursive: true, force: true });
+}
+
 async function main() {
   const config = configFromArgs(process.argv.slice(2));
   const log = (line) => console.log(line);
@@ -1442,7 +1513,7 @@ async function main() {
   if (config.phase === 'smoke') {
     const protocol = buildExperimentProtocol('smoke');
     const workspace = config.workspace ?? SMOKE_WORKSPACE;
-    rmSync(workspace, { recursive: true, force: true });
+    resetSmokeWorkspace(workspace);
     log(`smoke: fresh workspace '${workspace}'`);
     await executeExperimentPhase({ phase: 'screen', workspace, protocol, log, allowDirty: true });
     await executeExperimentPhase({ phase: 'confirm', workspace, protocol, log, allowDirty: true });
@@ -1477,8 +1548,23 @@ async function main() {
   log(`${summary.phase}: ${summary.executed} executed, ${summary.skipped} skipped, ${summary.planned} planned`);
 }
 
+/**
+ * Whether `argv1` names THIS file being run as a script.
+ *
+ * A named, exported predicate rather than an inline `endsWith`, because the
+ * inline form was an untested string comparison that silently governed whether
+ * the CLI did anything at all — and the test file claimed to pin its behaviour
+ * while asserting nothing about it. The basename must MATCH, not merely be a
+ * suffix: `.../experiment-evolution.js.snap` ends with neither.
+ */
+export function shouldRunAsScript(argv1) {
+  if (typeof argv1 !== 'string' || argv1 === '') return false;
+  const base = argv1.slice(Math.max(argv1.lastIndexOf('/'), argv1.lastIndexOf('\\')) + 1);
+  return base === 'experiment-evolution.js';
+}
+
 // Only when invoked as a script — importing this module (the committed tests do)
 // must never start an experiment.
-if (process.argv[1] && process.argv[1].endsWith('experiment-evolution.js')) {
+if (shouldRunAsScript(process.argv[1])) {
   await main();
 }

@@ -44,7 +44,7 @@
 // evidence digest by construction, not by convention.
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync, rmSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -56,7 +56,7 @@ import {
 } from '../src/sim/evolution-history.js';
 import { deserializeLineage, LINEAGE_ACCOUNTING_KEYS, LINEAGE_ORIGINS } from '../src/sim/evolution-lineage.js';
 import {
-  deserializeFitnessVector, spawnPoseOnFlatStart,
+  deserializeFitnessVector, spawnPoseOnFlatStart, isVehicleResultValid,
 } from '../src/sim/population-evaluation.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
 import { deserializePopulationSnapshot } from '../src/sim/population.js';
@@ -492,8 +492,19 @@ export function medianOrNull(values) {
  * it is what makes an index-aligned comparison correct.
  */
 export function geneDistance(genotypeA, genotypeB) {
-  const a = geneVector(genotypeA);
-  const b = geneVector(genotypeB);
+  return distanceFromVectors(geneVector(genotypeA), geneVector(genotypeB));
+}
+
+/**
+ * The distance arithmetic, over ALREADY-VECTORIZED genotypes.
+ *
+ * Split out so `geneSpaceDispersion` can vectorize each individual ONCE instead
+ * of once per pair. The statements are the original ones verbatim and in the
+ * original order, which is what makes the result bit-identical: the summation
+ * order, the pair order and the per-pair expression are all unchanged, verified
+ * with `Object.is` over real generation-0 populations for seeds 20260744-50.
+ */
+function distanceFromVectors(a, b) {
   const shared = Math.min(a.length, b.length);
   const union = Math.max(a.length, b.length);
   if (union === 0) fail('a genotype with no gene leaves cannot be compared');
@@ -548,16 +559,33 @@ function readGenePath(genotype, path) {
   return node;
 }
 
-/** Mean pairwise gene distance over a generation, in ascending-id pair order. */
+/**
+ * Mean pairwise gene distance over a generation, in ascending-id pair order.
+ *
+ * EACH GENOTYPE IS VECTORIZED EXACTLY ONCE. Calling `geneDistance` inside the
+ * pair loop re-walked both genotypes for every one of the n(n-1)/2 pairs — at
+ * the campaign's population of 20 that is 380 vectorizations where 20 suffice,
+ * resolving ~32,000 gene leaves instead of ~1,700, and it grows quadratically
+ * (measured 14.5x slower than the precomputed form at n=20, and 4.4x again at
+ * n=40). It also read every caller-owned gene leaf 19 times, which is the exact
+ * shape `tests/single-read.test.js` exists to forbid in `src/sim`.
+ *
+ * The result is bit-identical, not merely close: the sort, the pair order and
+ * the accumulation order are untouched, and only the redundant re-parsing is
+ * removed. Reported by external review; the linear-vectorization tooth in
+ * `tests/evolution-experiment.test.js` reddens if the precomputation is undone.
+ */
 export function geneSpaceDispersion(individuals) {
   const n = individuals.length;
   if (n < 2) return null; // a single individual has no pairwise distance
   const ordered = individuals.slice().sort((a, b) => a.individualId - b.individualId);
+  const vectors = [];
+  for (let i = 0; i < n; i += 1) vectors.push(geneVector(ordered[i].genotype));
   let sum = 0;
   let pairs = 0;
   for (let i = 0; i < n; i += 1) {
     for (let j = i + 1; j < n; j += 1) {
-      sum += geneDistance(ordered[i].genotype, ordered[j].genotype);
+      sum += distanceFromVectors(vectors[i], vectors[j]);
       pairs += 1;
     }
   }
@@ -1116,10 +1144,11 @@ export function readSourceIdentity() {
  */
 export async function openWorkspace(workspace, protocol, options = {}) {
   const allowDirty = options.allowDirty === true;
+  const readSource = options.readSource ?? readSourceIdentity;
   mkdirSync(join(workspace, RUNS_DIR), { recursive: true });
   const manifestFile = join(workspace, MANIFEST_FILE);
   const protocolDigest = await canonicalDigest(protocol);
-  const source = readSourceIdentity();
+  const source = readSource();
 
   if (existsSync(manifestFile)) {
     const manifest = readJson(manifestFile);
@@ -1175,6 +1204,109 @@ export function loadRunRecords(workspace, protocolDigest) {
     records.set(record.runId, record);
   }
   return records;
+}
+
+/**
+ * Bind every loaded record to the plan that was supposed to produce it, and — if
+ * the phase is meant to be complete — to the WHOLE declared schedule.
+ *
+ * The individual checks in `loadRunRecords` are all self-consistency: a record
+ * that parses, carries the right protocol digest and agrees with its own
+ * filename is accepted no matter what it claims to be. That leaves three gaps,
+ * every one of them reproduced on a copy of the real workspace:
+ *
+ *  - OMISSION PLUS DUPLICATION. Deleting one replicate's records and rewriting
+ *    another replicate's under the missing runIds kept the count at 204, kept
+ *    every `pairingCoherence` group passing, and produced a CITABLE report with
+ *    moved confirmation numbers. Cardinality is not a set.
+ *  - METADATA THAT LIES ABOUT ITS OWN PHYSICS. `executeRun` checks that the
+ *    persisted history's mutation parameters match the plan, but only at WRITE
+ *    time; nothing re-checked it on read. Editing one field of one file made the
+ *    report announce `resolvedDefaults {0.9, 0.9}` — the values the experiment
+ *    AUTHORIZES — while that same file's history header still read 0.2.
+ *  - AN UNDECLARED ARM. A record for an arm or replicate in no schedule was
+ *    grouped under its own id and could be ranked, and screening could select it.
+ *
+ * The schedule is the predeclaration; a workspace that does not match it is not
+ * this experiment. Reported by external review.
+ */
+export function validateRecordsAgainstSchedule(schedule, records, { requireComplete }) {
+  const expected = new Map();
+  for (const plan of schedule) expected.set(plan.runId, plan);
+  const phaseNames = new Set(schedule.map((p) => p.phase));
+
+  for (const record of records) {
+    if (!phaseNames.has(record.phase)) continue; // another phase's records
+    const plan = expected.get(record.runId);
+    if (plan === undefined) {
+      fail(`run '${String(record.runId)}' is not in the declared schedule for phase `
+        + `'${String(record.phase)}' — the workspace holds a run this protocol never planned`,
+        { runId: record.runId, phase: record.phase });
+    }
+    for (const field of SCHEDULED_RUN_FIELDS) {
+      const want = field === 'generations' ? plan.generations : plan[field];
+      const got = field === 'generations' ? record.plannedGenerations : record[field];
+      if (got !== want) {
+        fail(`run '${record.runId}' declares ${field} ${String(got)}, but its scheduled plan says `
+          + `${String(want)} — the record does not describe the run it is filed as`,
+          { runId: record.runId, field, expected: want, found: got });
+      }
+    }
+    // The record's own metadata against its own PERSISTED history. Everything
+    // above compares one caller-written label to another; this is the only check
+    // that reaches the bytes the physics actually ran under.
+    const header = record.summary?.header;
+    if (header === undefined || header === null) {
+      fail(`run '${record.runId}' carries no summary header`, { runId: record.runId });
+    }
+    if (header.mutationProbability !== plan.probability || header.mutationMagnitude !== plan.magnitude) {
+      fail(`run '${record.runId}' is filed under mutation (${plan.probability}, ${plan.magnitude}) but its `
+        + `persisted history ran (${String(header.mutationProbability)}, ${String(header.mutationMagnitude)})`,
+        { runId: record.runId });
+    }
+    if (header.maxGenerations !== plan.generations) {
+      fail(`run '${record.runId}' is filed for ${plan.generations} generations but its persisted history `
+        + `declares ${String(header.maxGenerations)}`, { runId: record.runId });
+    }
+  }
+
+  if (!requireComplete) return;
+  const present = new Set();
+  for (const record of records) if (phaseNames.has(record.phase)) present.add(record.runId);
+  const missing = [...expected.keys()].filter((id) => !present.has(id));
+  if (missing.length > 0) {
+    fail(`the workspace is missing ${missing.length} scheduled run(s), the first being '${missing[0]}'`,
+      { missing: missing.slice(0, 8), missingCount: missing.length });
+  }
+}
+
+/** The plan fields every record must reproduce verbatim. */
+const SCHEDULED_RUN_FIELDS = Object.freeze([
+  'phase', 'armId', 'probability', 'magnitude', 'replicateIndex',
+  'populationSeed', 'terrainSeed', 'generations',
+]);
+
+/**
+ * The confirmation arms implied by a screening candidate: candidate, baseline,
+ * control, deduplicated in that order.
+ *
+ * Extracted so the executor and the report derive the expected arm set the SAME
+ * way, from the PROTOCOL. The report previously counted arms in the records it
+ * was checking (`new Set(confirmRuns.map(r => r.armId)).size`), so its
+ * "expected" total was partly attacker-controlled and a wholly missing arm could
+ * not make it fail.
+ */
+export function confirmationArmsFor(protocol, candidateArmId) {
+  const seen = new Set();
+  const arms = [];
+  for (const armId of [candidateArmId, protocol.baselineArmId, protocol.controlArmId]) {
+    if (seen.has(armId)) continue;
+    seen.add(armId);
+    const source = protocol.screen.arms.find((a) => a.armId === armId);
+    if (source === undefined) fail(`confirmation arm '${String(armId)}' is not a declared screening arm`);
+    arms.push(source);
+  }
+  return arms;
 }
 
 // --- Execution ---------------------------------------------------------------
@@ -1246,14 +1378,16 @@ export async function executeRun(protocol, plan) {
  */
 export async function executeExperimentPhase({
   phase, workspace, protocol, log = () => {}, allowDirty = false,
+  readSource = readSourceIdentity,
 }) {
   if (phase !== 'screen' && phase !== 'confirm') {
     fail(`executeExperimentPhase does not execute phase '${String(phase)}'`);
   }
   const phaseName = phase;
-  const ws = await openWorkspace(workspace, protocol, { allowDirty });
+  const ws = await openWorkspace(workspace, protocol, { allowDirty, readSource });
 
-  if (protocol.citable && CITABLE_PHASES.includes(phaseName) && !allowDirty) {
+  const citablePhase = protocol.citable && CITABLE_PHASES.includes(phaseName);
+  if (citablePhase && !allowDirty) {
     if (!ws.source.available) {
       fail('git is unavailable, so the source identity of a citable run cannot be recorded');
     }
@@ -1269,10 +1403,14 @@ export async function executeExperimentPhase({
   } else {
     const screenRecords = [...loadRunRecords(workspace, ws.protocolDigest).values()]
       .filter((r) => r.phase === 'screen');
-    const expected = buildExecutionSchedule(protocol, 'screen', protocol.screen.arms).length;
-    if (screenRecords.length !== expected) {
-      fail(`confirmation needs all ${expected} screening runs; the workspace has ${screenRecords.length}`);
+    const screenSchedule = buildExecutionSchedule(protocol, 'screen', protocol.screen.arms);
+    if (screenRecords.length !== screenSchedule.length) {
+      fail(`confirmation needs all ${screenSchedule.length} screening runs; the workspace has ${screenRecords.length}`);
     }
+    // The candidate is chosen from these records and then burns ~24 minutes of
+    // physics, so they are validated against the schedule BEFORE selection — a
+    // duplicated screening replicate was measured to flip the selected arm.
+    validateRecordsAgainstSchedule(screenSchedule, screenRecords, { requireComplete: true });
     const screening = screenCandidates(protocol, screenRecords);
     const candidateArmId = screening.candidateArmId;
     if (ws.manifest.candidateArmId !== null && ws.manifest.candidateArmId !== candidateArmId) {
@@ -1283,27 +1421,44 @@ export async function executeExperimentPhase({
       ws.manifest.candidateArmId = candidateArmId;
       writeJsonAtomic(ws.manifestFile, ws.manifest);
     }
-    const wanted = [candidateArmId, protocol.baselineArmId, protocol.controlArmId];
-    const seen = new Set();
-    arms = [];
-    for (const armId of wanted) {
-      if (seen.has(armId)) continue; // dedup when screening selected the baseline
-      seen.add(armId);
-      const source = protocol.screen.arms.find((a) => a.armId === armId);
-      if (source === undefined) fail(`confirmation arm '${armId}' is not a declared screening arm`);
-      arms.push(source);
-    }
+    arms = confirmationArmsFor(protocol, candidateArmId);
     log(`confirmation arms: ${arms.map((a) => a.armId).join(', ')}`);
   }
 
   const schedule = buildExecutionSchedule(protocol, phaseName, arms);
   const existing = loadRunRecords(workspace, ws.protocolDigest);
+  // Records already in the workspace for THIS phase are a resumption prefix, so
+  // completeness is not required — but each one must still describe the run it
+  // is filed as, or the phase resumes on top of a workspace that is not this
+  // experiment.
+  validateRecordsAgainstSchedule(schedule, [...existing.values()], { requireComplete: false });
   const todo = schedule.filter((plan) => !existing.has(plan.runId));
   log(`${phaseName}: ${schedule.length} runs planned, ${schedule.length - todo.length} already complete, ${todo.length} to execute`);
 
   let executed = 0;
   for (const plan of todo) {
     const t = performance.now();
+    // PROVENANCE IS RE-READ PER RUN, and compared against the phase's opening
+    // identity. It used to be captured ONCE in `openWorkspace` and stamped onto
+    // every record for the whole 24-46 minute phase, so a tree edited or a HEAD
+    // moved mid-phase produced runs that executed different source while
+    // attesting the original clean commit — and the report believed them,
+    // because the only thing it checks is those stored values. (That this is not
+    // hypothetical was demonstrated during the review of this very PR: parallel
+    // agents dirtied the tree inside a 20-minute window.)
+    //
+    // The comparison covers the COMMIT as well as cleanliness. Re-reading alone
+    // would still pass a run executed at a different — but clean — commit, since
+    // `citable` never compared commits.
+    const runSource = readSource();
+    const drifted = runSource.available !== ws.source.available
+      || runSource.commit !== ws.source.commit
+      || runSource.clean !== ws.source.clean;
+    if (drifted && citablePhase && !allowDirty) {
+      fail('the source identity changed mid-phase — a citable phase must run entirely from one '
+        + 'clean commit (pass allowDirty to continue; the evidence is then marked non-citable)',
+        { runId: plan.runId, phaseSource: ws.source, runSource });
+    }
     const { summary, performance: perf } = await executeRun(protocol, plan);
     const record = {
       schema: EXPERIMENT_RUN_SCHEMA,
@@ -1317,9 +1472,10 @@ export async function executeExperimentPhase({
       terrainSeed: plan.terrainSeed,
       plannedGenerations: plan.generations,
       protocolDigest: ws.protocolDigest,
-      // OBSERVATIONS. Excluded from the evidence digest and from every gate.
-      source: ws.source,
-      citable: protocol.citable && ws.source.available && ws.source.clean,
+      // The source this run ACTUALLY executed at — not the phase's opening
+      // snapshot. Attest what executed.
+      source: runSource,
+      citable: protocol.citable && runSource.available && runSource.clean && !drifted,
       performance: perf,
       summary,
     };
@@ -1406,6 +1562,11 @@ export async function runForensicCase(protocol, plan) {
   const ceiling = fitnessPlausibilityCeiling(protocol).conservativeCeiling;
   const rows = [];
   for (const pick of picks) {
+    // IDENTITY IS THE GENOTYPE BYTES. Equal fitness is a proxy that can merge two
+    // different vehicles, and elitism gives one surviving individual a FRESH id
+    // every generation (PR 3), so neither fitness nor id identifies a champion.
+    // The digest is what lets the summary count individuals rather than rows.
+    const genotypeDigest = await sha256(serializeGenotype(pick.champion.genotype));
     const ir = compileAssembly(pick.champion.genotype);
     const evaluation = await runEvaluation({
       deterministic: protocol.workload.deterministic,
@@ -1425,6 +1586,7 @@ export async function runForensicCase(protocol, plan) {
       terrainSeed: plan.terrainSeed,
       pick: pick.label,
       generationIndex: pick.champion.generationIndex,
+      genotypeDigest: bytesToHex(genotypeDigest),
       fitness: pick.champion.fitness,
       reevaluatedMaxForwardDistance: vehicle.maxForwardDistance,
       finalX: vehicle.finalPose.translation.x,
@@ -1461,6 +1623,29 @@ export function forensicSamplePlans(protocol) {
   return plans;
 }
 
+/**
+ * The identity of one forensically sampled champion.
+ *
+ * A champion is the vehicle its GENOTYPE BYTES describe. `generationIndex` is
+ * deliberately absent (elitism carries one individual across generations with a
+ * fresh id each time) and so is `armId` (arms paired at a replicate share
+ * generation 0 by the pairing identity, so the same generation-0 champion
+ * legitimately appears under several arms — proven in the committed sample:
+ * confirmation replicate 2 reports the same generation-0 population digest and
+ * `individualId` 16 under all three arms).
+ *
+ * `phase` IS present: `control`, `p0.050-m0.050` and `p0.200-m0.200` are arm ids
+ * in BOTH phases, and replicate indices restart per phase, so a key without it
+ * would merge two genuinely different individuals.
+ */
+export function forensicIndividualKey(row) {
+  if (typeof row.genotypeDigest !== 'string' || row.genotypeDigest === '') {
+    fail('a forensic row carries no genotypeDigest, so its individual cannot be identified',
+      { phase: row.phase, armId: row.armId, generationIndex: row.generationIndex });
+  }
+  return `${row.phase}:r${row.replicateIndex}:${row.genotypeDigest}`;
+}
+
 /** The PURE forensic report: provenance, ceiling and the derived summary. */
 export function buildForensicReport({ protocolDigest, ceiling, rows }) {
   const ordered = rows.slice().sort((a, b) => a.fitness - b.fitness);
@@ -1477,10 +1662,17 @@ export function buildForensicReport({ protocolDigest, ceiling, rows }) {
     rows: ordered,
     summary: {
       sampled: ordered.length,
+      distinctSampledIndividuals: new Set(ordered.map(forensicIndividualKey)).size,
       // DISTINCT individuals, not rows: the lowest/median/highest picks of one
       // run can be the same elite, and the first report turned a row count into
       // a claim about that many sampled champions.
-      distinctOverCeilingIndividuals: new Set(over.map((r) => `${r.armId}:r${r.replicateIndex}:${r.generationIndex}:${r.fitness}`)).size,
+      //
+      // The first key did exactly what this comment says it must not: it
+      // included `generationIndex`, so an elite surviving to generations 0, 30
+      // and 59 counted THREE times and the field simply equalled the row count
+      // (committed 12 where the truth is 8). Identity is the genotype digest —
+      // see `forensicIndividualKey`. Reported by external review.
+      distinctOverCeilingIndividuals: new Set(over.map(forensicIndividualKey)).size,
       overCeiling: over.length,
       // NOTE: this field CANNOT come back false while the ceiling exceeds
       // alertSpeed x runSeconds, so it is entailed by arithmetic rather than
@@ -1558,6 +1750,7 @@ export const ADOPTION_RULING = Object.freeze({
  * (divergence that still passes), which is out of scope here and stated as such.
  */
 export async function runEscalationCost(protocol, log = () => {}) {
+  const protocolDigest = await canonicalDigest(protocol);
   const replicates = [
     ...protocol.screen.replicates.map((r) => ({ phase: 'screen', ...r })),
     ...protocol.confirm.replicates.map((r) => ({ phase: 'confirm', ...r })),
@@ -1589,6 +1782,11 @@ export async function runEscalationCost(protocol, log = () => {}) {
         terrainSeed: replicate.terrainSeed,
         individualId: members[i].individualId,
         maxForwardDistance: vehicle.maxForwardDistance,
+        // THE PRODUCTION VALIDITY VERDICT, not a local re-derivation. Fitness
+        // policy v2 selects on `valid && integrity.status === 'ok'`; recording
+        // only the integrity half made an invalid-but-`ok` vehicle count as
+        // currently selectable, and therefore as a NEW cost of escalating.
+        valid: isVehicleResultValid(vehicle),
         integrityStatus: vehicle.integrity.status,
         peakBodySpeed: o.peakBodySpeed,
         firstAlertStep: o.firstAlertStep,
@@ -1597,7 +1795,7 @@ export async function runEscalationCost(protocol, log = () => {}) {
     }
   }
 
-  return summarizeEscalationRows(rows);
+  return summarizeEscalationRows(rows, protocolDigest);
 }
 
 /**
@@ -1608,35 +1806,58 @@ export async function runEscalationCost(protocol, log = () => {}) {
  *
  * `newlyUnselectable` is deliberately NOT "everything alert-band": an individual
  * that policy v2 already refuses is not a NEW cost of escalating.
+ *
+ * SELECTABILITY IS THE PRODUCTION PREDICATE, both halves. Policy v2 is
+ * `valid && integrity.status === 'ok'`; this accounting originally tested only
+ * the integrity half, so an INVALID vehicle reporting `ok` counted as currently
+ * selectable and, if alert-band, as a new cost of escalating — overstating
+ * exactly the number this arm exists to measure. The gap is unreachable through
+ * `runEvaluation` on Rapier 0.19.3 (measured: 0 disagreements over all 440
+ * generation-0 individuals and all 7,560 committed campaign generations, because
+ * a non-finite body sets integrity `nonFinite` through the same reads), so no
+ * committed figure moved — but an instrument whose purpose is to model a
+ * production policy change must apply that policy verbatim, or its answer is
+ * about a policy nobody proposed. Reported by external review.
  */
-export function summarizeEscalationRows(rows) {
+export function summarizeEscalationRows(rows, protocolDigest = null) {
   const total = rows.length;
-  const currentlyUnselectable = rows.filter((r) => r.integrityStatus !== 'ok');
+  const selectableNow = (r) => r.valid === true && r.integrityStatus === 'ok';
+  const currentlyUnselectable = rows.filter((r) => !selectableNow(r));
   const alertBand = rows.filter((r) => r.firstAlertStep !== null);
-  const newlyUnselectable = rows.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep !== null);
+  const newlyUnselectable = rows.filter((r) => selectableNow(r) && r.firstAlertStep !== null);
   const peaks = newlyUnselectable.map((r) => r.peakBodySpeed).sort((a, b) => a - b);
 
   // Would the generation-0 CHAMPION change? That is what sets selection pressure.
   const byPopulation = new Map();
   for (const r of rows) {
-    const key = `${r.phase}:${r.populationSeed}`;
+    const key = `${r.phase}:${r.populationSeed}:${r.terrainSeed}`;
     if (!byPopulation.has(key)) byPopulation.set(key, []);
     byPopulation.get(key).push(r);
   }
   let championChanges = 0;
+  let populationsLosingEveryChampion = 0;
   for (const [, members] of byPopulation) {
     const best = (xs) => {
       let top = null;
       for (const x of xs) if (top === null || x.maxForwardDistance > top.maxForwardDistance) top = x;
       return top;
     };
-    const now = best(members.filter((r) => r.integrityStatus === 'ok'));
-    const after = best(members.filter((r) => r.integrityStatus === 'ok' && r.firstAlertStep === null));
-    if (now === null || after === null || now.individualId !== after.individualId) championChanges += 1;
+    const now = best(members.filter(selectableNow));
+    const after = best(members.filter((r) => selectableNow(r) && r.firstAlertStep === null));
+    // A population left with NO selectable champion is counted separately: it is
+    // a different — and worse — outcome than the crown moving to another
+    // individual, and pooling the two would report a wipe-out as a mild reshuffle.
+    if (after === null) populationsLosingEveryChampion += 1;
+    if (now !== null && after !== null && now.individualId !== after.individualId) championChanges += 1;
   }
 
   return {
-    schema: 'boxcar3d.evolution-experiment-escalation-cost/1',
+    schema: 'boxcar3d.evolution-experiment-escalation-cost/2',
+    // PROVENANCE. Without it a stale artifact from a different protocol — other
+    // seeds, other terrain, other workload — stays green against every internal
+    // consistency check and is quoted against the wrong experiment. Its sibling
+    // forensic artifact already carried this; this one did not.
+    protocolDigest,
     scope: 'generation-0 populations only (unmutated); FALSE-POSITIVE side only',
     individuals: total,
     populations: byPopulation.size,
@@ -1646,6 +1867,7 @@ export function summarizeEscalationRows(rows) {
     newlyUnselectablePeakSpeed: peaks.length === 0 ? null : quartiles(peaks),
     newlyUnselectableBelow50: peaks.filter((p) => p < 50).length,
     generationZeroChampionChanges: championChanges,
+    populationsLosingEveryChampion,
     rows,
   };
 }
@@ -1660,7 +1882,9 @@ export function summarizeEscalationRows(rows) {
  * raw rows — which is exactly what the committed test does, and what makes the
  * report mechanically checkable rather than a claim about a run nobody can see.
  */
-export async function buildExperimentReport({ workspace, protocol = undefined }) {
+export async function buildExperimentReport({
+  workspace, protocol = undefined, readSource = readSourceIdentity,
+}) {
   const manifestFile = join(workspace, MANIFEST_FILE);
   if (!existsSync(manifestFile)) fail(`no manifest in workspace '${workspace}'`);
   const manifest = readJson(manifestFile);
@@ -1675,36 +1899,60 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
 
   const screenRuns = records.filter((r) => r.phase === 'screen');
   const confirmRuns = records.filter((r) => r.phase === 'confirm');
-  const screenExpected = buildExecutionSchedule(activeProtocol, 'screen', activeProtocol.screen.arms).length;
-  if (screenRuns.length !== screenExpected) {
-    fail(`the report needs all ${screenExpected} screening runs; found ${screenRuns.length}`);
+  const screenSchedule = buildExecutionSchedule(activeProtocol, 'screen', activeProtocol.screen.arms);
+  if (screenRuns.length !== screenSchedule.length) {
+    fail(`the report needs all ${screenSchedule.length} screening runs; found ${screenRuns.length}`);
   }
+  validateRecordsAgainstSchedule(screenSchedule, screenRuns, { requireComplete: true });
   const screening = screenCandidates(activeProtocol, screenRuns);
 
   let confirmation = null;
   if (confirmRuns.length > 0) {
-    const armCount = new Set(confirmRuns.map((r) => r.armId)).size;
-    const expected = armCount * activeProtocol.confirm.replicates.length;
-    if (confirmRuns.length !== expected) {
-      fail(`confirmation is incomplete: ${confirmRuns.length} runs for ${armCount} arms `
-        + `over ${activeProtocol.confirm.replicates.length} replicates (expected ${expected})`);
+    // The expected arm set comes from the PROTOCOL and the selected candidate,
+    // never from the records being checked. Counting arms in the data made the
+    // expectation partly attacker-controlled: a wholly missing arm simply lowered
+    // the expected total and the check passed.
+    const confirmSchedule = buildExecutionSchedule(
+      activeProtocol, 'confirm', confirmationArmsFor(activeProtocol, screening.candidateArmId));
+    if (confirmRuns.length !== confirmSchedule.length) {
+      fail(`confirmation is incomplete: ${confirmRuns.length} runs, but the schedule for candidate `
+        + `'${screening.candidateArmId}' declares ${confirmSchedule.length}`);
     }
+    validateRecordsAgainstSchedule(confirmSchedule, confirmRuns, { requireComplete: true });
     confirmation = confirmDecision(activeProtocol, confirmRuns, screening.candidateArmId);
   }
 
   const coherence = pairingCoherence(records);
+  // THE SOURCE THIS REPORT IS BEING BUILT FROM, not merely the source the runs
+  // executed at. `screening`, `confirmation` and the digest are all RECOMPUTED
+  // here by the current analysis code, so a report generated from a dirty
+  // checkout could change the machine-readable verdict while the artifact still
+  // claimed clean single-commit evidence. It legitimately differs from the run
+  // commit — analysis may be revised after a campaign — so what is required is
+  // that it be COMMITTED, and it is recorded either way. Reported by external
+  // review.
+  const reportSource = readSource();
   const citable = activeProtocol.citable
     && records.length > 0
     && records.every((r) => r.citable === true)
     && new Set(records.map((r) => r.source.commit)).size === 1
     && confirmation !== null
-    && coherence.every((c) => c.pass);
+    && coherence.every((c) => c.pass)
+    && reportSource.available && reportSource.clean;
 
-  // The DETERMINISTIC SUBSET: everything a re-run on another machine must
-  // reproduce byte-for-byte. Timing, machine identity, execution order and the
-  // source commit are deliberately outside it — the first three are properties
-  // of the machine and the last would make the digest change when this very
-  // document is committed.
+  // THE ATTESTED SUBSET. Machine identity, timing, execution order and the
+  // BUILD-TIME source commit are outside it; per-run provenance is deliberately
+  // INSIDE, because the artifact's headline claim is "every run from the single
+  // clean commit X" and a digest that did not cover it would let provenance be
+  // swapped under a still-valid digest.
+  //
+  // An earlier comment here claimed the opposite — that "the source commit" was
+  // outside — while `projectRunForEvidence` put it in and a committed test
+  // required it there. The rationale offered ("it would make the digest change
+  // when this very document is committed") is true of the BUILD-time commit,
+  // which is genuinely outside, and false of the per-run commit, which is frozen
+  // in the workspace records. Unenforced prose read as an audited guarantee is
+  // this project's signature failure; the prose was the wrong half.
   const evidence = evidenceSubset({
     protocol: activeProtocol,
     protocolDigest,
@@ -1713,11 +1961,20 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
     confirmation,
   });
   const evidenceDigest = await canonicalDigest(evidence);
+  // The SCIENCE-ONLY identity: the same subset with per-run provenance projected
+  // away, so two campaigns run from different commits can be compared for
+  // experimental equality. Separating the two is what lets `evidenceDigest`
+  // attest provenance without also making "did we get the same result?"
+  // unanswerable across commits.
+  const resultDigest = await canonicalDigest({
+    ...evidence, runs: evidence.runs.map(stripRunProvenance),
+  });
 
   return {
     schema: EXPERIMENT_SCHEMA,
     protocolVersion: activeProtocol.protocolVersion,
     evidenceDigest,
+    resultDigest,
     citable,
     decision: confirmation === null ? null : confirmation.decision,
     resolvedDefaults: confirmation === null ? null : confirmation.resolvedDefaults,
@@ -1736,6 +1993,11 @@ export async function buildExperimentReport({ workspace, protocol = undefined })
     // OBSERVATIONS ONLY — never an input to any gate above.
     observations: {
       source: manifest.createdSource,
+      // The source the REPORT was built from. `source` above is the workspace's
+      // creation-time snapshot and is never refreshed on resume, so for a
+      // resumed campaign it can name a commit no run ever executed; this one is
+      // read now and gates citability.
+      reportSource,
       runSources: [...new Set(records.map((r) => r.source.commit))],
       performance: performanceObservations(records),
       // Raw per-run timing, OUTSIDE the digest, so the envelope figures quoted
@@ -1788,18 +2050,30 @@ export function pairingCoherence(records) {
 }
 
 /**
- * The DETERMINISTIC SUBSET the evidence digest is computed over.
+ * The ATTESTED SUBSET the evidence digest is computed over.
  *
  * Exactly these five keys, in one place, so the digest's scope is a definition
- * rather than a field list repeated at every call site. Everything a re-run on
- * another machine must reproduce byte-for-byte is inside; timing, machine
- * identity, execution order and the source commit are outside — the first three
- * are properties of the machine, and the last would make the digest change when
- * this very document is committed.
+ * rather than a field list repeated at every call site. Outside it: timing,
+ * machine identity, execution order, and the BUILD-TIME source identity
+ * (`observations.source` / `observations.reportSource`) — all properties of the
+ * machine or of when the document was assembled.
+ *
+ * INSIDE it, deliberately: the per-run provenance carried by each projected run.
+ * The artifact's headline claim is "every run from the single clean commit X",
+ * so a digest that excluded it would let provenance be swapped under a
+ * still-valid digest. `resultDigest` is the companion identity for the opposite
+ * question — whether two campaigns produced the same SCIENCE — and is taken over
+ * this same subset with `RUN_PROVENANCE_KEYS` projected away.
+ *
+ * These five names bound only the TOP level; the real scope includes everything
+ * inside a projected run, which is pinned separately by `PROJECTED_RUN_KEYS`. An
+ * earlier version of this docblock asserted that the source commit was outside
+ * the digest while the projection put it in — a claim nothing could falsify,
+ * because the committed scope test inspected top-level keys only.
  *
  * A caller that adds a key gets a loud failure rather than a silently different
- * digest, and `tests/evolution-experiment.test.js` pins the key set against a
- * copy-declared literal so a scope change cannot pass unnoticed.
+ * digest, and `tests/evolution-experiment.test.js` pins both key sets against
+ * copy-declared literals so a scope change cannot pass unnoticed.
  */
 export const EVIDENCE_DIGEST_KEYS = Object.freeze([
   'protocol', 'protocolDigest', 'runs', 'screening', 'confirmation',
@@ -1837,6 +2111,33 @@ export function evidenceSubset(source) {
 const TRAJECTORY_FIELDS = Object.freeze([
   'generationIndex', 'champion', 'selectableCount', 'uniqueGenotypeCount', 'geneSpaceDispersion',
 ]);
+
+/**
+ * The exact key set `projectRunForEvidence` emits.
+ *
+ * THIS is the digest's real scope. `EVIDENCE_DIGEST_KEYS` pins five TOP-LEVEL
+ * names and reads as though it bounded the whole thing, but `runs` is one of
+ * those five and everything inside a projected run is transitively digested —
+ * which is how the digest came to cover per-run provenance while two docblocks
+ * said it did not, with no test able to notice. A field added to the projection
+ * now has to be declared here.
+ */
+export const PROJECTED_RUN_KEYS = Object.freeze([
+  'armId', 'citable', 'magnitude', 'phase', 'plannedGenerations', 'populationSeed',
+  'probability', 'replicateIndex', 'runId', 'sourceClean', 'sourceCommit', 'summary', 'terrainSeed',
+]);
+
+/** The per-run provenance fields, i.e. exactly what `resultDigest` projects away. */
+export const RUN_PROVENANCE_KEYS = Object.freeze(['citable', 'sourceClean', 'sourceCommit']);
+
+function stripRunProvenance(run) {
+  const out = {};
+  for (const key of Object.keys(run)) {
+    if (RUN_PROVENANCE_KEYS.includes(key)) continue;
+    out[key] = run[key];
+  }
+  return out;
+}
 
 function projectRunForEvidence(record) {
   const gens = record.summary.generations;
@@ -2251,13 +2552,19 @@ async function main() {
  * A named, exported predicate rather than an inline `endsWith`, because the
  * inline form was an untested string comparison that silently governed whether
  * the CLI did anything at all — and the test file claimed to pin its behaviour
- * while asserting nothing about it. The basename must MATCH, not merely be a
- * suffix: `.../experiment-evolution.js.snap` ends with neither.
+ * while asserting nothing about it.
+ *
+ * It compares the RESOLVED PATH, not the basename. A basename match meant any
+ * other entrypoint that happened to be called `experiment-evolution.js` — a
+ * wrapper, a copy in another directory, a vendored harness — would start a real
+ * multi-hour experiment merely by importing this module, which is exactly what
+ * the header says must never happen. The module's own path comes from
+ * `import.meta.url`, so the answer is bound to the file actually running rather
+ * than to a name anyone can reuse. Found by external review.
  */
 export function shouldRunAsScript(argv1) {
   if (typeof argv1 !== 'string' || argv1 === '') return false;
-  const base = argv1.slice(Math.max(argv1.lastIndexOf('/'), argv1.lastIndexOf('\\')) + 1);
-  return base === 'experiment-evolution.js';
+  return resolve(argv1) === resolve(fileURLToPath(import.meta.url));
 }
 
 // Only when invoked as a script — importing this module (the committed tests do)

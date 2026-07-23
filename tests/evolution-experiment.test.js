@@ -33,15 +33,20 @@ import {
   buildExperimentReport, canonicalJson, confirmDecision, configFromArgs, executeExperimentPhase,
   finalGeneration, geneDistance, geneSpaceDispersion, medianOrNull, pairedComparison,
   pairingCoherence, runScore, screenCandidates, summarizeEvolutionHistory, summarizeFitnessRows,
-  validateProtocol,
+  validateProtocol, PROJECTED_RUN_KEYS, RUN_PROVENANCE_KEYS, confirmationArmsFor,
+  forensicIndividualKey, validateRecordsAgainstSchedule, runConfigFor, runEscalationCost,
+  runForensicCase,
 } from '../scripts/experiment-evolution.js';
 import { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } from '../src/sim/evolution-fixtures.js';
 import { createEvolutionRun } from '../src/sim/evolution-run.js';
+import { decodeGenerationPayload, decodeHistoryFraming } from '../src/sim/evolution-history.js';
+import { deserializePopulationSnapshot } from '../src/sim/population.js';
 import {
   compileAssembly, deserializeGenotype, genotypeFieldWalk, randomGenotype, repairGenotype,
   serializeGenotype,
 } from '../src/sim/assembly.js';
 import { Rng } from '../src/sim/prng.js';
+import { PARAMETRIC_MUTATION_DEFAULTS } from '../src/sim/evolution-operators.js';
 
 // --- Shared helpers ----------------------------------------------------------
 
@@ -365,6 +370,30 @@ describe('experiment: gene-space distance', () => {
     // the floating-point accumulation.
     expect(geneSpaceDispersion(members)).toBe(expected);
   });
+
+  test('dispersion vectorizes each genotype ONCE — linear, not quadratic', () => {
+    // `geneDistance` re-walked both genotypes for every pair, so an n-member
+    // generation was vectorized n(n-1) times instead of n: 380 walks at the
+    // campaign's population of 20, reading every caller-owned gene leaf 19 times.
+    // `hue` is the first f64 leaf of the canonical walk and a top-level scalar,
+    // so one read of it is exactly one vectorization — the assertion is an
+    // identity, not a timing heuristic. Reported by external review.
+    const N = 6;
+    let reads = 0;
+    const members = [];
+    for (let id = 0; id < N; id += 1) {
+      const source = withAxleCount(a, 1 + (id % 2));
+      const hue = (id + 1) / (N + 1);
+      const observed = {};
+      for (const key of Object.keys(source)) if (key !== 'hue') observed[key] = source[key];
+      Object.defineProperty(observed, 'hue', {
+        get() { reads += 1; return hue; }, enumerable: true, configurable: true,
+      });
+      members.push({ individualId: id, genotype: observed });
+    }
+    expect(geneSpaceDispersion(members)).toBeGreaterThan(0);
+    expect(reads).toBe(N); // reverting the precomputation gives N*(N-1) = 30
+  });
 });
 
 describe('experiment: fitness-row fold', () => {
@@ -493,11 +522,55 @@ describe('experiment: summarizing a real evolution history', () => {
       expect(summary.generations[1].lineage.originCounts.eliteCopy).toBeGreaterThan(0);
       expect(summary.generations[1].lineage.originCounts.continuousMutation).toBeGreaterThan(0);
 
+      // THE DIVERSITY CALL SITES, INDEPENDENTLY RECOMPUTED. Everything above is
+      // self-consistency: `uniquenessRatio === uniqueGenotypeCount /
+      // populationSize` holds for ANY constant, and `0 <= dispersion <= 1` is
+      // satisfied by 0. Replacing the two call sites with constants therefore
+      // left the whole file green — and these are the values the screening
+      // dispersion guardrail (the only guardrail that fired in the campaign) and
+      // two confirmation gates read. Recompute them from the population the
+      // summary describes, using the independently-tested pure functions.
+      const framing = decodeHistoryFraming(run.historyBytes());
+      for (let gi = 0; gi < framing.generations.length; gi += 1) {
+        const payload = decodeGenerationPayload(framing.generations[gi].payloadBytes);
+        const members = deserializePopulationSnapshot(payload.components.population).individuals;
+        const g = summary.generations[gi];
+        expect(g.geneSpaceDispersion).toBe(geneSpaceDispersion(members));
+        expect(g.uniqueGenotypeCount)
+          .toBe(new Set(members.map((m) => serializeGenotype(m.genotype).join(','))).size);
+      }
+      // ...and the values must be DISCRIMINATING, not degenerate: a real
+      // population of distinct individuals has nonzero spread.
+      expect(summary.generations[0].geneSpaceDispersion).toBeGreaterThan(0);
+      expect(summary.generations[0].uniqueGenotypeCount).toBeGreaterThan(1);
+
       // The whole summary must be canonical-JSON-serializable — i.e. free of
       // NaN, Infinity and undefined. That is the contract the evidence digest
       // depends on, and it is checked here rather than discovered at report time.
       expect(() => canonicalJson(summary)).not.toThrow();
     });
+
+  test('runConfigFor binds the DECLARED workload, not a plausible substitute', () => {
+    // Nothing tied the executed configuration to the protocol: making every run
+    // step 7 times instead of the declared 300 left the file green, because every
+    // metric is computed from whatever history the run produced.
+    const protocol = buildExperimentProtocol();
+    const plan = buildExecutionSchedule(protocol, 'confirm',
+      [protocol.screen.arms[0]])[0];
+    const config = runConfigFor(protocol, plan);
+    expect(config.evaluationSpec.maxSteps).toBe(protocol.workload.maxSteps);
+    expect(config.evaluationSpec.maxSteps).toBe(300);
+    expect(config.evaluationSpec.deterministic).toBe(protocol.workload.deterministic);
+    expect(config.evaluationSpec.deterministic).toBe(true);
+    expect(config.evaluationSpec.spawn).toEqual(protocol.workload.spawn);
+    expect(config.evaluationSpec.terrain.seed).toBe(plan.terrainSeed);
+    expect(config.evaluationSpec.terrain.startFlatLength).toBe(protocol.workload.terrain.startFlatLength);
+    expect(config.initialization.seed).toBe(plan.populationSeed);
+    expect(config.initialization.populationSize).toBe(protocol.workload.populationSize);
+    expect(config.initialization.populationSize).toBe(20);
+    expect(config.evolution.maxGenerations).toBe(plan.generations);
+    expect(config.evolution.mutation).toEqual({ probability: plan.probability, magnitude: plan.magnitude });
+  });
 
   test('a ONE-generation history summarizes: first and last are the same record',
     { timeout: 240000 }, async () => {
@@ -838,6 +911,40 @@ describe('experiment: the confirmation decision', () => {
     expect(out.decision).not.toBe('retune');
   });
 
+  test('a candidate that wins on fitness while LOSING on score is REFUSED', () => {
+    // `medianScoreDifference` was the one confirmation gate no test could fail:
+    // hard-coding it to `pass: true` left the whole CI touchpoint green, and the
+    // committed campaign's real value already passed, so even the artifact
+    // recomputation could not see it. A win is measured on final champion
+    // fitness; the SCORE is improvement over the arm's own generation 0, so an
+    // arm can win every replicate while going backwards.
+    const out = confirmDecision(protocol, [
+      ...candidateWinning(WINS, { baseFitness: 100 }), // wins on fitness, score negative
+      ...baselineFlat(),
+      ...controlWeak(),
+    ], CANDIDATE);
+    expect(out.candidate.comparison.wins).toBe(WINS); // the win gate passes...
+    expect(out.candidate.comparison.medianScoreDifference).toBeLessThan(0);
+    expect(out.candidate.checks.find((c) => c.name === 'medianScoreDifference').pass).toBe(false);
+    expect(out.candidate.passes).toBe(false);
+    expect(out.decision).not.toBe('retune');
+    expect(out.resolvedDefaults).toEqual({ probability: 0.05, magnitude: 0.05 });
+  });
+
+  test('the baseline-vs-control claim also requires a positive median score difference', () => {
+    // Same inertness on the other side: the RETAIN INCONCLUSIVE test fails on
+    // wins before this clause is ever decisive.
+    const out = confirmDecision(protocol, [
+      ...candidateWinning(0),
+      ...mk(BASELINE_ARM_ID, 0.05, 0.05, { finalFitness: 10, baseFitness: 100 }),
+      ...controlWeak(),
+    ], CANDIDATE);
+    expect(out.baselineVsControl.comparison.wins).toBeGreaterThanOrEqual(WINS);
+    expect(out.baselineVsControl.comparison.medianScoreDifference).toBeLessThan(0);
+    expect(out.baselineVsControl.passes).toBe(false);
+    expect(out.decision).toBe('retainInconclusive');
+  });
+
   test('RETAIN VALIDATED when the candidate fails but baseline beats the control', () => {
     const out = confirmDecision(protocol,
       [...candidateWinning(0), ...baselineFlat(), ...controlWeak()], CANDIDATE);
@@ -1006,8 +1113,17 @@ describe('experiment: the CLI cannot destroy evidence or run on import', () => {
     // mode CLAUDE.md rounds 8-14 name repeatedly. The guard was an inline
     // `process.argv[1].endsWith(...)`, unreachable from a test. It is now a
     // named predicate, so both of its answers are pinned.
-    expect(shouldRunAsScript('/repo/scripts/experiment-evolution.js')).toBe(true);
-    expect(shouldRunAsScript('C:\\repo\\scripts\\experiment-evolution.js')).toBe(true);
+    // The predicate matches the RESOLVED PATH of this module, not a basename.
+    // Under a basename match, any other entrypoint sharing the name — a wrapper,
+    // a vendored copy — started a real multi-hour experiment on import, which is
+    // precisely what the module header forbids. Reported by external review.
+    const self = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'experiment-evolution.js');
+    expect(shouldRunAsScript(self)).toBe(true);
+    // The same file reached by a non-normalized path is still this file.
+    expect(shouldRunAsScript(join(dirname(self), '..', 'scripts', 'experiment-evolution.js'))).toBe(true);
+    // SAME BASENAME, DIFFERENT FILE — the whole point of the fix.
+    expect(shouldRunAsScript(join(dirname(self), 'copies', 'experiment-evolution.js'))).toBe(false);
+    expect(shouldRunAsScript('/somewhere/else/experiment-evolution.js')).toBe(false);
     expect(shouldRunAsScript('/repo/node_modules/.bin/vitest')).toBe(false);
     expect(shouldRunAsScript(undefined)).toBe(false);
     expect(shouldRunAsScript('')).toBe(false);
@@ -1119,7 +1235,9 @@ describe('experiment: the observation producers themselves', () => {
     const mk = (id, status, alert, peak, dist) => ({
       phase: 'screen',
       populationSeed: 1,
+      terrainSeed: 2,
       individualId: id,
+      valid: true,
       integrityStatus: status,
       firstAlertStep: alert,
       firstCatastrophicStep: null,
@@ -1139,11 +1257,48 @@ describe('experiment: the observation producers themselves', () => {
     expect(out.newlyUnselectableBelow50).toBe(0);
   });
 
+  test('escalation selectability is fitness policy v2 — BOTH conjuncts, not integrity alone', () => {
+    // The arm re-derived "selectable" as `integrityStatus === 'ok'`, dropping the
+    // validity half of `valid && integrity.status === 'ok'`. An INVALID vehicle
+    // reporting 'ok' therefore counted as currently selectable AND, being
+    // alert-band, as a new cost of escalating — inflating the one number this
+    // arm exists to produce. Reported by external review.
+    const row = {
+      phase: 'screen',
+      populationSeed: 1,
+      terrainSeed: 2,
+      individualId: 0,
+      valid: false,
+      integrityStatus: 'ok',
+      firstAlertStep: 16,
+      firstCatastrophicStep: null,
+      peakBodySpeed: 400,
+      maxForwardDistance: 900, // the best distance in the population, so it would be champion
+    };
+    const healthy = {
+      ...row, individualId: 1, valid: true, firstAlertStep: null, peakBodySpeed: 4, maxForwardDistance: 20,
+    };
+    const out = summarizeEscalationRows([row, healthy]);
+    // Production already refuses it, so escalation costs nothing here.
+    expect(out.currentlyUnselectable).toBe(1);
+    expect(out.newlyUnselectable).toBe(0);
+    // ...and it was never the champion, so the crown does not move either.
+    expect(out.generationZeroChampionChanges).toBe(0);
+    // Restoring validity is what makes it a real cost, which is the discriminator:
+    // if the predicate ignored `valid`, both cases would read the same.
+    const asValid = summarizeEscalationRows([{ ...row, valid: true }, healthy]);
+    expect(asValid.currentlyUnselectable).toBe(0);
+    expect(asValid.newlyUnselectable).toBe(1);
+    expect(asValid.generationZeroChampionChanges).toBe(1);
+  });
+
   test('the escalation accounting detects a champion change', () => {
     const mk = (id, alert, peak, dist) => ({
       phase: 'screen',
       populationSeed: 1,
+      terrainSeed: 2,
       individualId: id,
+      valid: true,
       integrityStatus: 'ok',
       firstAlertStep: alert,
       firstCatastrophicStep: null,
@@ -1153,9 +1308,56 @@ describe('experiment: the observation producers themselves', () => {
     // The top scorer is alert-band, so escalation hands the crown to id 1.
     const changed = summarizeEscalationRows([mk(0, 9, 400, 900), mk(1, null, 4, 20)]);
     expect(changed.generationZeroChampionChanges).toBe(1);
+    expect(changed.populationsLosingEveryChampion).toBe(0);
     // Here the top scorer is healthy, so nothing changes.
     const stable = summarizeEscalationRows([mk(0, null, 4, 900), mk(1, null, 4, 20)]);
     expect(stable.generationZeroChampionChanges).toBe(0);
+    // A population left with NO selectable champion is a DIFFERENT outcome and is
+    // counted separately; pooling it with "the crown moved" reported a wipe-out
+    // as a mild reshuffle.
+    const wiped = summarizeEscalationRows([mk(0, 9, 400, 900), mk(1, 7, 300, 20)]);
+    expect(wiped.populationsLosingEveryChampion).toBe(1);
+    expect(wiped.generationZeroChampionChanges).toBe(0);
+  });
+
+  test('the escalation arm binds its output to the protocol and records validity',
+    { timeout: 120000 }, async () => {
+      // An artifact test cannot catch this: the committed JSON is a constant, so
+      // a source regression that stopped emitting the binding leaves it green.
+      // The smoke protocol runs the real arm end to end in ~0.2 s.
+      const smokeProtocol = buildExperimentProtocol('smoke');
+      const out = await runEscalationCost(smokeProtocol);
+      expect(out.protocolDigest).toBe(await canonicalDigest(smokeProtocol));
+      expect(out.individuals)
+        .toBe((smokeProtocol.screen.replicates.length + smokeProtocol.confirm.replicates.length)
+          * smokeProtocol.workload.populationSize);
+      // Every row carries the production validity verdict, so the accounting can
+      // apply fitness policy v2 rather than half of it.
+      for (const row of out.rows) expect(typeof row.valid).toBe('boolean');
+      // The rows must describe the DECLARED replicates, not arbitrary seeds.
+      const declared = new Set([...smokeProtocol.screen.replicates, ...smokeProtocol.confirm.replicates]
+        .map((r) => `${r.populationSeed}:${r.terrainSeed}`));
+      for (const row of out.rows) expect(declared.has(`${row.populationSeed}:${row.terrainSeed}`)).toBe(true);
+    });
+
+  test('escalation populations are keyed by BOTH seeds, so two terrains never pool', () => {
+    // The key was `phase:populationSeed`. Two replicates sharing a population
+    // seed on different terrain would have had their distances pooled into one
+    // champion contest, comparing vehicles that never raced the same world.
+    const mk = (terrainSeed, id, dist) => ({
+      phase: 'screen',
+      populationSeed: 1,
+      terrainSeed,
+      individualId: id,
+      valid: true,
+      integrityStatus: 'ok',
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+      peakBodySpeed: 4,
+      maxForwardDistance: dist,
+    });
+    const out = summarizeEscalationRows([mk(10, 0, 5), mk(10, 1, 6), mk(20, 0, 5), mk(20, 1, 6)]);
+    expect(out.populations).toBe(2);
   });
 
   test('the forensic SAMPLE resolves each case against the phase it declares', () => {
@@ -1183,7 +1385,8 @@ describe('experiment: the observation producers themselves', () => {
   test('the forensic report BUILDER carries provenance and derives its summary', () => {
     const protocol = buildExperimentProtocol();
     const mk = (fitness, alert, plausible) => ({
-      armId: 'x', replicateIndex: 0, generationIndex: 1, fitness,
+      phase: 'screen', armId: 'x', replicateIndex: 0, generationIndex: 1, fitness,
+      genotypeDigest: `d${fitness}`,
       firstAlertStep: alert, firstCatastrophicStep: null, plausible,
     });
     const out = buildForensicReport({
@@ -1201,11 +1404,106 @@ describe('experiment: the observation producers themselves', () => {
     expect(fitnessPlausibilityCeiling(protocol).conservativeCeiling).toBe(129);
   });
 
+  test('the forensic summary counts INDIVIDUALS, so one surviving elite counts once', () => {
+    // The original key included generationIndex, so the field simply equalled the
+    // row count and the docstring's promise ("distinct individuals, not rows")
+    // was enforced by nothing. Elitism carries one individual across generations
+    // with a fresh id each time, and paired arms share generation 0 — so an elite
+    // legitimately appears under several generations AND several arms.
+    const elite = (generationIndex, armId) => ({
+      phase: 'confirm', armId, replicateIndex: 2, generationIndex, fitness: 363.4,
+      genotypeDigest: 'aaaa', firstAlertStep: 23, firstCatastrophicStep: null, plausible: false,
+    });
+    const other = {
+      phase: 'confirm', armId: 'x', replicateIndex: 2, generationIndex: 15, fitness: 1156.5,
+      genotypeDigest: 'bbbb', firstAlertStep: 20, firstCatastrophicStep: null, plausible: false,
+    };
+    const out = buildForensicReport({
+      protocolDigest: 'abc',
+      ceiling: 129,
+      rows: [elite(0, 'control'), elite(30, 'control'), elite(59, 'control'), elite(0, 'p0.050-m0.050'), other],
+    });
+    expect(out.summary.overCeiling).toBe(5); // five ROWS
+    expect(out.summary.distinctOverCeilingIndividuals).toBe(2); // two INDIVIDUALS
+    expect(out.summary.distinctSampledIndividuals).toBe(2);
+
+    // The same genotype in a DIFFERENT phase is a different individual: arm ids
+    // and replicate indices both repeat across phases.
+    const crossPhase = buildForensicReport({
+      protocolDigest: 'abc',
+      ceiling: 129,
+      rows: [elite(0, 'control'), { ...elite(0, 'control'), phase: 'screen' }],
+    });
+    expect(crossPhase.summary.distinctOverCeilingIndividuals).toBe(2);
+  });
+
+  test('the forensic RUNNER emits a genotype digest per row, and it identifies the champion',
+    { timeout: 120000 }, async () => {
+      // The builder refuses a row without a digest, but nothing made the RUNNER
+      // produce one: deleting the emission left every test green, because the
+      // only tests touching forensics read the committed artifact (a constant) or
+      // hand-authored rows. The smoke protocol runs a real case in ~0.25 s.
+      const smokeProtocol = buildExperimentProtocol('smoke');
+      const plan = forensicCasePlan(
+        smokeProtocol, smokeProtocol.screen.replicates[0], smokeProtocol.screen.arms[0], 'screen');
+      const rows = await runForensicCase(smokeProtocol, plan);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.genotypeDigest).toMatch(/^[0-9a-f]{64}$/);
+        expect(() => forensicIndividualKey(row)).not.toThrow();
+      }
+      // Rows picked at the SAME fitness must agree on identity, and the digest
+      // must actually discriminate: distinct fitnesses cannot share a digest.
+      const byFitness = new Map();
+      for (const row of rows) {
+        const seen = byFitness.get(row.fitness);
+        if (seen !== undefined) expect(row.genotypeDigest).toBe(seen);
+        else byFitness.set(row.fitness, row.genotypeDigest);
+      }
+      // ...and the summary built from them counts individuals, not rows.
+      const report = buildForensicReport({ protocolDigest: 'abc', ceiling: 129, rows });
+      expect(report.summary.distinctSampledIndividuals).toBe(new Set(rows.map(forensicIndividualKey)).size);
+      expect(report.summary.distinctSampledIndividuals).toBeLessThanOrEqual(rows.length);
+    });
+
+  test('a forensic row without a genotype digest is REFUSED, never silently counted', () => {
+    // Identity is the genotype bytes. Falling back to fitness would resurrect the
+    // proxy this key exists to replace.
+    expect(() => forensicIndividualKey({
+      phase: 'screen', replicateIndex: 0, fitness: 5, generationIndex: 1,
+    })).toThrow(/no genotypeDigest/);
+  });
+
+  test('CONTEXT.md\'s candidate rule matches the code: the BASELINE can be the candidate', () => {
+    // The glossary said "eligible NON-BASELINE arm" while the code excludes only
+    // the control, so it described a state the code has an explicit field for.
+    // Screening over just {baseline, control} must therefore select the baseline.
+    const protocol = buildExperimentProtocol();
+    const runs = [
+      ...armRuns(BASELINE_ARM_ID, 0.05, 0.05, protocol.screen.replicates.length, { finalFitness: 10 }),
+      ...armRuns(CONTROL_ARM_ID, 0, 0, protocol.screen.replicates.length, { finalFitness: 2 }),
+    ];
+    const out = screenCandidates(protocol, runs);
+    expect(out.candidateArmId).toBe(BASELINE_ARM_ID);
+    expect(out.candidateIsBaseline).toBe(true);
+    // The control is never selectable as a candidate, whatever it scores.
+    const controlWins = [
+      ...armRuns(BASELINE_ARM_ID, 0.05, 0.05, protocol.screen.replicates.length, { finalFitness: 2 }),
+      ...armRuns(CONTROL_ARM_ID, 0, 0, protocol.screen.replicates.length, { finalFitness: 999 }),
+    ];
+    expect(screenCandidates(protocol, controlWins).candidateArmId).not.toBe(CONTROL_ARM_ID);
+  });
+
   test('the adoption ruling is pinned in CODE, not only in the committed file', () => {
     expect(ADOPTION_RULING.gateVerdictAdopted).toBe(false);
     expect(ADOPTION_RULING.adoptedDefaults).toEqual({ probability: 0.05, magnitude: 0.05 });
     expect(ADOPTION_RULING.reasonCode).toBe('fitnessSignalContaminated');
     expect(Object.isFrozen(ADOPTION_RULING)).toBe(true);
+    // AND IT MUST MATCH REALITY. `adoptedDefaults` was a literal bound to
+    // nothing, so a future PR could record an adoption it never performed —
+    // the same "the machine-readable file says one thing, the code does
+    // another" hazard `adoption` exists to close, reopened one field over.
+    expect(ADOPTION_RULING.adoptedDefaults).toEqual(PARAMETRIC_MUTATION_DEFAULTS);
   });
 });
 
@@ -1269,12 +1567,72 @@ describe('experiment: the committed evidence', () => {
     expect(() => evidenceSubset({ protocol: 1 })).toThrow(/must carry exactly/);
   });
 
+  test('the digest scope is pinned TRANSITIVELY, not only at the top level', () => {
+    // The five top-level names bound nothing below them: `runs` is digested, so
+    // every field of a projected run is too. That is how the digest came to cover
+    // per-run provenance while two docblocks said it did not — the scope test
+    // above inspects top-level keys and could never have noticed. Reported by
+    // external review.
+    expect(PROJECTED_RUN_KEYS.slice().sort()).toEqual([
+      'armId', 'citable', 'magnitude', 'phase', 'plannedGenerations', 'populationSeed',
+      'probability', 'replicateIndex', 'runId', 'sourceClean', 'sourceCommit', 'summary', 'terrainSeed',
+    ]);
+    // The committed artifact must actually be projected that way.
+    for (const run of evidence.runs) {
+      expect(Object.keys(run).slice().sort()).toEqual(PROJECTED_RUN_KEYS.slice().sort());
+    }
+    // Per-run timing must stay OUT: it made a resumed campaign digest differently
+    // from an uninterrupted one.
+    for (const excluded of ['performance', 'evolveMs', 'source']) {
+      expect(PROJECTED_RUN_KEYS).not.toContain(excluded);
+    }
+    // Provenance is deliberately INSIDE, and is exactly what resultDigest strips.
+    for (const key of RUN_PROVENANCE_KEYS) expect(PROJECTED_RUN_KEYS).toContain(key);
+  });
+
+  test('resultDigest is the SCIENCE-ONLY identity: provenance moves it, nothing else does', async () => {
+    // Two campaigns run from different commits produce identical science and
+    // different `evidenceDigest`s. `resultDigest` is the identity that answers
+    // "did we get the same result?" across commits, and it must be blind to
+    // exactly the provenance fields and no others.
+    const science = (runs) => runs.map((run) => {
+      const out = {};
+      for (const key of Object.keys(run)) {
+        if (RUN_PROVENANCE_KEYS.includes(key)) continue;
+        out[key] = run[key];
+      }
+      return out;
+    });
+    const subset = evidenceSubset({
+      protocol: evidence.protocol,
+      protocolDigest: evidence.protocolDigest,
+      runs: evidence.runs,
+      screening: evidence.screening,
+      confirmation: evidence.confirmation,
+    });
+    expect(await canonicalDigest(subset)).toBe(evidence.evidenceDigest);
+    expect(await canonicalDigest({ ...subset, runs: science(subset.runs) }))
+      .toBe(evidence.resultDigest);
+    // The two must differ, or provenance is not actually attested by the first.
+    expect(evidence.resultDigest).not.toBe(evidence.evidenceDigest);
+    // Changing a provenance field moves evidenceDigest and NOT resultDigest.
+    const moved = { ...subset, runs: subset.runs.map((r) => ({ ...r, sourceCommit: 'a'.repeat(40) })) };
+    expect(await canonicalDigest(moved)).not.toBe(evidence.evidenceDigest);
+    expect(await canonicalDigest({ ...moved, runs: science(moved.runs) })).toBe(evidence.resultDigest);
+  });
+
   test('the KINEMATIC ceiling is a displacement bound; the conservative one is not', () => {
     // The first draft returned `corridor + v*T` and called it the distance a
     // vehicle "could reach", which adds a spatial extent to a time-integral.
     // Displacement in T seconds is bounded by v*T and nothing else. Both are
     // asserted as arithmetic identities so a workload change moves them.
     const basis = evidence.observations.fitnessPlausibility.basis;
+    // ABSOLUTE literals first. Both identities below draw their operands from the
+    // same returned object, so on their own they would hold for any consistent
+    // rescaling; the kinematic ceiling in particular was anchored only
+    // transitively, through the conservative literal.
+    expect(basis.kinematicCeiling).toBe(25);
+    expect(basis.conservativeCeiling).toBe(129);
     expect(basis.kinematicCeiling).toBe(basis.noLoadSurfaceSpeed * basis.runSeconds);
     expect(basis.conservativeCeiling)
       .toBe(basis.corridorForwardDistance + basis.kinematicCeiling);
@@ -1607,6 +1965,232 @@ describe('experiment: the resumable workspace', () => {
         await expect(executeExperimentPhase({
           phase: 'confirm', workspace, protocol: smoke, allowDirty: true,
         })).rejects.toThrow(/confirmation needs all \d+ screening runs/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('a replicate DUPLICATED over another — the count-preserving attack — is refused',
+    { timeout: 300000 }, async () => {
+      // The attack the count checks cannot see: delete one replicate's records
+      // and rewrite another replicate's under the missing runIds. Cardinality
+      // stays correct, every filename matches its runId, every protocol digest
+      // matches, and `pairingCoherence` stays green because the substituted group
+      // is internally consistent. Measured on a copy of the real 204-run
+      // workspace: it produced a CITABLE report with moved confirmation numbers.
+      // Reported by external review.
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({ phase: 'screen', workspace, protocol: smoke, allowDirty: true });
+        const runsDir = join(workspace, 'runs');
+        const donorFile = readdirSync(runsDir).sort()
+          .find((f) => JSON.parse(readFileSync(join(runsDir, f), 'utf8')).replicateIndex === 0);
+        const victimFile = readdirSync(runsDir).sort()
+          .find((f) => JSON.parse(readFileSync(join(runsDir, f), 'utf8')).replicateIndex === 1);
+        expect(donorFile).toBeDefined();
+        expect(victimFile).toBeDefined();
+        const donor = JSON.parse(readFileSync(join(runsDir, donorFile), 'utf8'));
+        const victim = JSON.parse(readFileSync(join(runsDir, victimFile), 'utf8'));
+        // Relabel the donor as the victim: self-consistent in every way the old
+        // checks looked at, and carrying the WRONG seeds for that replicate.
+        writeFileSync(join(runsDir, victimFile), JSON.stringify({
+          ...donor, runId: victim.runId, replicateIndex: victim.replicateIndex, armId: victim.armId,
+        }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/does not describe the run it is filed as/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('a record whose metadata contradicts its own persisted history is refused',
+    { timeout: 300000 }, async () => {
+      // `executeRun` checks the plan against the history header — at WRITE time
+      // only. Editing one metadata field of one file made the report announce
+      // `resolvedDefaults` the experiment never ran, while that same file's
+      // history header still carried the real parameters.
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({ phase: 'screen', workspace, protocol: smoke, allowDirty: true });
+        const runsDir = join(workspace, 'runs');
+        const file = join(runsDir, readdirSync(runsDir).sort()[0]);
+        const good = JSON.parse(readFileSync(file, 'utf8'));
+
+        // A mutation parameter that disagrees with the schedule.
+        writeFileSync(file, JSON.stringify({ ...good, probability: 0.9, magnitude: 0.9 }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/does not describe the run it is filed as/);
+
+        // A seed that disagrees with the schedule.
+        writeFileSync(file, JSON.stringify({ ...good, populationSeed: 99999999 }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/does not describe the run it is filed as/);
+
+        // Metadata that matches the schedule while the PHYSICS underneath does
+        // not: the only check that reaches the persisted bytes.
+        writeFileSync(file, JSON.stringify({
+          ...good,
+          summary: { ...good.summary, header: { ...good.summary.header, mutationProbability: 0.9 } },
+        }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/persisted history ran/);
+
+        writeFileSync(file, JSON.stringify({
+          ...good,
+          summary: { ...good.summary, header: { ...good.summary.header, maxGenerations: 999 } },
+        }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/persisted history declares/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('a run for an arm or replicate in no schedule is refused', () => {
+    // Pure: the schedule check needs no physics. A record filed under an
+    // undeclared arm was previously grouped under its own armId and could be
+    // RANKED — screening could select an arm the protocol never declared.
+    const protocol = buildExperimentProtocol('smoke');
+    const schedule = buildExecutionSchedule(protocol, 'screen', protocol.screen.arms);
+    const asRecord = (plan) => ({
+      ...plan,
+      plannedGenerations: plan.generations,
+      summary: {
+        header: {
+          mutationProbability: plan.probability,
+          mutationMagnitude: plan.magnitude,
+          maxGenerations: plan.generations,
+        },
+      },
+    });
+    const good = schedule.map(asRecord);
+    expect(() => validateRecordsAgainstSchedule(schedule, good, { requireComplete: true })).not.toThrow();
+
+    const undeclared = [...good, asRecord({ ...schedule[0], runId: 'screen:p9.9-m9.9:r0', armId: 'p9.9-m9.9' })];
+    expect(() => validateRecordsAgainstSchedule(schedule, undeclared, { requireComplete: true }))
+      .toThrow(/never planned/);
+
+    // Missing runs are only refused when completeness is required, so resumption
+    // still works on a partial workspace.
+    const partial = good.slice(1);
+    expect(() => validateRecordsAgainstSchedule(schedule, partial, { requireComplete: false })).not.toThrow();
+    expect(() => validateRecordsAgainstSchedule(schedule, partial, { requireComplete: true }))
+      .toThrow(/missing \d+ scheduled run/);
+  });
+
+  test('a confirmation phase missing a WHOLE ARM is refused by the report',
+    { timeout: 300000 }, async () => {
+      // The completeness check multiplied replicates by the number of arms it
+      // found IN THE RECORDS, so deleting every record of one arm lowered the
+      // expectation to match and passed. The expected count now comes from the
+      // schedule the protocol declares.
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({ phase: 'screen', workspace, protocol: smoke, allowDirty: true });
+        await executeExperimentPhase({ phase: 'confirm', workspace, protocol: smoke, allowDirty: true });
+        const runsDir = join(workspace, 'runs');
+        const doomed = readdirSync(runsDir)
+          .filter((f) => f.startsWith('confirm__') && f.includes(CONTROL_ARM_ID));
+        expect(doomed.length).toBeGreaterThan(0);
+        for (const f of doomed) rmSync(join(runsDir, f));
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/confirmation is incomplete/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('the confirmation arm set comes from the PROTOCOL, never from the records', () => {
+    // The report derived `armCount` from the records it was checking, so a
+    // wholly missing arm simply lowered the expected total and passed.
+    const protocol = buildExperimentProtocol('smoke');
+    const arms = confirmationArmsFor(protocol, 'p0.200-m0.200');
+    expect(arms.map((a) => a.armId))
+      .toEqual(['p0.200-m0.200', protocol.baselineArmId, protocol.controlArmId]);
+    // When screening picks the baseline itself, the set dedups to two.
+    const dedup = confirmationArmsFor(protocol, protocol.baselineArmId);
+    expect(dedup.map((a) => a.armId)).toEqual([protocol.baselineArmId, protocol.controlArmId]);
+    expect(() => confirmationArmsFor(protocol, 'p9.9-m9.9')).toThrow(/not a declared screening arm/);
+  });
+
+  test('provenance is re-read PER RUN, and mid-phase drift is refused for a citable phase',
+    { timeout: 300000 }, async () => {
+      // It used to be captured once per phase and stamped on every record for the
+      // whole 24-46 minute run, so a tree edited or a HEAD moved mid-phase
+      // produced runs that executed different source while attesting the original
+      // clean commit. The reader is injectable so this needs no real git mutation.
+      const clean = { commit: 'a'.repeat(40), clean: true, available: true };
+      const dirty = { commit: 'a'.repeat(40), clean: false, available: true };
+      const moved = { commit: 'b'.repeat(40), clean: true, available: true };
+
+      const workspace = tempWorkspace();
+      try {
+        // Read 1 is openWorkspace's; read 2 is the first run's. The tree goes
+        // dirty from the second run onward.
+        let n = 0;
+        await executeExperimentPhase({
+          phase: 'screen', workspace, protocol: smoke, allowDirty: true,
+          readSource: () => { n += 1; return n <= 2 ? clean : dirty; },
+        });
+        const runsDir = join(workspace, 'runs');
+        const records = readdirSync(runsDir).sort()
+          .map((f) => JSON.parse(readFileSync(join(runsDir, f), 'utf8')));
+        expect(records.length).toBeGreaterThan(1);
+        // The records DIFFER: the stamp is per run, not per phase. Under the old
+        // per-phase capture every record carried `clean: true`.
+        expect(records.filter((r) => r.source.clean === true)).toHaveLength(1);
+        expect(records.filter((r) => r.source.clean === false).length).toBeGreaterThan(0);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+
+      // And under a CITABLE protocol the drift is refused outright — including a
+      // moved-but-still-clean HEAD, which a cleanliness-only check would pass.
+      const citableProtocol = { ...smoke, citable: true };
+      for (const second of [dirty, moved]) {
+        const ws = tempWorkspace();
+        try {
+          let n = 0;
+          await expect(executeExperimentPhase({
+            phase: 'screen', workspace: ws, protocol: citableProtocol, allowDirty: false,
+            readSource: () => (n++ === 0 ? clean : second),
+          })).rejects.toThrow(/source identity changed mid-phase/);
+        } finally {
+          rmSync(ws, { recursive: true, force: true });
+        }
+      }
+    });
+
+  test('a report built from a DIRTY checkout is never citable',
+    { timeout: 300000 }, async () => {
+      // The report recomputes screening, confirmation and the digest with the
+      // CURRENT analysis code, so an uncommitted metric change could alter the
+      // machine-readable verdict while the artifact still claimed clean
+      // single-commit evidence. Reported by external review.
+      const citableProtocol = { ...smoke, citable: true };
+      const clean = { commit: 'a'.repeat(40), clean: true, available: true };
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({
+          phase: 'screen', workspace, protocol: citableProtocol, readSource: () => clean,
+        });
+        await executeExperimentPhase({
+          phase: 'confirm', workspace, protocol: citableProtocol, readSource: () => clean,
+        });
+        const honest = await buildExperimentReport({
+          workspace, protocol: citableProtocol, readSource: () => clean,
+        });
+        expect(honest.citable).toBe(true);
+        expect(honest.observations.reportSource).toEqual(clean);
+
+        const fromDirtyTree = await buildExperimentReport({
+          workspace,
+          protocol: citableProtocol,
+          readSource: () => ({ commit: 'a'.repeat(40), clean: false, available: true }),
+        });
+        expect(fromDirtyTree.citable).toBe(false);
+        // The evidence itself is unchanged — only the citability claim drops.
+        expect(fromDirtyTree.evidenceDigest).toBe(honest.evidenceDigest);
       } finally {
         rmSync(workspace, { recursive: true, force: true });
       }

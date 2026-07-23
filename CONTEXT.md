@@ -31,9 +31,14 @@ Three arms have standing names:
   from selection re-sorting generation 0 rather than from mutation producing
   anything new. **The control is never eligible to become the new default** —
   a zero-mutation default would make the operator inert.
-- **candidate** — whichever eligible non-baseline arm screening ranks first.
-  There is at most one, and it is chosen by the screening rule, never by
-  inspection.
+- **candidate** — whichever eligible **non-control** arm screening ranks first,
+  chosen by the screening rule and never by inspection. There is at most one.
+  The baseline is ranked as an ordinary arm, so the candidate **may be the
+  baseline itself** — and is, whenever no other arm outranks it or no arm is
+  eligible at all. `candidateIsBaseline` records that state, and when it holds
+  the only reachable decisions are `retainValidated` and `retainInconclusive`.
+  (This entry said "non-baseline" while the code excluded only the control; the
+  two disagreed about a state the code has an explicit field for.)
 
 ## replicate
 
@@ -129,9 +134,15 @@ candidate to keep dispersion within a declared fraction of baseline's.
 - **eligible** — an arm that passed screening's guardrails (termination
   behaviour, selectable rate, dispersion floor). Eligibility is a filter, not a
   ranking.
-- **decision** — the experiment's single conclusion, one of:
-  - `retune` — a non-baseline candidate passed every confirmation gate; this PR
-    changes `PARAMETRIC_MUTATION_DEFAULTS`.
+- **decision** — the **gate's** single verdict, one of:
+  - `retune` — a non-baseline candidate passed every confirmation gate. This is
+    the gate's finding, **not** a record that anything changed: whether
+    `PARAMETRIC_MUTATION_DEFAULTS` actually moves is a separate maintainer
+    disposition, recorded beside the verdict in `adoption` (`ADOPTION_RULING`).
+    PR 4's gate returned `retune` and the maintainer declined it, so the two
+    fields deliberately disagree in the committed artifact. Reading `decision`
+    as "the defaults were changed" is exactly the adoption hazard `adoption`
+    exists to prevent — an earlier version of this entry reintroduced it here.
   - `retainValidated` — the defaults stay at `0.05/0.05` AND baseline itself
     beat the control on the confirmation gate, so "mutation-only evolution
     works at the current defaults" is an evidenced claim.

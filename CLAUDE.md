@@ -2331,7 +2331,7 @@ run from the single clean commit `9c5f24c`):**
   step) in the fitness vector so contamination is measurable from history rather
   than by re-evaluation (a versioned encoding change — the vector currently
   stores status only, which is why §9's diagnosis needed a forensic re-run);
-  (3) re-run this exact protocol afterwards (~75 min, committed and resumable);
+  (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
   (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
   Structural mutation, worker sharding and segmented history stay out of scope
   and unaffected.

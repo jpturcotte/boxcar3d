@@ -71,6 +71,12 @@ evidence notes. Reference only; never import from `legacy/`.
   (distributions/viability/undriven-audit/cost/shared-world-recheck; markdown
   to stdout, `--json`; defaults SMALL for a light local run, big sweep opt-in;
   never a CI gate — its only touchpoint is the schema smoke)
+- `npm run experiment:evolution` — the PR 4 broad evolution EXPERIMENT
+  (`--phase smoke|screen|confirm|report`; never a CI gate — its only CI
+  touchpoint is `tests/evolution-experiment.test.js`). `smoke` is a ~4 s
+  end-to-end shape proof; `screen`/`confirm` need a clean tree, take ~46/~24 min,
+  resume by exact run id, and write to a gitignored workspace; `report` emits the
+  committed canonical evidence JSON
 - `npm run lint` — includes the determinism ban on `src/sim`
 - `npm run build` — production bundle; CI deploys `dist/` to GitHub Pages
 
@@ -133,7 +139,11 @@ evidence notes. Reference only; never import from `legacy/`.
   `characterize-population.js`, `probe-physics-explosion.js` (the
   finite-explosion forensic instrument), `explosion-witnesses.js` (the
   frozen witness identities + the materialized minimal reproducer —
-  investigation fixtures, not a production contract).
+  investigation fixtures, not a production contract),
+  `experiment-evolution.js` (the PR 4 EXPERIMENT: the predeclared protocol, the
+  pure history summarizer, the screening/confirmation decision logic, a
+  resumable filesystem runner, and the SHA-256 evidence report — an experiment,
+  never a gate, and it establishes no lock authority).
 - `src/render/` — Three.js only; may use wall clock and `Math.*` freely.
 - `src/workers/` — population sharding (Phase 1 step 6+); one physics world
   per worker; results merged by `postMessage`; shard-invariant by rule 1.
@@ -185,6 +195,11 @@ evidence notes. Reference only; never import from `legacy/`.
   `test:determinism`),
   `population-probe-schema.test.js` (the characterization instrument's only
   CI touchpoint), `bench-schema.test.js` (the bench's only CI touchpoint),
+  `evolution-experiment.test.js` (the PR 4 experiment's only CI touchpoint:
+  protocol structure with every threshold pinned exactly, metric arithmetic,
+  decision logic over hand-authored matrices, one real tiny history, a
+  filesystem interrupt/resume proof, and the committed evidence recomputing to
+  its own conclusions and digest — no empirical magnitude anywhere),
   `explosion-witnesses.test.js` (witness + reproducer identity locks —
   digests, initializer cross-check, passive-twin recipe; NEVER a
   must-explode assertion), `trace-forensics.test.js` (pure codec-fed onset/
@@ -2117,6 +2132,359 @@ history, replay, and strong artifact identity. Full contract:
 - **Seeds allocated:** 20260740 engine unit-test population · 20260741 engine
   unit-test terrain · 20260742 committed fixture population · 20260743 committed
   fixture terrain.
+
+**GA Phase 1B PR 4 landed — the broad evolution experiment. DECISION: RETAIN
+`{ probability: 0.05, magnitude: 0.05 }`; no production behaviour changes, no
+lock movement, no version movement. Full report:
+`docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md`; committed evidence
+`docs/ga-phase-1b-pr4-evolution-experiment-evidence.json`
+(`boxcar3d.evolution-experiment/1`, 204 runs, `evidenceDigest`
+`75c849ce…8ff99d6e` / `resultDigest` `1e9614c8…24fc0e32`, every run from the
+single clean commit `9c5f24c`):**
+- **THE HEADLINE FINDING, and the reason the retune was refused: mutation-only
+  evolution on the composite corridor produces a selection signal in which
+  ~1 champion in 5 is NOT locomotion but Rapier constraint-solver divergence
+  inside the integrity ALERT band** — which policy v2 deliberately treats as an
+  observation, so it reports `ok` and is fully SELECTABLE. Forensic witness
+  (re-evaluated through `runEvaluation`): reported fitness **1450 m** in a
+  **120 m** corridor, final x **1406**, final speed **297.9 m/s**,
+  `peakBodySpeed` **818.76 m/s** (82% of the 1000 m/s catastrophic threshold),
+  `firstAlertStep` 16, `firstCatastrophicStep` **null**, `status` **`ok`**.
+  **NOT a new physics bug:** it is the divergence class PR #17 diagnosed
+  (ill-conditioned multi-module joint islands, onset on the flat pad during
+  settle), in the SUB-CATASTROPHIC band policy v2 consciously left open — PR #17
+  and Phase 1A's witnesses were >1000 m/s and policy v2 already makes those
+  unselectable. What is new is the exposure mechanism: **SELECTION**, absent from
+  every corpus PR #17 and PR-B characterized.
+  Prevalence: **≥18.7%** of screening generations (877/4680) and **≥22.9%** of
+  confirmation generations (660/2880) exceed the derived plausibility ceiling;
+  **~25% of FINAL-generation champions** — exactly the values `runScore` reads.
+  **These are LOWER BOUNDS, not estimates** — see the forensic phase below.
+- **`--phase forensics` (committed, regenerable) turns the claim from inference
+  into measurement.** It re-runs NINE declared cases — six screening and THREE
+  confirmation, including the zero-mutation CONTROL's contaminated replicate —
+  and re-evaluates each one's lowest/median/highest selectable champion through
+  the production runner (the persisted fitness vector stores integrity STATUS
+  only, so history cannot answer this). The first draft could not express a
+  confirmation case at all (`runForensicCase` hard-coded `phase: 'screen'`), so
+  the phase carrying the strongest positive claim had NO re-evaluation evidence.
+  Results: 12/12 over-ceiling champions are alert-band, none catastrophic, peaks
+  142–855 m/s; **the ceiling has MEASURED FALSE NEGATIVES** (a champion reporting
+  an ordinary **12.9 m** peaked at **142.4 m/s**, 1 of 15 sampled under-ceiling —
+  same shape as PR #17's witness S: 3.63 m over a 1070 m/s blow-up).
+  **SHARP LIMITATION the first draft missed:** `overCeilingAllAlertBand` CANNOT
+  come back false — alertSpeed 25 m/s × 5 s = 125 m < the 129 m ceiling — so that
+  field is entailed by ARITHMETIC, not evidence; what carries information is the
+  peak magnitudes and the absence of catastrophic crossings. The champion
+  distribution is starkly BIMODAL (0–30 m: 76.6%; 30–120 m gap: 4.2%;
+  150–2000 m: 18.1%). Output: `docs/ga-phase-1b-pr4-evolution-forensics.json`
+  (now carries `protocolDigest` and the `declaredSample`, so a stale artifact
+  cannot stay green).
+- **`--phase escalation-cost` (committed) MEASURES what the recommended fix would
+  cost**, over all 440 generation-0 individuals (unmutated): currently
+  unselectable **18 (4.1%)**, alert-band **29 (6.6%)**, **would NEWLY become
+  unselectable 11 (2.5%)** — peak speeds min **142.4**, median **421.9**, max
+  **994.2** m/s, **NONE below 50 m/s**. No cluster near the 25 m/s alert line, so
+  the false-positive risk is effectively nil and the cost is 2.5%, not the 5–15%
+  feared. In **6 of 22 populations (27%) the generation-0 CHAMPION changes**.
+  SCOPE: false-POSITIVE side only, generation 0 only; PR-B's acceptance test also
+  needs the false-NEGATIVE side, and escalation itself is an
+  `INTEGRITY_POLICY_VERSION`/`FITNESS_POLICY_VERSION` bump plus a deliberate
+  re-lock — a PR-B/PR-5 change, explicitly NOT done here. **This is the evidence
+  PR-B's escalation trigger was waiting for.** (PR-B recorded it "unmet on the
+  tested corpus"; the first draft blamed the absence of selection alone — but
+  PR-B's population pass also uses a SINGLE terrain realization, and contamination
+  is predicted far better by the seed pairing than by anything else.) Output:
+  `docs/ga-phase-1b-pr4-escalation-cost.json`.
+- **TWO ceilings, because the first one was analytically WRONG.** The draft used
+  `corridorForwardDistance + noLoadSpeed × runSeconds` (104 + 25 = 129 m) as "the
+  distance a vehicle could reach" — that adds a SPATIAL EXTENT to a TIME-INTEGRAL
+  (at 5 m/s the corridor's own 104 m takes 20.8 s, 4× the whole run), so it bounds
+  nothing and was ~5× too generous, which is precisely why the report then
+  "discovered" false negatives. Now: `kinematicCeiling = 5 × 5 = 25 m` (the real
+  displacement bound) and `conservativeCeiling = 129 m` (an unarguable envelope,
+  kept so counts against it are strict LOWER bounds). Over-kinematic: 1106/4680
+  screening, 956/2880 confirmation. **Slot counts are EXPOSURE, not prevalence** —
+  elitism re-counts a survivor every generation; distinct champion FITNESS VALUES
+  are 106/44 (keyed on `(replicate, fitness)`, a LOWER BOUND on distinct
+  individuals — equal-fitness genotypes merge; the summaries carry no champion
+  genotype and adding it would need a re-run).
+  Neither ceiling feeds any eligibility rule, gate or decision. The ceiling now
+  reads the RESOLVED terrain length, not `TERRAIN_DEFAULTS` unconditionally.
+- **The predeclared gate returned `retune` to (0.20, 0.20) with all six checks
+  passing** (13/16 paired wins ≥ 12; median paired score difference +0.2244;
+  0 `noSelectableParents`; aggregate selectable rate 0.9219 ≥ 0.8719; median
+  final uniqueness 1.0000 ≥ 0.9000; median final dispersion 0.0612 ≥ 0.0041).
+  Reported faithfully and committed verbatim; **NOT adopted**, for three reasons
+  the gate could not see: the premise is violated (above); the candidate's
+  identity is NOT robust (post-hoc, on the 3 uncontaminated screening replicates
+  the winner FLIPS to `p0.100-m0.200`, which was never confirmed head-to-head);
+  and the candidate sits on the GRID BOUNDARY, so "0.20/0.20 is best" is
+  unsupported even on clean data.
+- **What IS robustly supported, and reported as such:** mutation-only evolution
+  WORKS at the current defaults — baseline improved over its OWN generation 0 in
+  **16/16** replicates (the "beats control" framing is an algebraic identity, see
+  above), and **10/10** on the uncontaminated subset; and
+  0.05/0.05 is probably not optimal — the candidate beats baseline on **every one
+  of the 10 clean confirmation replicates** with entirely plausible magnitudes
+  (17.5–23.9 m ≈ 3.5–4.8 m/s against a 5 m/s drive law). **The retune is
+  DEFERRED, not refuted.** Retaining is the conservative reading, not an
+  evidence-free one.
+- **Protocol (declared and committed at `44955a9` BEFORE the first broad run;
+  every threshold pinned to its exact value by a test):** fixed workload —
+  population 20, 300 steps, deterministic, isolated worlds, spawn (−44, 0),
+  composite terrain with `startFlatLength: 30`/`startBlendLength: 6` and craters
+  /features/zones ON. Screening 26 arms (control + a 5×5 factorial over
+  {0.01, 0.025, 0.05, 0.1, 0.2}) × 6 replicates × 30 generations; confirmation
+  candidate+baseline+control × 16 replicates × 60 generations on DISJOINT seeds.
+  `validateProtocol` REFUSES an overlapping protocol rather than trusting the
+  literals — and earned its keep by catching a collision in the smoke protocol's
+  own seeds on the first run. Arm order is shuffled per replicate (scheduling
+  seed 20260788, which never reaches an evolution run). **Pairing is VERIFIED,
+  not assumed:** within a phase and replicate every arm must report an identical
+  generation-0 population digest and champion (generation 0 precedes mutation, so
+  this is an identity) — all 22 groups pass.
+- **Screening observations:** 13 of 26 arms ineligible, EVERY one on the
+  dispersion floor — the other two guardrails were INERT (median final selectable
+  rate 1.000 for every arm; zero `noSelectableParents` in 204 runs). The control
+  collapses to dispersion 0.0000 / uniqueness 0.05 (ONE distinct genotype in 20)
+  by generation 4 and its champion never moves — pure elitism + tournament with
+  no variation is exactly a fixed point. Magnitude dominates probability (all
+  top-3 arms carry m = 0.20).
+- **Runtime/storage envelope (reference machine i7-14650HX, Windows 11, Node
+  22.19.0; machine-specific, never a CI threshold):** 70 minutes total for 204
+  runs; median run **15.8 s** at 30 gens / **35.0 s** at 60 (split by generation
+  count — the first draft quoted a POOLED median as the 30-gen figure);
+  **535 ms per generation** (~89 µs per vehicle-step); **history growth
+  12.2 KB/generation, LINEAR** (366 KB / 731 KB median at 30 / 60 gens). **The
+  margin is THIN, not large:** the observed MAXIMUM at 60 generations is
+  **1.27 MiB**, 94% of PR #25's ~1.35 MiB worst case — that projection is
+  CONFIRMED ACCURATE rather than shown conservative. The 64 MiB ceiling is far
+  away and **the segmented-history refactor is NOT triggered**, but a longer
+  campaign must re-measure rather than extrapolate the median.
+- **`scripts/experiment-evolution.js`** (Node-only, outside the sim ban) — the
+  deep offline instrument: `buildExperimentProtocol`, `summarizeEvolutionHistory`
+  (pure, decodes only the four persisted component kinds through public codecs —
+  no physics, so every metric test is engine-free), `executeExperimentPhase`
+  (resumable by exact run id; atomic per-run records; refuses a mismatched
+  protocol digest, a corrupt/mislabelled record, a filename/runId mismatch, an
+  incomplete prior phase, and a dirty tree for a citable phase),
+  `buildExperimentReport` (recomputes EVERY conclusion from the raw run rows, so
+  the committed document is self-derivable). TWO digests, because they answer
+  different questions: `evidenceDigest` covers `EVIDENCE_DIGEST_KEYS` —
+  protocol/protocolDigest/runs/screening/confirmation, and `runs` carries per-run
+  provenance, so it attests the citability claim; `resultDigest` is the same
+  subset with `RUN_PROVENANCE_KEYS` projected away, so two campaigns from
+  different commits can be compared for experimental equality. Both EXCLUDE
+  timing, machine identity, execution order and the BUILD-time source. The real
+  scope is transitive and pinned by `PROJECTED_RUN_KEYS` — the old top-level-only
+  scope test is how a docblock came to claim the source commit was outside a
+  digest that contained it. The
+  committed JSON is CANONICAL (sorted keys, compact): byte-stable across
+  rebuilds, the same spelling the digest is taken over, and a third the size of
+  the pretty-printed form. Per-generation morphology/lineage/integrity detail is
+  projected away for the middle generations (17 MB → 1.9 MB) with first and last
+  kept in FULL, under the rule that every figure quoted in the report must be
+  recomputable from the committed evidence alone.
+- **`tests/evolution-experiment.test.js`** is the ONLY CI touchpoint (131 tests,
+  ~10 s): protocol structure, metric arithmetic, decision logic over hand-authored
+  matrices, one real tiny history, a filesystem interrupt/resume proof, the
+  workspace-integrity refusals, smoke-scale runs of the escalation and forensic
+  arms (so their teeth bind SOURCE, not a committed artifact), and the
+  committed evidence recomputing to its own screening/confirmation/decision/
+  digest. **No empirical magnitude is asserted anywhere** (regression asymmetry).
+- **THE CORRECTION TO PR #25's HANDOFF (§9), verified by execution:** a
+  mutation-default retune does **NOT** move the committed evolution locks.
+  `EVOLUTION_FIXTURE_A` declares its mutation parameters as LITERALS and
+  `evolutionRunConfigFor` passes them explicitly, so the locked artifact never
+  reads `PARAMETRIC_MUTATION_DEFAULTS`. Setting the defaults to (0.2, 0.2) and
+  running `tests/evolution-determinism.test.js` leaves it GREEN (5/5). Lock
+  stability across a default change is EXPECTED; unexpected movement would be a
+  blocker, not a re-lock. The PR 3 doc now carries this correction inline.
+- **TWO adversarial review rounds.** Round 1 (31 findings, 9 confirmed) found
+  instrument defects BEFORE any decision rested on them, and the screening
+  phase was re-run from scratch after fixing them rather than resuming across two
+  commits. The one that mattered: **`medianOrNull` inverted its own declared null
+  ordering** — CONTEXT.md and its docstring both said a missing champion "ranks
+  below every finite result", but the code indexed median positions straight into
+  the ascending finite array, putting nulls at the TAIL, i.e. treating a run that
+  produced NO selectable individual as the LARGEST observation. It biased every
+  median UPWARD by exactly the runs that failed outright; measured,
+  `[null, null, 0.095, 0.140, 0.182, 3.418]` scored 1.800 against a steady
+  baseline's 1.011 and WON screening, the median window having slid onto the one
+  lucky long run that `runScore` uses log1p specifically to prevent. The
+  committed test had locked the wrong value in under a title its own assertion
+  falsified. Also fixed: `--phase smoke` recursive-deleted whatever `--workspace`
+  named (and `phase` DEFAULTS to smoke, so `--workspace experiment-workspace`
+  alone was an rm -rf of hours-old citable evidence); `readSourceIdentity` ran
+  git in `process.cwd()`, so the clean-tree citability gate could describe an
+  unrelated repository; three confirmation thresholds were tested for existence
+  but not value; and the "importing must not start an experiment" claim had no
+  test behind it.
+- **Round 2 (a 101-agent red team over 6 lenses + 6 orthogonal questions;
+  20 confirmed of 88, 68 refuted, plus 9 completeness-critic gaps) found the two
+  headline claims above and forced this block's biggest corrections.** Eight of
+  twelve finder agents independently reported the control-arm claim. The
+  generalizable lesson, and it is the project's oldest one: **I verified the
+  claim on the phase I had been looking at (screening) and generalized to "any
+  replicate" without checking the other phase — and no test could catch it,
+  because the evidence aggregated per PHASE only.** The fix is not the corrected
+  sentence; it is the `perArm` + `generationZero` breakdown plus the committed
+  teeth that recompute them, so the NEXT claim of this shape reddens.
+- **Sabotage: 23 mutations. `m20` (the git-cwd fix) SURVIVED on the first pass —
+  the fix had been applied to the site with NO tooth written for it**, which is
+  precisely the failure this project keeps relearning (round 8: *a test written
+  to the fix is not enforcement of the rule*; here it was worse — no test at
+  all). A tooth was added and verified to bite. All 23 bite now.
+- **Round 3 — EXTERNAL REVIEW (three reviewers, ten findings; nine confirmed by
+  execution, one REFUTED by execution). No committed experimental figure moved
+  except one that was wrong; zero production/lock/version movement.**
+  Every claim was reproduced or refuted at HEAD before anything changed.
+  - **The refutation matters as much as the fixes.** "The confirmation-gate tests
+    mirror the production formula, so a `/100`→`/10` mutation stays green" — four
+    such mutations were executed and ALL FOUR reddened. The assertions are
+    STRADDLES: a loosening mutation flips the mandatory-FAIL leg. The reviewer
+    read only the pass leg. One genuine instance of the class was nearby (the
+    25 m kinematic ceiling was anchored only transitively through the 129 m
+    literal) and now has its own literal.
+  - **I also refuted my own red team's lead evidence, and it is the same trap
+    this PR already documented.** A completeness critic reported "49 discordant
+    control-vs-mutating pairs, all favouring mutation" as evidence that mutation
+    DOES create divergence. It is an ALGEBRAIC IDENTITY: with zero mutation and
+    elitism the control is a fixed point, so it is contaminated iff its
+    generation-0 champion is — and every arm SHARES generation 0 by the pairing
+    identity, so the reverse discordance is impossible (measured: 0 such pairs).
+    Exactly the shape of "baseline beats control 16/16". **What survives is a
+    direct counterexample** — screening replicate 3 became contaminated from a
+    generation-0 population with ZERO alert-band members — so §1.1's
+    "mutation is not the source" is now stated as unsettled, with the
+    underpowered by-magnitude null (7,7,8,9,9, monotone non-decreasing, n=30/cell)
+    labelled as absence of evidence.
+  - **Wrong committed figures, corrected:** the forensic
+    `distinctOverCeilingIndividuals` read **12** where the truth is **8** (its key
+    included `generationIndex`, so one surviving elite counted once per
+    generation — defeating the de-duplication its own docstring promised, and the
+    ONE summary field the artifact test never recomputed); the §1.3 band table
+    omitted 55 champions in [120,150) and made the bimodal trough read 28%
+    emptier than the data; "peaks 142–855 m/s" attributed the single
+    UNDER-ceiling false negative to the over-ceiling group, whose real range is
+    372–855; the CI test count read 98 against a real 129. Identity is now the
+    champion's GENOTYPE DIGEST — elitism gives an elite a fresh id every
+    generation, and fitness is a proxy that can merge two vehicles.
+  - **`evidenceDigest` vs `resultDigest`.** Two docblocks (copied into CLAUDE.md)
+    said the source commit was "deliberately outside" the digest while
+    `projectRunForEvidence` put it in and a committed test REQUIRED it there. The
+    prose was the wrong half. Per-run provenance stays inside — the artifact's
+    headline claim is that every run came from one clean commit — and the new
+    `resultDigest` strips it for cross-commit comparison. **The stale
+    `1e9614c8…` figure in this handoff turned out to BE that digest**, which
+    proves `resultDigest` removes exactly the three fields that were added.
+  - **Workspace integrity was self-consistency only.** Reproduced on a copy of the
+    real 204-run workspace: deleting one replicate's records and rewriting
+    another's under the missing runIds kept the count, kept every coherence group
+    green, and produced a CITABLE report with moved confirmation numbers; editing
+    ONE metadata field made the report announce `resolvedDefaults {0.9,0.9}` while
+    that file's own history header still read 0.2. Every record is now bound to
+    its scheduled plan AND to its own persisted physics, with set equality against
+    the schedule; the confirmation arm set comes from the protocol, not from the
+    records being checked.
+  - **Provenance was captured once per phase** and stamped on every record for
+    24–46 minutes; now re-read per run, comparing COMMIT as well as cleanliness
+    (re-reading alone still passed a run executed at a different clean commit).
+    `buildExperimentReport` never checked the tree IT ran from, though it
+    recomputes every conclusion — a dirty checkout is no longer citable.
+  - **Also:** the escalation arm used half of fitness policy v2 (integrity without
+    validity — REACHABLE in principle, measured unreachable on this runner, 0
+    disagreements in 440+7,560 evaluations, so no figure moved); the escalation
+    artifact had no protocol binding while its forensic sibling did;
+    `geneSpaceDispersion` re-parsed genotypes 380× instead of 20× (bit-identical
+    after the fix, verified with `Object.is`); `shouldRunAsScript` matched a
+    BASENAME, so any same-named entrypoint started a real experiment on import.
+  - **Enforcement gaps found while fixing, also closed:** `medianScoreDifference`
+    was a confirmation gate NO test could fail; the per-generation dispersion and
+    uniqueness call sites were satisfied by constants; `runConfigFor` was not
+    bound to the declared workload; CONTEXT.md's `candidate` and `retune`
+    definitions contradicted the code.
+  - **Sabotage: 23 mutations, all bite. TWO survived the first pass** — the
+    escalation protocol binding and the forensic genotype-digest emission —
+    **because their only tests read committed artifacts, which cannot change when
+    source does.** The project's standing rule, hit again: an artifact test is not
+    source enforcement. Both now have source-level teeth that run the real arm at
+    smoke scale in ~0.25 s.
+- **Round 4 — SECOND EXTERNAL REVIEW (five findings, all reproduced or refuted by
+  execution). Scoped by a maintainer ruling: this is an OFFLINE developer
+  instrument for a game, so harden what can bite (a mislabelled or stray record,
+  a self-contradictory report) — NOT hand-forgery of a workspace the author owns.
+  evidenceDigest UNCHANGED at 75c849ce; the run/summarize/physics path untouched.**
+  - **A record's persisted physics is now bound to the seed it is filed under
+    (P1a).** The schedule labels are caller-written; the generation-0 population
+    snapshot is not. `verifyPersistedPopulations` recomputes the expected gen-0
+    population component digest from `plan.populationSeed` — a physics-free
+    function already stored in every summary — and rejects a record whose
+    persisted population is a DIFFERENT one. No re-run, no engine, milliseconds.
+    It covers the terrain seed transitively: `runConfigFor` draws BOTH seeds from
+    one plan row, so a record with the right gen-0 population necessarily ran the
+    paired terrain; a wrong terrain needs hand-editing, i.e. forgery, explicitly
+    out of scope. Runs before candidate selection in the confirm phase and in the
+    report. Reproduced both directions on a copy of the real workspace.
+  - **A record under an unknown phase is refused (P1b)** — it was skipped by both
+    schedule checks yet still entered coherence, the digest and observations. The
+    report now rejects any phase outside {screen, confirm} and requires every
+    runId to be in the declared screen+confirm schedule UNION (set equality, not a
+    count). Reproduced: a `phase:"other"` record used to reach citable evidence.
+  - **The report no longer states a causal claim it then retracts (P1c).** §1.1's
+    bullet said flatly "divergence is a property of the representation, not of
+    mutation" twenty lines above the block calling that too strong. The bullets
+    now state only what holds (capability exists pre-mutation; seed predicts
+    contamination far better than arm) and mark the magnitude question unresolved.
+  - **The machine-readable adoption reason dropped the superseded "candidate
+    identity is not robust" clause (P2a)** — it reversed under the paired
+    comparator in Round 3; `ADOPTION_RULING.reason` now matches the prose.
+  - **The fitness-keyed distinct-champion field is renamed
+    `distinctChampionFitnessValuesOverConservative` and documented as a LOWER
+    BOUND (P2b)** — it keys on `(replicate, fitness)`, so a retained elite
+    collapses but equal-fitness distinct genotypes merge. The honest fix is the
+    rename, not a per-generation genotype digest (that needs a re-run; these are
+    observations). The forensic sample, which does re-run, keeps its digest.
+  - **The one REFUTATION was the reviewer's literal terrain-forgery binding** —
+    ruled out by the maintainer's scope: an offline dev tool's author produces
+    its own evidence, so defending against a determined workspace forger is not
+    the threat model; the mislabel/stray-record class is.
+  - **Two new workspace-integrity teeth (wrong-seed, unknown-phase),
+    mutation-verified. Bounded reproduction (maintainer-chosen over a 70-min
+    re-run): four representative runs — including both contaminated cases,
+    the 1156 m screen r3 and the 363.4 m confirm-control r2 — re-executed
+    BYTE-IDENTICAL to the committed records, so the divergence itself reproduces
+    deterministically across every review change.**
+- **The escalate-vs-multibody fork is now a PROPOSED decision record:
+  `docs/solver-divergence-remediation-2026-07.md`.** It costs both options against
+  the evidence — Option A (escalate the alert band, a band-aid: makes the
+  divergence non-selectable, does NOT fix the physics) vs Option B (re-express
+  S0/S1 as reduced-coordinate multibody joints, the root cause). The
+  feasibility layer PR #19 named but never costed is captured there and in the
+  `rapier-multibody-motor-binding` memory: core 0.34 already honors the 1-DoF
+  revolute/prismatic motor+limit+spring path, a near-complete binding patch
+  already exists upstream (rapier.js#235, stranded/unmigrated ~3 yrs), so B is a
+  binding-revival + source-build, NOT a from-scratch effort — but the DRIVEN
+  multibody island's stability is unverified (PR #19's quiescence result is
+  undriven only). Recommendation: A now (unblocks tuning), B as a parallel
+  evidence-gated track, ratification is JP's.
+- **Recommended next steps (recorded, NOT implemented; sequenced in the decision
+  record §5):** (1) escalate the alert
+  band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
+  what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
+  (2) persist the integrity OBSERVATIONS (peak body speed, first alert
+  step) in the fitness vector so contamination is measurable from history rather
+  than by re-evaluation (a versioned encoding change — the vector currently
+  stores status only, which is why §9's diagnosis needed a forensic re-run);
+  (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
+  (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
+  Structural mutation, worker sharding and segmented history stay out of scope
+  and unaffected.
+- **Seeds allocated:** 20260744–20260749 screening population · 20260750–20260755
+  screening terrain · 20260756–20260771 confirmation population ·
+  20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
+  20260789–20260796 smoke protocol (non-citable).
 
 ### Phase 1B PR 2 operator boundary
 

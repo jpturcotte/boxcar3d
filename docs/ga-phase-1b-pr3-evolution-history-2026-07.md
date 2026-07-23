@@ -386,6 +386,19 @@ and nothing in PR 3 should be cited for any of it.
    been measured. The resolved numbers are encoded in every history header, so a
    retune is a visible, versioned act — but it *will* move the committed
    evolution locks, and that re-lock must be deliberate.
+
+   > **CORRECTION (PR 4, 2026-07-22): the clause after the dash is FALSE.** A
+   > mutation-default retune does **not** move the committed evolution locks.
+   > `EVOLUTION_FIXTURE_A` declares its mutation parameters as LITERALS and
+   > `evolutionRunConfigFor` passes them explicitly, so the locked artifact never
+   > reads `PARAMETRIC_MUTATION_DEFAULTS` — a property the fixture's own comment
+   > states deliberately ("PR 4 may deliberately retune the defaults, and that
+   > must not silently re-point this fixture at new numbers"). Verified by
+   > execution rather than by reading: setting the defaults to `(0.2, 0.2)` and
+   > running `tests/evolution-determinism.test.js` leaves it green (5/5). Lock
+   > stability across a default change is the EXPECTED behaviour, and unexpected
+   > lock movement under such a change would be a blocker, not a re-lock.
+   > See `docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md` §8.
 4. **Runtime and performance reporting.** The physics cost baseline
    (`docs/bench-physics-reference-2026-07-11.md`) says 50 max-topology vehicles
    do not meet the 60 FPS step budget; PR 4 should say what a realistic

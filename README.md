@@ -6,20 +6,60 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR 3 — the deterministic evolution engine, byte-only
-history, replay, and strong artifact identity — landed on the Phase 1A
-population/fitness foundation and PR 2's pure operators. **BoxCar3D now evolves
-end to end and can persist, verify, and replay a run.** Given a population seed
-and a declared evaluation configuration it produces a canonical repaired
+**Status:** GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
+deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
+replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
+screening on seeds 20260744–20260755 then held-out confirmation on the disjoint
+20260756–20260787, 70 minutes, all from one clean commit) shows mutation-only
+evolution genuinely improving vehicles — the baseline arm beats its own
+generation 0 in **16/16** paired replicates — and that the current defaults are
+probably not optimal. **The provisional defaults `{ probability: 0.05,
+magnitude: 0.05 }` are nevertheless RETAINED and PR 4 changes no production
+behaviour**, because the signal a retune would rest on is partly an artifact:
+champions exceeding the kinematic bound of the drive law (5 m/s × 5 s = 25 m) are
+not locomotion but Rapier constraint-solver divergence inside the integrity
+ALERT band, which fitness policy v2 reports as `ok` and therefore selectable. A
+witness scored **1450 m in a 120 m corridor** at a peak body speed of **818 m/s**
+— 82 % of the catastrophic threshold, never crossing it. This is **not a new
+physics bug**: it is the divergence class PR #17 diagnosed, in the
+sub-catastrophic band policy v2 consciously left open. **Divergence capability is
+present in unmutated populations** — 6.6 % of all 440 unmutated generation-0
+individuals are already alert-band, and the zero-mutation control inherits one
+such individual and carries it for 60 generations by elitism — **but whether
+mutation also creates it is not settled by this campaign**, and at least one
+screening replicate became contaminated from a generation-0 population with no
+alert-band member at all. (An earlier version of this paragraph said divergence
+was "a property of the representation, not of mutation"; the by-magnitude null
+behind that is underpowered, and the control cannot answer the question at all —
+with zero mutation and elitism it is a fixed point, so the comparison is
+one-directional by construction. See §1.1 of the report.) A committed
+`--phase escalation-cost` arm measures what fixing it would cost: making an alert
+crossing unselectable removes **2.5 %** of unmutated individuals, all peaking
+**≥142 m/s** with none near the 25 m/s line, and corrects the generation-0
+champion in **27 %** of populations — so the false-positive risk is effectively
+nil. That is the evidence PR-B's alert-as-failure escalation trigger was waiting
+for; landing it (plus PR-B's false-negative half) is the declared prerequisite
+before any tuning decision. Full report, including the headline claims this PR
+corrected in itself across three adversarial review rounds — and one external
+finding it REFUTED by executing the mutation the reviewer predicted would
+survive:
+[`docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md`](docs/ga-phase-1b-pr4-evolution-experiment-2026-07.md);
+committed evidence
+[`docs/ga-phase-1b-pr4-evolution-experiment-evidence.json`](docs/ga-phase-1b-pr4-evolution-experiment-evidence.json)
+(`npm run experiment:evolution`). Measured envelope: **535 ms per generation**
+(20 individuals × 300 steps, isolated composite worlds) and **12.2 KB of history
+per generation**, linear at 30 and 60 generations — a 60-generation run retains
+0.73 MB median but **1.27 MiB at the observed maximum**, which is 94 % of PR
+#25's worst-case projection, so that projection is confirmed accurate rather than
+conservative; the 64 MiB v1 ceiling is far away and the segmented-history
+refactor is not triggered. Given a population seed
+and a declared evaluation configuration the engine produces a canonical repaired
 population and an exact, reproducible fitness vector whose per-individual
 results are independent of cohort membership and ordering; it then advances
 generation over generation — elites copied with fresh ids, children drawn from
 their own `(seed, childId)` streams — and commits each generation to a
 versioned artifact with SHA-256 component, chain, and whole-history digests
-that Node (three OSes) and pinned Chromium reproduce byte-for-byte. PR 4 owns
-the empirical experiment, the fitness/diversity report, and validation or
-deliberate tuning of the provisional mutation defaults, which PR 3 records in
-every history header but has never measured. A live initializer
+that Node (three OSes) and pinned Chromium reproduce byte-for-byte. A live initializer
 (`src/sim/population-initializer.js`, separate from the locked test-corpus
 generator) turns a seed into 20-odd vehicles via one order-independent
 `Rng.fork(individualId)` stream each, with the GA biases the corpus must

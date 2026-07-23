@@ -1196,9 +1196,12 @@ describe('experiment: the observation producers themselves', () => {
     expect(out.generationZero['screen:r1']).toBeDefined();
   });
 
-  test('distinct champions COLLAPSE a surviving elite; ids would not', () => {
-    // A 3-generation run whose champion never changes is ONE individual, even
-    // though PR 3 gives every elite copy a fresh id.
+  test('distinct champion FITNESS VALUES collapse a surviving elite; slot counts do not', () => {
+    // A 3-generation run whose champion never changes re-evaluates to the same
+    // fitness, so it counts ONCE — even though PR 3 gives every elite copy a
+    // fresh id. The key is FITNESS, not identity (the field name says so): two
+    // different genotypes with equal distance would also collapse, which is why
+    // the count is a lower bound on distinct individuals, not an exact count.
     const protocol = buildExperimentProtocol();
     const survivor = {
       phase: 'screen',
@@ -1214,8 +1217,8 @@ describe('experiment: the observation producers themselves', () => {
     };
     const out = fitnessPlausibilityObservations(protocol, [survivor]);
     const arm = out.perArm['screen:control'];
-    expect(arm.championGenerationsOverConservative).toBe(3); // exposure
-    expect(arm.distinctChampionsOverConservative).toBe(1); // prevalence
+    expect(arm.championGenerationsOverConservative).toBe(3); // exposure (slots)
+    expect(arm.distinctChampionFitnessValuesOverConservative).toBe(1); // lower bound
   });
 
   test('the forensic case plan ROUTES to the phase it names', () => {
@@ -1692,10 +1695,10 @@ describe('experiment: the committed evidence', () => {
         }
       }
       expect(observed.championGenerationsOverConservative).toBe(over);
-      // Distinct champions collapse a surviving elite; ids do NOT (PR 3 gives
-      // every elite copy a fresh id), which is why this is keyed on fitness.
-      expect(observed.distinctChampionsOverConservative).toBe(distinct.size);
-      expect(observed.distinctChampionsOverConservative)
+      // Keyed on (replicate, fitness): a surviving elite collapses, and the count
+      // is a lower bound on distinct individuals (equal-fitness genotypes merge).
+      expect(observed.distinctChampionFitnessValuesOverConservative).toBe(distinct.size);
+      expect(observed.distinctChampionFitnessValuesOverConservative)
         .toBeLessThanOrEqual(observed.championGenerationsOverConservative);
     }
   });
@@ -2032,6 +2035,64 @@ describe('experiment: the resumable workspace', () => {
         }), 'utf8');
         await expect(buildExperimentReport({ workspace, protocol: smoke }))
           .rejects.toThrow(/does not describe the run it is filed as/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('a record filed under the WRONG SEED is refused by the persisted-population check',
+    { timeout: 300000 }, async () => {
+      // The schedule labels are caller-written; the persisted generation-0
+      // population is not. A record that carries replicate A's physics but is
+      // relabelled as replicate B passes every label and header check (same arm,
+      // same mutation, same generation budget) yet describes a different seed.
+      // The population digest — recomputed from the seed, no physics — catches it.
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({ phase: 'screen', workspace, protocol: smoke, allowDirty: true });
+        const runsDir = join(workspace, 'runs');
+        const files = readdirSync(runsDir).sort();
+        const a = JSON.parse(readFileSync(join(runsDir, files[0]), 'utf8'));
+        const b = JSON.parse(readFileSync(join(runsDir, files[1]), 'utf8'));
+        // Two records for the SAME arm, DIFFERENT replicates (different seeds).
+        const donor = a.armId === b.armId ? [a, b] : [a, JSON.parse(readFileSync(
+          join(runsDir, files.find((f) => {
+            const r = JSON.parse(readFileSync(join(runsDir, f), 'utf8'));
+            return r.armId === a.armId && r.replicateIndex !== a.replicateIndex;
+          })), 'utf8'))];
+        const [src, victim] = donor;
+        expect(src.populationSeed).not.toBe(victim.populationSeed);
+        // Relabel src as victim: every label now matches victim's plan, but the
+        // persisted generation-0 population is still src's.
+        writeFileSync(join(runsDir, `screen__${victim.armId}__r${victim.replicateIndex}.json`),
+          JSON.stringify({
+            ...src,
+            runId: victim.runId,
+            replicateIndex: victim.replicateIndex,
+            populationSeed: victim.populationSeed,
+            terrainSeed: victim.terrainSeed,
+          }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/does not describe the seed it is filed as/);
+      } finally {
+        rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+  test('a record under an UNKNOWN PHASE is refused, never silently counted',
+    { timeout: 300000 }, async () => {
+      // Such a record is skipped by both schedule checks (they are keyed by the
+      // phases they validate) yet flows into coherence, the evidence projection,
+      // the digest and observations — a stray file entering citable evidence.
+      const workspace = tempWorkspace();
+      try {
+        await executeExperimentPhase({ phase: 'screen', workspace, protocol: smoke, allowDirty: true });
+        const runsDir = join(workspace, 'runs');
+        const base = JSON.parse(readFileSync(join(runsDir, readdirSync(runsDir).sort()[0]), 'utf8'));
+        writeFileSync(join(runsDir, 'other__ghost__r0.json'),
+          JSON.stringify({ ...base, runId: 'other:ghost:r0', phase: 'other', armId: 'ghost' }), 'utf8');
+        await expect(buildExperimentReport({ workspace, protocol: smoke }))
+          .rejects.toThrow(/unknown phase/);
       } finally {
         rmSync(workspace, { recursive: true, force: true });
       }

@@ -49,7 +49,7 @@ checking confirmation. An adversarial review caught it; the numbers below are th
 correction, and the evidence now records contamination **per arm** and **at
 generation 0** so the claim is checkable rather than asserted.
 
-| arm | over-conservative-ceiling generation slots | distinct champions | max |
+| arm | over-conservative-ceiling generation slots | distinct champion fitness values | max |
 |---|---:|---:|---:|
 | screening control `(0,0)` | 0 / 180 | 0 | 13.6 m |
 | **confirmation control `(0,0)`** | **60 / 960** | **1** | **363.4 m** |
@@ -62,29 +62,31 @@ draw**, before any operator has acted.
 
 **So the honest causal picture is:**
 
-- Divergence is a property of the **representation**, not of mutation. It is
-  present in unmutated populations: measured over all 440 generation-0
-  individuals, **6.6 %** are alert-band (§1.5).
+- Divergence **capability exists in the representation before mutation acts**: of
+  all 440 unmutated generation-0 individuals, **6.6 %** are alert-band (§1.5).
+  This does not establish that mutation cannot *also* create divergent
+  morphologies — see the limitation below.
 - 5 of the 6 contaminated confirmation replicates have an elevated generation-0
   champion (49.8, 363.4, 49.0, 70.1, 31.3 m, against 7.0–12.6 m for all ten clean
   ones) — contamination is predicted by a **pre-treatment** covariate.
-- Contamination incidence does **not** increase with mutation magnitude. Runs
-  whose final champion exceeds the conservative ceiling, by magnitude: 7, 7, 8,
-  9, 9 out of 30 for m = 0.01 … 0.20 (Fisher two-sided m=0.01 vs m=0.20
-  **p = 0.771**). By probability: 8, 9, 8, 7, 8 — no trend. Median onset
-  generation is non-monotone, and the *largest* magnitude has the *latest*
-  median onset.
 - Contamination is far better predicted by the **seed** than by the arm:
   screening replicate 2 has 24 of 26 arms contaminated, replicates 0/4/5 have
   none.
+- Whether contamination incidence **rises with mutation magnitude is not
+  resolved.** By magnitude, runs whose final champion exceeds the conservative
+  ceiling are 7, 7, 8, 9, 9 out of 30 for m = 0.01 … 0.20 — *monotone
+  non-decreasing*, and the Fisher two-sided m=0.01 vs m=0.20 test (**p = 0.771**)
+  is underpowered at n = 30 per cell. By probability: 8, 9, 8, 7, 8. This is an
+  absence of evidence, not evidence of absence.
 
-What mutation does is **amplify the reward**: once such a morphology exists,
-selection climbs it because in a 120 m corridor it outscores real locomotion by
-one to two orders of magnitude.
+What mutation demonstrably does is **amplify the reward**: once such a morphology
+exists, selection climbs it because in a 120 m corridor it outscores real
+locomotion by one to two orders of magnitude.
 
-**What this campaign does *not* establish — a second correction, from a later
-review.** The bullets above were originally summarised as *"mutation is not the
-source."* That is stronger than the evidence, in two directions:
+**What this campaign does *not* establish — expanded from a later review, which
+is why the bullets above are hedged rather than bold.** An earlier draft
+summarised this section as *"mutation is not the source."* That is stronger than
+the evidence, in two directions:
 
 - **The dose-response null is underpowered, and it is not monotone in the
   direction the summary implied.** The by-magnitude counts 7, 7, 8, 9, 9 are
@@ -154,15 +156,20 @@ Counts against the conservative ceiling are **strict lower bounds**; counts
 against the kinematic ceiling are the honest measure. Neither feeds any
 eligibility rule, gate or decision.
 
-| phase | generations | over kinematic (25 m) | over conservative (129 m) | distinct champions |
+| phase | generations | over kinematic (25 m) | over conservative (129 m) | distinct champion fitness values |
 |---|---:|---:|---:|---:|
 | screening | 4,680 | **1,106 (23.6 %)** | 877 (18.7 %) | 106 |
 | confirmation | 2,880 | **956 (33.2 %)** | 660 (22.9 %) | 44 |
 
-The distinct-champion column matters: elitism re-counts one surviving individual
-every generation, so the slot counts are an **exposure** measure, not a
-prevalence. A statement like "one champion in five" is true of generation slots
-and false of individuals.
+The last column matters: elitism re-counts one surviving individual every
+generation, so the slot counts are an **exposure** measure, not a prevalence. A
+statement like "one champion in five" is true of generation slots and false of
+individuals. That column is keyed on **`(replicate, fitness)`, not on genotype**
+— a retained elite collapses correctly, but two different genotypes with equal
+forward distance would also collapse, so **106 and 44 are lower bounds on
+distinct individuals**, not exact counts. (The forensic sample in §1.2 uses a
+genotype digest for exactly this reason; these per-generation summaries do not
+carry the champion genotype, and adding it would mean re-running the campaign.)
 
 The distribution is starkly **bimodal** — a locomotion mode and an artifact mode
 with a sparse gap between them:

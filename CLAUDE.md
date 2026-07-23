@@ -2205,7 +2205,10 @@ single clean commit `9c5f24c`):**
   displacement bound) and `conservativeCeiling = 129 m` (an unarguable envelope,
   kept so counts against it are strict LOWER bounds). Over-kinematic: 1106/4680
   screening, 956/2880 confirmation. **Slot counts are EXPOSURE, not prevalence** —
-  elitism re-counts a survivor every generation; distinct champions are 106/44.
+  elitism re-counts a survivor every generation; distinct champion FITNESS VALUES
+  are 106/44 (keyed on `(replicate, fitness)`, a LOWER BOUND on distinct
+  individuals — equal-fitness genotypes merge; the summaries carry no champion
+  genotype and adding it would need a re-run).
   Neither ceiling feeds any eligibility rule, gate or decision. The ceiling now
   reads the RESOLVED terrain length, not `TERRAIN_DEFAULTS` unconditionally.
 - **The predeclared gate returned `retune` to (0.20, 0.20) with all six checks

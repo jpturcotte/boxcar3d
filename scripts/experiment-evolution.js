@@ -52,14 +52,14 @@ import { Rng } from '../src/sim/prng.js';
 import { createEvolutionRun } from '../src/sim/evolution-run.js';
 import {
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
-  deserializeEvaluationMetadata,
+  deserializeEvaluationMetadata, digestComponent,
 } from '../src/sim/evolution-history.js';
 import { deserializeLineage, LINEAGE_ACCOUNTING_KEYS, LINEAGE_ORIGINS } from '../src/sim/evolution-lineage.js';
 import {
   deserializeFitnessVector, spawnPoseOnFlatStart, isVehicleResultValid,
 } from '../src/sim/population-evaluation.js';
 import { runEvaluation } from '../src/sim/evaluation.js';
-import { deserializePopulationSnapshot } from '../src/sim/population.js';
+import { deserializePopulationSnapshot, serializePopulationSnapshot } from '../src/sim/population.js';
 import { createInitialPopulation } from '../src/sim/population-initializer.js';
 import {
   compileAssembly, genotypeFieldWalk, serializeGenotype,
@@ -1287,6 +1287,54 @@ const SCHEDULED_RUN_FIELDS = Object.freeze([
 ]);
 
 /**
+ * Bind each record's PERSISTED generation-0 population to the seed it is filed
+ * under — the one integrity check the schedule labels cannot make, because the
+ * labels are caller-written and the persisted physics is not.
+ *
+ * The generation-0 population snapshot is a deterministic, physics-free function
+ * of the population seed (`createInitialPopulation`), and its component digest is
+ * already stored in every record's summary. So the expected digest is
+ * recomputed here from `plan.populationSeed` and compared — no re-run, no engine,
+ * a few milliseconds for the whole workspace.
+ *
+ * This is deliberately NOT a defence against a determined forger of an offline
+ * developer workspace (that is out of scope for a single-author instrument that
+ * produces its own evidence). It catches the realistic failure: a record that
+ * ends up FILED UNDER THE WRONG SEED — a mixed-up filename after a protocol edit,
+ * a bad resume, a copy-paste. And it covers the TERRAIN seed transitively:
+ * `runConfigFor` draws both seeds from the same plan row, so a run carrying the
+ * right generation-0 population necessarily ran the paired terrain. A wrong
+ * terrain would require hand-editing a label the population digest does not touch
+ * — forgery, not a mistake.
+ */
+async function verifyPersistedPopulations(protocol, records) {
+  const expectedForSeed = new Map();
+  const expectedDigest = async (seed) => {
+    if (!expectedForSeed.has(seed)) {
+      const { population } = createInitialPopulation({
+        seed, populationSize: protocol.workload.populationSize,
+      });
+      expectedForSeed.set(seed, bytesToHex(await digestComponent('population', serializePopulationSnapshot(population))));
+    }
+    return expectedForSeed.get(seed);
+  };
+  for (const record of records) {
+    const gen0 = record.summary?.generations?.[0];
+    if (gen0 === undefined || typeof gen0.populationDigest !== 'string') {
+      fail(`run '${String(record.runId)}' has no generation-0 population digest to verify`,
+        { runId: record.runId });
+    }
+    const expected = await expectedDigest(record.populationSeed);
+    if (gen0.populationDigest !== expected) {
+      fail(`run '${record.runId}' is filed under population seed ${record.populationSeed}, but its `
+        + 'persisted generation-0 population is a DIFFERENT population — the record does not describe '
+        + 'the seed it is filed as',
+        { runId: record.runId, expected, found: gen0.populationDigest });
+    }
+  }
+}
+
+/**
  * The confirmation arms implied by a screening candidate: candidate, baseline,
  * control, deduplicated in that order.
  *
@@ -1409,8 +1457,11 @@ export async function executeExperimentPhase({
     }
     // The candidate is chosen from these records and then burns ~24 minutes of
     // physics, so they are validated against the schedule BEFORE selection — a
-    // duplicated screening replicate was measured to flip the selected arm.
+    // duplicated screening replicate was measured to flip the selected arm — and
+    // each record's persisted generation-0 population is bound to the seed it is
+    // filed under, so a mislabelled record cannot silently reshape screening.
     validateRecordsAgainstSchedule(screenSchedule, screenRecords, { requireComplete: true });
+    await verifyPersistedPopulations(protocol, screenRecords);
     const screening = screenCandidates(protocol, screenRecords);
     const candidateArmId = screening.candidateArmId;
     if (ws.manifest.candidateArmId !== null && ws.manifest.candidateArmId !== candidateArmId) {
@@ -1718,9 +1769,8 @@ export const ADOPTION_RULING = Object.freeze({
   adoptedDefaults: Object.freeze({ probability: 0.05, magnitude: 0.05 }),
   reasonCode: 'fitnessSignalContaminated',
   reason: 'The selectable-fitness signal is contaminated by integrity alert-band '
-    + 'constraint-solver divergence that fitness policy v2 classifies as selectable. '
-    + 'The candidate is additionally on the grid boundary, and its identity is not '
-    + 'robust to the contamination in screening. Retune deferred, not refuted.',
+    + 'constraint-solver divergence that fitness policy v2 classifies as selectable, '
+    + 'and the candidate sits on the grid boundary. Retune deferred, not refuted.',
   prerequisite: 'Resolve the alert band (see the escalation-cost arm), then re-run this protocol.',
 });
 
@@ -1897,6 +1947,19 @@ export async function buildExperimentReport({
   const records = [...loadRunRecords(workspace, protocolDigest).values()]
     .sort((a, b) => compareArmId(a.runId, b.runId));
 
+  const knownPhases = new Set(['screen', 'confirm']);
+  for (const record of records) {
+    if (!knownPhases.has(record.phase)) {
+      // A record under any other phase is skipped by BOTH schedule checks (they
+      // are keyed by the phases they validate) yet still flows into pairing
+      // coherence, the evidence projection, the digest and the observations — a
+      // stray file silently entering the citable evidence. Reject it here.
+      fail(`the workspace holds a run under an unknown phase '${String(record.phase)}' `
+        + `(runId '${String(record.runId)}') — only 'screen' and 'confirm' belong to this experiment`,
+        { runId: record.runId, phase: record.phase });
+    }
+  }
+
   const screenRuns = records.filter((r) => r.phase === 'screen');
   const confirmRuns = records.filter((r) => r.phase === 'confirm');
   const screenSchedule = buildExecutionSchedule(activeProtocol, 'screen', activeProtocol.screen.arms);
@@ -1907,12 +1970,13 @@ export async function buildExperimentReport({
   const screening = screenCandidates(activeProtocol, screenRuns);
 
   let confirmation = null;
+  let confirmSchedule = [];
   if (confirmRuns.length > 0) {
     // The expected arm set comes from the PROTOCOL and the selected candidate,
     // never from the records being checked. Counting arms in the data made the
     // expectation partly attacker-controlled: a wholly missing arm simply lowered
     // the expected total and the check passed.
-    const confirmSchedule = buildExecutionSchedule(
+    confirmSchedule = buildExecutionSchedule(
       activeProtocol, 'confirm', confirmationArmsFor(activeProtocol, screening.candidateArmId));
     if (confirmRuns.length !== confirmSchedule.length) {
       fail(`confirmation is incomplete: ${confirmRuns.length} runs, but the schedule for candidate `
@@ -1921,6 +1985,17 @@ export async function buildExperimentReport({
     validateRecordsAgainstSchedule(confirmSchedule, confirmRuns, { requireComplete: true });
     confirmation = confirmDecision(activeProtocol, confirmRuns, screening.candidateArmId);
   }
+
+  // Set equality with the DECLARED experiment: every loaded record must be a run
+  // this protocol planned, and the persisted generation-0 population of each must
+  // match the seed it is filed under.
+  const allowedRunIds = new Set([...screenSchedule, ...confirmSchedule].map((p) => p.runId));
+  for (const record of records) {
+    if (!allowedRunIds.has(record.runId)) {
+      fail(`run '${String(record.runId)}' is not part of the declared experiment`, { runId: record.runId });
+    }
+  }
+  await verifyPersistedPopulations(activeProtocol, records);
 
   const coherence = pairingCoherence(records);
   // THE SOURCE THIS REPORT IS BEING BUILT FROM, not merely the source the runs
@@ -2255,11 +2330,20 @@ export function fitnessPlausibilityCeiling(protocol, dt = 1 / 60) {
  * the artifact that is supposed to support it.
  *
  * Counts are reported two ways because they answer different questions:
- *   championGenerations   — generation-SLOTS whose champion is over the ceiling.
- *                           Elitism re-counts one surviving individual every
- *                           generation, so this is an exposure measure.
- *   distinctChampionIds   — DISTINCT individual ids, which is what "one champion
- *                           in five" would have to mean to be a prevalence.
+ *   championGenerations                  — generation-SLOTS whose champion is over
+ *                           the ceiling. Elitism re-counts one surviving individual
+ *                           every generation, so this is an exposure measure.
+ *   distinctChampionFitnessValues        — DISTINCT `(replicate, champion fitness)`
+ *                           values, keyed on FITNESS, not on genotype identity.
+ *                           Elitism reappearances collapse correctly (a retained
+ *                           individual re-evaluates to the same fitness), but two
+ *                           DIFFERENT genotypes with equal forward distance also
+ *                           collapse, so this is a LOWER BOUND on distinct
+ *                           individuals — never an exact prevalence. (Fitness is a
+ *                           proxy for identity here for the same reason the forensic
+ *                           sample uses a genotype digest instead; the difference is
+ *                           that these summaries do not carry the champion genotype,
+ *                           and adding it would require re-running the campaign.)
  */
 export function fitnessPlausibilityObservations(protocol, records) {
   if (records.length === 0) return null;
@@ -2271,7 +2355,7 @@ export function fitnessPlausibilityObservations(protocol, records) {
     championGenerationsOverKinematic: 0,
     championGenerationsOverConservative: 0,
     finalChampionsOverConservative: 0,
-    distinctChampionsOverConservative: 0,
+    distinctChampionFitnessValuesOverConservative: 0,
     maxChampion: 0,
     contaminatedReplicates: [],
   });
@@ -2329,7 +2413,7 @@ export function fitnessPlausibilityObservations(protocol, records) {
 
   for (const bucket of [...Object.values(phases), ...Object.values(perArm)]) {
     bucket.contaminatedReplicates.sort((a, b) => a - b);
-    bucket.distinctChampionsOverConservative = distinctIds.get(bucket).size;
+    bucket.distinctChampionFitnessValuesOverConservative = distinctIds.get(bucket).size;
   }
   return { basis, phases, perArm, generationZero };
 }

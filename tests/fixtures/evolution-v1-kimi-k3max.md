@@ -22,7 +22,7 @@ Chromium tests: population seed `20260721`, terrain seed `20260722`, population
 4, 60 steps, 3 generations, deterministic physics, mutation probability `0.5`,
 and magnitude `0.1`.
 
-## ROLE CHANGE at fitness vector v3 (PR #27, 2026-07-24)
+## ROLE CHANGE at fitness vector v3 (PR #28, 2026-07-24)
 
 This artifact embeds a **v2** fitness vector. It therefore **can no longer be
 resumed**, and is no longer byte-identical to a fresh local run.

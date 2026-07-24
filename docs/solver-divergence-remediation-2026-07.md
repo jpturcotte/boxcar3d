@@ -74,7 +74,7 @@ pressure.
    body speed, first alert step) are **persisted in the fitness vector** first
    (a versioned encoding change) — today the vector stores only status, which is
    why PR 4's diagnosis needed a forensic re-run.~~
-   **DISCHARGED by PR #27 (2026-07-24).** `FITNESS_VECTOR_VERSION` is 3 and all
+   **DISCHARGED by PR #28 (2026-07-24).** `FITNESS_VECTOR_VERSION` is 3 and all
    five observations are canonical in the vector, in evolution history, and
    through replay. `scripts/history-observations.js` reads them back from a
    cryptographically verified artifact with no physics. Record:
@@ -171,13 +171,13 @@ it.**
   lands, so a future reader does not mistake a masked defect for a solved one.
 
 **Concrete sequence:**
-1. ~~Persist integrity observations in the fitness vector~~ **DONE — PR #27.**
+1. ~~Persist integrity observations in the fitness vector~~ **DONE — PR #28.**
    Contamination is now readable from history without re-simulating, which is
    what A's pool and false-negative measurements were waiting on.
-2. **PR #28 — measure and decide.** Breeding-pool, elite and parent exposure
+2. **Next PR — measure and decide.** Breeding-pool, elite and parent exposure
    from persisted history; the false-negative side with an *independent*
    adjudication rule (kinematic thresholds cannot adjudicate themselves — see
-   the PR #27 record §9); predeclared gates; a mechanical verdict.
+   the PR #28 record §9); predeclared gates; a mechanical verdict.
 3. Land A (alert-band escalation) with the false-negative acceptance test —
    the version bump + re-lock. **Conditional on step 2's verdict.**
 4. Re-run PR 4's protocol on the now-clean signal → take the mutation-default

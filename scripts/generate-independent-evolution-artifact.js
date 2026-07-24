@@ -6,7 +6,7 @@
 //
 //   INDEPENDENT (this file re-derives it from the spec):
 //     - the fitness-vector v3 member walk, including the three peaks and the
-//       two flagged optional onsets — the layer PR #27 actually changed;
+//       two flagged optional onsets — the layer PR #28 actually changed;
 //     - the lineage, evaluation-metadata and population-snapshot walks;
 //     - the header payload walk;
 //     - all seven domain-separated SHA-256 formulas, the generation chain, and
@@ -16,7 +16,7 @@
 //     - genotype BYTES, the initialization-manifest bytes and the
 //       evaluation-spec bytes, as hex. Those encodings are unchanged by this
 //       PR and are covered by their own codec suites; re-deriving them here
-//       would test PR #23's work, not PR #27's.
+//       would test PR #23's work, not PR #28's.
 //     - every physics-derived scalar (fitness, the observations, effectiveDt).
 //       These are what the simulation produced. The bytes built around them
 //       are what is under test.

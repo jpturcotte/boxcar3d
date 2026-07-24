@@ -1,4 +1,4 @@
-# Fitness Vector v3 — Persisted Integrity Observations (PR #27, 2026-07-24)
+# Fitness Vector v3 — Persisted Integrity Observations (PR #28, 2026-07-24)
 
 **Status: LANDED.** Representation and observability only. **No policy,
 selection, or mutation behaviour changed.** `INTEGRITY_POLICY_VERSION` stays 1,
@@ -75,7 +75,7 @@ than its own producer, failing exactly on the results most worth persisting.
 is unreachable from the producer (`speed > peak` is false for `NaN`, and peaks
 start at `+0`), so rejecting it still mirrors the producer exactly.
 
-**Consequence for PR #28:** `canonicalJson` in `scripts/experiment-evolution.js`
+**Consequence for Next PR:** `canonicalJson` in `scripts/experiment-evolution.js`
 refuses non-finite numbers, and v3 histories can now carry one. An evidence-JSON
 representation for `+Infinity` is needed before those observations are
 summarized.
@@ -309,11 +309,11 @@ resume path runs, and shares their error taxonomy; there is deliberately no
 second, script-local notion of what a valid history is.
 
 Its scope is decoded rows and nothing else — no aggregation, rates,
-distributions, thresholds or counterfactuals. Those belong to PR #28, and
+distributions, thresholds or counterfactuals. Those belong to Next PR, and
 keeping them out is what stops an offline reader from quietly becoming a second,
 unversioned fitness policy.
 
-## 9. Handoff to PR #28
+## 9. Handoff to Next PR
 
 Confirmed findings, reproduced against `main`, carried forward so they are not
 rediscovered:
@@ -334,7 +334,7 @@ rediscovered:
 
 **Infrastructure**
 - `executeExperimentPhase` hard-fails outside `screen`/`confirm`, and `confirm`
-  demands all 156 screening runs — PR #28 needs its own schema, phases and file.
+  demands all 156 screening runs — Next PR needs its own schema, phases and file.
 - Workspace helpers are mutation-experiment-specific (the manifest carries
   `candidateArmId`).
 - `executeRun` returns `{summary, performance}` — history bytes are dropped.

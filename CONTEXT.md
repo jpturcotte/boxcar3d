@@ -104,7 +104,7 @@ The five kinematic measurements the online detector
 `firstAlertStep`, `firstCatastrophicStep` (onset capture indices, or `null` for
 "never crossed").
 
-Since **fitness vector v3** (PR #27) they are persisted per individual, so they
+Since **fitness vector v3** (PR #28) they are persisted per individual, so they
 can be read back from a saved history without re-simulating. Before v3 only the
 *verdict* survived, which is why PR 4 had to re-run its own campaign to
 diagnose the contamination it had recorded.
@@ -116,7 +116,7 @@ Two properties bite in practice and are easy to get wrong:
   threshold it was at that moment. A metric built on them is *whole-run
   severity*, never "distance from the boundary at onset".
 - **A peak may be `+Infinity`.** That is legal policy-v1 output, not corruption
-  — see the PR #27 record §2.2. `NaN` and negatives are refused.
+  — see the PR #28 record §2.2. `NaN` and negatives are refused.
 
 ## alert-bearing
 
@@ -128,7 +128,7 @@ treats the alert band as an *observation*; only the catastrophic band and
 non-finite state are failures. So an alert-bearing result reports
 `integrity.status: 'ok'`, carries its raw fitness, and is **fully selectable** on
 `main` today. That is precisely the open band PR 4 measured evolution
-exploiting, and whether to close it is a decision PR #28 owns — PR #27 only made
+exploiting, and whether to close it is a decision Next PR owns — PR #28 only made
 the evidence readable.
 
 Do not use "alert-bearing" and "divergent" interchangeably. An alert crossing is

@@ -3,7 +3,7 @@
 // WHY THIS FILE EXISTS. `captureEvaluationMemberResult` is private and reachable
 // only through `evaluatePopulation`, which runs physics — so the standing
 // single-read instrument (tests/single-read.test.js) exempts `evaluatePopulation`
-// as `notExercised`, and the boundary had NO tooth. A PR #27 sabotage pass
+// as `notExercised`, and the boundary had NO tooth. A PR #28 sabotage pass
 // confirmed it: replacing the capture's `member.observations` with a second read
 // of `v.integrity.observations` left the entire suite green.
 //

@@ -588,7 +588,7 @@ describe('fitness vector — the committed contract (reconstructed without physi
       // v3 persists the OBSERVATIONS behind the status, and a clean vehicle's
       // peaks are ordinary nonzero measurements — so the lock now has to carry
       // them per member or this reconstruction is impossible. That is not
-      // incidental bookkeeping: it is exactly the evidence PR #28 needs, and
+      // incidental bookkeeping: it is exactly the evidence Next PR needs, and
       // pinning it here is what keeps "the committed digest is reproducible
       // without physics" a true statement rather than one v3 quietly broke.
       individuals: LOCK.individuals.map((m) => ({

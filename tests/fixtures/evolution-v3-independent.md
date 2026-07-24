@@ -15,7 +15,7 @@ looser than what it actually established.
 
 - the fitness-vector **v3** member walk — the three f64 peaks and the two
   flagged optional onset steps, including the rule that an *absent* step writes
-  a zero payload. This is the layer PR #27 changed;
+  a zero payload. This is the layer PR #28 changed;
 - the lineage, evaluation-metadata and population-snapshot walks;
 - the header payload walk;
 - all seven domain-separated SHA-256 formulas, the generation chain (generation

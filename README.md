@@ -6,7 +6,7 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR #27 — **fitness vector v3** — landed on PR 4's broad
+**Status:** GA Phase 1B PR #28 — **fitness vector v3** — landed on PR 4's broad
 evolution experiment. Saved evolution histories now canonically preserve the
 five integrity **observations** the online detector already computed
 (`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
@@ -17,7 +17,7 @@ PR 4 had to re-run its own campaign to answer.
 v1, fitness policy stays v2, mutation defaults stay `{ 0.05, 0.05 }`, and an
 alert-bearing vehicle still reports `integrity.status: 'ok'` and is **still
 fully selectable**. It does not fix the solver defect and does not implement the
-escalation — it is the evidence layer beneath that decision, which PR #28 owns.
+escalation — it is the evidence layer beneath that decision, which Next PR owns.
 Replay also gained two pre-physics gates, so a stale or incoherent artifact is
 refused as an unsupported *format* (naming the exact field) instead of
 surfacing as `replayDivergence` after a generation has been re-simulated —

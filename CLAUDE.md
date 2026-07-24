@@ -143,10 +143,10 @@ evidence notes. Reference only; never import from `legacy/`.
   finite-explosion forensic instrument), `explosion-witnesses.js` (the
   frozen witness identities + the materialized minimal reproducer —
   investigation fixtures, not a production contract),
-  `history-observations.js` (the PR #27 offline read seam:
+  `history-observations.js` (the PR #28 offline read seam:
   `extractHistoryObservations` returns per-individual integrity evidence from a
   cryptographically VERIFIED history with no physics; decoded rows only — no
-  aggregation, gates or counterfactuals, which are PR #28's),
+  aggregation, gates or counterfactuals, which are Next PR's),
   `generate-independent-evolution-artifact.js` (the spec-derived encoder behind
   the committed v3 interop oracle; imports nothing from the modules it attests),
   `experiment-evolution.js` (the PR 4 EXPERIMENT: the predeclared protocol, the
@@ -2486,7 +2486,7 @@ single clean commit `9c5f24c`):**
   step) in the fitness vector so contamination is measurable from history rather
   than by re-evaluation (a versioned encoding change — the vector currently
   stores status only, which is why §9's diagnosis needed a forensic re-run)
-  — **DONE: PR #27, fitness vector v3; see its block below**;
+  — **DONE: PR #28, fitness vector v3; see its block below**;
   (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
   (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
   Structural mutation, worker sharding and segmented history stay out of scope
@@ -2496,7 +2496,7 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**PR #27 landed - fitness vector v3: the integrity OBSERVATIONS are persisted,
+**PR #28 landed - fitness vector v3: the integrity OBSERVATIONS are persisted,
 and replay refuses stale or incoherent vectors before physics. Representation
 and observability ONLY - no policy, selection or mutation behaviour changed.
 Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
@@ -2510,7 +2510,7 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   defaults stay (0.05, 0.05). **An alert-bearing vehicle still reports `ok` and
   is STILL FULLY SELECTABLE on main.** This PR does not fix the solver defect and
   does not implement escalation; it is the evidence layer beneath that decision,
-  which PR #28 owns.
+  which Next PR owns.
 - **`+Infinity` peaks are ACCEPTED, and the obvious rule was wrong.**
   `isCanonicalPeak` is `typeof v === 'number' && v >= 0` - NaN and -Infinity are
   rejected by the comparison, the typeof gate stops the string '3'.
@@ -2520,7 +2520,7 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   output; a `Number.isFinite` rule would have made `serializeFitnessVector` THROW
   inside `evaluatePopulation` on the run's own defensive-net result - a codec
   stricter than its producer, failing on exactly the results most worth
-  persisting. **Consequence for PR #28:** `canonicalJson` refuses non-finite
+  persisting. **Consequence for Next PR:** `canonicalJson` refuses non-finite
   numbers, so the evidence layer needs an `+Infinity` representation before
   summarizing observations.
 - **Optional steps carry a PRESENCE FLAG, not a sentinel** - `null` ("never
@@ -2640,11 +2640,11 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   Chromium 21/21 reproducing every re-locked digest on the FIRST run; lint and
   build clean. **No new seeds allocated** - the v3 interop artifact re-encodes
   the existing 20260721/20260722 interop run.
-- **NEXT: PR #28** - measure alert-band selection exposure from persisted history
+- **NEXT** - measure alert-band selection exposure from persisted history
   and decide escalation. Its handoff (confirmed findings carried forward so they
   are not rediscovered, incl. that `analyzeTrace` CANNOT adjudicate a sub-alert
   case and that whole-run peaks do not measure boundary proximity at onset) is
-  section 9 of the PR #27 record.
+  section 9 of the PR #28 record.
 
 ### Phase 1B PR 2 operator boundary
 

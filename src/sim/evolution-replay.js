@@ -345,12 +345,28 @@ export function captureExpectedIdentity(options, copy) {
   const rawIndex = options.expectedGenerationIndex;
   let historyDigestBytes = null;
   if (rawDigest !== undefined) {
-    historyDigestBytes = copy(rawDigest);
-    if (typedArrayByteLength(historyDigestBytes) !== SHA256_DIGEST_BYTES) {
+    // Preflight the INTRINSIC length BEFORE the owned copy: the legal length is
+    // always exactly SHA256_DIGEST_BYTES, so an oversized ordinary Uint8Array
+    // must be refused as invalidConfig without first allocating its own size
+    // (the same pre-copy resource principle the history intake applies). A
+    // non-ordinary input is classified as invalidConfig here too — the same
+    // dialect the copy callback would have produced — rather than leaking the
+    // byte helper's own error shape.
+    let declaredDigestLength;
+    try {
+      declaredDigestLength = typedArrayByteLength(rawDigest);
+    } catch (cause) {
+      evolutionFail('invalidConfig',
+        `resume option expectedHistoryDigestBytes is not valid persisted bytes: ${cause && cause.message ? cause.message : String(cause)}`,
+        {}, cause);
+      return { historyDigestBytes: null, generationIndex: null }; // unreachable
+    }
+    if (declaredDigestLength !== SHA256_DIGEST_BYTES) {
       evolutionFail('invalidConfig',
         `expectedHistoryDigestBytes must be exactly ${SHA256_DIGEST_BYTES} bytes`,
-        { byteLength: typedArrayByteLength(historyDigestBytes) });
+        { byteLength: declaredDigestLength });
     }
+    historyDigestBytes = copy(rawDigest);
   }
   let generationIndex = null;
   if (rawIndex !== undefined) {

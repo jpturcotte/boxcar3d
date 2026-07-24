@@ -35,6 +35,19 @@ vi.mock('../src/sim/population-evaluation.js', async (importOriginal) => {
   };
 });
 
+// A pass-through spy on the owned-copy seam, so a wrong-length expected digest
+// can be proven NOT copied (the 32-byte preflight fires before any allocation
+// of the caller's digest size). Transparent for every other test.
+vi.mock('../src/sim/bytes.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    copyOrdinaryBytes: vi.fn((...args) => original.copyOrdinaryBytes(...args)),
+  };
+});
+
+const { copyOrdinaryBytes } = await import('../src/sim/bytes.js');
+
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const {
   EvolutionError, MAX_EVOLUTION_EVALUATION_WORK, MAX_EVOLUTION_GENERATIONS,
@@ -324,14 +337,18 @@ describe('resume and continuation', () => {
 // ============================================================================
 
 describe('fitness vector — independent v3 wire oracle (manual literal bytes)', () => {
-  // A genuinely independent witness for the v3 wire semantics. The bytes below
-  // are written with a bare DataView at hard-coded little-endian offsets — the
-  // production serializer is NEVER called to produce them — then read back two
-  // ways: (a) by an independent reference walk in this test, and (b) by the
-  // production decoder, which must agree field-by-field. A shared geometry bug
-  // in the production encoder cannot hide here, because the oracle's offsets
-  // are expressed independently. Unavoidable version literals are pinned as
-  // literals (not imported), so a version bump forces a conscious update here.
+  // A genuinely independent witness for the v3 wire semantics — on the WRITER
+  // side. The bytes below are written with a bare DataView at hard-coded
+  // little-endian offsets — the production serializer is NEVER called to produce
+  // them — and the expected decoded values are stated as literals in this test.
+  // The production decoder reads those independent bytes and must reproduce the
+  // literal expectations field-by-field; a differential check then confirms the
+  // production serializer emits the very same bytes. There is NO second
+  // independent DECODER — the independence is in the byte source and the literal
+  // expectations, not in a parallel parser. A shared geometry bug in the
+  // production encoder cannot hide here, because the oracle's offsets are
+  // expressed independently. Unavoidable version literals are pinned as literals
+  // (not imported), so a version bump forces a conscious update here.
   const STATUS = ['ok', 'nonFinite', 'numericalDivergence'];
   const HEADER_BYTES = 22;
   const MEMBER_BYTES = 48;
@@ -935,6 +952,25 @@ describe('the external expected-identity contract', () => {
       'staleOrWrongArtifact',
     );
     expect(SHA256_DIGEST_BYTES).toBe(32);
+  });
+
+  test('a wrong-length expected digest is refused BEFORE it is copied', async () => {
+    const artifact = await runGenerations(1);
+    copyOrdinaryBytes.mockClear();
+    // 33 bytes: ordinary storage, but not exactly SHA256_DIGEST_BYTES. The
+    // preflight must refuse it as invalidConfig without copying the caller's
+    // (arbitrarily large) digest. The history itself IS copied once (the intake
+    // seam, before identity capture), so the proof is that NO call received the
+    // 33-byte digest — the copy count stays at exactly the one history copy.
+    const err = expectCodeSync(
+      () => resumeEvolutionRun(artifact, { expectedHistoryDigestBytes: new Uint8Array(33) }),
+      'invalidConfig', /exactly 32 bytes/,
+    );
+    expect(err.context.byteLength).toBe(33);
+    expect(copyOrdinaryBytes).toHaveBeenCalledTimes(1); // history only
+    for (const call of copyOrdinaryBytes.mock.calls) {
+      expect(call[0].byteLength).not.toBe(33); // the digest was never copied
+    }
   });
 });
 

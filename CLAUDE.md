@@ -2088,18 +2088,29 @@ history, replay, and strong artifact identity. Full contract:
   **on the first run**. The gate also asserts STRUCTURAL coverage (elites exist,
   both mutation branches occur incl. a zero-selection child, the last record is
   terminal), so a fixture change cannot quietly narrow what the locks prove.
-- **Independent interoperability oracle (post-PR-27 role):**
+- **Independent interoperability evidence (post-PR-27 role), stated precisely:**
   `tests/fixtures/evolution-v1-kimi-k3max.base64` is a static 4,024-byte
   one-generation artifact produced by the isolated Kimi implementation, with
   provenance and literal digests in the adjacent Markdown file. Since PR #27
-  bumped the fitness vector to v3, this v2 artifact is preserved as an
-  EARLY-REFUSAL WITNESS: it passes self-consistency (stages 3–7) but is refused
-  at Gate A (stage 8a) as `unsupportedVersion` naming `fitnessVectorVersion`,
-  before physics. The successful-replay role is now filled by the
-  independent-assembly witness in `tests/evolution-replay.test.js`: a v3
-  artifact decoded into logical structures and re-encoded using only the
-  low-level codec functions (no `createEvolutionRun`), proving byte-identity,
-  then resumed and continued to a byte-identical terminal digest.
+  (open branch, pending merge) bumps the fitness vector to v3, this v2 artifact
+  is preserved as an INDEPENDENT EARLY-REFUSAL WITNESS: it passes
+  self-consistency (stages 3–7) but is refused at Gate A (stage 8a) as
+  `unsupportedVersion` naming `fitnessVectorVersion`, before physics. (Gate A
+  classifies a READABLE-but-unsupported version as `unsupportedVersion`; a
+  truncated or structurally UNREADABLE current-format prefix is
+  `malformedHistory`, not `unsupportedVersion`.) The successful-resume role is
+  now filled by two tests in `tests/evolution-replay.test.js`: (1) an INTERNAL
+  codec-losslessness/composability test — a v3 artifact whose original IS
+  produced through the normal `createEvolutionRun` path is decoded into logical
+  structures and re-encoded using only the low-level codec functions (only the
+  REASSEMBLY avoids `createEvolutionRun`), proving byte-identity, then resumed
+  and continued to a byte-identical terminal digest; this is explicitly NOT an
+  independence proof. (2) A genuinely INDEPENDENT v3 reference ENCODER: a manual
+  `DataView` implementation writes the v3 bytes at hard-coded offsets without
+  calling the production serializer, with literal expected values and a
+  differential comparison against production serialization. The independence is
+  on the WRITER side; there is NO separate independent decoder — the production
+  decoder reads the independent bytes and must match the literal expectations.
 - **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
   comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
   selectors (it was a single-block lookup by filename, which would have silently

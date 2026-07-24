@@ -221,6 +221,26 @@ describe('extractHistoryObservations — the verified extraction seam', () => {
     expect(caught.code).toBe('staleOrWrongArtifact');
   });
 
+  test('a wrong-length expected digest is refused BEFORE it is copied (extraction path)', async () => {
+    const bytes = await runFixture();
+    copyOrdinaryBytes.mockClear();
+    // 33 bytes: ordinary storage, but not exactly 32. The preflight (shared
+    // captureExpectedIdentity) must refuse it as invalidConfig without copying
+    // the caller's digest. The history is copied once first, so the proof is
+    // that NO call received the 33-byte digest.
+    let caught = null;
+    try {
+      await extractHistoryObservations(bytes, { expectedHistoryDigestBytes: new Uint8Array(33) });
+    } catch (e) { caught = e; }
+    expect(caught).not.toBeNull();
+    expect(caught.code).toBe('invalidConfig');
+    expect(caught.context.byteLength).toBe(33);
+    expect(copyOrdinaryBytes).toHaveBeenCalledTimes(1); // history only
+    for (const call of copyOrdinaryBytes.mock.calls) {
+      expect(call[0].byteLength).not.toBe(33); // the digest was never copied
+    }
+  });
+
   test('the correct expectedHistoryDigestBytes passes and yields observations', async () => {
     const bytes = await runFixture();
     // Compute the actual history digest from the framing (last 32 bytes of the

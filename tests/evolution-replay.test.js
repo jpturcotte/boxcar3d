@@ -59,10 +59,35 @@ const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
 
 
+const INTEROP_CONFIG = Object.freeze({
+  initialization: { seed: 20260721, populationSize: 4 },
+  evaluationSpec: {
+    terrain: {
+      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
+      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
+    },
+    maxSteps: 60,
+    deterministic: true,
+    spawn: { x: -44, z: 0 },
+  },
+  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
+});
+
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
   'base64',
 ));
+
+// The v3 interoperability artifact, produced by an encoder written from the
+// FORMAT SPEC with no imports from the modules under test and hashing via
+// node:crypto (scripts/generate-independent-evolution-artifact.mjs). See
+// tests/fixtures/evolution-v3-independent.md for exactly what its independence
+// covers and what enters as declared input.
+const independentV3Bytes = () => new Uint8Array(Buffer.from(
+  readFileSync(new URL('./fixtures/evolution-v3-independent.base64', import.meta.url), 'utf8').trim(),
+  'base64',
+));
+const INDEPENDENT_V3_TERMINAL_HISTORY_DIGEST = 'bc53c425b88c3cb549285749abc82282162a580f93b741632702028a6cbf247b';
 // The v2 artifact's own one-generation history digest, from the adjacent .md.
 // Its TERMINAL continuation digest is deliberately not asserted any more: that
 // leg required resuming a v2 vector, which fitness vector v3 refuses. Recorded
@@ -194,6 +219,39 @@ describe('resume and continuation', () => {
     expect(bytesToHex(verified.historyDigestBytes)).toBe(KIMI_GENERATION_ZERO_HISTORY_DIGEST);
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
     expect(fixtureHeader.physicsFlavor).toBe('deterministicCompat');
+  });
+
+  test('an independently encoded v3 artifact is byte-identical to a local run', async () => {
+    // The claim: an encoder written from the FORMAT SPEC, importing nothing
+    // from evolution-history / evolution-lineage / population /
+    // population-evaluation and hashing with node:crypto, produces exactly
+    // these bytes. So the v3 member walk, the four component walks, all seven
+    // digest domains, the chain and the outer framing are attested by
+    // something other than the implementation agreeing with itself.
+    const fixture = independentV3Bytes();
+    const control = createEvolutionRun(INTEROP_CONFIG);
+    await control.advance();
+    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
+    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
+    expect(controlHeader.rapierVersion,
+      'engine changed — re-lock the independent evolution artifact deliberately')
+      .toBe(fixtureHeader.rapierVersion);
+    expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
+  });
+
+  test('...and it resumes and continues to the literal terminal digest', async () => {
+    const fixture = independentV3Bytes();
+    const control = createEvolutionRun(INTEROP_CONFIG);
+    await control.advance();
+    const resumed = await resumeEvolutionRun(fixture);
+    while (control.status().phase !== 'terminal') {
+      const a = await control.advance();
+      const b = await resumed.advance();
+      expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
+      expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
+    }
+    expect(bytesToHex(control.historyBytes().slice(-32)))
+      .toBe(INDEPENDENT_V3_TERMINAL_HISTORY_DIGEST);
   });
 
   test('...and is then refused as an UNSUPPORTED FORMAT, before any physics', async () => {

@@ -175,6 +175,11 @@ describe('population evaluation gate (deterministic flavor)', () => {
           stepAtMaxForwardDistance: i.diagnostics.stepAtMaxForwardDistance,
           forwardDistance: i.diagnostics.forwardDistance,
           maxBackwardDistance: i.diagnostics.maxBackwardDistance,
+          // v3: the lock must carry the observations, because the vector
+          // digest now binds them. Under v2 a clean status alone determined
+          // the bytes; it no longer does, and without these the committed
+          // digest could not be reconstructed without physics.
+          integrityObservations: i.integrityObservations,
         })),
         champion: { individualId: champion.individualId, fitness: champion.fitness },
       };

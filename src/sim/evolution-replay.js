@@ -68,7 +68,9 @@ import {
 import {
   deserializeFitnessVector, peekFitnessVectorVersions,
 } from './population-evaluation.js';
-import { peekPopulationSnapshotCount } from './population.js';
+import { peekPopulationSnapshotIds } from './population.js';
+import { deserializeLineage } from './evolution-lineage.js';
+import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
   MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE,
@@ -307,22 +309,72 @@ function collectFitnessVectorFacts(payload, generationIndex) {
     () => ({
       metadata: deserializeEvaluationMetadata(payload.components.evaluationMetadata),
       vector: deserializeFitnessVector(payload.components.fitnessVector),
-      // Count only — see peekPopulationSnapshotCount. The population component
-      // is what the vector must agree with, and reading the run's declared
+      // Ids only — see peekPopulationSnapshotIds. The population component is
+      // what the vector must agree with, and reading the run's declared
       // populationSize from the header instead would be a weaker check placed
       // at the wrong rung: the header's own agreement with the initialization
       // manifest is established later, so a forged header would be diagnosed
       // here by its symptom rather than there by its cause.
-      scoredPopulationCount: peekPopulationSnapshotCount(payload.components.population),
+      populationIds: peekPopulationSnapshotIds(payload.components.population),
+      lineage: deserializeLineage(payload.components.lineage),
+      // The FNV state the production evaluator folded over the snapshot bytes.
+      // The population component IS those bytes, so this recomputes exactly
+      // what the vector declares. (SENTINEL, not identity — see the gate.)
+      populationDigestState: fnv1aFold(FNV_OFFSET_BASIS, payload.components.population),
     }));
   if (decoded.failure !== null) {
     return Object.freeze({
       generationIndex, versions, coherence: null, failure: decoded.failure,
     });
   }
-  const { metadata, vector, scoredPopulationCount } = decoded.value;
+  const {
+    metadata, vector, populationIds, lineage, populationDigestState,
+  } = decoded.value;
   const executedSteps = metadata.executedSteps;
   const rows = vector.individuals;
+
+  // ID-SET AGREEMENT across the three components that name individuals.
+  //
+  // Compared as ORDERED SEQUENCES, which is sound only because each of the
+  // three decoders has already REJECTED a non-ascending stream: canonical
+  // ordering is established before this runs, so sequence equality IS set
+  // equality here. It is also strictly more informative — the first
+  // disagreeing position names the offending id instead of a set difference.
+  //
+  // Only the FIRST disagreement is retained (a bounded scalar record), so the
+  // documented one-payload-at-a-time memory model holds: nothing decoded here
+  // outlives this call.
+  let idMismatch = null;
+  const compareIds = (otherName, other) => {
+    if (idMismatch !== null) return;
+    const shared = rows.length < other.length ? rows.length : other.length;
+    for (let i = 0; i < shared; i += 1) {
+      if (rows[i].individualId !== other[i]) {
+        idMismatch = Object.freeze({
+          component: otherName,
+          position: i,
+          fitnessVectorId: rows[i].individualId,
+          otherId: other[i],
+        });
+        return;
+      }
+    }
+    if (rows.length !== other.length) {
+      idMismatch = Object.freeze({
+        component: otherName,
+        position: shared,
+        fitnessVectorId: shared < rows.length ? rows[shared].individualId : null,
+        otherId: shared < other.length ? other[shared] : null,
+      });
+    }
+  };
+  const lineageIds = [];
+  for (let i = 0; i < lineage.individuals.length; i += 1) {
+    lineageIds.push(lineage.individuals[i].individualId);
+  }
+  compareIds('population', populationIds);
+  compareIds('lineage', lineageIds);
+
   let worst = null;
   for (let i = 0; i < rows.length; i += 1) {
     const row = rows[i];
@@ -345,12 +397,18 @@ function collectFitnessVectorFacts(payload, generationIndex) {
     failure: null,
     coherence: Object.freeze({
       executedSteps,
-      // Carried because this is the one cross-component fact the vector's own
+      // Carried because these are the cross-component facts the vector's own
       // codec cannot check: its `count` is bound only to its own byte length,
-      // so a vector scoring 5 of a generation's 6 individuals is perfectly
-      // well-formed in isolation.
+      // so a vector scoring 5 of a generation's 6 individuals — or scoring six
+      // DIFFERENT individuals — is perfectly well-formed in isolation.
       memberCount: rows.length,
-      scoredPopulationCount,
+      scoredPopulationCount: populationIds.length,
+      idMismatch,
+      // The two bindings the vector itself declares. Scalars, compared in the
+      // gate against what the persisted components actually fold to.
+      declaredPopulationDigestState: vector.populationSnapshotDigestState,
+      computedPopulationDigestState: populationDigestState,
+      declaredSpecDigestState: vector.evaluationSpecDigestState,
       worst: worst === null ? null : Object.freeze(worst),
     }),
   });
@@ -442,6 +500,32 @@ export function checkFitnessVectorCompatibility(verified) {
  * physics, and comes back as `replayDivergence` at stage 'fitnessVector' —
  * "the engine drifted" for a fault that is entirely in the file.
  *
+ * THE CROSS-COMPONENT BINDINGS the vector DECLARES are checked here too, and
+ * they are the general form of that same fault. A fitness vector carries
+ * `populationSnapshotDigestState` and `evaluationSpecDigestState`: the states
+ * its producer folded over the population it scored and the specification it
+ * ran under. Nothing in the outer format binds them — every component digest,
+ * the chain and the whole-history digest all stay valid when a vector is
+ * paired with the WRONG population or the wrong spec. Measured on this branch
+ * before the check existed: such an artifact reached physics and reported
+ * `replayDivergence` at stage 'fitnessVector' for generations past the first,
+ * i.e. after re-simulating every earlier generation. Both states recompute
+ * exactly from bytes the artifact already carries — the population component
+ * IS the snapshot, and the header carries the spec — so the check is free.
+ *
+ * ID-SET AGREEMENT closes the last gap the counts leave: three components name
+ * individuals, and equal counts do not mean equal identities.
+ *
+ * WHAT THE FNV STATES ARE, precisely. They are 32-bit IN-FORMAT SEMANTIC
+ * MISMATCH SENTINELS, not cryptographic identity, and this gate must not be
+ * read as authenticating anything. A 32-bit collision is cheap to construct
+ * deliberately; what these catch is the accidental or careless pairing — a
+ * vector filed against the wrong population, a spec edited underneath a saved
+ * run. Artifact IDENTITY is the SHA-256 layer above (component digests, the
+ * chain, the whole-history digest), which has already passed by the time this
+ * runs. The two layers answer different questions and neither substitutes for
+ * the other.
+ *
  * This gate also raises whatever `collectFitnessVectorFacts` CAPTURED while
  * walking components — a malformed version prefix or an unreadable vector.
  * Those are discovered at stage 5 and belong on this rung, so they wait here
@@ -464,6 +548,33 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
           populationCount: coherence.scoredPopulationCount,
         });
     }
+    if (coherence.idMismatch !== null) {
+      const m = coherence.idMismatch;
+      evolutionFail('malformedHistory',
+        `generation ${facts.generationIndex} fitness vector and ${m.component} component name `
+        + `different individuals: at position ${m.position} the vector scores `
+        + `${String(m.fitnessVectorId)} and the ${m.component} holds ${String(m.otherId)}`,
+        {
+          generationIndex: facts.generationIndex,
+          component: m.component,
+          position: m.position,
+          fitnessVectorId: m.fitnessVectorId,
+          otherId: m.otherId,
+        });
+    }
+    if (coherence.declaredPopulationDigestState !== coherence.computedPopulationDigestState) {
+      evolutionFail('malformedHistory',
+        `generation ${facts.generationIndex} fitness vector declares population digest state `
+        + `${coherence.declaredPopulationDigestState}, but this generation's population component `
+        + `folds to ${coherence.computedPopulationDigestState} — the vector was produced against a `
+        + 'different population',
+        {
+          generationIndex: facts.generationIndex,
+          field: 'populationSnapshotDigestState',
+          stored: coherence.declaredPopulationDigestState,
+          computed: coherence.computedPopulationDigestState,
+        });
+    }
     if (coherence.worst === null) continue;
     const { individualId, field, step } = coherence.worst;
     evolutionFail('malformedHistory',
@@ -476,6 +587,50 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
         step,
         executedSteps: coherence.executedSteps,
       });
+  }
+}
+
+/**
+ * GATE C — the vector's binding to the run's EVALUATION SPECIFICATION.
+ *
+ * Separate from gate B, and deliberately LATER, because of what it compares.
+ * Gates A and B compare a generation against its own siblings: everything they
+ * read lives inside one payload, so they are sound the moment that payload's
+ * digests have passed. This one compares a generation's vector against the
+ * HEADER — and the header's own validity is not established until the resume
+ * path has decoded its spec, refused a non-deterministic one, checked the
+ * initialization manifest and applied the compute budget.
+ *
+ * Run before those, it diagnoses a forged header BY SYMPTOM: a spec edited to
+ * be non-deterministic, or past the work budget, would be reported as "the
+ * vector disagrees with the header" instead of "this header is not one this
+ * build will run". Measured on this branch — three committed tests changed
+ * their diagnosis when this check sat inside gate B. It is the same asymmetry
+ * gate B's member count already observes by comparing against the population
+ * component rather than the header's `populationSize`.
+ *
+ * `evaluationSpecDigestState` is a SENTINEL, not identity — see gate B.
+ */
+export function verifyFitnessVectorSpecBinding(verified) {
+  // The spec is run-level, so this folds once for the whole artifact.
+  const headerSpecDigestState = fnv1aFold(FNV_OFFSET_BASIS, verified.header.evaluationSpecBytes);
+  const records = verified.records;
+  for (let i = 0; i < records.length; i += 1) {
+    const facts = records[i].fitnessVector;
+    const coherence = facts.coherence;
+    if (coherence === null) continue;
+    if (coherence.declaredSpecDigestState !== headerSpecDigestState) {
+      evolutionFail('malformedHistory',
+        `generation ${facts.generationIndex} fitness vector declares evaluation spec digest state `
+        + `${coherence.declaredSpecDigestState}, but the header's spec folds to `
+        + `${headerSpecDigestState} — the vector was produced against a different specification`,
+        {
+          generationIndex: facts.generationIndex,
+          field: 'evaluationSpecDigestState',
+          stored: coherence.declaredSpecDigestState,
+          computed: headerSpecDigestState,
+        });
+    }
   }
 }
 

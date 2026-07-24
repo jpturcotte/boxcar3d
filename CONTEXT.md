@@ -104,8 +104,9 @@ The five kinematic measurements the online detector
 `firstAlertStep`, `firstCatastrophicStep` (onset capture indices, or `null` for
 "never crossed").
 
-Since **fitness vector v3** (PR #28) they are persisted per individual, so they
-can be read back from a saved history without re-simulating. Before v3 only the
+Under **fitness vector v3** (PR #28, open — not yet merged) they are persisted
+per individual, so they can be read back from a saved history without
+re-simulating. Before v3 only the
 *verdict* survived, which is why PR 4 had to re-run its own campaign to
 diagnose the contamination it had recorded.
 

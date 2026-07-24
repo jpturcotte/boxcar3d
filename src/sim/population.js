@@ -281,20 +281,27 @@ function decodeFail(path, value) {
  * way in, serializePopulationSnapshot on the way out), never by immutability.
  */
 /**
- * Read ONLY the member count out of a population snapshot stream.
+ * Read ONLY the individual IDs out of a population snapshot stream, in stream
+ * order, without decoding a single genotype.
  *
- * Beside its codec, for the reason `peekFitnessVectorVersions` sits beside
- * its own: a cross-component check needs one scalar out of a component it
- * does not own, and the alternatives are both worse — decoding the whole
- * snapshot costs every genotype in it (a 1024-generation artifact would decode
- * a quarter of a million genotypes to count them), and reading the u32 at a
- * hard-coded offset from another module would be a second interpretation of
- * this layout, drifting the moment the header changes.
+ * Beside its codec, for the reason `peekFitnessVectorVersions` sits beside its
+ * own: a cross-component check needs a little structure out of a component it
+ * does not own, and both alternatives are worse — decoding the whole snapshot
+ * costs every genotype in it (a 1024-generation artifact would decode a
+ * quarter of a million genotypes to read their ids), and walking the layout
+ * from another module would be a second interpretation of it, drifting the
+ * moment this header changes.
  *
- * The version prefix is validated first, so an unknown layout is refused
- * rather than guessed at.
+ * ORDER IS VALIDATED, NOT ASSUMED. Ids must be strictly ascending here exactly
+ * as `deserializePopulationSnapshot` requires, so a caller comparing this
+ * against another component's ids may compare them as ORDERED SEQUENCES: both
+ * sides have had their canonical ordering established by their own decoder
+ * first. Without that check, sequence comparison would be an ordering
+ * assumption standing in for set equality.
+ *
+ * Returns a module-owned frozen array; the count is its length.
  */
-export function peekPopulationSnapshotCount(bytes) {
+export function peekPopulationSnapshotIds(bytes) {
   const r = createByteReader(bytes, decodeFail);
   const snapshotVersion = r.u16('snapshotVersion');
   if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) decodeFail('snapshotVersion', snapshotVersion);
@@ -302,7 +309,21 @@ export function peekPopulationSnapshotCount(bytes) {
   if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
   const count = r.u32('individualCount');
   if (count < 1) decodeFail('individualCount', count);
-  return count;
+  const ids = [];
+  let prevId = -1;
+  for (let i = 0; i < count; i += 1) {
+    const individualId = r.u32(`individuals[${i}].individualId`);
+    if (individualId <= prevId) {
+      decodeFail(`individuals[${i}].individualId`,
+        `${individualId} must be strictly ascending (previous ${prevId})`);
+    }
+    prevId = individualId;
+    const length = r.u32(`individuals[${i}].genotypeByteLength`);
+    r.bytes(length, `individuals[${i}].genotype`); // skipped, never decoded
+    ids.push(individualId);
+  }
+  r.expectEnd('individuals');
+  return Object.freeze(ids);
 }
 
 export function deserializePopulationSnapshot(bytes) {

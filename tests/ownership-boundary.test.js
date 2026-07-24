@@ -93,7 +93,7 @@ const {
 } = AssemblyNS;
 const {
   POPULATION_SNAPSHOT_VERSION, attestPopulation, bytesEqual,
-  deserializePopulationSnapshot, peekPopulationSnapshotCount,
+  deserializePopulationSnapshot, peekPopulationSnapshotIds,
   serializePopulationSnapshot, validatePopulation,
 } = PopulationNS;
 const {
@@ -306,7 +306,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   'population.js': Object.freeze([
     'POPULATION_SNAPSHOT_VERSION', 'attestPopulation', 'bytesEqual',
     'deserializePopulationSnapshot', 'isCanonicalUint32',
-    'peekPopulationSnapshotCount', 'serializePopulationSnapshot', 'validatePopulation',
+    'peekPopulationSnapshotIds', 'serializePopulationSnapshot', 'validatePopulation',
   ]),
   'population-initializer.js': Object.freeze([
     'INITIAL_POPULATION_DEFAULTS', 'MAX_POPULATION_SIZE', 'POPULATION_INITIALIZER_VERSION',
@@ -351,7 +351,8 @@ const EXPECTED_EXPORTS = Object.freeze({
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
     'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity',
     'failReplayDivergence',
-    'firstByteDifference', 'verifyFitnessVectorMetadataCoherence', 'verifyHistoryArtifact',
+    'firstByteDifference', 'verifyFitnessVectorMetadataCoherence',
+    'verifyFitnessVectorSpecBinding', 'verifyHistoryArtifact',
   ]),
   'evolution-history.js': Object.freeze([
     'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
@@ -540,7 +541,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'serializePopulationSnapshot', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'attestPopulation', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'deserializePopulationSnapshot', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
-    { name: 'peekPopulationSnapshotCount', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'peekPopulationSnapshotIds', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
   ]),
   'population-initializer.js': Object.freeze([
     { name: 'POPULATION_INITIALIZER_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -679,6 +680,7 @@ const EXPORT_ROLES = Object.freeze({
     // neither reads caller data or bytes.
     { name: 'checkFitnessVectorCompatibility', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyFitnessVectorSpecBinding', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
@@ -986,7 +988,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     // Arg `a` probed here; the b-side battery lives in tests/population.test.js.
     bytesEqual: { intake: 'gated', invoke: (u) => bytesEqual(u, Uint8Array.of(1)) },
     deserializePopulationSnapshot: { intake: 'gated', invoke: (u) => deserializePopulationSnapshot(u) },
-    peekPopulationSnapshotCount: { intake: 'gated', invoke: (u) => peekPopulationSnapshotCount(u) },
+    peekPopulationSnapshotIds: { intake: 'gated', invoke: (u) => peekPopulationSnapshotIds(u) },
     attestPopulation: { intake: 'no-byte-intake', why: 'population object in; returns module-owned bytes + decoded genotypes' },
     isCanonicalUint32: { intake: 'no-byte-intake', why: 'number in, boolean out' },
     serializePopulationSnapshot: { intake: 'no-byte-intake', why: 'population object in; returns fresh module-owned bytes' },
@@ -1045,6 +1047,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
     checkFitnessVectorCompatibility: { intake: 'no-byte-intake', why: 'consumes the frozen verified record; the bytes were gated at decodeHistoryFraming' },
     verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the frozen verified record; the bytes were gated at decodeHistoryFraming' },
+    verifyFitnessVectorSpecBinding: { intake: 'no-byte-intake', why: 'consumes the frozen verified record; the header bytes were gated at decodeHistoryFraming' },
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
   },
   'src/sim/evolution-history.js': {
@@ -1683,7 +1686,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   serializePopulationSnapshot: 'freshBytes',
   attestPopulation: 'ownedCopy',
   deserializePopulationSnapshot: 'ownedCopy',
-  peekPopulationSnapshotCount: 'scalar',
+  peekPopulationSnapshotIds: 'scalar',
   // population-initializer.js
   sampleInitialGenotype: 'ownedCopy',
   createInitialPopulation: 'ownedCopy',

@@ -6,8 +6,9 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR #28 — **fitness vector v3** — landed on PR 4's broad
-evolution experiment. Saved evolution histories now canonically preserve the
+**Status:** GA Phase 1B PR #28 — **fitness vector v3** — is OPEN, proposed on
+top of PR 4's broad evolution experiment. Once it merges, saved evolution
+histories will canonically preserve the
 five integrity **observations** the online detector already computed
 (`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
 `firstCatastrophicStep`), so *"was this champion locomotion or constraint-solver

@@ -86,7 +86,8 @@ import {
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
   checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
-  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+  verifyFitnessVectorMetadataCoherence, verifyFitnessVectorSpecBinding,
+  verifyHistoryArtifact,
 } from './evolution-replay.js';
 import { decodeGenerationPayload } from './evolution-history.js';
 
@@ -965,6 +966,11 @@ async function resumeFromOwnedBytes(owned, expected) {
       { headerPopulationSize: populationSize, manifestPopulationSize: manifest.config.populationSize });
   }
   assertEvaluationWork(populationSize, spec.maxSteps);
+  // Stage 8c: the vector's binding to the SPEC, once the header's own spec has
+  // proven deterministic, manifest-coherent and inside the work budget — so a
+  // forged header is diagnosed as a forged header, not as a vector that
+  // disagrees with it. Still before the runtime gate and before any physics.
+  verifyFitnessVectorSpecBinding(verified);
 
   // Stage 9: the runtime gate, after all product-level resource/coherence
   // checks but before a single world is created.

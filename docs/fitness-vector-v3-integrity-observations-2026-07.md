@@ -1,6 +1,9 @@
 # Fitness Vector v3 — Persisted Integrity Observations (PR #28, 2026-07-24)
 
-**Status: LANDED.** Representation and observability only. **No policy,
+**Status: IMPLEMENTED ON THIS BRANCH — PR #28 is OPEN and not merged.** This
+record describes the branch's implementation as complete, which it is; it does
+NOT claim the PR has landed on `main`, and the behaviour below becomes `main`'s
+only after it merges. Representation and observability only. **No policy,
 selection, or mutation behaviour changed.** `INTEGRITY_POLICY_VERSION` stays 1,
 `FITNESS_POLICY_VERSION` stays 2, `PARAMETRIC_MUTATION_DEFAULTS` stays
 `{ probability: 0.05, magnitude: 0.05 }`.
@@ -211,7 +214,85 @@ chain, whole-history and identity checks, and would let
 `population-evaluation`'s dialect escape a verification call as a plain `Error`
 with no `code` for callers to branch on.
 
-### 4.1 A wider member also shrinks the capacity projection
+### 4.1 Gate B also verifies every CROSS-COMPONENT BINDING
+
+Counts and step bounds are the narrow cases. The general one is that a fitness
+vector *declares what it was produced against* — `populationSnapshotDigestState`
+and `evaluationSpecDigestState` — and **nothing in the outer format binds
+either**. Every component digest, the generation chain and the whole-history
+digest all stay valid when a vector is paired with the wrong population or the
+wrong specification.
+
+Measured on this branch before these checks existed, with all outer SHA-256
+digests recomputed so the artifact verified perfectly:
+
+| Forgery | Reported as | Physics run first? |
+|---|---|---|
+| vector's `populationSnapshotDigestState` altered (generation 1) | `replayDivergence`, stage `fitnessVector` | **yes — generations 0 and 1** |
+| vector's `evaluationSpecDigestState` altered | `replayDivergence`, stage `fitnessVector` | **yes** |
+| whole population component substituted | `replayDivergence`, stage `initialization` | no (generation 0 only) |
+| ids renumbered, counts equal | `replayDivergence`, stage `initialization` | no (generation 0 only) |
+
+All four now report `malformedHistory` with the offending generation, field,
+stored value and computed value — and zero evaluations, asserted by a probe.
+
+What is verified per generation:
+
+1. `populationSnapshotDigestState` against the FNV state of **that
+   generation's own population component** — which *is* the snapshot the
+   producer folded, so it recomputes exactly;
+2. `evaluationSpecDigestState` against the FNV state of the **header's** spec
+   bytes (gate C — see below);
+3. the fitness vector, population and lineage components name the **same
+   individual ids**, not merely the same number of rows.
+
+**Ordering is validated, not assumed.** The ids are compared as ordered
+sequences, which is equivalent to set equality *only* because all three
+decoders reject a non-ascending stream first. `peekPopulationSnapshotIds`
+enforces that ascent for the same reason its siblings do, and a committed test
+pins it — a sabotage pass showed the check could otherwise be deleted with the
+whole replay suite green.
+
+**These FNV states are SENTINELS, not identity.** A 32-bit collision is cheap
+to construct deliberately; what they catch is the accidental or careless
+pairing. Artifact identity is the SHA-256 layer above them, which has already
+passed by the time these run. Neither substitutes for the other, and this
+document does not claim the gate authenticates anything.
+
+**Cost and memory.** Both states recompute from bytes the artifact already
+carries, so no component is re-encoded. The id comparison retains only the
+FIRST disagreement — a bounded scalar record — and the id peek never decodes a
+genotype, so the documented one-payload-at-a-time model holds.
+
+### 4.2 Gate C: the spec binding runs LATER, and the position is load-bearing
+
+The spec binding compares a generation's vector against the **header**, and the
+header's own validity is not established until the resume path has decoded its
+spec, refused a non-deterministic one, checked the initialization manifest and
+applied the compute budget. Run before those, it diagnoses a forged header *by
+symptom*: a spec edited to be non-deterministic would be reported as "the
+vector disagrees with the header" rather than "this header is not one this
+build will run".
+
+That is not hypothetical — three committed tests changed their diagnosis when
+this check sat inside gate B. It is therefore `verifyFitnessVectorSpecBinding`,
+called after `assertEvaluationWork` and still before the runtime gate and any
+physics. It is the same asymmetry gate B's member count already observes by
+comparing against the population component rather than the header's
+`populationSize`.
+
+The full ladder, unchanged:
+
+```
+corruption → wrong artifact → unsupported format → malformed current format
+→ runtime mismatch → deterministic divergence
+```
+
+A committed test pins the precedence in both directions: a semantic
+contradiction alone reports `malformedHistory`, and the same artifact with a
+damaged trailer reports `historyDigestMismatch`.
+
+### 4.3 A wider member also shrinks the capacity projection
 
 `assertHistoryCapacity` projects a run's worst-case artifact size from
 `fitnessVectorByteLength(populationSize)`, so a member growing 14 → 48 bytes
@@ -220,8 +301,25 @@ moves a **public production refusal**: measured, population 20 is unchanged
 population 256 goes 235 → 228 maximum feasible generations. This is correct —
 the projection tracks the real format, and a gate that did not move would be
 the bug — but it is outside the four things this PR promises are unchanged
-(policy, selection, mutation, physics), and no committed literal records it, so
-it is recorded here for the next reader of a `resourceLimitExceeded`.
+(policy, selection, mutation, physics).
+
+`tests/evolution-capacity.test.js` now pins the boundary directly: for
+populations 64 and 256 it proves the maximum is accepted, that one more is
+refused with `resourceLimitExceeded`, and that the reported
+`maximumFeasibleGenerations` is the expected value. The literals are
+**independently declared** — measured by bisecting `createEvolutionRun` itself,
+not computed from `fitnessVectorByteLength`, which is the helper under test.
+The file also pins two things the literals cannot say on their own: at
+population 20 the *generation cap* binds rather than capacity (so "the boundary
+moved" is not read as "everything got smaller"), and the boundary is monotone
+in population size. It is physics-free and runs in about a second.
+
+One correction worth recording, because it was an assumption rather than a
+measurement: both refusals share the `resourceLimitExceeded` **code**. What
+distinguishes them is the error CONTEXT — the declared cap reports
+`{maxGenerations, limit}`, the capacity projection reports `{projectedBytes,
+limit, maximumFeasibleGenerations, requestedGenerations, generationFrameBytes}`
+— and that is what the test asserts.
 
 `REPLAY_STAGES` is **not** modified — it is stage 10's per-component comparison
 vocabulary, not the verification ladder.
@@ -302,16 +400,45 @@ different directions.
 ## 8. What it enables
 
 `scripts/history-observations.js` — `extractHistoryObservations(historyBytes,
-{ expectedHistoryDigestBytes?, includeGenotypeDigest? })` — returns the decoded
-per-individual evidence from a **cryptographically verified** artifact, with no
-physics. It runs the same `verifyHistoryArtifact` and both gates the production
-resume path runs, and shares their error taxonomy; there is deliberately no
-second, script-local notion of what a valid history is.
+{ expectedHistoryDigestBytes?, expectedGenerationIndex?, includeGenotypeDigest? })`
+— returns the decoded per-individual evidence from a **cryptographically
+verified** artifact, with no physics. It runs the same `verifyHistoryArtifact`
+and all three gates the production resume path runs, and shares their error
+taxonomy; there is deliberately no second, script-local notion of what a valid
+history is. Its options route through resume's own `captureExpectedIdentity`,
+so unknown keys, a wrong-length digest and the `invalidConfig`-versus-
+`malformedHistory` distinction are inherited rather than reimplemented.
 
 Its scope is decoded rows and nothing else — no aggregation, rates,
 distributions, thresholds or counterfactuals. Those belong to Next PR, and
 keeping them out is what stops an offline reader from quietly becoming a second,
 unversioned fitness policy.
+
+### 8.1 `genotypeDigest` is a digest
+
+**SHA-256 of the canonical serialized genotype bytes, as 64 lowercase
+hexadecimal characters.** Opt-in, because it costs a serialization and a hash
+per member.
+
+An earlier draft of this branch stored
+`bytesToHex(serializeGenotype(genotype))` under that name: the **whole
+canonical stream** as hex, measured at 1048–2072 characters per individual on
+the committed fixture. It is a perfectly injective identity — and it is not a
+digest, it is variable-length, and at campaign scale it would dominate the
+extraction output. The name said one thing and the value was another. Corrected
+in place rather than versioned around, since the `/1` schema is unmerged.
+
+SHA-256 rather than FNV-1a32 by this repository's standing ruling: FNV is a
+drift/lock digest and an in-process mismatch sentinel, while this is durable
+content identity for offline analysis — exactly where a cheap 32-bit collision
+would silently merge two genomes, the same failure the fitness proxy had.
+
+The committed tests assert the value against an **independent `node:crypto`
+computation** over the same bytes, that it is exactly 64 lowercase hex
+characters, that equal genomes under different ids hash equally, that an elite
+keeps its digest across generations despite a fresh id, and that it is *not*
+the serialized stream. A `/^[0-9a-f]+$/` match — which the earlier
+implementation passed — is explicitly not good enough.
 
 ## 9. Handoff to Next PR
 

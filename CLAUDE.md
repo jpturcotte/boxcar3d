@@ -2496,7 +2496,8 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**PR #28 landed - fitness vector v3: the integrity OBSERVATIONS are persisted,
+**PR #28 (OPEN — proposed for `main`, not yet merged) - fitness vector v3: the
+integrity OBSERVATIONS are persisted,
 and replay refuses stale or incoherent vectors before physics. Representation
 and observability ONLY - no policy, selection or mutation behaviour changed.
 Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
@@ -2582,11 +2583,48 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   `replayDivergence` - "the engine drifted" for a fault entirely in the file.
   Facts collect as SCALARS ONLY (a max is a complete check
   against an upper bound) so verification's one-payload-at-a-time memory model
-  holds. **A member 14 -> 48 bytes also shrinks `assertHistoryCapacity`'s
+  holds.
+- **EVERY CROSS-COMPONENT BINDING is verified pre-physics.** A vector DECLARES
+  `populationSnapshotDigestState` and `evaluationSpecDigestState` and the outer
+  format binds NEITHER - so with all SHA-256 digests recomputed, a vector paired
+  with the wrong population or the wrong spec verified perfectly and came back
+  as `replayDivergence` at stage `fitnessVector`, i.e. AFTER re-simulating every
+  earlier generation (measured on this branch). Gate B now recomputes the
+  population state from that generation's OWN population component (which IS the
+  snapshot the producer folded, so it recomputes exactly) and checks that the
+  vector, population and lineage name the SAME IDS, not merely the same count.
+  Ids are compared as ORDERED SEQUENCES, sound only because all three decoders
+  reject a non-ascending stream first - `peekPopulationSnapshotIds` enforces that
+  ascent and a committed test pins it (a sabotage pass showed it could otherwise
+  be deleted with the replay suite green). **The FNV states are SENTINELS, never
+  identity** - a 32-bit collision is cheap to build deliberately; artifact
+  identity is the SHA-256 layer above, already passed by then.
+- **GATE C (`verifyFitnessVectorSpecBinding`) is SEPARATE and LATER, and the
+  position is load-bearing.** It compares a vector against the HEADER, and the
+  header's own validity is not established until resume has refused a
+  non-deterministic spec, checked the manifest and applied the work budget - so
+  inside gate B it diagnosed a forged header BY SYMPTOM ("the vector disagrees"
+  rather than "this header is not one this build runs"). Not hypothetical:
+  three committed tests changed their diagnosis. It runs after
+  `assertEvaluationWork`, still before the runtime gate and any physics.
+- **A member 14 -> 48 bytes also shrinks `assertHistoryCapacity`'s
   projection** (measured: pop 20 unchanged at the 1024 cap; pop 64 940 -> 912;
   pop 256 235 -> 228 maximum feasible generations) - correct behaviour, since
   the projection tracks the real format, but it moves a public production
-  refusal and no literal records it. **`REPLAY_STAGES` is NOT modified** - it is stage 10's comparison
+  refusal. `tests/evolution-capacity.test.js` now pins the boundary with
+  INDEPENDENTLY DECLARED literals (bisected through `createEvolutionRun`, never
+  computed from the helper under test), plus the monotonicity property and the
+  pop-20 case where the generation CAP binds instead. Note both refusals share
+  the `resourceLimitExceeded` code; the CONTEXT shape is the discriminator.
+- **`genotypeDigest` is now an actual digest: SHA-256 of the canonical
+  serialized genotype bytes, 64 lowercase hex chars.** It had been
+  `bytesToHex(serializeGenotype(...))` - the WHOLE canonical stream as hex,
+  measured 1048-2072 chars per individual, under a name that says digest.
+  Injective, but not a digest, variable-length, and dominant in campaign-scale
+  output. SHA-256 by the standing FNV-vs-SHA ruling (durable content identity,
+  not an in-process sentinel). Tests assert it against an independent
+  `node:crypto` computation; `/^[0-9a-f]+$/` is explicitly not good enough - the
+  old implementation passed it. **`REPLAY_STAGES` is NOT modified** - it is stage 10's comparison
   vocabulary, not the verification ladder.
 - **DELIBERATE RE-LOCK, and the movement pattern IS the evidence** (asserted at
   re-lock time by throwaway scripts that refused to write if an unrelated digest

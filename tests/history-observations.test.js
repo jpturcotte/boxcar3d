@@ -25,6 +25,7 @@ import {
 import { readFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { URL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 // A pass-through spy purely to COUNT physics. The seam's headline promise is
 // "evidence with no re-simulation", and a title is not an assertion: this is
@@ -47,9 +48,12 @@ const { EvolutionError } = await import('../src/sim/evolution-contract.js');
 const {
   decodeGenerationPayload, decodeHistoryFraming,
 } = await import('../src/sim/evolution-history.js');
-const { hexToBytes } = await import('../src/sim/bytes.js');
+const { bytesToHex, hexToBytes } = await import('../src/sim/bytes.js');
+const { deserializePopulationSnapshot } = await import('../src/sim/population.js');
+const { serializeGenotype } = await import('../src/sim/assembly.js');
 const { createEvolutionRun } = await import('../src/sim/evolution-run.js');
 const { reforge } = await import('./helpers/evolution-artifacts.js');
+const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 
 beforeEach(() => { globalThis.__observationProbe = { evaluations: 0 }; });
 
@@ -148,13 +152,69 @@ describe('extractHistoryObservations — evidence without physics', () => {
   test('genotype digests are opt-in, and identify individuals where ids cannot', async () => {
     // Elitism gives a surviving individual a FRESH id each generation, so a
     // consumer counting distinct genomes needs the digest. Off by default
-    // because it costs a serialization per member.
+    // because it costs a serialization and a hash per member.
     const without = await extractHistoryObservations(artifact());
     expect(without.generations[0].individuals[0].genotypeDigest).toBeNull();
     const withDigests = await extractHistoryObservations(artifact(), { includeGenotypeDigest: true });
     const digests = withDigests.generations[0].individuals.map((r) => r.genotypeDigest);
-    for (const d of digests) expect(d).toMatch(/^[0-9a-f]+$/);
+    // EXACTLY 64 lowercase hex characters — a SHA-256. A `/^[0-9a-f]+$/` match
+    // is not good enough and was how an earlier implementation shipped the
+    // WHOLE canonical genotype stream as hex (1048-2072 characters per
+    // individual) under a name that says "digest".
+    for (const d of digests) expect(d).toMatch(/^[0-9a-f]{64}$/);
     expect(new Set(digests).size).toBe(4);
+  });
+
+  test('genotypeDigest IS SHA-256 of the canonical genotype bytes — checked against an independent hash', async () => {
+    // The value is verified against node:crypto over the bytes
+    // `serializeGenotype` produces, so this does not test the implementation
+    // against itself. Documented algorithm: SHA-256 of the canonical
+    // serialized genotype bytes, as 64 lowercase hexadecimal characters.
+    const bytes = artifact();
+    const payload = decodeGenerationPayload(decodeHistoryFraming(bytes).generations[0].payloadBytes);
+    const snapshot = deserializePopulationSnapshot(payload.components.population);
+    const result = await extractHistoryObservations(bytes, { includeGenotypeDigest: true });
+
+    for (const row of result.generations[0].individuals) {
+      const member = snapshot.individuals.find((m) => m.individualId === row.individualId);
+      const canonical = serializeGenotype(member.genotype);
+      const independent = createHash('sha256').update(Buffer.from(canonical)).digest('hex');
+      expect(row.genotypeDigest, `individual ${row.individualId}`).toBe(independent);
+      // And it is emphatically NOT the serialized stream itself.
+      expect(row.genotypeDigest).not.toBe(bytesToHex(canonical));
+      expect(canonical.length * 2).toBeGreaterThan(64); // the stream really is longer
+    }
+  });
+
+  test('equal genomes hash equally and different genomes do not', async () => {
+    const result = await extractHistoryObservations(artifact(), { includeGenotypeDigest: true });
+    const rows = result.generations[0].individuals;
+    const payload = decodeGenerationPayload(decodeHistoryFraming(artifact()).generations[0].payloadBytes);
+    const snapshot = deserializePopulationSnapshot(payload.components.population);
+
+    // Same canonical bytes under a DIFFERENT individual id must hash the same:
+    // the digest is a property of the genome, not of who is carrying it.
+    const canonical = serializeGenotype(snapshot.individuals[0].genotype);
+    const sameGenomeOtherId = createHash('sha256').update(Buffer.from(canonical)).digest('hex');
+    expect(rows[0].genotypeDigest).toBe(sameGenomeOtherId);
+
+    // The committed fixture's four genomes are distinct, so their digests are.
+    const digests = rows.map((r) => r.genotypeDigest);
+    expect(new Set(digests).size).toBe(digests.length);
+  });
+
+  test('a caller cannot change a digest by mutating its buffer during hashing', async () => {
+    // sha256 validates and COPIES in a synchronous prologue, and the bytes it
+    // is handed here are module-owned anyway (serializeGenotype returns a
+    // fresh array). Both extractions must agree, and neither may observe the
+    // caller's post-call write to the artifact it passed in.
+    const bytes = artifact();
+    const pending = extractHistoryObservations(bytes, { includeGenotypeDigest: true });
+    bytes.fill(0);
+    const a = await pending;
+    const b = await extractHistoryObservations(artifact(), { includeGenotypeDigest: true });
+    expect(a.generations[0].individuals.map((r) => r.genotypeDigest))
+      .toEqual(b.generations[0].individuals.map((r) => r.genotypeDigest));
   });
 });
 
@@ -338,7 +398,7 @@ describe('extractHistoryObservations — across generations, on a real run', () 
 
       const previous = g === 0 ? null : result.generations[g - 1];
       for (const row of gen.individuals) {
-        expect(row.genotypeDigest).toMatch(/^[0-9a-f]+$/);
+        expect(row.genotypeDigest).toMatch(/^[0-9a-f]{64}$/);
         if (g === 0) {
           expect(row.origin).toBe('initialized');
           expect(row.parentIndividualId).toBeNull();
@@ -357,6 +417,69 @@ describe('extractHistoryObservations — across generations, on a real run', () 
     }
     expect(elitesSeen, 'the run must actually produce elites, or this proves nothing')
       .toBeGreaterThan(0);
+  });
+
+  test('a scored individual absent from the population is REFUSED, never a null digest', async () => {
+    // The silent-null path. `?? null` here returned a row that reads like
+    // ordinary missing-optional-data, for an artifact whose fitness vector
+    // scores an individual its own population does not contain. Measured on
+    // this branch before the fix: `scored id 5 -> genotypeDigest null`, with
+    // no error anywhere.
+    //
+    // The pre-physics ID-set gate now refuses this artifact outright, which is
+    // the primary defence; the extractor's own check is the backstop.
+    const bytes = await runToTerminal();
+    const broken = await reforge(bytes, {
+      mutateRecord: (record, i) => {
+        if (i !== 0) return;
+        // Renumber the LAST population member, preserving strict ascent, and
+        // re-bind the vector's digest state so the identity mismatch is the
+        // ONLY fault left.
+        const p = new Uint8Array(record.components.population);
+        const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+        const count = dv.getUint32(4, true);
+        let off = 8;
+        let last = 8;
+        for (let k = 0; k < count; k += 1) { last = off; off += 8 + dv.getUint32(off + 4, true); }
+        dv.setUint32(last, 900, true);
+        record.components.population = p;
+        const v = new Uint8Array(record.components.fitnessVector);
+        new DataView(v.buffer, v.byteOffset, v.byteLength)
+          .setUint32(8, fnv1aFold(FNV_OFFSET_BASIS, p), true);
+        record.components.fitnessVector = v;
+      },
+    });
+    const err = await expectCode(
+      () => extractHistoryObservations(broken, { includeGenotypeDigest: true }),
+      'malformedHistory',
+    );
+    // The GATE is what refuses this, and naming its exact message is the point:
+    // an alternation over "either diagnosis" would pass whichever fired, and a
+    // sabotage pass would then be unable to tell the two apart.
+    expect(err.message).toMatch(/name different individuals/);
+    expect(err.context.component).toBe('population');
+
+    // HONEST LIMITATION, recorded rather than papered over. The extractor also
+    // carries its own `requireGenotypeDigest` backstop for this exact case, and
+    // that backstop is UNREACHABLE through this seam precisely because the gate
+    // above refuses first — a sabotage pass restoring the old `?? null` left
+    // this file green. It is kept as defence against a future format change
+    // that adds a legitimate way for the two components to disagree, and it is
+    // deliberately NOT claimed to be enforced by a test.
+  });
+
+  test('GATE C runs here too: a vector bound to a different spec is refused', async () => {
+    const bytes = await runToTerminal();
+    const broken = await reforge(bytes, {
+      mutateRecord: (record, i) => {
+        if (i !== 1) return;
+        const v = new Uint8Array(record.components.fitnessVector);
+        new DataView(v.buffer, v.byteOffset, v.byteLength).setUint32(14, 0xfeedface, true);
+        record.components.fitnessVector = v;
+      },
+    });
+    const err = await expectCode(() => extractHistoryObservations(broken), 'malformedHistory');
+    expect(err.message).toMatch(/evaluation spec digest state/);
   });
 
   test('GATE B runs here too: an onset beyond the executed steps is refused', async () => {

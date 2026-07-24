@@ -591,7 +591,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   // no caller-DATA object: reads numbers/bytes/handles the instrument skips
   deserializeGenotype: 'exempt: decodes a TypedArray (byte family, not plain data)',
   deserializePopulationSnapshot: 'exempt: TypedArray input',
-  peekPopulationSnapshotCount: 'exempt: TypedArray input',
+  peekPopulationSnapshotIds: 'exempt: TypedArray input',
   deserializePopulationInitialization: 'exempt: TypedArray input',
   deserializeEvaluationSpec: 'exempt: TypedArray input',
   deserializeFitnessVector: 'exempt: TypedArray input',
@@ -661,6 +661,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   checkExpectedIdentity: 'exempt: module-owned capture in',
   checkFitnessVectorCompatibility: 'exempt: module-owned verified record in',
   verifyFitnessVectorMetadataCoherence: 'exempt: module-owned verified record in',
+  verifyFitnessVectorSpecBinding: 'exempt: module-owned verified record in',
   checkRuntimeIdentity: 'exempt: two string records in',
   captureExpectedIdentity: 'CASES row',
   resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',

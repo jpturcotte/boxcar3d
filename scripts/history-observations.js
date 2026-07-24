@@ -45,7 +45,8 @@ import {
 } from '../src/sim/evolution-history.js';
 import {
   captureExpectedIdentity, checkExpectedIdentity, checkFitnessVectorCompatibility,
-  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+  verifyFitnessVectorMetadataCoherence, verifyFitnessVectorSpecBinding,
+  verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 import { deserializeFitnessVector } from '../src/sim/population-evaluation.js';
 import { deserializeLineage } from '../src/sim/evolution-lineage.js';
@@ -53,6 +54,7 @@ import { deserializePopulationSnapshot } from '../src/sim/population.js';
 import { evolutionFail } from '../src/sim/evolution-contract.js';
 import { bytesToHex, copyOrdinaryBytes } from '../src/sim/bytes.js';
 import { serializeGenotype } from '../src/sim/assembly.js';
+import { sha256 } from '../src/platform/sha256.js';
 
 export const HISTORY_OBSERVATIONS_SCHEMA = 'boxcar3d.history-observations/1';
 
@@ -74,6 +76,32 @@ const optionBytesFail = (path, value) => {
 };
 
 const DECLARED_OPTIONS = ['expectedHistoryDigestBytes', 'expectedGenerationIndex', 'includeGenotypeDigest'];
+
+/**
+ * A scored individual with no genome in its own generation's population is
+ * MALFORMED HISTORY, never a `null` digest.
+ *
+ * `?? null` here read as "no digest available" and returned a row that looks
+ * like ordinary missing-optional-data, for an artifact whose fitness vector
+ * scores an individual the population does not contain. Measured before the
+ * fix: `scored id 5 -> genotypeDigest null`, with no error anywhere.
+ *
+ * UNREACHABLE, AND SAID SO PLAINLY. The pre-physics id-set gate now refuses
+ * that artifact before this runs, so no committed test can redden by deleting
+ * this function — a sabotage pass restoring `?? null` left the suite green.
+ * That makes this DEFENCE IN DEPTH against a future format change that adds a
+ * legitimate way for the two components to disagree, not an enforced
+ * guarantee. The enforced one is the gate, and it is tested.
+ */
+function requireGenotypeDigest(digestById, individualId, generationIndex) {
+  const digest = digestById.get(individualId);
+  if (digest === undefined) {
+    evolutionFail('malformedHistory',
+      `generation ${generationIndex} individual ${individualId} is scored but absent from the population`,
+      { generationIndex, individualId });
+  }
+  return digest;
+}
 
 /**
  * Validate and own the caller's options, in one synchronous pass.
@@ -138,12 +166,19 @@ function captureOptions(options) {
  * only ever be detected against something the caller knows and the file does
  * not.
  *
- * `includeGenotypeDigest` attaches each member's genotype digest. It is off by
- * default because it costs a serialization per member, and on when a consumer
- * needs to count distinct INDIVIDUALS: elitism gives a surviving individual a
- * fresh id every generation, so neither id nor fitness identifies a genome
- * across generations. Fitness in particular is a proxy that silently merges two
+ * `includeGenotypeDigest` attaches each member's genotype digest: the
+ * **SHA-256 of the canonical serialized genotype bytes, as 64 lowercase
+ * hexadecimal characters**. It is off by default because it costs a
+ * serialization and a hash per member, and on when a consumer needs to count
+ * distinct INDIVIDUALS: elitism gives a surviving individual a fresh id every
+ * generation, so neither id nor fitness identifies a genome across
+ * generations. Fitness in particular is a proxy that silently merges two
  * different vehicles — PR #26 shipped a summary field that did exactly that.
+ *
+ * SHA-256 rather than FNV-1a32 by this repository's standing ruling: FNV is a
+ * drift/lock digest and an in-process mismatch sentinel, while this is durable
+ * content identity for offline analysis, where a cheap 32-bit collision would
+ * silently merge two genomes exactly as the fitness proxy did.
  *
  * NOT an `async function`, deliberately, and the same ruling `sha256` and
  * `resumeEvolutionRun` are written under: every caller-owned input is
@@ -166,6 +201,11 @@ async function extractFromOwned(owned, intake) {
   checkExpectedIdentity(verified, identity);
   checkFitnessVectorCompatibility(verified);
   verifyFitnessVectorMetadataCoherence(verified);
+  // Gate C too. This seam runs none of resume's header-validity checks — it
+  // never executes the spec — so there is no earlier diagnosis for it to
+  // preempt here, and a vector bound to a different specification is exactly
+  // the kind of incoherence an evidence reader must refuse rather than report.
+  verifyFitnessVectorSpecBinding(verified);
 
   const framing = verified.framing;
   const generations = [];
@@ -192,7 +232,18 @@ async function extractFromOwned(owned, intake) {
       const snapshot = deserializePopulationSnapshot(payload.components.population);
       for (let k = 0; k < snapshot.individuals.length; k += 1) {
         const m = snapshot.individuals[k];
-        genotypeDigestById.set(m.individualId, bytesToHex(serializeGenotype(m.genotype)));
+        // SHA-256 of the canonical serialized genotype bytes, as 64 lowercase
+        // hex characters. The bytes are module-owned (serializeGenotype
+        // returns a fresh array) and are handed to sha256, which validates and
+        // COPIES them in a synchronous prologue — so nothing a caller holds is
+        // read across this await.
+        //
+        // An earlier draft stored bytesToHex(serializeGenotype(...)): the
+        // WHOLE canonical stream as hex, ~1-2 KB per individual, under a name
+        // that says "digest". At campaign scale that is the dominant cost of
+        // the extraction output, and the name actively misleads.
+        genotypeDigestById.set(m.individualId,
+          bytesToHex(await sha256(serializeGenotype(m.genotype))));
       }
     }
 
@@ -217,7 +268,7 @@ async function extractFromOwned(owned, intake) {
         origin: provenance.origin,
         parentIndividualId: provenance.parentIndividualId,
         genotypeDigest: genotypeDigestById === null
-          ? null : genotypeDigestById.get(row.individualId) ?? null,
+          ? null : requireGenotypeDigest(genotypeDigestById, row.individualId, payload.generationIndex),
       }));
     }
 

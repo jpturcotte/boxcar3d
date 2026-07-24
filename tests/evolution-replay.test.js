@@ -52,6 +52,7 @@ const {
 } = await import('../src/sim/evolution-replay.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
+const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
@@ -126,6 +127,40 @@ const flipByte = (bytes, offset = 0) => {
   const copy = new Uint8Array(bytes);
   copy[offset] ^= 0xff;
   return copy;
+};
+
+// A population component's first genotype payload starts at byte 16:
+// u16 snapshotVersion | u16 genotypeVersion | u32 count | u32 id | u32 length.
+// Forging at or after this offset leaves the snapshot's STRUCTURE — its member
+// count, its ids and its length prefixes — intact, so the artifact stays
+// decodable and the fault is purely one of content.
+const POPULATION_GENOTYPE_PAYLOAD_OFFSET = 40;
+
+/**
+ * Forge a generation's population into a COHERENT artifact: flip a content
+ * byte, then re-bind the generation's fitness vector to the forged bytes.
+ *
+ * WHY THE RE-BIND IS REQUIRED, and why these tests are stronger for it. A
+ * fitness vector declares `populationSnapshotDigestState`, the FNV state its
+ * producer folded over the population it scored. Flipping a population byte
+ * without touching the vector leaves an artifact that is INTERNALLY
+ * CONTRADICTORY, and the pre-physics coherence gate now refuses it as
+ * `malformedHistory` — correctly, and before replay ever runs.
+ *
+ * That is the right behaviour and the wrong test: it would prove the gate
+ * works, not that replay localizes a divergence. So the vector is re-bound,
+ * making the artifact perfectly self-consistent and leaving exactly one fault
+ * — it describes a population this environment does not reproduce — which is
+ * precisely what deterministic replay exists to catch. It is the same
+ * discipline the fitness-value divergence test below already states: a forgery
+ * that is refused earlier leaves its test passing for the wrong reason.
+ */
+const forgePopulation = (record, offset = POPULATION_GENOTYPE_PAYLOAD_OFFSET) => {
+  record.components.population = flipByte(record.components.population, offset);
+  const v = new Uint8Array(record.components.fitnessVector);
+  new DataView(v.buffer, v.byteOffset, v.byteLength)
+    .setUint32(8, fnv1aFold(FNV_OFFSET_BASIS, record.components.population), true);
+  record.components.fitnessVector = v;
 };
 
 async function expectCodeAsync(promiseFn, code, re) {
@@ -618,28 +653,28 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
-        if (i === 0) record.components.population = flipByte(record.components.population, 40);
+        if (i === 0) forgePopulation(record);
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
     expect(err.context.stage).toBe('initialization');
     expect(err.context.generationIndex).toBe(0);
     expect(err.context.lastAgreedGenerationIndex).toBeNull();
-    expect(err.context.byteOffset).toBe(40);
+    expect(err.context.byteOffset).toBe(POPULATION_GENOTYPE_PAYLOAD_OFFSET);
   });
 
   test("generation 1's population diverges at stage 'population', with generation 0 agreed", async () => {
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
-        if (i === 1) record.components.population = flipByte(record.components.population, 12);
+        if (i === 1) forgePopulation(record);
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
     expect(err.context.stage).toBe('population');
     expect(err.context.generationIndex).toBe(1);
     expect(err.context.lastAgreedGenerationIndex).toBe(0);
-    expect(err.context.byteOffset).toBe(12);
+    expect(err.context.byteOffset).toBe(POPULATION_GENOTYPE_PAYLOAD_OFFSET);
     expect(typeof err.context.expectedByte).toBe('number');
     expect(typeof err.context.actualByte).toBe('number');
     expect(err.context.expectedByte).not.toBe(err.context.actualByte);
@@ -782,6 +817,212 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const both = new Uint8Array(contentOnly);
     both[both.length - 1] ^= 0xff;
     await expectCodeAsync(() => resumeEvolutionRun(both), 'historyDigestMismatch');
+  });
+
+  // ==========================================================================
+  // CROSS-COMPONENT BINDINGS — every one of these artifacts is CRYPTOGRAPHICALLY
+  // PERFECT. Framing, all four component digests, the generation chain and the
+  // whole-history digest are recomputed by `reforge` and verify cleanly. What
+  // is wrong is a SEMANTIC relationship the outer format does not bind, and
+  // each must be refused as malformed current-format history before physics.
+  //
+  // Measured on this branch before these checks existed: every case below
+  // reached `replayDivergence` instead — and for a generation past the first,
+  // only after every earlier generation had been fully re-simulated. "The
+  // engine drifted" for a fault entirely inside the file.
+  // ==========================================================================
+
+  // Re-bind the vector to whatever population the record now carries, so a case
+  // that means to test ONE binding does not trip a different one first.
+  const rebindPopulationState = (record) => {
+    const v = new Uint8Array(record.components.fitnessVector);
+    new DataView(v.buffer, v.byteOffset, v.byteLength)
+      .setUint32(8, fnv1aFold(FNV_OFFSET_BASIS, record.components.population), true);
+    record.components.fitnessVector = v;
+  };
+  const setVectorU32 = (record, offset, value) => {
+    const v = new Uint8Array(record.components.fitnessVector);
+    new DataView(v.buffer, v.byteOffset, v.byteLength).setUint32(offset, value, true);
+    record.components.fitnessVector = v;
+  };
+  // The LAST population member's individualId. It must be the last one and the
+  // new value must stay above its predecessor, or the snapshot's own
+  // strictly-ascending rule fires first and the test proves the wrong thing.
+  // Layout: u16 ver | u16 genoVer | u32 count | per member: u32 id | u32 len | bytes.
+  const setLastPopulationId = (record, value) => {
+    const p = new Uint8Array(record.components.population);
+    const dv = new DataView(p.buffer, p.byteOffset, p.byteLength);
+    const count = dv.getUint32(4, true);
+    let off = 8;
+    let last = 8;
+    for (let i = 0; i < count; i += 1) {
+      last = off;
+      off += 8 + dv.getUint32(off + 4, true);
+    }
+    dv.setUint32(last, value, true);
+    record.components.population = p;
+  };
+
+  test('a vector declaring the WRONG population digest state is refused before physics', async () => {
+    // The general form of the member-count fault: the vector says it scored a
+    // population whose bytes fold to something other than the one filed
+    // beside it. Both states recompute exactly from bytes the artifact already
+    // carries, so this costs nothing.
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => { if (i === 1) setVectorU32(record, 8, 0xdeadbeef); },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/declares population digest state 3735928559/);
+    expect(err.context).toMatchObject({ generationIndex: 1, field: 'populationSnapshotDigestState', stored: 3735928559 });
+    expect(typeof err.context.computed).toBe('number');
+    expect(err.context.computed).not.toBe(err.context.stored);
+    // The load-bearing half: generation 1 is DERIVED, so reaching this fault by
+    // replay would have required evaluating generations 0 and 1 first.
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a vector declaring the WRONG evaluation spec digest state is refused before physics', async () => {
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => { if (i === 0) setVectorU32(record, 14, 0xfeedface); },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/evaluation spec digest state 4277009102/);
+    expect(err.context).toMatchObject({ generationIndex: 0, field: 'evaluationSpecDigestState' });
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a SUBSTITUTED population component is refused before physics', async () => {
+    // Not a flipped byte — a whole valid population from a different run,
+    // swapped in with every digest recomputed. Its member ids happen to match,
+    // so the count and id checks pass and the digest-state binding is what
+    // catches it.
+    const artifact = await runGenerations(1);
+    const foreign = await runGenerations(1, config({ evolution: { maxGenerations: 8 } }));
+    const foreignPop = decodeGenerationPayload(
+      decodeHistoryFraming(foreign).generations[0].payloadBytes,
+    ).components.population;
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i === 0) record.components.population = flipByte(foreignPop, POPULATION_GENOTYPE_PAYLOAD_OFFSET);
+      },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory',
+      /declares population digest state/);
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test.each([
+    ['a fitness-vector id absent from the population', 'population', (record) => {
+      // Renumber the LAST population member. Ids stay strictly ascending, the
+      // count is unchanged, and the digest state is re-bound — so ONLY the
+      // identities disagree.
+      setLastPopulationId(record, 900);
+      rebindPopulationState(record);
+    }],
+    ['a lineage id-set mismatch', 'lineage', (record) => {
+      // Layout: u16 lineageVersion | u32 generationIndex | u32 individualCount,
+      // then fixed-stride rows beginning with u32 individualId. The stride is
+      // DERIVED from the component rather than hard-coded, and the mutation
+      // asserts it actually changed something: an earlier draft poked offset 6
+      // (the COUNT, producing a length error) and then offset 10 with the value
+      // 0 — which is what row 0 already held, so the forgery was a silent
+      // no-op and the test passed for no reason at all.
+      const l = new Uint8Array(record.components.lineage);
+      const dv = new DataView(l.buffer, l.byteOffset, l.byteLength);
+      const count = dv.getUint32(6, true);
+      const stride = (l.length - 10) / count;
+      expect(Number.isInteger(stride), 'lineage rows must be fixed-stride').toBe(true);
+      const lastIdOffset = 10 + stride * (count - 1);
+      const before = dv.getUint32(lastIdOffset, true);
+      // Raise the LAST row's id: strictly ascending is preserved, so only the
+      // identities disagree.
+      dv.setUint32(lastIdOffset, 900, true);
+      expect(dv.getUint32(lastIdOffset, true), 'the forgery must change the id').not.toBe(before);
+      record.components.lineage = l;
+    }],
+  ])('%s is refused before physics', async (_label, component, mutate) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => { if (i === 0) mutate(record); },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/name different individuals/);
+    expect(err.context.component).toBe(component);
+    expect(typeof err.context.position).toBe('number');
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a lineage with FEWER rows than the vector scores is refused before physics', async () => {
+    // The length tail of the id comparison, which a sabotage pass proved was
+    // unreachable by every other case here: the population side is caught
+    // first by the member-count check, so only LINEAGE — which has no count
+    // check of its own — can reach it. Without this the tail could be deleted
+    // with the whole suite green.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i !== 0) return;
+        const l = new Uint8Array(record.components.lineage);
+        const dv = new DataView(l.buffer, l.byteOffset, l.byteLength);
+        const count = dv.getUint32(6, true);
+        const stride = (l.length - 10) / count;
+        expect(Number.isInteger(stride)).toBe(true);
+        // Drop the LAST row and say so, leaving a lineage that is perfectly
+        // well-formed on its own terms and simply names one fewer individual.
+        const shorter = l.slice(0, l.length - stride);
+        new DataView(shorter.buffer, shorter.byteOffset, shorter.byteLength)
+          .setUint32(6, count - 1, true);
+        record.components.lineage = shorter;
+      },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/name different individuals/);
+    expect(err.context.component).toBe('lineage');
+    expect(err.context.otherId).toBeNull(); // the lineage simply ran out
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('PRECEDENCE: corruption still outranks a semantic contradiction', async () => {
+    // An artifact that is BOTH semantically contradictory and damaged at the
+    // trailer must report the damage. The new checks are on the
+    // malformed-current-format rung, below corruption — adding them must not
+    // have quietly promoted them above it.
+    const artifact = await runGenerations(1);
+    const contradictory = await reforge(artifact, {
+      mutateRecord: (record, i) => { if (i === 0) setVectorU32(record, 8, 0xdeadbeef); },
+    });
+    // Alone: the semantic complaint.
+    await expectCodeAsync(() => resumeEvolutionRun(contradictory), 'malformedHistory',
+      /declares population digest state/);
+    // Plus a broken whole-history digest (the stored trailer, last 32 bytes):
+    // corruption wins.
+    const both = new Uint8Array(contradictory);
+    both[both.length - 1] ^= 0xff;
+    await expectCodeAsync(() => resumeEvolutionRun(both), 'historyDigestMismatch');
+  });
+
+  test('PRECEDENCE: a forged HEADER is diagnosed as a forged header, not as a vector disagreement', async () => {
+    // The spec binding compares a vector against the HEADER, so it must not run
+    // until the header's own spec has proven deterministic and inside the work
+    // budget — otherwise a forged header is reported by its symptom. This is
+    // why the binding is gate C and not part of gate B; three committed tests
+    // changed their diagnosis when it sat in gate B.
+    const artifact = await runGenerations(1);
+    const nonDeterministic = await reforge(artifact, {
+      mutateHeader: (h) => {
+        const spec = deserializeEvaluationSpec(h.evaluationSpecBytes);
+        return { ...h, evaluationSpecBytes: serializeEvaluationSpec({ ...spec, deterministic: false }) };
+      },
+    });
+    await expectCodeAsync(() => resumeEvolutionRun(nonDeterministic), 'malformedHistory',
+      /not deterministic/);
   });
 
   test('the SAME bound applies to firstCatastrophicStep, not just the alert step', async () => {
@@ -935,7 +1176,7 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const artifact = await runGenerations(3);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
-        if (i >= 1) record.components.population = flipByte(record.components.population, 8);
+        if (i >= 1) forgePopulation(record);
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');

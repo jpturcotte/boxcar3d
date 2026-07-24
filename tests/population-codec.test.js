@@ -18,7 +18,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   POPULATION_SNAPSHOT_VERSION, bytesEqual, deserializePopulationSnapshot,
-  serializePopulationSnapshot,
+  peekPopulationSnapshotIds, serializePopulationSnapshot,
 } from '../src/sim/population.js';
 import {
   POPULATION_INITIALIZER_VERSION, createInitialPopulation,
@@ -230,6 +230,50 @@ describe('population snapshot — malformed streams fail loud', () => {
     view.setUint32(8 + 8 + memberLength(), 3, true); // ... second id 3
     expect(() => deserializePopulationSnapshot(bytes))
       .toThrow(/individuals\[1\]\.individualId \(3 must be strictly ascending \(previous 9\)\)/);
+  });
+
+  test('peekPopulationSnapshotIds enforces the SAME ascent — the premise of ordered comparison', () => {
+    // THIS IS WHY IT MATTERS, and it is not decoration. The pre-physics
+    // cross-component gate compares the fitness vector's ids against these as
+    // ORDERED SEQUENCES, and that is only equivalent to set equality because
+    // every side has had its canonical ordering ESTABLISHED by its own decoder
+    // first. If this peek stopped validating ascent, sequence comparison would
+    // silently become an ordering assumption standing in for identity — and a
+    // sabotage pass confirmed the ascent check could be deleted with the whole
+    // replay and observation suites green.
+    const good = base();
+    expect(peekPopulationSnapshotIds(good)).toEqual([3, 9]);
+
+    const bytes = base();
+    const view = new DataView(bytes.buffer);
+    view.setUint32(8, 9, true); // first id 9 ...
+    view.setUint32(8 + 8 + memberLength(), 3, true); // ... second id 3
+    expect(() => peekPopulationSnapshotIds(bytes))
+      .toThrow(/individuals\[1\]\.individualId \(3 must be strictly ascending \(previous 9\)\)/);
+  });
+
+  test('peekPopulationSnapshotIds agrees with the full decoder, and reads no genotype', () => {
+    // Equivalence with the authority it stands in for. It must also REFUSE a
+    // stream the full decoder refuses for structural reasons (a lying length
+    // prefix), since it walks those prefixes to skip payloads.
+    const bytes = base();
+    const full = deserializePopulationSnapshot(bytes);
+    expect(peekPopulationSnapshotIds(bytes))
+      .toEqual(full.individuals.map((m) => m.individualId));
+
+    const lying = base();
+    new DataView(lying.buffer).setUint32(12, 0xffff, true); // member 0's length
+    expect(() => peekPopulationSnapshotIds(lying)).toThrow(/population/);
+
+    // But a genotype that the FULL decoder rejects is invisible here: the peek
+    // deliberately never decodes one. That is the whole point of its existence
+    // (a max-length artifact would otherwise decode a quarter-million
+    // genotypes just to read their ids), and it is safe because the payload is
+    // separately covered by the component digest and by replay.
+    const nanGene = base();
+    new DataView(nanGene.buffer).setFloat64(16 + 2, NaN, true);
+    expect(() => deserializePopulationSnapshot(nanGene)).toThrow(/assembly: invalid genotype/);
+    expect(peekPopulationSnapshotIds(nanGene)).toEqual([3, 9]);
   });
 
   test('a malformed genotype payload (NaN gene) inside a member', () => {

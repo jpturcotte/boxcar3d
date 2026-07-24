@@ -112,7 +112,9 @@ evidence notes. Reference only; never import from `legacy/`.
   symmetry prior, S0/S1 mask, driven-by-construction, + the provenance
   manifest), `population-evaluation.js` (the deterministic per-individual
   evaluator on ISOLATED worlds: fitness policy, spawn placement, evaluation-
-  spec + fitness-vector encodings, champion selection, selection-pool capture),
+  spec + fitness-vector encodings — v3 persists the five integrity
+  OBSERVATIONS, with `peekFitnessVectorVersions` as the layered version
+  prefix reader — champion selection, selection-pool capture),
   `population-fixtures.js` + `population-locks.js` (the committed population/
   fitness contract, literals only), `evolution-operators.js` (the pure Phase 1B
   tournament, elitism, and continuous-mutation operators),
@@ -123,7 +125,8 @@ evidence notes. Reference only; never import from `legacy/`.
   agreement), `evolution-history.js` (the fixed byte-only history codec, the
   seven domain-separated SHA-256 formulas, the evaluation-metadata component,
   and the byte ceilings), `evolution-replay.js` (private ordered verification,
-  the runtime/freshness gates, first-divergence reporting),
+  the runtime/freshness gates, the two pre-physics fitness-vector gates
+  — compatibility and metadata coherence — first-divergence reporting),
   `evolution-run.js` (THE deep module: the opaque run and the one private
   generation transition that `advance()` and replay share),
   `evolution-fixtures.js` + `evolution-locks.js` (the committed evolution
@@ -140,6 +143,12 @@ evidence notes. Reference only; never import from `legacy/`.
   finite-explosion forensic instrument), `explosion-witnesses.js` (the
   frozen witness identities + the materialized minimal reproducer —
   investigation fixtures, not a production contract),
+  `history-observations.js` (the PR #27 offline read seam:
+  `extractHistoryObservations` returns per-individual integrity evidence from a
+  cryptographically VERIFIED history with no physics; decoded rows only — no
+  aggregation, gates or counterfactuals, which are PR #28's),
+  `generate-independent-evolution-artifact.mjs` (the spec-derived encoder behind
+  the committed v3 interop oracle; imports nothing from the modules it attests),
   `experiment-evolution.js` (the PR 4 EXPERIMENT: the predeclared protocol, the
   pure history summarizer, the screening/confirmation decision logic, a
   resumable filesystem runner, and the SHA-256 evidence report — an experiment,
@@ -2476,7 +2485,8 @@ single clean commit `9c5f24c`):**
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
   step) in the fitness vector so contamination is measurable from history rather
   than by re-evaluation (a versioned encoding change — the vector currently
-  stores status only, which is why §9's diagnosis needed a forensic re-run);
+  stores status only, which is why §9's diagnosis needed a forensic re-run)
+  — **DONE: PR #27, fitness vector v3; see its block below**;
   (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
   (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
   Structural mutation, worker sharding and segmented history stay out of scope
@@ -2485,6 +2495,130 @@ single clean commit `9c5f24c`):**
   screening terrain · 20260756–20260771 confirmation population ·
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
+
+**PR #27 landed - fitness vector v3: the integrity OBSERVATIONS are persisted,
+and replay refuses stale or incoherent vectors before physics. Representation
+and observability ONLY - no policy, selection or mutation behaviour changed.
+Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
+- **THE POINT.** The detector already computed `peakBodySpeed`/`peakSpeedDelta`/
+  `peakStepDisplacement`/`firstAlertStep`/`firstCatastrophicStep` on every
+  evaluation and the vector threw them away, keeping only the verdict - which is
+  why PR 4 had to RE-SIMULATE its own campaign to diagnose contamination it had
+  already recorded. `FITNESS_VECTOR_VERSION` 2 -> 3 (header unchanged at 22 B;
+  member 14 -> 48 B, every pre-existing offset preserved).
+  `INTEGRITY_POLICY_VERSION` stays 1, `FITNESS_POLICY_VERSION` stays 2, mutation
+  defaults stay (0.05, 0.05). **An alert-bearing vehicle still reports `ok` and
+  is STILL FULLY SELECTABLE on main.** This PR does not fix the solver defect and
+  does not implement escalation; it is the evidence layer beneath that decision,
+  which PR #28 owns.
+- **`+Infinity` peaks are ACCEPTED, and the obvious rule was wrong.**
+  `isCanonicalPeak` is `typeof v === 'number' && v >= 0` - NaN and -Infinity are
+  rejected by the comparison, the typeof gate stops the string '3'.
+  `foldIntegrity` takes sqrt(vx^2+vy^2+vz^2) as the peak whenever greater and
+  reaches the CATASTROPHIC predicate BEFORE the non-finite one, so
+  `{status:'numericalDivergence', peakBodySpeed: Infinity}` is legal policy-v1
+  output; a `Number.isFinite` rule would have made `serializeFitnessVector` THROW
+  inside `evaluatePopulation` on the run's own defensive-net result - a codec
+  stricter than its producer, failing on exactly the results most worth
+  persisting. **Consequence for PR #28:** `canonicalJson` refuses non-finite
+  numbers, so the evidence layer needs an `+Infinity` representation before
+  summarizing observations.
+- **Optional steps carry a PRESENCE FLAG, not a sentinel** - `null` ("never
+  crossed") and step 0 ("crossed at the post-realization capture") are different
+  facts. An ABSENT step's u32 payload is canonically 0, written unconditionally
+  and REJECTED when nonzero; otherwise one semantic value would have 2^32 byte
+  identities and decode-then-encode would not reproduce its input.
+- **Coherence rules are POLICY-V1-CONDITIONAL** (catastrophic implies alert at or
+  before it; `ok` implies no catastrophic step; `numericalDivergence` implies one
+  exists), shared by encoder and decoder through one `validatedObservations`
+  walk. Rule 1 is DERIVED from the threshold ordering and carries a drift tooth.
+  The conditioning is deliberate: PR #29 will classify alert-only crossings as
+  `numericalDivergence` with NO catastrophic step, and baking those in as eternal
+  v3 invariants would force a needless v4 bump or an undo. `nonFinite` is
+  unconstrained both ways - status LATCHES at the first failure.
+- **`captureEvaluationMemberResult` is a NEW capture, not an extension of
+  `captureVehicleResult`** - that helper backs `isVehicleResultValid`, whose
+  contract is deliberately integrity-INDEPENDENT, and folding observation
+  validation in would let it throw on a missing block: a production semantic
+  change in the one PR promising none. It also collapses `evaluatePopulation`'s
+  three independent readings of one result into one.
+- **TWO PRE-PHYSICS GATES (`evolution-replay.js`), and their POSITION is the
+  ruling.** The vector is an OPAQUE component - the outer header binds every
+  other version but not the vector's - so a stale or self-contradictory vector
+  was invisible to stages 3-7 and surfaced at stage 10 as `replayDivergence`
+  AFTER a generation was re-simulated, which reads as engine drift when the file
+  is simply old. `EVOLUTION_HISTORY_VERSION` stays **1**; the header is
+  untouched. 8a `checkFitnessVectorCompatibility` -> `unsupportedVersion`;
+  8b `verifyFitnessVectorMetadataCoherence` -> `malformedHistory`. They run AFTER
+  stage 8, not inside stage 5, so a stale artifact still proves its framing, all
+  four component digests, its chain and its history digest before being refused -
+  which is what lets a superseded artifact serve as a regression witness. Ladder
+  preserved: corruption -> wrong artifact -> unsupported format -> malformed
+  current format -> runtime mismatch -> deterministic divergence.
+  **Gate A is LAYERED** (unrecognized vector version means read nothing further;
+  parsing an unknown layout would be guesswork reported as fact) and names the
+  exact field, across all FIVE declared versions. **Gate B's bound is
+  INCLUSIVE** - captures are 0..maxSteps (`captureStep(0)` then `i <= maxSteps`),
+  so an onset at exactly `executedSteps` is legal and `<` would reject correct
+  artifacts, only the most interesting ones; each generation is checked against
+  ITS OWN metadata. Facts collect as SCALARS ONLY (a max is a complete check
+  against an upper bound) so verification's one-payload-at-a-time memory model
+  holds. **`REPLAY_STAGES` is NOT modified** - it is stage 10's comparison
+  vocabulary, not the verification ladder.
+- **DELIBERATE RE-LOCK, and the movement pattern IS the evidence** (both scripts
+  ASSERT the unchanged half and refuse to write if an unrelated digest moves):
+  `population-locks` `fitnessVectorDigest a6d04f75 -> fd4222eb` with every
+  per-member fitness/valid literal, the champion, the champion trace and the
+  snapshot/initialization/spec digests BIT-IDENTICAL; `evolution-locks` every
+  `fitnessVectorDigest`/`payloadByteLength` and therefore every
+  `generationDigest`, `historyDigest da573ca5 -> 8cab787f`, bytes 12126 -> 12738
+  - with **`headerDigest` UNCHANGED**, plus every population/metadata/lineage
+  component digest. headerDigest not moving is load-bearing: the header binds no
+  vector version, so an opaque component's contents cannot reach it. Nothing
+  outside those two files moved (A-D, the five terrain locks, noise, boulder
+  hull, and every version constant but `FITNESS_VECTOR_VERSION`).
+  **The lock now carries the observations** - necessarily, since a clean status
+  no longer determines the bytes - recording the fixture's margins for the first
+  time: 20/20 alert-free, peak body speed 0.9696-4.8661 m/s, 5.14x below the
+  25 m/s line at the worst member. MEASURED VALUES, never thresholds.
+- **Oracles.** `scripts/generate-independent-evolution-artifact.mjs` encodes from
+  the WRITTEN SPEC - no imports from evolution-history/evolution-lineage/
+  population/population-evaluation, `node:crypto` instead of the platform
+  adapter - and reproduces production's bytes EXACTLY
+  (`tests/fixtures/evolution-v3-independent.base64`). Its independence is
+  STRUCTURAL, not organizational: authored here, it catches an encoder drifting
+  from the spec, not a spec misread twice - which is why the hand-computed
+  118-byte expected-stream literal in `tests/evaluation-codec.test.js` is kept as
+  a second, narrower oracle (its two members are the null-vs-step-0
+  discriminator, byte-identical zero payloads separated only by the flag).
+  **The v2 Kimi artifact is PRESERVED, not regenerated** - regenerating it
+  through this repo's own encoder would have destroyed the only property that
+  made it valuable. It keeps every leg the outer format owns and becomes the
+  early-refusal witness, in Node AND Chromium.
+- **`scripts/history-observations.js`** - `extractHistoryObservations` returns
+  per-individual evidence from a CRYPTOGRAPHICALLY VERIFIED artifact with no
+  physics, running the same `verifyHistoryArtifact` + both gates the resume path
+  runs and sharing their taxonomy (no second script-local notion of "valid
+  history"). Decoded rows ONLY - no aggregation, rates, thresholds or
+  counterfactuals, which is what stops an offline reader becoming a second
+  unversioned fitness policy. Placed in `scripts/` so it does not widen the
+  derived byte-family lint scope for no gain. NOTE the contrast:
+  `summarizeEvolutionHistory` decodes WITHOUT verifying - sound for in-process
+  `run.historyBytes()`, NOT sound for an artifact read back from disk.
+- **Sabotage-verified:** removing copy-before-await, skipping the compatibility
+  gate, and decoding without verifying redden 1/2/4 tests respectively. Also
+  fixed a vacuous assertion authored in this PR - `Object.isFrozen(undefined)` is
+  TRUE, so a frozenness check passed against a decoder emitting no block at all;
+  presence and key set are established first.
+- Full suite green (61 files, 1705 tests); determinism gate green; pinned
+  Chromium 21/21 reproducing every re-locked digest on the FIRST run; lint and
+  build clean. **No new seeds allocated** - the v3 interop artifact re-encodes
+  the existing 20260721/20260722 interop run.
+- **NEXT: PR #28** - measure alert-band selection exposure from persisted history
+  and decide escalation. Its handoff (confirmed findings carried forward so they
+  are not rediscovered, incl. that `analyzeTrace` CANNOT adjudicate a sub-alert
+  case and that whole-run peaks do not measure boundary proximity at onset) is
+  section 9 of the PR #27 record.
 
 ### Phase 1B PR 2 operator boundary
 

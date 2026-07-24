@@ -70,10 +70,17 @@ pressure.
 2. **Contamination in the breeding *pool*, not just at the champion** —
    tournament selection samples the whole pool, so the champion is not the
    mechanism.
-3. Both of the above are far easier if the integrity **observations** (peak body
-   speed, first alert step) are **persisted in the fitness vector** first (a
-   versioned encoding change) — today the vector stores only status, which is
-   why PR 4's diagnosis needed a forensic re-run.
+3. ~~Both of the above are far easier if the integrity **observations** (peak
+   body speed, first alert step) are **persisted in the fitness vector** first
+   (a versioned encoding change) — today the vector stores only status, which is
+   why PR 4's diagnosis needed a forensic re-run.~~
+   **DISCHARGED by PR #27 (2026-07-24).** `FITNESS_VECTOR_VERSION` is 3 and all
+   five observations are canonical in the vector, in evolution history, and
+   through replay. `scripts/history-observations.js` reads them back from a
+   cryptographically verified artifact with no physics. Record:
+   `docs/fitness-vector-v3-integrity-observations-2026-07.md`. **No policy
+   moved** — integrity v1, fitness v2, and alert-bearing results are still
+   selectable.
 4. The policy bump is a deliberate re-lock (Node 3-OS + pinned Chromium).
 
 **Effort:** small–moderate, all in-repo, no dependency change.
@@ -164,13 +171,18 @@ it.**
   lands, so a future reader does not mistake a masked defect for a solved one.
 
 **Concrete sequence:**
-1. Persist integrity observations in the fitness vector (enables A's pool +
-   false-negative measurements, and makes contamination readable from history).
-2. Land A (alert-band escalation) with the false-negative acceptance test —
-   the version bump + re-lock.
-3. Re-run PR 4's protocol on the now-clean signal → take the mutation-default
+1. ~~Persist integrity observations in the fitness vector~~ **DONE — PR #27.**
+   Contamination is now readable from history without re-simulating, which is
+   what A's pool and false-negative measurements were waiting on.
+2. **PR #28 — measure and decide.** Breeding-pool, elite and parent exposure
+   from persisted history; the false-negative side with an *independent*
+   adjudication rule (kinematic thresholds cannot adjudicate themselves — see
+   the PR #27 record §9); predeclared gates; a mechanical verdict.
+3. Land A (alert-band escalation) with the false-negative acceptance test —
+   the version bump + re-lock. **Conditional on step 2's verdict.**
+4. Re-run PR 4's protocol on the now-clean signal → take the mutation-default
    decision (extend the grid past 0.20; add `p0.100-m0.200`).
-4. **In parallel, one experiment for B:** source-build core 0.34 with PR #235
+5. **In parallel, one experiment for B:** source-build core 0.34 with PR #235
    revived, drive the multibody 2×2 / a minimal S0 build, measure peak body
    speed. If it stays quiescent under drive, B graduates from "named follow-up"
    to a real representation-migration proposal with its own decision record.

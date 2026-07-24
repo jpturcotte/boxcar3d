@@ -6,8 +6,28 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
-deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
+**Status:** GA Phase 1B PR #27 — **fitness vector v3** — landed on PR 4's broad
+evolution experiment. Saved evolution histories now canonically preserve the
+five integrity **observations** the online detector already computed
+(`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
+`firstCatastrophicStep`), so *"was this champion locomotion or constraint-solver
+divergence?"* is answerable **from bytes, without re-simulating** — the question
+PR 4 had to re-run its own campaign to answer.
+**This changes what is RECORDED, not what is selected.** Integrity policy stays
+v1, fitness policy stays v2, mutation defaults stay `{ 0.05, 0.05 }`, and an
+alert-bearing vehicle still reports `integrity.status: 'ok'` and is **still
+fully selectable**. It does not fix the solver defect and does not implement the
+escalation — it is the evidence layer beneath that decision, which PR #28 owns.
+Replay also gained two pre-physics gates, so a stale or incoherent artifact is
+refused as an unsupported *format* (naming the exact field) instead of
+surfacing as `replayDivergence` after a generation has been re-simulated —
+which read like engine drift when the truth was that the file was old. The
+outer history version stays 1 and `headerDigest` did not move, which is what
+makes this a representation change rather than a semantic one. Full record:
+[`docs/fitness-vector-v3-integrity-observations-2026-07.md`](docs/fitness-vector-v3-integrity-observations-2026-07.md).
+
+**Previously:** GA Phase 1B PR 4 — the broad evolution experiment — landed on
+PR 3's deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
 screening on seeds 20260744–20260755 then held-out confirmation on the disjoint
 20260756–20260787, 70 minutes, all from one clean commit) shows mutation-only

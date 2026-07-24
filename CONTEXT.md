@@ -96,6 +96,46 @@ Phase-1A finite-explosion tail (a vehicle catapulted to 8.17e6 m and still
 zero: it ranks below every finite result, and it is reported as `null`, never
 as `NaN`, `Infinity`, or a sentinel number.
 
+## integrity observations
+
+The five kinematic measurements the online detector
+(`src/sim/integrity.js`) records on **every** evaluation, whatever its verdict:
+`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement` (whole-run maxima) and
+`firstAlertStep`, `firstCatastrophicStep` (onset capture indices, or `null` for
+"never crossed").
+
+Since **fitness vector v3** (PR #27) they are persisted per individual, so they
+can be read back from a saved history without re-simulating. Before v3 only the
+*verdict* survived, which is why PR 4 had to re-run its own campaign to
+diagnose the contamination it had recorded.
+
+Two properties bite in practice and are easy to get wrong:
+
+- **They are WHOLE-RUN maxima, not values at the crossing.** They cannot say
+  which of the three alert predicates fired first, or how far over its
+  threshold it was at that moment. A metric built on them is *whole-run
+  severity*, never "distance from the boundary at onset".
+- **A peak may be `+Infinity`.** That is legal policy-v1 output, not corruption
+  — see the PR #27 record §2.2. `NaN` and negatives are refused.
+
+## alert-bearing
+
+An individual whose `firstAlertStep` is not `null` — the alert band (25 m/s and
+its companions) was crossed at least once.
+
+**An alert-bearing individual is NOT a failure under current policy.** Policy v1
+treats the alert band as an *observation*; only the catastrophic band and
+non-finite state are failures. So an alert-bearing result reports
+`integrity.status: 'ok'`, carries its raw fitness, and is **fully selectable** on
+`main` today. That is precisely the open band PR 4 measured evolution
+exploiting, and whether to close it is a decision PR #28 owns — PR #27 only made
+the evidence readable.
+
+Do not use "alert-bearing" and "divergent" interchangeably. An alert crossing is
+a *locator*, not proof of instability: an unusual but legitimate impact can
+cross it, and establishing divergence needs evidence independent of the same
+thresholds.
+
 ## genotype uniqueness
 
 The count of DISTINCT canonical genotype byte streams in a generation

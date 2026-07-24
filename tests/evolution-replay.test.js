@@ -254,6 +254,31 @@ describe('resume and continuation', () => {
       .toBe(INDEPENDENT_V3_TERMINAL_HISTORY_DIGEST);
   });
 
+  test('WRONG ARTIFACT outranks UNSUPPORTED FORMAT when both are true', async () => {
+    // The ordering the compatibility gate's POSITION exists for, and the only
+    // property that position actually buys — a sabotage pass moving the gate
+    // one line earlier left everything else green.
+    //
+    // The caller holds an expected digest and hands over a file that is BOTH
+    // the wrong one AND an old format. The actionable answer is "go find the
+    // right file", not "migrate this one": a caller told the format is stale
+    // may set off on a migration they never needed. So stage 8 wins.
+    const wrongExpected = new Uint8Array(32).fill(0x5a);
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(kimiFixtureBytes(), { expectedHistoryDigestBytes: wrongExpected }),
+      'staleOrWrongArtifact',
+    );
+    expect(err.code).not.toBe('unsupportedVersion');
+    // …and with the RIGHT expectation, the format verdict is what comes back.
+    const framing = decodeHistoryFraming(kimiFixtureBytes());
+    await expectCodeAsync(
+      () => resumeEvolutionRun(kimiFixtureBytes(), {
+        expectedHistoryDigestBytes: framing.historyDigestBytes,
+      }),
+      'unsupportedVersion',
+    );
+  });
+
   test('...and is then refused as an UNSUPPORTED FORMAT, before any physics', async () => {
     // The diagnosis must name the format, not the environment. Before the
     // compatibility gate existed this artifact reached stage 10 and reported

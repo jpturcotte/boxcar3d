@@ -309,14 +309,28 @@ function collectFitnessVectorFacts(payload, generationIndex) {
  * self-consistency check and the external identity check, and BEFORE the
  * runtime gate or any physics.
  *
- * WHY THIS POSITION, precisely. The failure ladder is corruption -> wrong
- * artifact -> unsupported format -> malformed current format -> runtime
- * mismatch -> deterministic divergence, and each rung has a different remedy.
- * Raising here rather than during component verification keeps a stale
- * artifact's OWN self-consistency legs reachable: a v2 history still proves
- * its framing, its component digests, its chain and its whole-history digest
- * before being refused for its format, which is exactly what makes it usable
- * as a regression witness.
+ * WHY THIS POSITION, precisely, and what it does NOT buy. The failure ladder is
+ * corruption -> wrong artifact -> unsupported format -> malformed current
+ * format -> runtime mismatch -> deterministic divergence, and each rung has a
+ * different remedy.
+ *
+ * Two distinct properties are at stake, and only one of them depends on this
+ * gate's position:
+ *
+ *  - "a stale artifact still proves its own framing, component digests, chain
+ *    and whole-history digest before being refused" is guaranteed by running
+ *    OUTSIDE `verifyHistoryArtifact` at all. Stages 3-7 complete before either
+ *    check, so this holds wherever the gate sits afterwards. (An earlier
+ *    version of this comment attributed that property to the position; a
+ *    sabotage pass moving the gate one line earlier left every test green,
+ *    which is how the overclaim was found.)
+ *  - "wrong artifact" outranks "unsupported format" — the ordering against
+ *    `checkExpectedIdentity` — DOES depend on the position, and it is the
+ *    reason the call sits after it. When a caller holds an expected digest and
+ *    the file is both the wrong one AND an old format, the actionable answer is
+ *    `staleOrWrongArtifact`: go find the right file. Telling them the format is
+ *    old sends them to a migration they may not need. That ordering is pinned
+ *    by a test in tests/evolution-replay.test.js.
  *
  * Without this gate a stale vector surfaces at stage 10 as `replayDivergence`
  * — after a full generation has been re-simulated — and that reads like engine

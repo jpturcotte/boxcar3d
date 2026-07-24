@@ -1110,6 +1110,63 @@ generation chain, and the whole artifact. FNV-1a32 keeps its unchanged role —
 drift/lock digests and the same-input cross-environment determinism comparator —
 and no evolution artifact identity is ever established by FNV.
 
+## Round 16: fitness-vector v3 (GA Phase 1B PR 29)
+
+A representation migration, and a stress test of every ruling this memo
+accumulated: the fitness vector gains the five integrity observations per
+member (14 B → 48 B), and the codec family's own rules had to decide each new
+field class without inventing a new doctrine.
+
+- **The peak domain is the producer's, mirrored exactly — no more and no
+  less.** Each peak must be a number `>= 0`, which ADMITS `+Infinity` and
+  rejects `NaN`, `-Infinity` and negatives. Measured on the producer:
+  `Math.sqrt(Infinity * Infinity)` is `Infinity`, which takes the peak AND
+  the catastrophic crossing before the `!finite` branch can claim the status,
+  so `{status:'numericalDivergence', peakBodySpeed: Infinity}` is legal
+  policy-v1 output, and `+Infinity` has one canonical f64 representation
+  (`00 00 00 00 00 00 f0 7f`). The tempting "must be finite" rule — the one
+  every other f64 leaf here enforces — would make `serializeFitnessVector`
+  throw on a legal producer result and kill the run on its own defensive
+  path: the one value with an implementation-defined bit pattern (NaN) is
+  already outside the `>= 0` domain and is unreachable from the producer
+  (NaN comparisons are false; peaks start at 0). `-0` is accepted, consistent
+  with the standing f64-leaf ruling (`setFloat64` preserves the bit), and is
+  likewise unreachable.
+- **The onset steps are flag+`u32` pairs, never sentinels.** `null` and step
+  `0` are byte-distinct and no valid step value is consumed; an absent step's
+  payload is exactly `0`, written unconditionally by the encoder and REJECTED
+  when nonzero by the decoder — one semantic value has exactly one byte
+  string, so decode → encode is a true inverse (the same canonical-presence
+  discipline as the flag byte and the `-0` u32 refusal).
+- **The status/step coherence rules are policy-CONDITIONED, deliberately.** A
+  catastrophic step implies an alert step at or before it (the catastrophic
+  thresholds exceed the alert ones arm-for-arm under one shared `dtScale` — a
+  drift tooth in `tests/evaluation-codec.test.js` pins that premise);
+  `status === 'ok'` carries no catastrophic step; `status ===
+  'numericalDivergence'` always carries one. All three are checked
+  conditioned on `integrityPolicyVersion === 1`, NOT as eternal vector-v3
+  invariants: a later policy is expected to classify alert-only crossings as
+  divergence with NO catastrophic step, and encoding these as eternal would
+  force an unnecessary v4 bump or an undo. The decoder already rejects a
+  non-current `integrityPolicyVersion`, so there is no reachable defect today
+  — the value is in not writing down a false invariant.
+- **The wire-validity / semantic-coherence split is preserved.** Anything
+  needing the metadata component (`executedSteps`, `effectiveDt` for
+  `dtScale`) is NOT checked at this boundary: it is the replay layer's
+  metadata-coherence gate (Gate B), which runs against each generation's own
+  persisted metadata before physics. This decoder's contract row is thereby
+  extended, not replaced: wire shape + the unselectable⇒fitness-0 tooth +
+  the observation domain and the policy-v1-conditioned coherence rules.
+- **The preflight now captures NINE fields before any check** (the four
+  selection fields plus the five observations, through a structurally guarded
+  container) — the same "ALL FIELDS CAPTURED BEFORE ANY CHECK" ruling, and
+  the write pass re-reads nothing.
+- The §"What did not move" population-lock literal is superseded:
+  `fitnessVectorDigest` `a6d04f75` → `fd4222eb` (the rows gained the five
+  measured observation literals; every fitness literal bit-identical), with
+  the same null-digest re-lock workflow and the same Node + pinned-Chromium
+  agreement.
+
 ## Follow-ups (recorded, not fixed here)
 
 - `validateGenotype` still imposes no axle cap. The serializer guard contains

@@ -123,7 +123,8 @@ evidence notes. Reference only; never import from `legacy/`.
   agreement), `evolution-history.js` (the fixed byte-only history codec, the
   seven domain-separated SHA-256 formulas, the evaluation-metadata component,
   and the byte ceilings), `evolution-replay.js` (private ordered verification,
-  the runtime/freshness gates, first-divergence reporting),
+  the runtime/freshness and fitness-vector format gates, first-divergence
+  reporting),
   `evolution-run.js` (THE deep module: the opaque run and the one private
   generation transition that `advance()` and replay share),
   `evolution-fixtures.js` + `evolution-locks.js` (the committed evolution
@@ -2485,6 +2486,129 @@ single clean commit `9c5f24c`):**
   screening terrain · 20260756–20260771 confirmation population ·
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
+
+**GA Phase 1B PR 29 landed — integrity observations persisted in evolution
+history (fitness-vector v3), two pre-physics format gates, and a verified
+offline extraction seam. NO policy, selection or mutation behaviour change:**
+- **The gap closed.** Integrity policy v1 makes only the CATASTROPHIC band a
+  selection failure; the alert band is an observation, so a diverging vehicle
+  reports `status: 'ok'` and stays selectable. PR 4 measured that exposure by
+  RE-SIMULATING, because the v2 vector persisted only a status byte. v3
+  persists the five observations the online detector already computed (the
+  three whole-run peaks + the two onset steps) per member — +34 B/member
+  (14 → 48 B), header unchanged at 22 B.
+- **The wire rulings (R3/R4).** Onset steps are flag+u32 pairs, never
+  sentinels: null and step 0 are byte-distinct, and an absent step's payload
+  is exactly 0 — written unconditionally, rejected when nonzero — so
+  decode→encode is a true inverse. Peaks are numbers ≥ 0, ADMITTING
+  `+Infinity` (a legal policy-v1 divergence peak: `Math.sqrt(Infinity *
+  Infinity)` takes the peak AND the catastrophic crossing before the
+  `!finite` branch can claim the status; one canonical f64 representation)
+  and rejecting NaN / −Infinity — a "must be finite" rule would have the
+  encoder throw on a legal producer result and kill the run on its own
+  defensive path. The status/step coherence rules (a catastrophic step
+  implies an alert step at or before it; `'ok'` carries no catastrophic step;
+  `'numericalDivergence'` always carries one) are conditioned on
+  `integrityPolicyVersion === 1`, deliberately NOT eternal v3 invariants — a
+  later policy is expected to classify alert-only crossings with NO
+  catastrophic step, and writing these down eternally would force an
+  unnecessary v4 bump or an undo.
+- **Capture discipline (R5).** A NEW internal
+  `captureEvaluationMemberResult(vehicleResult)` produces validity, status,
+  gated fitness and all five observations from ONE module-owned snapshot;
+  `captureVehicleResult` and `isVehicleResultValid` keep their exact
+  contracts — extending them would have let a malformed observations block
+  change what the validity predicate throws on, a production semantic change
+  in the one PR whose central promise is that nothing behavioural changes.
+- **R1 — history version stays 1; two pre-physics gates after external
+  identity.** `EVOLUTION_HISTORY_VERSION` and `headerDigest` do not move (the
+  header binds no vector version). Verification stage 5 now collects the
+  gates' inputs while walking components — scalars plus at most one failure
+  descriptor per gate, NEVER rows, so the documented memory model holds — and
+  the RAISE happens after stage 8. The ladder: corruption → wrong artifact →
+  **unsupported format** → **malformed current format** → runtime mismatch →
+  deterministic divergence. Gate A (`checkFitnessVectorCompatibility`):
+  layered `peekFitnessVectorVersions` reads `fitnessVectorVersion` first and
+  stops when unsupported (never assumes an unknown layout); only when current
+  are the remaining four declared versions compared — the error names the
+  exact field, generation, stored and current values; a truncated or
+  unreadable prefix is `malformedHistory`. Gate B
+  (`verifyFitnessVectorMetadataCoherence`): onset steps ≤ each generation's
+  OWN persisted `executedSteps` (captures are 0..maxSteps inclusive, so a
+  first crossing at exactly `executedSteps` is legal), plus the peak↔alert
+  equivalence recomputed with the producer's exact dtScale arithmetic.
+  `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 12 stages.
+- **Locks moved, exactly as named.** Population `fitnessVectorDigest`
+  `a6d04f75` → `fd4222eb` (+ `fitnessVectorVersion` 2 → 3; the rows gained
+  the five measured observation literals — all 20 members integrity-clean,
+  both onset steps null, every fitness literal bit-identical). Evolution:
+  each generation's `fitnessVectorDigest`, `generationDigest`,
+  `payloadByteLength` (+204 B per record at population 6), plus
+  `historyByteLength` 12126 → 12738 and `historyDigest` `da573ca5…1ef20e55` →
+  `8cab787f…0d01ff` (+ `fitnessVectorVersion` 2 → 3). **`headerDigest`
+  `6b872cad…bfcce51b` is byte-identical**, as is every population, metadata
+  and lineage component digest, every terrain/noise/boulder/assembly
+  fingerprint and the A–D evaluation digests — the header-not-moving check is
+  what distinguishes a representation change from an accidental semantic one.
+  The capacity projection tracks automatically through
+  `fitnessVectorByteLength` and is PINNED at v3:
+  `maximumFeasibleGenerations` 228 at population 256 (235 at v2, measured by
+  executing main's own gate).
+- **Fixture role split (R2).** The v2 Kimi artifact is preserved as the
+  early-refusal witness: every self-consistency leg still asserted, then
+  resume fails `unsupportedVersion` naming `fitnessVectorVersion` (stored 2,
+  current 3) with zero evaluations; its successful-replay role is historical,
+  pinned to the pre-PR-29 commit in its `.md`. The role passed to
+  `tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64` — a
+  structurally independent v3 oracle whose generator
+  (`scripts/generate-evolution-v3-interop-fixture.js`) imports NOTHING from
+  the four implementation modules and hashes with Node's `crypto`,
+  independently encoding the v3 vector bytes and the framing/digest assembly
+  from declared inputs
+  (`tests/fixtures/evolution-v1-fitness-vector-v3-oracle-inputs.json`,
+  captured from the committed fixture-A run — NO new seeds). The claim is
+  deliberately narrow and its `.md` says so: population/lineage/metadata/
+  header bytes are captured literals; the oracle attests the ENCODING AND
+  ASSEMBLY layer only, and is not equivalent to the original Kimi artifact.
+  Node and Chromium both require byte-identity with the local generation-0
+  artifact, then resume and continue to the committed lock's terminal digest.
+  A hand-computed v3 byte literal in `tests/evaluation-codec.test.js` remains
+  the strongest narrow oracle for the member walk itself.
+- **The extraction seam (R6).** `scripts/history-observations.js` —
+  `extractHistoryObservations(historyBytes, { expectedHistoryDigestBytes? })`
+  runs `verifyHistoryArtifact` AND both gates internally before decoding
+  anything (sharing the production checks and error taxonomy — never a
+  script-local second interpretation of compatibility); async because SHA-256
+  is; pure with respect to filesystem, clock, randomness and physics. Placed
+  outside `src/sim` deliberately: an offline read-only consumer, and a new
+  `src/sim` module would expand the derived byte-family lint scope and
+  ownership classification for no correctness gain. Its test proves a
+  committed v3 history yields observations with ZERO evaluations, and that
+  tampered, incoherent and stale artifacts are refused with the production
+  codes rather than read as evidence.
+- **Deliberate sabotage: 12 mutations, ALL BITE** (gate ordering, the layered
+  peek, absent-payload canonicality, the +Infinity acceptance, the three
+  policy-conditional coherence rules independently, the executed-steps bound,
+  the peak↔alert equivalence, the capture boundary, the seam's gates, the
+  seam's verification, the member stride against the capacity pin). The 'ok'
+  rule's first tooth was unfalsifiable — the catastrophic-implies-alert rule
+  fired first and hid it — and now carries a coherent alert step so ONLY the
+  'ok' rule is reachable.
+- **What did NOT change.** `INTEGRITY_POLICY_VERSION` 1,
+  `FITNESS_POLICY_VERSION` 2, the mutation defaults (0.05, 0.05); every
+  production integrity, fitness and mutation behaviour;
+  `EVOLUTION_HISTORY_VERSION` 1; the A–D digests; every fingerprint.
+  **Alert-bearing `ok` vehicles are STILL selectable on main** — v3 persists
+  evidence; it does not act on it. The solver defect remains; Option A masks
+  rather than fixes it; the multibody root-cause track stays deferred and
+  appears nowhere in the diff. This discharges PR 4's recorded next-step (2)
+  and the decision record's §5 sequence step 1; **Next PR owns the
+  breeding-pool and false-negative measurements** — the experiment schema,
+  the campaign, retained workspace histories, the forensic adjudicator,
+  counterfactual analysis, empirical gates and the escalation verdict all
+  live there, not here.
+- **Seeds allocated:** none (the v3 oracle re-encodes the committed
+  fixture-A run).
 
 ### Phase 1B PR 2 operator boundary
 

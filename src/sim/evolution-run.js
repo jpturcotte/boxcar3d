@@ -85,7 +85,8 @@ import {
 } from './evolution-lineage.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
-  checkRuntimeIdentity, failReplayDivergence, verifyHistoryArtifact,
+  checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
+  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from './evolution-replay.js';
 import { decodeGenerationPayload } from './evolution-history.js';
 
@@ -935,6 +936,14 @@ async function resumeFromOwnedBytes(owned, expected) {
   const verified = await verifyHistoryArtifact(owned);
   // Stage 8: external expected identity — staleness, distinct from corruption.
   checkExpectedIdentity(verified, expected);
+  // Stages 8a/8b: the fitness vector is an OPAQUE component to the history
+  // format, so neither its version nor its agreement with the evaluation
+  // metadata is covered by anything above. Both are refused here — after the
+  // artifact has proven its own self-consistency, and before the runtime gate
+  // or any physics — so a stale or contradictory vector is diagnosed as a
+  // format problem instead of re-surfacing at stage 10 as replay divergence.
+  checkFitnessVectorCompatibility(verified);
+  verifyFitnessVectorMetadataCoherence(verified);
   const header = verified.header;
   const spec = translate('malformedHistory', 'history evaluation spec is malformed',
     () => deserializeEvaluationSpec(header.evaluationSpecBytes));

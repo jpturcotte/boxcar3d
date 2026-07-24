@@ -658,6 +658,8 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   failReplayDivergence: 'exempt: scalars + TypedArray inputs; always throws',
   verifyHistoryArtifact: 'exempt: TypedArray input',
   checkExpectedIdentity: 'exempt: module-owned capture in',
+  checkFitnessVectorCompatibility: 'exempt: module-owned verified record in',
+  verifyFitnessVectorMetadataCoherence: 'exempt: module-owned verified record in',
   checkRuntimeIdentity: 'exempt: two string records in',
   captureExpectedIdentity: 'CASES row',
   resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',

@@ -23,12 +23,29 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
+//   8a. fitness-vector component compatibility     (unsupported FORMAT)
+//   8b. fitness-vector vs evaluation-metadata      (malformed CURRENT format)
 //   9. deterministic flavor + exact Rapier version (before physics)
 //  10. deterministic replay, stopping at the first byte divergence
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-9 are the two small checks below; 10 is the run's own replay loop.
+// 8-9 are the small checks below; 10 is the run's own replay loop.
+//
+// WHY 8a/8b SIT WHERE THEY DO. The fitness vector is an OPAQUE component to
+// the history format — the outer header binds every other version but not the
+// vector's — so a stale or semantically malformed vector is invisible to
+// stages 3-7 and would surface at stage 10 as `replayDivergence`, after a
+// generation has been re-simulated. That reads as engine drift; the truth is a
+// stale file. They run AFTER stage 8 rather than inside stage 5 so a stale
+// artifact still proves its own framing, component digests, chain and history
+// digest before being refused — which is what lets a superseded artifact serve
+// as a regression witness instead of failing at the first byte it is judged on.
+//
+// NOTE that the stage names above are the ORDERED VERIFICATION LADDER, which is
+// a different thing from `REPLAY_STAGES` below: that array is the vocabulary of
+// stage-10's per-component byte comparison, and a format-compatibility gate has
+// no place in it.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
@@ -45,11 +62,16 @@ import {
   SHA256_DIGEST_BYTES, COMPONENT_KINDS, EVALUATION_METADATA_VERSION,
   GENERATION_RECORD_VERSION,
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
+  deserializeEvaluationMetadata,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, evolutionFail, isEvolutionUint32,
+  deserializeFitnessVector, peekFitnessVectorVersions,
+} from './population-evaluation.js';
+import {
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
+  MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE,
+  evolutionFail, isEvolutionUint32,
 } from './evolution-contract.js';
 import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
 import {
@@ -66,6 +88,22 @@ export const REPLAY_STAGES = Object.freeze([
 /** The 64 MiB intake ceiling, checked before the first copy. Re-exported so the
  * resume seam and this module cannot disagree about the number. */
 export { MAX_EVOLUTION_HISTORY_BYTES } from './evolution-history.js';
+
+/**
+ * Re-raise a sibling module's failure in the evolution taxonomy, keeping the
+ * original as `cause`. Mirrors evolution-run's private helper of the same name:
+ * callers branch on `code`, never on message text, so an error crossing a
+ * module boundary must arrive wearing this family's vocabulary.
+ */
+function translate(code, message, body) {
+  try {
+    return body();
+  } catch (cause) {
+    if (cause instanceof EvolutionError) throw cause;
+    evolutionFail(code, `${message}: ${cause && cause.message ? cause.message : String(cause)}`, {}, cause);
+    return undefined; // unreachable; evolutionFail always throws
+  }
+}
 
 /**
  * The first index at which two byte arrays differ, or -1. Used only for
@@ -175,7 +213,9 @@ async function verifyFramedArtifact(framing) {
       }
     }
     records.push(Object.freeze({
-      generationIndex: i, terminalReason: payload.terminalReason,
+      generationIndex: i,
+      terminalReason: payload.terminalReason,
+      fitnessVector: collectFitnessVectorFacts(payload, i),
     }));
   }
   // Stage 6: the chain, from the header digest forward.
@@ -204,6 +244,144 @@ async function verifyFramedArtifact(framing) {
     finalGenerationIndex: generationCount - 1,
     finalTerminalReason: records[generationCount - 1].terminalReason,
   });
+}
+
+/**
+ * Collect, from ONE generation payload, the scalar facts the two pre-physics
+ * fitness-vector gates need — and nothing else.
+ *
+ * SCALARS ONLY, never rows. Verification's documented memory model is "one
+ * decoded payload at a time, discarded"; retaining decoded members would hold
+ * a second copy of every vector in the artifact and quietly break that bound.
+ * A `max` is a complete check against an upper bound (max ≤ n ⟺ all ≤ n), so
+ * the worst offender's three scalars are all a diagnosis needs.
+ *
+ * LAYERED, for the reason peekFitnessVectorVersions is layered: when the vector
+ * version is not this build's, NOTHING further is read. Handing a v2 stream to
+ * a v3 decoder would report `malformedHistory` — "these bytes are corrupt" —
+ * about an artifact that is perfectly well-formed under the version it declares.
+ */
+function collectFitnessVectorFacts(payload, generationIndex) {
+  const versions = peekFitnessVectorVersions(payload.components.fitnessVector);
+  if (!versions.supported) {
+    return Object.freeze({ generationIndex, versions, coherence: null });
+  }
+  const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
+  // A component can be digest-consistent and still internally contradictory —
+  // an unselectable member carrying a nonzero fitness, an alert onset after a
+  // catastrophic one. That is a MALFORMED CURRENT-FORMAT artifact, not a
+  // replay divergence, and it must be reported in the evolution error taxonomy
+  // rather than leaking population-evaluation's decoder dialect out of a
+  // verification call. The decoder's own message rides along as `cause`.
+  const vector = translate('malformedHistory',
+    `generation ${generationIndex} fitness vector is malformed`,
+    () => deserializeFitnessVector(payload.components.fitnessVector));
+  const executedSteps = metadata.executedSteps;
+  const rows = vector.individuals;
+  let worst = null;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const observations = row.integrityObservations;
+    const fields = [
+      ['firstAlertStep', observations.firstAlertStep],
+      ['firstCatastrophicStep', observations.firstCatastrophicStep],
+    ];
+    for (let k = 0; k < fields.length; k += 1) {
+      const [field, step] = fields[k];
+      if (step === null || step <= executedSteps) continue;
+      if (worst === null || step > worst.step) {
+        worst = { individualId: row.individualId, field, step };
+      }
+    }
+  }
+  return Object.freeze({
+    generationIndex,
+    versions,
+    coherence: Object.freeze({
+      executedSteps,
+      worst: worst === null ? null : Object.freeze(worst),
+    }),
+  });
+}
+
+/**
+ * GATE A — component compatibility. Runs AFTER the artifact has passed every
+ * self-consistency check and the external identity check, and BEFORE the
+ * runtime gate or any physics.
+ *
+ * WHY THIS POSITION, precisely. The failure ladder is corruption -> wrong
+ * artifact -> unsupported format -> malformed current format -> runtime
+ * mismatch -> deterministic divergence, and each rung has a different remedy.
+ * Raising here rather than during component verification keeps a stale
+ * artifact's OWN self-consistency legs reachable: a v2 history still proves
+ * its framing, its component digests, its chain and its whole-history digest
+ * before being refused for its format, which is exactly what makes it usable
+ * as a regression witness.
+ *
+ * Without this gate a stale vector surfaces at stage 10 as `replayDivergence`
+ * — after a full generation has been re-simulated — and that reads like engine
+ * or environment drift when the truth is simply that the file is old.
+ */
+export function checkFitnessVectorCompatibility(verified) {
+  const records = verified.records;
+  for (let i = 0; i < records.length; i += 1) {
+    const facts = records[i].fitnessVector;
+    const mismatches = facts.versions.mismatches;
+    if (mismatches.length === 0) continue;
+    const first = mismatches[0];
+    evolutionFail('unsupportedVersion',
+      `generation ${facts.generationIndex} fitness vector ${first.field} is ${first.stored}; this build implements ${first.current}`,
+      {
+        generationIndex: facts.generationIndex,
+        field: first.field,
+        stored: first.stored,
+        current: first.current,
+        mismatchCount: mismatches.length,
+      });
+  }
+}
+
+/**
+ * GATE B — cross-component semantic coherence, the check no single component
+ * can make on its own.
+ *
+ * The fitness vector carries onset STEPS; the evaluation metadata carries the
+ * EXECUTED step count. Neither codec can see the other, so an artifact
+ * declaring `executedSteps: 45` and `firstAlertStep: 4000000000` is
+ * well-formed by every check that exists before this one — framing, all four
+ * component digests, the chain, the whole-history digest, the version fields,
+ * the runtime identity — and would then be re-simulated and reported as
+ * `replayDivergence`. It is not divergence; it is a malformed current-format
+ * artifact, and it is refused as one, before physics.
+ *
+ * THE BOUND IS INCLUSIVE. Captures are indexed 0..maxSteps — `captureStep(0)`
+ * runs post-realization and the loop then captures after every step through
+ * `i <= maxSteps` — so a first crossing at exactly `executedSteps` is legal and
+ * a `<` bound would reject a real, correctly-produced artifact.
+ *
+ * Each generation is checked against ITS OWN persisted metadata, never the
+ * header's spec or generation 0's: they agree in every artifact this build
+ * produces, and reading one to validate another would be an assumption the
+ * format does not enforce.
+ */
+export function verifyFitnessVectorMetadataCoherence(verified) {
+  const records = verified.records;
+  for (let i = 0; i < records.length; i += 1) {
+    const facts = records[i].fitnessVector;
+    const coherence = facts.coherence;
+    if (coherence === null || coherence.worst === null) continue;
+    const { individualId, field, step } = coherence.worst;
+    evolutionFail('malformedHistory',
+      `generation ${facts.generationIndex} individual ${individualId} declares ${field} ${step}, `
+      + `but that evaluation executed ${coherence.executedSteps} steps (captures are 0..${coherence.executedSteps})`,
+      {
+        generationIndex: facts.generationIndex,
+        individualId,
+        field,
+        step,
+        executedSteps: coherence.executedSteps,
+      });
+  }
 }
 
 /**

@@ -348,8 +348,9 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   'evolution-replay.js': Object.freeze([
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
-    'checkExpectedIdentity', 'checkRuntimeIdentity', 'failReplayDivergence',
-    'firstByteDifference', 'verifyHistoryArtifact',
+    'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity',
+    'failReplayDivergence',
+    'firstByteDifference', 'verifyFitnessVectorMetadataCoherence', 'verifyHistoryArtifact',
   ]),
   'evolution-history.js': Object.freeze([
     'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
@@ -672,6 +673,10 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'failReplayDivergence', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: [] },
     { name: 'verifyHistoryArtifact', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'checkExpectedIdentity', kind: 'validator', callerCollections: [], callerNumbers: ['expected.generationIndex'] },
+    // Both consume the frozen module-owned record verifyHistoryArtifact built;
+    // neither reads caller data or bytes.
+    { name: 'checkFitnessVectorCompatibility', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
@@ -1035,6 +1040,8 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
       invoke: (u) => captureExpectedIdentity({ expectedHistoryDigestBytes: u }, (b) => copyOrdinaryBytes(b)),
     },
     checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
+    checkFitnessVectorCompatibility: { intake: 'no-byte-intake', why: 'consumes the frozen verified record; the bytes were gated at decodeHistoryFraming' },
+    verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the frozen verified record; the bytes were gated at decodeHistoryFraming' },
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
   },
   'src/sim/evolution-history.js': {

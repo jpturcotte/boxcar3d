@@ -25,7 +25,7 @@ import { describe, test, expect } from 'vitest';
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   SPAWN_CLEARANCE, deserializeEvaluationSpec, deserializeFitnessVector,
-  serializeEvaluationSpec, serializeFitnessVector,
+  fitnessVectorByteLength, serializeEvaluationSpec, serializeFitnessVector,
 } from '../src/sim/population-evaluation.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from '../src/sim/population.js';
 import {
@@ -984,6 +984,24 @@ describe('fitness vector v3 — the integrity observations', () => {
       .toBeLessThanOrEqual(INTEGRITY_THRESHOLDS.catastrophicSpeed);
     expect(INTEGRITY_THRESHOLDS.alertStepDisplacement)
       .toBeLessThanOrEqual(INTEGRITY_THRESHOLDS.catastrophicStepDisplacement);
+  });
+
+  test('fitnessVectorByteLength IS the encoder geometry, at every member count', () => {
+    // This identity is load-bearing OUTSIDE the codec: evolution-run's
+    // assertHistoryCapacity projects a run's worst-case artifact size from
+    // fitnessVectorByteLength(populationSize) and REFUSES a configuration whose
+    // history could not fit under the 64 MiB ceiling. If the declared geometry
+    // ever drifted from what the encoder actually emits, that gate would be
+    // computing a fiction — and it is a production refusal, not a test helper.
+    // v3 widened a member 14 -> 48 bytes, so this is exactly the change that
+    // could have desynchronized them.
+    for (const count of [1, 2, 3, 20, 256]) {
+      const entries = [];
+      for (let i = 0; i < count; i += 1) entries.push([i, 0, true]);
+      expect(serializeFitnessVector(synth(entries)).length, `count ${count}`)
+        .toBe(fitnessVectorByteLength(count));
+    }
+    expect(fitnessVectorByteLength(20)).toBe(22 + 20 * 48);
   });
 
   test('the decoded observation block EXISTS and is frozen', () => {

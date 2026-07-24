@@ -41,39 +41,33 @@ const {
   MAX_EVOLUTION_POPULATION_SIZE,
 } = await import('../src/sim/evolution-contract.js');
 const {
-  deserializeEvaluationSpec, serializeEvaluationSpec,
+  deserializeEvaluationSpec, deserializeFitnessVector, serializeEvaluationSpec,
+  serializeFitnessVector,
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
   decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
   digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
-const { REPLAY_STAGES, firstByteDifference } = await import('../src/sim/evolution-replay.js');
+const {
+  REPLAY_STAGES, firstByteDifference, verifyHistoryArtifact,
+} = await import('../src/sim/evolution-replay.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
 
-const INTEROP_CONFIG = Object.freeze({
-  initialization: { seed: 20260721, populationSize: 4 },
-  evaluationSpec: {
-    terrain: {
-      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
-      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
-    },
-    maxSteps: 60,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
-  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
-});
 
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
   'base64',
 ));
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
+// The v2 artifact's own one-generation history digest, from the adjacent .md.
+// Its TERMINAL continuation digest is deliberately not asserted any more: that
+// leg required resuming a v2 vector, which fitness vector v3 refuses. Recorded
+// in the .md as historical, pinned to the pre-v3 commit.
+const KIMI_GENERATION_ZERO_HISTORY_DIGEST = '3717df1acd2debc9f6aec79425da49032687b238ae1d0edb60a620c4d902575d';
 
 const config = (overrides = {}) => ({
   initialization: { seed: POPULATION_SEED, populationSize: 6 },
@@ -169,28 +163,56 @@ function expectCodeSync(fn, code, re) {
 // ============================================================================
 
 describe('resume and continuation', () => {
-  test('an independently produced Kimi artifact resumes and continues byte-identically', async () => {
+  // THE KIMI ARTIFACT'S ROLE SPLIT AT FITNESS VECTOR v3.
+  //
+  // It embeds a v2 fitness vector, so it can no longer be byte-identical to a
+  // fresh local run and can no longer be resumed. What did NOT change is
+  // everything the outer format owns: framing, header digest, all four
+  // component digests, the generation chain, and the whole-history digest are
+  // untouched by a change to an opaque component's contents. So the artifact
+  // keeps its independent-oracle role for THAT layer, and gains a new one —
+  // it is now this repo's only artifact produced by a foreign implementation
+  // under a superseded component version, which makes it the honest witness
+  // for the early-refusal path.
+  //
+  // Regenerating it through this repo's own encoder would have destroyed the
+  // one property that made it valuable. Its successful-replay role is taken by
+  // a separately generated v3 artifact (see the interop suite); its historical
+  // digests remain recorded in the adjacent .md, pinned to the pre-v3 commit.
+  test('the independently produced v2 Kimi artifact still verifies as a well-formed history', async () => {
     const fixture = kimiFixtureBytes();
     expect(fixture.length).toBe(4024);
     expect(fixture[14 + 18]).toBe(0); // outer prefix + format-owned flavor byte
 
-    const control = createEvolutionRun(INTEROP_CONFIG);
-    await control.advance();
+    // Every self-consistency leg the outer format owns — proven on bytes this
+    // repo did not produce. verifyHistoryArtifact IS stages 3-7: framing,
+    // header digest + decode, all four component digests per generation, the
+    // chain from the header digest, and the whole-history digest.
+    const verified = await verifyHistoryArtifact(fixture);
+    expect(verified.finalGenerationIndex).toBe(0);
+    expect(verified.finalTerminalReason).toBe('none');
+    expect(bytesToHex(verified.historyDigestBytes)).toBe(KIMI_GENERATION_ZERO_HISTORY_DIGEST);
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
-    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
-    expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
-      .toBe(fixtureHeader.rapierVersion);
-    expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
-    const resumed = await resumeEvolutionRun(fixture);
+    expect(fixtureHeader.physicsFlavor).toBe('deterministicCompat');
+  });
 
-    while (control.status().phase !== 'terminal') {
-      const a = await control.advance();
-      const b = await resumed.advance();
-      expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
-      expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
-    }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+  test('...and is then refused as an UNSUPPORTED FORMAT, before any physics', async () => {
+    // The diagnosis must name the format, not the environment. Before the
+    // compatibility gate existed this artifact reached stage 10 and reported
+    // `replayDivergence` at the fitnessVector stage — after a full generation
+    // had been re-simulated — which reads as engine or environment drift when
+    // the truth is simply that the file predates a component version.
+    let threw;
+    try {
+      await resumeEvolutionRun(kimiFixtureBytes());
+    } catch (err) { threw = err; }
+    expect(threw, 'a v2 artifact must be refused').toBeInstanceOf(EvolutionError);
+    expect(threw.code).toBe('unsupportedVersion');
+    expect(threw.code).not.toBe('replayDivergence');
+    expect(threw.message).toMatch(/fitness vector fitnessVectorVersion is 2; this build implements 3/);
+    expect(threw.context.generationIndex).toBe(0);
+    expect(threw.context.field).toBe('fitnessVectorVersion');
+    expect(threw.context.stored).toBe(2);
   });
 
   test('a mid-run history resumes to the same status and the same bytes', async () => {
@@ -585,16 +607,109 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
   });
 
   test("a changed fitness value diverges at stage 'fitnessVector'", async () => {
+    // The changed vector must stay INTERNALLY VALID, or it is refused earlier
+    // as a malformed component (asserted separately below) and never reaches
+    // replay — which would leave this test passing for the wrong reason. So
+    // the fitness is moved on a SELECTABLE member, the only kind that may
+    // legally carry a nonzero value, and the stream is rebuilt through the
+    // encoder rather than by poking bytes at a hard-coded offset. (It was
+    // exactly such an offset — "the last member's f64 fitness, at the end of
+    // the fixed-stride vector" — that fitness vector v3 invalidated: fitness
+    // is no longer the last field of a member.)
+    const artifact = await runGenerations(1);
+    let moved = false;
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        const individuals = decoded.individuals.map((row) => {
+          if (moved || !(row.valid && row.integrityStatus === 'ok')) return { ...row };
+          moved = true;
+          return { ...row, fitness: row.fitness + 1234.5 };
+        });
+        record.components.fitnessVector = serializeFitnessVector({
+          individuals,
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        });
+      },
+    });
+    expect(moved, 'the premise: generation 0 has at least one selectable member').toBe(true);
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+  });
+
+  test('a digest-consistent but CONTRADICTORY vector is malformed, not divergent', async () => {
+    // The distinction this asserts: `reforge` recomputes every digest, so the
+    // artifact is perfectly self-consistent. What it is not is internally
+    // coherent — the fitness policy gates an unselectable member to zero, so a
+    // member flagged invalid while carrying a nonzero fitness describes an
+    // evaluation that cannot have happened. Reporting that as replay
+    // divergence would blame the environment for a defect in the file.
     const artifact = await runGenerations(1);
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
         const v = new Uint8Array(record.components.fitnessVector);
-        // The last member's f64 fitness, at the end of the fixed-stride vector.
-        new DataView(v.buffer).setFloat64(v.length - 8, 1234.5, true);
+        const view = new DataView(v.buffer);
+        // Member 0: force a nonzero fitness (offset 6) and clear validity
+        // (offset 4) — a combination the encoder refuses to produce.
+        view.setUint8(22 + 4, 0);
+        view.setFloat64(22 + 6, 9.5, true);
         record.components.fitnessVector = v;
       },
     });
-    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
+    // Zero physics DURING THE RESUME (the counter already holds the
+    // evaluations that produced the artifact above, so the claim is a delta).
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/generation 0 fitness vector is malformed/);
+    expect(err.message).toMatch(/must have fitness 0/);
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('an onset step beyond the executed step count is refused before physics', async () => {
+    // GATE B. Neither codec can catch this: the fitness vector carries onset
+    // STEPS and the evaluation metadata carries the EXECUTED step count, and
+    // they are separate components. The artifact below passes framing, all four
+    // component digests, the chain, the whole-history digest, every version
+    // field and the runtime gate — and describes an alert at capture four
+    // billion in a run that executed 45 steps.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        const view = new DataView(v.buffer);
+        view.setUint8(22 + 38, 1); // firstAlertStep PRESENT
+        view.setUint32(22 + 39, 4000000000, true);
+        record.components.fitnessVector = v;
+      },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/declares firstAlertStep 4000000000/);
+    expect(err.context.executedSteps).toBe(45);
+    expect(err.context.field).toBe('firstAlertStep');
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('an onset at EXACTLY the executed step count is legal — captures are 0..maxSteps', async () => {
+    // The inclusive bound, pinned. `captureStep(0)` runs post-realization and
+    // the loop captures after every step through `i <= maxSteps`, so a first
+    // crossing at exactly `executedSteps` is a real, producible observation. A
+    // `<` bound here would reject correct artifacts — and would do it only for
+    // the rarest and most interesting ones.
+    const artifact = await runGenerations(1);
+    const atBound = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        const view = new DataView(v.buffer);
+        view.setUint8(22 + 38, 1);
+        view.setUint32(22 + 39, 45, true); // == maxSteps for this config
+        record.components.fitnessVector = v;
+      },
+    });
+    // It must get PAST the coherence gate; it then legitimately diverges at
+    // replay, because this environment reproduces the original observation.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(atBound), 'replayDivergence');
     expect(err.context.stage).toBe('fitnessVector');
   });
 

@@ -54,6 +54,7 @@ import {
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata, digestComponent,
 } from '../src/sim/evolution-history.js';
+import { checkFitnessVectorCompatibility } from '../src/sim/evolution-replay.js';
 import { deserializeLineage, LINEAGE_ACCOUNTING_KEYS, LINEAGE_ORIGINS } from '../src/sim/evolution-lineage.js';
 import {
   deserializeFitnessVector, spawnPoseOnFlatStart, isVehicleResultValid,
@@ -682,6 +683,12 @@ export function summarizeFitnessRows(rows) {
 export function summarizeEvolutionHistory(historyBytes) {
   const framing = decodeHistoryFraming(historyBytes);
   const header = decodeEvolutionHeader(framing.headerBytes);
+  // Gate A before any component decode: a pre-v3 history summarized here used
+  // to die inside deserializeFitnessVector with a raw codec error. The replay
+  // path translates the identical condition into the taxonomied
+  // `unsupportedVersion` naming `fitnessVectorVersion` — forensics reports the
+  // same honest refusal (the gate reads only `framing.generations`).
+  checkFitnessVectorCompatibility({ framing });
   const generations = [];
   let metadata = null;
 

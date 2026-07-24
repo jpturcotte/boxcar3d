@@ -20,8 +20,9 @@
 import { describe, test, expect } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import { tmpdir } from 'node:os';
+import { Buffer } from 'node:buffer';
 
 import {
   BASELINE_ARM_ID, CONTROL_ARM_ID, EXPERIMENT_PHASES, EXPERIMENT_RUN_SCHEMA, EXPERIMENT_SCHEMA,
@@ -38,6 +39,7 @@ import {
   runForensicCase,
 } from '../scripts/experiment-evolution.js';
 import { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } from '../src/sim/evolution-fixtures.js';
+import { EvolutionError } from '../src/sim/evolution-contract.js';
 import { createEvolutionRun } from '../src/sim/evolution-run.js';
 import { decodeGenerationPayload, decodeHistoryFraming } from '../src/sim/evolution-history.js';
 import { deserializePopulationSnapshot } from '../src/sim/population.js';
@@ -596,6 +598,22 @@ describe('experiment: summarizing a real evolution history', () => {
       expect(summary.generations[0].terminalReason).toBe('generationLimitReached');
       expect(runScore(summary)).toBe(0);
     });
+
+  test('a pre-v3 artifact is refused as unsupportedVersion, not a raw codec error (Gate A)', () => {
+    // The committed Kimi fixture carries fitness-vector v2 — the standing
+    // early-refusal witness. Forensics must report the same taxonomied refusal
+    // as the replay path, never die inside deserializeFitnessVector.
+    const kimi = new Uint8Array(Buffer.from(
+      readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
+      'base64',
+    ));
+    let threw = null;
+    try { summarizeEvolutionHistory(kimi); } catch (e) { threw = e; }
+    expect(threw).toBeInstanceOf(EvolutionError);
+    expect(threw.code).toBe('unsupportedVersion');
+    expect(threw.message).toMatch(/fitnessVectorVersion is 2; this build implements 3/);
+    expect(threw.context.field).toBe('fitnessVectorVersion');
+  });
 });
 
 // --- 4. Protocol -------------------------------------------------------------

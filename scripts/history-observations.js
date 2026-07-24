@@ -44,7 +44,7 @@ import {
   decodeGenerationPayload, deserializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import {
-  checkExpectedIdentity, checkFitnessVectorCompatibility,
+  captureExpectedIdentity, checkExpectedIdentity, checkFitnessVectorCompatibility,
   verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 import { deserializeFitnessVector } from '../src/sim/population-evaluation.js';
@@ -62,14 +62,81 @@ const bytesFail = (path, value) => {
     { path });
 };
 
+// A caller's OPTION bytes are a different fault class from the ARTIFACT's
+// bytes: 'your argument is wrong', not 'the file is wrong'. The evolution
+// taxonomy already draws that line — `resumeEvolutionRun` reports
+// `invalidConfig` for a malformed expected digest — and a seam that reported
+// `malformedHistory` here would send a caller to inspect a file that is fine.
+const optionBytesFail = (path, value) => {
+  evolutionFail('invalidConfig',
+    `history-observations: expectedHistoryDigestBytes are not ordinary canonical bytes at ${path} (${String(value)})`,
+    { path });
+};
+
+const DECLARED_OPTIONS = ['expectedHistoryDigestBytes', 'expectedGenerationIndex', 'includeGenotypeDigest'];
+
+/**
+ * Validate and own the caller's options, in one synchronous pass.
+ *
+ * The freshness subset is delegated to `captureExpectedIdentity` rather than
+ * hand-built, which is what keeps this seam's promise to share resume's
+ * checks rather than reinterpret them: unknown-key refusal, the 32-byte
+ * length check, the canonical-uint32 generation index and the `invalidConfig`
+ * code all come from that one function. Hand-building the record silently
+ * dropped `expectedGenerationIndex` — turning a freshness check OFF with no
+ * error — and misrouted two failure classes.
+ */
+function captureOptions(options) {
+  const copy = (b) => copyOrdinaryBytes(b, optionBytesFail);
+  if (options === undefined || options === null) {
+    return { identity: captureExpectedIdentity(null, copy), includeGenotypeDigest: false };
+  }
+  if (typeof options !== 'object' || Array.isArray(options)) {
+    evolutionFail('invalidConfig', 'history-observations options must be a plain object', {});
+  }
+  const proto = Object.getPrototypeOf(options);
+  if (proto !== Object.prototype && proto !== null) {
+    evolutionFail('invalidConfig', 'history-observations options must be a plain object', {});
+  }
+  const keys = Object.keys(options);
+  if (Object.getOwnPropertyNames(options).length !== keys.length) {
+    evolutionFail('invalidConfig', 'history-observations options carry non-enumerable own properties', {});
+  }
+  const identityOptions = {};
+  let includeGenotypeDigest = false;
+  let sawInclude = false;
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    if (!DECLARED_OPTIONS.includes(key)) {
+      evolutionFail('invalidConfig', `history-observations option '${key}' is not a known key`, { key });
+    }
+    const value = options[key]; // ONE read per key
+    if (key === 'includeGenotypeDigest') {
+      sawInclude = true;
+      includeGenotypeDigest = value;
+    } else {
+      identityOptions[key] = value;
+    }
+  }
+  if (sawInclude && includeGenotypeDigest !== true && includeGenotypeDigest !== false) {
+    evolutionFail('invalidConfig',
+      `includeGenotypeDigest must be true or false (${String(includeGenotypeDigest)})`, {});
+  }
+  return {
+    identity: captureExpectedIdentity(identityOptions, copy),
+    includeGenotypeDigest: sawInclude ? includeGenotypeDigest : false,
+  };
+}
+
 /**
  * Decode the per-individual integrity evidence out of a VERIFIED evolution
  * history.
  *
- * `expectedHistoryDigestBytes` is the caller's externally-held freshness
- * claim, passed through to the same stage-8 check resume uses: a valid but
- * OLDER artifact verifies perfectly, so staleness can only ever be detected
- * against something the caller knows and the file does not.
+ * `expectedHistoryDigestBytes` and `expectedGenerationIndex` are the caller's
+ * externally-held freshness claims, passed through to the same stage-8 check
+ * resume uses: a valid but OLDER artifact verifies perfectly, so staleness can
+ * only ever be detected against something the caller knows and the file does
+ * not.
  *
  * `includeGenotypeDigest` attaches each member's genotype digest. It is off by
  * default because it costs a serialization per member, and on when a consumer
@@ -77,24 +144,26 @@ const bytesFail = (path, value) => {
  * fresh id every generation, so neither id nor fitness identifies a genome
  * across generations. Fitness in particular is a proxy that silently merges two
  * different vehicles — PR #26 shipped a summary field that did exactly that.
+ *
+ * NOT an `async function`, deliberately, and the same ruling `sha256` and
+ * `resumeEvolutionRun` are written under: every caller-owned input is
+ * validated and COPIED in a synchronous prologue, so copy-before-await is
+ * structural rather than a line anyone has to keep in the right order. An
+ * `async function` would let a caller mutate its own buffer — or its options —
+ * while verification is in flight, and a bad argument would arrive as a
+ * rejected promise instead of a throw.
  */
-export async function extractHistoryObservations(historyBytes, options = {}) {
-  const {
-    expectedHistoryDigestBytes = null,
-    includeGenotypeDigest = false,
-  } = options;
-  // Copy before any await, the resume seam's rule: nothing this function
-  // attests may be mutable by the caller while verification is in flight.
+export function extractHistoryObservations(historyBytes, options = {}) {
   const owned = copyOrdinaryBytes(historyBytes, bytesFail);
+  const intake = captureOptions(options);
+  return extractFromOwned(owned, intake);
+}
 
+async function extractFromOwned(owned, intake) {
+  const { identity, includeGenotypeDigest } = intake;
   // Stages 3-7, then the two pre-physics gates. Same functions, same codes.
   const verified = await verifyHistoryArtifact(owned);
-  if (expectedHistoryDigestBytes !== null) {
-    checkExpectedIdentity(verified, {
-      historyDigestBytes: copyOrdinaryBytes(expectedHistoryDigestBytes, bytesFail),
-      generationIndex: null,
-    });
-  }
+  checkExpectedIdentity(verified, identity);
   checkFitnessVectorCompatibility(verified);
   verifyFitnessVectorMetadataCoherence(verified);
 

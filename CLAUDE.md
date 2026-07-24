@@ -147,7 +147,7 @@ evidence notes. Reference only; never import from `legacy/`.
   `extractHistoryObservations` returns per-individual integrity evidence from a
   cryptographically VERIFIED history with no physics; decoded rows only — no
   aggregation, gates or counterfactuals, which are PR #28's),
-  `generate-independent-evolution-artifact.mjs` (the spec-derived encoder behind
+  `generate-independent-evolution-artifact.js` (the spec-derived encoder behind
   the committed v3 interop oracle; imports nothing from the modules it attests),
   `experiment-evolution.js` (the PR 4 EXPERIMENT: the predeclared protocol, the
   pure history summarizer, the screening/confirmation decision logic, a
@@ -2549,10 +2549,21 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   AFTER a generation was re-simulated, which reads as engine drift when the file
   is simply old. `EVOLUTION_HISTORY_VERSION` stays **1**; the header is
   untouched. 8a `checkFitnessVectorCompatibility` -> `unsupportedVersion`;
-  8b `verifyFitnessVectorMetadataCoherence` -> `malformedHistory`. They run AFTER
-  stage 8, not inside stage 5, so a stale artifact still proves its framing, all
-  four component digests, its chain and its history digest before being refused -
-  which is what lets a superseded artifact serve as a regression witness. Ladder
+  8b `verifyFitnessVectorMetadataCoherence` -> `malformedHistory`.
+  **TWO properties, only ONE of which the position buys** (an earlier comment
+  credited it with both; a sabotage pass moving a gate one line earlier left
+  everything green, which is how the overclaim was found): "a stale artifact
+  still proves its framing, all four component digests, its chain and its
+  history digest before being refused" - the regression-witness property -
+  comes from running OUTSIDE `verifyHistoryArtifact` at all, since stages 3-7
+  complete before either check; what the position after `checkExpectedIdentity`
+  DOES buy is that `staleOrWrongArtifact` outranks `unsupportedVersion` when
+  both are true ("go find the right file" beats "migrate this one"), pinned by
+  the WRONG-ARTIFACT-outranks-UNSUPPORTED-FORMAT test. Both gates also RAISE
+  what the stage-5 component walk CAPTURED rather than threw - a foreign
+  decoder failure belongs on the malformed rung, so letting it throw at stage 5
+  would preempt the chain, whole-history and identity checks and diagnose a
+  doubly-broken artifact by the less actionable of its faults. Ladder
   preserved: corruption -> wrong artifact -> unsupported format -> malformed
   current format -> runtime mismatch -> deterministic divergence.
   **Gate A is LAYERED** (unrecognized vector version means read nothing further;
@@ -2561,12 +2572,27 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   INCLUSIVE** - captures are 0..maxSteps (`captureStep(0)` then `i <= maxSteps`),
   so an onset at exactly `executedSteps` is legal and `<` would reject correct
   artifacts, only the most interesting ones; each generation is checked against
-  ITS OWN metadata. Facts collect as SCALARS ONLY (a max is a complete check
+  ITS OWN metadata. Gate B also refuses a vector whose MEMBER COUNT disagrees
+  with its generation's population component (`peekPopulationSnapshotCount`,
+  a count-only peek beside its own codec - decoding every snapshot would cost a
+  quarter-million genotype decodes on a max-length artifact, and reading the u32
+  at a hard-coded offset from another module would be a second interpretation of
+  that layout): the vector's `count` is bound only to its own byte length, so a
+  short vector is well-formed alone, reaches physics, and returns as
+  `replayDivergence` - "the engine drifted" for a fault entirely in the file.
+  Facts collect as SCALARS ONLY (a max is a complete check
   against an upper bound) so verification's one-payload-at-a-time memory model
-  holds. **`REPLAY_STAGES` is NOT modified** - it is stage 10's comparison
+  holds. **A member 14 -> 48 bytes also shrinks `assertHistoryCapacity`'s
+  projection** (measured: pop 20 unchanged at the 1024 cap; pop 64 940 -> 912;
+  pop 256 235 -> 228 maximum feasible generations) - correct behaviour, since
+  the projection tracks the real format, but it moves a public production
+  refusal and no literal records it. **`REPLAY_STAGES` is NOT modified** - it is stage 10's comparison
   vocabulary, not the verification ladder.
-- **DELIBERATE RE-LOCK, and the movement pattern IS the evidence** (both scripts
-  ASSERT the unchanged half and refuse to write if an unrelated digest moves):
+- **DELIBERATE RE-LOCK, and the movement pattern IS the evidence** (asserted at
+  re-lock time by throwaway scripts that refused to write if an unrelated digest
+  moved - those are NOT committed; what enforces the literals at HEAD is
+  `tests/population-determinism.test.js` + `tests/evolution-determinism.test.js`,
+  which assert every one of them live):
   `population-locks` `fitnessVectorDigest a6d04f75 -> fd4222eb` with every
   per-member fitness/valid literal, the champion, the champion trace and the
   snapshot/initialization/spec digests BIT-IDENTICAL; `evolution-locks` every
@@ -2581,7 +2607,7 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   no longer determines the bytes - recording the fixture's margins for the first
   time: 20/20 alert-free, peak body speed 0.9696-4.8661 m/s, 5.14x below the
   25 m/s line at the worst member. MEASURED VALUES, never thresholds.
-- **Oracles.** `scripts/generate-independent-evolution-artifact.mjs` encodes from
+- **Oracles.** `scripts/generate-independent-evolution-artifact.js` encodes from
   the WRITTEN SPEC - no imports from evolution-history/evolution-lineage/
   population/population-evaluation, `node:crypto` instead of the platform
   adapter - and reproduces production's bytes EXACTLY
@@ -2610,7 +2636,7 @@ Full record: `docs/fitness-vector-v3-integrity-observations-2026-07.md`:**
   fixed a vacuous assertion authored in this PR - `Object.isFrozen(undefined)` is
   TRUE, so a frozenness check passed against a decoder emitting no block at all;
   presence and key set are established first.
-- Full suite green (61 files, 1705 tests); determinism gate green; pinned
+- Full suite green (62 files, 1728 tests); determinism gate green; pinned
   Chromium 21/21 reproducing every re-locked digest on the FIRST run; lint and
   build clean. **No new seeds allocated** - the v3 interop artifact re-encodes
   the existing 20260721/20260722 interop run.

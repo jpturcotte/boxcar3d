@@ -26,7 +26,7 @@
 // than src/platform/sha256.js. If this repo's encoder ever drifts from the
 // spec, the committed artifact stops verifying.
 //
-// Usage: node scripts/generate-independent-evolution-artifact.mjs <inputs.json>
+// Usage: node scripts/generate-independent-evolution-artifact.js <inputs.json>
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';

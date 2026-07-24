@@ -93,7 +93,8 @@ const {
 } = AssemblyNS;
 const {
   POPULATION_SNAPSHOT_VERSION, attestPopulation, bytesEqual,
-  deserializePopulationSnapshot, serializePopulationSnapshot, validatePopulation,
+  deserializePopulationSnapshot, peekPopulationSnapshotCount,
+  serializePopulationSnapshot, validatePopulation,
 } = PopulationNS;
 const {
   createInitialPopulation, deserializePopulationInitialization,
@@ -305,7 +306,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   'population.js': Object.freeze([
     'POPULATION_SNAPSHOT_VERSION', 'attestPopulation', 'bytesEqual',
     'deserializePopulationSnapshot', 'isCanonicalUint32',
-    'serializePopulationSnapshot', 'validatePopulation',
+    'peekPopulationSnapshotCount', 'serializePopulationSnapshot', 'validatePopulation',
   ]),
   'population-initializer.js': Object.freeze([
     'INITIAL_POPULATION_DEFAULTS', 'MAX_POPULATION_SIZE', 'POPULATION_INITIALIZER_VERSION',
@@ -539,6 +540,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'serializePopulationSnapshot', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'attestPopulation', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'deserializePopulationSnapshot', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'peekPopulationSnapshotCount', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
   ]),
   'population-initializer.js': Object.freeze([
     { name: 'POPULATION_INITIALIZER_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -984,6 +986,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     // Arg `a` probed here; the b-side battery lives in tests/population.test.js.
     bytesEqual: { intake: 'gated', invoke: (u) => bytesEqual(u, Uint8Array.of(1)) },
     deserializePopulationSnapshot: { intake: 'gated', invoke: (u) => deserializePopulationSnapshot(u) },
+    peekPopulationSnapshotCount: { intake: 'gated', invoke: (u) => peekPopulationSnapshotCount(u) },
     attestPopulation: { intake: 'no-byte-intake', why: 'population object in; returns module-owned bytes + decoded genotypes' },
     isCanonicalUint32: { intake: 'no-byte-intake', why: 'number in, boolean out' },
     serializePopulationSnapshot: { intake: 'no-byte-intake', why: 'population object in; returns fresh module-owned bytes' },
@@ -1680,6 +1683,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   serializePopulationSnapshot: 'freshBytes',
   attestPopulation: 'ownedCopy',
   deserializePopulationSnapshot: 'ownedCopy',
+  peekPopulationSnapshotCount: 'scalar',
   // population-initializer.js
   sampleInitialGenotype: 'ownedCopy',
   createInitialPopulation: 'ownedCopy',

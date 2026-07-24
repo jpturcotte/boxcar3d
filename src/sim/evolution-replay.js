@@ -68,6 +68,7 @@ import {
 import {
   deserializeFitnessVector, peekFitnessVectorVersions,
 } from './population-evaluation.js';
+import { peekPopulationSnapshotCount } from './population.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
   MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE,
@@ -90,18 +91,32 @@ export const REPLAY_STAGES = Object.freeze([
 export { MAX_EVOLUTION_HISTORY_BYTES } from './evolution-history.js';
 
 /**
- * Re-raise a sibling module's failure in the evolution taxonomy, keeping the
- * original as `cause`. Mirrors evolution-run's private helper of the same name:
- * callers branch on `code`, never on message text, so an error crossing a
- * module boundary must arrive wearing this family's vocabulary.
+ * Run `body`, CAPTURING any failure as an evolution-taxonomy error rather than
+ * throwing it. Returns `{ value, failure }` with exactly one of them set.
+ *
+ * TWO REASONS this captures instead of re-raising, and both are ordering
+ * rulings the failure ladder depends on:
+ *
+ *  - A sibling module's decoder fails in ITS OWN dialect —
+ *    `deserializeFitnessVector` throws a plain `Error` with no `code`. Callers
+ *    branch on `code`, never on message text, so an error crossing a module
+ *    boundary must arrive wearing this family's vocabulary. The original rides
+ *    along as `cause`.
+ *  - The failure is discovered while walking components (stage 5) but belongs
+ *    to the "malformed current format" rung, which sits BELOW corruption and
+ *    wrong-artifact. Throwing here would let a content complaint preempt the
+ *    chain (stage 6), whole-history digest (stage 7) and external identity
+ *    (stage 8) checks, so a doubly-broken artifact would be diagnosed by the
+ *    less actionable of its two faults. Capturing lets the higher rungs run
+ *    first and the gates raise what is left.
  */
-function translate(code, message, body) {
+function capture(code, message, body) {
   try {
-    return body();
+    return { value: body(), failure: null };
   } catch (cause) {
-    if (cause instanceof EvolutionError) throw cause;
-    evolutionFail(code, `${message}: ${cause && cause.message ? cause.message : String(cause)}`, {}, cause);
-    return undefined; // unreachable; evolutionFail always throws
+    if (cause instanceof EvolutionError) return { value: null, failure: cause };
+    const detail = cause && cause.message ? cause.message : String(cause);
+    return { value: null, failure: new EvolutionError(code, `${message}: ${detail}`, {}, cause) };
   }
 }
 
@@ -260,22 +275,52 @@ async function verifyFramedArtifact(framing) {
  * version is not this build's, NOTHING further is read. Handing a v2 stream to
  * a v3 decoder would report `malformedHistory` — "these bytes are corrupt" —
  * about an artifact that is perfectly well-formed under the version it declares.
+ *
+ * NOTHING HERE THROWS. Every failure is captured into `failure` and raised by
+ * the gates, which run after the artifact's own self-consistency and identity
+ * checks — see `capture`. A component can be digest-consistent and still
+ * internally contradictory (an unselectable member carrying a nonzero fitness,
+ * an alert onset after a catastrophic one); that is a malformed
+ * current-format artifact, not corruption and not a replay divergence, and it
+ * must not preempt the rungs above it.
  */
 function collectFitnessVectorFacts(payload, generationIndex) {
-  const versions = peekFitnessVectorVersions(payload.components.fitnessVector);
-  if (!versions.supported) {
-    return Object.freeze({ generationIndex, versions, coherence: null });
+  // The peek is a foreign decoder too: a fitness-vector component truncated
+  // inside its 14-byte version prefix fails in population-evaluation's dialect
+  // as a plain Error with no `code`, which would escape verification untyped.
+  const peeked = capture('malformedHistory',
+    `generation ${generationIndex} fitness vector header is malformed`,
+    () => peekFitnessVectorVersions(payload.components.fitnessVector));
+  if (peeked.failure !== null) {
+    // No version could be read, so no compatibility verdict is possible —
+    // gate A skips a null `versions` and gate B raises this.
+    return Object.freeze({
+      generationIndex, versions: null, coherence: null, failure: peeked.failure,
+    });
   }
-  const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
-  // A component can be digest-consistent and still internally contradictory —
-  // an unselectable member carrying a nonzero fitness, an alert onset after a
-  // catastrophic one. That is a MALFORMED CURRENT-FORMAT artifact, not a
-  // replay divergence, and it must be reported in the evolution error taxonomy
-  // rather than leaking population-evaluation's decoder dialect out of a
-  // verification call. The decoder's own message rides along as `cause`.
-  const vector = translate('malformedHistory',
+  const versions = peeked.value;
+  if (!versions.supported) {
+    return Object.freeze({ generationIndex, versions, coherence: null, failure: null });
+  }
+  const decoded = capture('malformedHistory',
     `generation ${generationIndex} fitness vector is malformed`,
-    () => deserializeFitnessVector(payload.components.fitnessVector));
+    () => ({
+      metadata: deserializeEvaluationMetadata(payload.components.evaluationMetadata),
+      vector: deserializeFitnessVector(payload.components.fitnessVector),
+      // Count only — see peekPopulationSnapshotCount. The population component
+      // is what the vector must agree with, and reading the run's declared
+      // populationSize from the header instead would be a weaker check placed
+      // at the wrong rung: the header's own agreement with the initialization
+      // manifest is established later, so a forged header would be diagnosed
+      // here by its symptom rather than there by its cause.
+      scoredPopulationCount: peekPopulationSnapshotCount(payload.components.population),
+    }));
+  if (decoded.failure !== null) {
+    return Object.freeze({
+      generationIndex, versions, coherence: null, failure: decoded.failure,
+    });
+  }
+  const { metadata, vector, scoredPopulationCount } = decoded.value;
   const executedSteps = metadata.executedSteps;
   const rows = vector.individuals;
   let worst = null;
@@ -297,8 +342,15 @@ function collectFitnessVectorFacts(payload, generationIndex) {
   return Object.freeze({
     generationIndex,
     versions,
+    failure: null,
     coherence: Object.freeze({
       executedSteps,
+      // Carried because this is the one cross-component fact the vector's own
+      // codec cannot check: its `count` is bound only to its own byte length,
+      // so a vector scoring 5 of a generation's 6 individuals is perfectly
+      // well-formed in isolation.
+      memberCount: rows.length,
+      scoredPopulationCount,
       worst: worst === null ? null : Object.freeze(worst),
     }),
   });
@@ -340,6 +392,10 @@ export function checkFitnessVectorCompatibility(verified) {
   const records = verified.records;
   for (let i = 0; i < records.length; i += 1) {
     const facts = records[i].fitnessVector;
+    // A component whose version prefix could not be read at all yields no
+    // verdict here: claiming "unsupported version" would name a version
+    // nothing ever decoded. Gate B raises the captured malformedHistory.
+    if (facts.versions === null) continue;
     const mismatches = facts.versions.mismatches;
     if (mismatches.length === 0) continue;
     const first = mismatches[0];
@@ -373,17 +429,42 @@ export function checkFitnessVectorCompatibility(verified) {
  * `i <= maxSteps` — so a first crossing at exactly `executedSteps` is legal and
  * a `<` bound would reject a real, correctly-produced artifact.
  *
- * Each generation is checked against ITS OWN persisted metadata, never the
- * header's spec or generation 0's: they agree in every artifact this build
- * produces, and reading one to validate another would be an assumption the
- * format does not enforce.
+ * Each generation's STEP BOUND is checked against ITS OWN persisted metadata,
+ * never the header's spec or generation 0's: `executedSteps` is a property of
+ * one evaluation, they agree in every artifact this build produces, and
+ * reading one to validate another would be an assumption the format does not
+ * enforce.
+ *
+ * THE MEMBER COUNT is checked the same way — against the generation's own
+ * population component, never the header's `populationSize`. A vector that
+ * scores fewer members than its generation holds is well-formed by every
+ * check above (its `count` is bound only to its own byte length), reaches
+ * physics, and comes back as `replayDivergence` at stage 'fitnessVector' —
+ * "the engine drifted" for a fault that is entirely in the file.
+ *
+ * This gate also raises whatever `collectFitnessVectorFacts` CAPTURED while
+ * walking components — a malformed version prefix or an unreadable vector.
+ * Those are discovered at stage 5 and belong on this rung, so they wait here
+ * rather than preempting the chain, whole-history and identity checks.
  */
 export function verifyFitnessVectorMetadataCoherence(verified) {
   const records = verified.records;
   for (let i = 0; i < records.length; i += 1) {
     const facts = records[i].fitnessVector;
+    if (facts.failure !== null) throw facts.failure;
     const coherence = facts.coherence;
-    if (coherence === null || coherence.worst === null) continue;
+    if (coherence === null) continue;
+    if (coherence.memberCount !== coherence.scoredPopulationCount) {
+      evolutionFail('malformedHistory',
+        `generation ${facts.generationIndex} fitness vector scores ${coherence.memberCount} `
+        + `members, but the generation holds ${coherence.scoredPopulationCount} individuals`,
+        {
+          generationIndex: facts.generationIndex,
+          memberCount: coherence.memberCount,
+          populationCount: coherence.scoredPopulationCount,
+        });
+    }
+    if (coherence.worst === null) continue;
     const { individualId, field, step } = coherence.worst;
     evolutionFail('malformedHistory',
       `generation ${facts.generationIndex} individual ${individualId} declares ${field} ${step}, `

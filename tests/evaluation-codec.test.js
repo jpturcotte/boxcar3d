@@ -25,7 +25,8 @@ import { describe, test, expect } from 'vitest';
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   SPAWN_CLEARANCE, deserializeEvaluationSpec, deserializeFitnessVector,
-  fitnessVectorByteLength, serializeEvaluationSpec, serializeFitnessVector,
+  fitnessVectorByteLength, peekFitnessVectorVersions, serializeEvaluationSpec,
+  serializeFitnessVector,
 } from '../src/sim/population-evaluation.js';
 import { POPULATION_SNAPSHOT_VERSION, bytesEqual, serializePopulationSnapshot } from '../src/sim/population.js';
 import {
@@ -902,9 +903,11 @@ describe('fitness vector v3 — the integrity observations', () => {
     // 'numericalDivergence' while the peak stays infinite. A "must be finite"
     // rule would make this public encoder throw on a legal policy-v1 result —
     // a codec stricter than its own producer, refusing the run's own
-    // defensive-net output.
-    expect(Math.sqrt(Infinity * Infinity)).toBe(Infinity);
-    expect(Infinity > 1000).toBe(true);
+    // defensive-net output. (An earlier draft asserted
+    // `Math.sqrt(Infinity * Infinity) === Infinity` and `Infinity > 1000` here.
+    // Both are IEEE-754 facts about the language, not claims about this
+    // codebase — they belong in the reasoning above, not in an expectation
+    // that can never fail.)
     for (const key of ['peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement']) {
       const evaluation = synth([[1, 0, true, 'numericalDivergence',
         { ...OBSERVATIONS.numericalDivergence, [key]: Infinity }]]);
@@ -972,6 +975,157 @@ describe('fitness vector v3 — the integrity observations', () => {
     const decoded = deserializeFitnessVector(serializeFitnessVector(alertOk));
     expect(decoded.individuals[0].integrityObservations.firstAlertStep).toBe(16);
     expect(decoded.individuals[0].fitness).toBe(7.5);
+  });
+
+  test('the DECODER refuses the same out-of-domain and incoherent observations', () => {
+    // WHY THIS EXISTS SEPARATELY. The test above is titled "the encoder AND
+    // decoder both enforce" and every one of its cases calls the ENCODER, so
+    // deleting `validatedObservations(...)` from `deserializeFitnessVector`
+    // left the entire suite green. The decoder's half of the mirror contract
+    // had no tooth at all — and it is the half that faces bytes nobody in this
+    // process wrote: a persisted artifact, a foreign encoder, a forged file.
+    //
+    // These cases therefore poke a VALID stream and assert the decoder refuses
+    // it, which the encoder cannot do for them.
+    const dv = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const poke = (mutate, entries = [[1, 0, true, 'ok']]) => {
+      const bytes = serializeFitnessVector(synth(entries));
+      mutate(dv(bytes), bytes);
+      return bytes;
+    };
+
+    // Domain: a peak that is NaN or negative. Both are unreachable from
+    // foldIntegrity and both are refused, and the asymmetry with +Infinity
+    // (accepted, above) is the point of the rule.
+    for (const key of ['peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement']) {
+      for (const bad of [NaN, -Infinity, -1]) {
+        const bytes = poke((v) => v.setFloat64(MEMBER_AT(0) + AT[key], bad, true));
+        expect(() => deserializeFitnessVector(bytes), `${key}=${String(bad)}`)
+          .toThrow(new RegExp(`population-evaluation: invalid encoded fitness vector at .*${key}`));
+      }
+    }
+
+    // Coherence, policy v1. Each case starts from a stream the encoder was
+    // willing to write and breaks exactly one rule.
+    const catastrophic = [[1, 0, false, 'numericalDivergence',
+      { ...OBSERVATIONS.numericalDivergence, firstAlertStep: 11, firstCatastrophicStep: 12 }]];
+
+    // catastrophic present, alert cleared to absent.
+    const noAlert = poke((v) => {
+      v.setUint8(MEMBER_AT(0) + AT.firstAlertStepPresent, 0);
+      v.setUint32(MEMBER_AT(0) + AT.firstAlertStep, 0, true);
+    }, catastrophic);
+    expect(() => deserializeFitnessVector(noAlert), 'catastrophic without alert')
+      .toThrow(/firstAlertStep/);
+
+    // alert moved AFTER the catastrophic step.
+    const late = poke((v) => v.setUint32(MEMBER_AT(0) + AT.firstAlertStep, 13, true), catastrophic);
+    expect(() => deserializeFitnessVector(late), 'alert after catastrophic')
+      .toThrow(/firstAlertStep/);
+
+    // status flipped to 'ok' while a catastrophic step remains.
+    const okStatus = poke((v) => {
+      v.setUint8(MEMBER_AT(0) + AT.integrityStatus, INTEGRITY_STATUS.indexOf('ok'));
+      v.setUint8(MEMBER_AT(0) + AT.valid, 1);
+    }, catastrophic);
+    expect(() => deserializeFitnessVector(okStatus), "'ok' carrying a catastrophic step")
+      .toThrow(/firstCatastrophicStep/);
+
+    // 'numericalDivergence' with the catastrophic step cleared.
+    const divergentNoStep = poke((v) => {
+      v.setUint8(MEMBER_AT(0) + AT.firstCatastrophicStepPresent, 0);
+      v.setUint32(MEMBER_AT(0) + AT.firstCatastrophicStep, 0, true);
+    }, catastrophic);
+    expect(() => deserializeFitnessVector(divergentNoStep), 'divergence with no catastrophic step')
+      .toThrow(/firstCatastrophicStep/);
+
+    // The positive control: an untouched stream of the same shape decodes.
+    // Without it every case above would pass on a decoder that refused
+    // everything.
+    const clean = serializeFitnessVector(synth(catastrophic));
+    expect(deserializeFitnessVector(clean).individuals[0].integrityObservations)
+      .toMatchObject({ firstAlertStep: 11, firstCatastrophicStep: 12 });
+  });
+
+  describe('peekFitnessVectorVersions — the layered compatibility parser', () => {
+    // WHY DIRECTLY. The only behavioural exercise of this function anywhere was
+    // the stale v2 artifact, which hits the early `fitnessVectorVersion !== 3`
+    // return — so FOUR of its five comparisons were unenforced, and neutering
+    // the whole mismatch loop left 252 tests green. It is the parser two
+    // production gates read their verdict from, and it faces foreign bytes.
+    const HEADER_AT = Object.freeze({
+      fitnessVectorVersion: 0,
+      fitnessPolicyVersion: 2,
+      integrityPolicyVersion: 4,
+      snapshotVersion: 6,
+      // bytes 8..11 are populationSnapshotDigestState (positional, not a version)
+      evaluationSpecVersion: 12,
+    });
+    const CURRENT = Object.freeze({
+      fitnessVectorVersion: FITNESS_VECTOR_VERSION,
+      fitnessPolicyVersion: FITNESS_POLICY_VERSION,
+      integrityPolicyVersion: INTEGRITY_POLICY_VERSION,
+      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
+      evaluationSpecVersion: EVALUATION_SPEC_VERSION,
+    });
+    const withVersion = (field, value) => {
+      const bytes = serializeFitnessVector(synth([[1, 0, true, 'ok']]));
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+        .setUint16(HEADER_AT[field], value, true);
+      return bytes;
+    };
+
+    test('a current stream is supported and declares every version it carries', () => {
+      const peeked = peekFitnessVectorVersions(serializeFitnessVector(synth([[1, 0, true, 'ok']])));
+      expect(peeked.supported).toBe(true);
+      expect(peeked.mismatches).toEqual([]);
+      expect(peeked.declared).toEqual(CURRENT);
+    });
+
+    test.each(['fitnessPolicyVersion', 'integrityPolicyVersion', 'snapshotVersion', 'evaluationSpecVersion'])(
+      'a non-current %s is reported BY NAME, with stored and current values',
+      (field) => {
+        const stored = CURRENT[field] + 7;
+        const peeked = peekFitnessVectorVersions(withVersion(field, stored));
+        expect(peeked.supported).toBe(false);
+        expect(peeked.mismatches.length).toBe(1);
+        expect(peeked.mismatches[0]).toEqual({ field, stored, current: CURRENT[field] });
+        // The other four are still read and still reported as declared: the
+        // layering stops at an unknown VECTOR version, not at any mismatch.
+        expect(peeked.declared).toEqual({ ...CURRENT, [field]: stored });
+      },
+    );
+
+    test('an unknown fitnessVectorVersion stops the parse — nothing further is claimed', () => {
+      // THE LAYERING RULE. Under an unrecognized layout every later offset is
+      // guesswork, so the parser must not report versions it cannot honestly
+      // have read. `declared` carries exactly the one field it did read.
+      const peeked = peekFitnessVectorVersions(withVersion('fitnessVectorVersion', 2));
+      expect(peeked.supported).toBe(false);
+      expect(Object.keys(peeked.declared)).toEqual(['fitnessVectorVersion']);
+      expect(peeked.declared.fitnessVectorVersion).toBe(2);
+      expect(peeked.mismatches).toEqual([
+        { field: 'fitnessVectorVersion', stored: 2, current: FITNESS_VECTOR_VERSION },
+      ]);
+    });
+
+    test('several non-current versions all report, vector version first', () => {
+      const bytes = serializeFitnessVector(synth([[1, 0, true, 'ok']]));
+      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      view.setUint16(HEADER_AT.integrityPolicyVersion, 9, true);
+      view.setUint16(HEADER_AT.evaluationSpecVersion, 9, true);
+      const peeked = peekFitnessVectorVersions(bytes);
+      expect(peeked.mismatches.map((m) => m.field))
+        .toEqual(['integrityPolicyVersion', 'evaluationSpecVersion']);
+    });
+
+    test('a stream truncated inside the version prefix FAILS — it is not "supported"', () => {
+      const bytes = serializeFitnessVector(synth([[1, 0, true, 'ok']]));
+      for (const length of [0, 1, 3, 5, 7, 13]) {
+        expect(() => peekFitnessVectorVersions(bytes.slice(0, length)), `length ${length}`)
+          .toThrow(/population-evaluation/);
+      }
+    });
   });
 
   test('the threshold ordering the catastrophic-implies-alert rule rests on', () => {

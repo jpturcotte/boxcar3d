@@ -15,7 +15,9 @@
 // vitest's received-first `.toBe` diff.
 
 import { describe, test, expect, beforeAll } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { URL, fileURLToPath } from 'node:url';
@@ -146,7 +148,9 @@ function nodeCandidateReport({ fvMeasured = 'ee605286', fvLock = FV_LOCK, champS
       {
         name: '/w/tests/evolution-replay.test.js',
         assertionResults: [
-          failed('resume and continuation > an independently produced Kimi artifact resumes and continues byte-identically',
+          failed('resume and continuation > an independently encoded v3 artifact is byte-identical to a local run',
+            "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+          failed('resume and continuation > ...and it resumes and continues to the literal terminal digest',
             "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
         ],
       },
@@ -182,7 +186,7 @@ function browserCandidateReport({
         assertionResults: [
           failed('evolution golden locks (Chromium) > the committed artifact reproduces exactly in the browser',
             "engine changed — re-lock deliberately via the Node gate: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
-          failed('evolution golden locks (Chromium) > Chromium continues the independent Kimi artifact byte-identically',
+          failed('evolution golden locks (Chromium) > Chromium continues the independent v3 artifact byte-identically',
             "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
         ],
       },
@@ -1021,6 +1025,60 @@ describe('helpers and the committed inventory', () => {
     expect(fvSigs.length).toBe(2);
     for (const s of fvSigs) expect(s.lockMarker).toBe('fitnessVector');
     expect(allSigs.filter((s) => s.lockMarker !== undefined)).toEqual(fvSigs);
+  });
+
+  // THE TITLE-DRIFT TOOTH — the same staleness class as the digest rule above,
+  // one notch over, and the reason it exists is that the class recurred.
+  //
+  // The /3 inventory removed a mutable DIGEST from the signature regexes. It
+  // left mutable TEST TITLES in `titleSubstring`, and nothing read them: this
+  // file's own fixtures hand-author titles, so renaming a pinned test leaves
+  // 90/90 green here and breaks the adjudicator only on the next `heavy=true`
+  // dispatch — where all three classification layers fail and the report calls
+  // it "a project-contract regression, not the allowed class-(c) move". A
+  // false alarm that inverts the gate's meaning, discovered months later.
+  //
+  // DERIVED, not enumerated: the file set comes from the inventory and the
+  // titles come from the inventory, so a rename reddens at authoring time and
+  // a newly pinned test is covered without anyone remembering.
+  const readSource = (file) => {
+    expect(existsSync(file), `inventory pins ${file}, which does not exist`).toBe(true);
+    return readFileSync(file, 'utf8');
+  };
+
+  test('every pinned titleSubstring still exists in the file it is filed under', () => {
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    const drift = [];
+    for (const arm of ['node', 'browser']) {
+      for (const [file, spec] of Object.entries(inv[arm].byFile)) {
+        const src = readSource(file);
+        for (const s of spec.allowedFailureSignatures) {
+          if (!src.includes(s.titleSubstring)) drift.push(`${arm} ${file} :: "${s.titleSubstring}"`);
+        }
+      }
+    }
+    expect(drift, 'a pinned test was renamed; update the inventory in the same commit').toEqual([]);
+  });
+
+  test('every mustPassPresent titleSubstring still exists somewhere in its arm', () => {
+    const inv = JSON.parse(readFileSync(EXPECTED, 'utf8'));
+    const testsDir = fileURLToPath(new URL('.', import.meta.url));
+    const armSources = (arm) => {
+      const dir = arm === 'browser' ? join(testsDir, 'browser') : testsDir;
+      return readdirSync(dir)
+        .filter((n) => n.endsWith('.test.js'))
+        .map((n) => readFileSync(join(dir, n), 'utf8'));
+    };
+    const drift = [];
+    for (const arm of ['node', 'browser']) {
+      const sources = armSources(arm);
+      for (const entry of inv[arm].mustPassPresent || []) {
+        if (!sources.some((src) => src.includes(entry.titleSubstring))) {
+          drift.push(`${arm} :: "${entry.titleSubstring}"`);
+        }
+      }
+    }
+    expect(drift, 'a must-pass test was renamed; update the inventory in the same commit').toEqual([]);
   });
 
   test('the default authoritative digest set derives LIVE from population-locks (the one source)', () => {

@@ -2,7 +2,7 @@
 
 `evolution-v3-independent.base64` is a 4,160-byte, one-generation, non-terminal
 history carrying a **fitness vector v3**. It was produced by
-`scripts/generate-independent-evolution-artifact.mjs`, an encoder written from
+`scripts/generate-independent-evolution-artifact.js`, an encoder written from
 the *written format spec* rather than from the implementation.
 
 ## What its independence covers — and what it does not
@@ -48,7 +48,12 @@ v3 member layout.
 ## Identity
 
 - Artifact SHA-256: `58973f6205852217d4d4666642f4ddfba7a99a8ba4f0feb1b8d1d1b142e576e3`
-- Header digest: `6b872cadac00b3a56463bcc8e0f55b14bc290c3c0b2e04568f4fc1d9bfcce51b`
+- Header digest: `312665978b18bdd920668a1ee3bc49b301a24b76d7497f9ef328732b6939bfce`
+  (identical to the v2 Kimi artifact's, as it must be: both are the same
+  interop configuration, and a change to an opaque component's contents cannot
+  reach the header. Asserted in `tests/history-observations.test.js` — this
+  line previously carried the golden evolution-lock fixture's header digest,
+  a different configuration entirely, and no test read it.)
 - One-generation history digest: `aea30ef11d4d6c75adc5af1a88b9a1a408e5ab51962690a29b7ec81dffd7e79c`
 - Expected terminal continuation digest: `bc53c425b88c3cb549285749abc82282162a580f93b741632702028a6cbf247b`
 - Expected terminal artifact SHA-256: `e6b2babe4ffa1dee2a69dd36dc1c6b0095aa48fcc41b9750db31bd14cec409f8`

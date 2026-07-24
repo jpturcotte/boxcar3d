@@ -1,14 +1,12 @@
 // REPLAY AND RESUME: ordered verification, first-divergence localization,
 // external freshness, the runtime gate, and byte-identical continuation.
 //
-// THE REFORGE HELPER is what makes this suite meaningful. Flipping a byte in a
-// committed artifact is caught by the component digest — correctly, and that is
-// tested — but it tests the DIGEST, not the REPLAY. To reach the replay stages
-// you need an artifact that is perfectly well-formed and self-consistent and
-// still describes a run this environment does not reproduce. `reforge` builds
-// exactly that: it rewrites a component (or the header), recomputes every
-// downstream digest, re-chains, and re-assembles, so verification passes
-// cleanly and the divergence must be found by re-running the generation.
+// THE REFORGE HELPER (tests/helpers/evolution-artifacts.js) is what makes this
+// suite meaningful. Flipping a byte in a committed artifact is caught by the
+// component digest — correctly, and that is tested — but it tests the DIGEST,
+// not the REPLAY. To reach the replay stages you need an artifact that is
+// perfectly well-formed and self-consistent and still describes a run this
+// environment does not reproduce.
 //
 // Seeds declared: population 20260740, terrain 20260741 (as in
 // tests/evolution-run.test.js).
@@ -46,8 +44,8 @@ const {
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
-  decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
-  digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
+  decodeGenerationPayload, decodeHistoryFraming, digestGeneration,
+  encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
 const {
   REPLAY_STAGES, firstByteDifference, verifyHistoryArtifact,
@@ -80,7 +78,7 @@ const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
 
 // The v3 interoperability artifact, produced by an encoder written from the
 // FORMAT SPEC with no imports from the modules under test and hashing via
-// node:crypto (scripts/generate-independent-evolution-artifact.mjs). See
+// node:crypto (scripts/generate-independent-evolution-artifact.js). See
 // tests/fixtures/evolution-v3-independent.md for exactly what its independence
 // covers and what enters as declared input.
 const independentV3Bytes = () => new Uint8Array(Buffer.from(
@@ -122,42 +120,7 @@ async function runGenerations(count, cfg = config({ evolution: { maxGenerations:
   return run.historyBytes();
 }
 
-/**
- * Rebuild a complete, self-consistent artifact after mutating the header
- * and/or one generation's decoded components. Every downstream digest is
- * recomputed, so the result passes verification and can only fail at replay.
- */
-async function reforge(bytes, { mutateHeader, mutateHeaderBytes, mutateRecord } = {}) {
-  const framing = decodeHistoryFraming(bytes);
-  let headerBytes = framing.headerBytes;
-  if (mutateHeader) {
-    const decoded = decodeEvolutionHeader(framing.headerBytes);
-    headerBytes = encodeEvolutionHeader(mutateHeader({ ...decoded }));
-  }
-  if (mutateHeaderBytes) {
-    headerBytes = new Uint8Array(headerBytes);
-    mutateHeaderBytes(headerBytes);
-  }
-  const headerDigestBytes = await digestHeader(headerBytes);
-  const generations = [];
-  let previous = headerDigestBytes;
-  for (let i = 0; i < framing.generations.length; i += 1) {
-    const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
-    const record = {
-      generationIndex: payload.generationIndex,
-      terminalReason: payload.terminalReason,
-      components: { ...payload.components },
-    };
-    if (mutateRecord) mutateRecord(record, i);
-    const digests = {};
-    for (const kind of COMPONENT_KINDS) digests[kind] = await digestComponent(kind, record.components[kind]);
-    const payloadBytes = encodeGenerationPayload(record, digests);
-    const generationDigestBytes = await digestGeneration(previous, payloadBytes);
-    previous = generationDigestBytes;
-    generations.push({ payloadBytes, generationDigestBytes });
-  }
-  return (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
-}
+const { reforge } = await import('./helpers/evolution-artifacts.js');
 
 const flipByte = (bytes, offset = 0) => {
   const copy = new Uint8Array(bytes);
@@ -243,6 +206,15 @@ describe('resume and continuation', () => {
     const fixture = independentV3Bytes();
     const control = createEvolutionRun(INTEROP_CONFIG);
     await control.advance();
+    // The same runtime pin its sibling carries, and for the same reason: this
+    // test ends at a LOCKED terminal digest, so on an engine change it must
+    // fail on the deliberate re-lock message rather than on an unexplained
+    // digest mismatch. The engine-swap adjudicator classifies by that message.
+    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
+    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
+    expect(controlHeader.rapierVersion,
+      'engine changed — re-lock the independent evolution artifact deliberately')
+      .toBe(fixtureHeader.rapierVersion);
     const resumed = await resumeEvolutionRun(fixture);
     while (control.status().phase !== 'terminal') {
       const a = await control.advance();
@@ -772,6 +744,123 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.executedSteps).toBe(45);
     expect(err.context.field).toBe('firstAlertStep');
     expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a DOUBLY-broken artifact reports the corruption, not the content complaint', async () => {
+    // THE REASON THE COMPONENT WALK CAPTURES INSTEAD OF THROWING. A fitness
+    // vector that fails to DECODE is discovered at stage 5, while walking
+    // components — but "malformed current format" sits BELOW corruption and
+    // wrong-artifact on the ladder. Throwing it there would preempt the chain
+    // (stage 6), the whole-history digest (stage 7) and external identity
+    // (stage 8), so a file that is both corrupt AND contradictory would be
+    // diagnosed by the less actionable of its two faults: the reader would go
+    // hunting a content bug in bytes that are simply damaged.
+    //
+    // Both halves are asserted, because only the PAIR proves the ordering —
+    // either alone is satisfied by the wrong implementation too.
+    const artifact = await runGenerations(1);
+    const contradictory = {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        const view = new DataView(v.buffer, v.byteOffset, v.byteLength);
+        // An UNSELECTABLE member carrying nonzero fitness: rejected by the
+        // vector's own decoder, so the failure is a stage-5 decode.
+        view.setUint8(22 + 4, 0); // valid = false
+        view.setFloat64(22 + 6, 12.5, true); // ...with a real fitness
+        record.components.fitnessVector = v;
+      },
+    };
+    // (a) Contradictory ALONE — the content complaint, raised by gate B.
+    const contentOnly = await reforge(artifact, contradictory);
+    await expectCodeAsync(() => resumeEvolutionRun(contentOnly), 'malformedHistory',
+      /generation 0 fitness vector is malformed/);
+
+    // (b) Contradictory AND corrupt at the trailer. The stored whole-history
+    // digest is the final 32 bytes and is not itself covered by anything, so
+    // flipping a byte there breaks stage 7 ALONE — no component digest and no
+    // chain link is disturbed, which is what isolates the rung being tested.
+    const both = new Uint8Array(contentOnly);
+    both[both.length - 1] ^= 0xff;
+    await expectCodeAsync(() => resumeEvolutionRun(both), 'historyDigestMismatch');
+  });
+
+  test('the SAME bound applies to firstCatastrophicStep, not just the alert step', async () => {
+    // Gate B walks a two-entry field table; only the alert entry was ever
+    // poked, so deleting the firstCatastrophicStep row left the replay and
+    // observation suites 76/76 green. Both onsets are persisted, both are
+    // bounded by the same metadata, and a catastrophic onset is the one that
+    // marks an unselectable member — the row a measurement PR most needs to
+    // trust.
+    //
+    // The alert step is set to a LEGAL in-range value so the coherence rule
+    // "catastrophic implies an alert at or before it" is satisfied and the
+    // stream survives its own decoder; the only thing wrong is the bound.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        const view = new DataView(v.buffer);
+        view.setUint8(22 + 4, 0); // valid = false
+        view.setUint8(22 + 5, 2); // integrityStatus = 'numericalDivergence'
+        view.setFloat64(22 + 6, 0, true); // unselectable => fitness 0
+        view.setUint8(22 + 38, 1); // firstAlertStep PRESENT
+        view.setUint32(22 + 39, 5, true); // ...and in range
+        view.setUint8(22 + 43, 1); // firstCatastrophicStep PRESENT
+        view.setUint32(22 + 44, 4000000000, true); // ...and far out of range
+        record.components.fitnessVector = v;
+      },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/declares firstCatastrophicStep 4000000000/);
+    expect(err.context.field).toBe('firstCatastrophicStep');
+    expect(err.context.executedSteps).toBe(45);
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a vector that scores fewer members than its generation holds is refused before physics', async () => {
+    // The one cross-component fact the vector's own codec cannot check: its
+    // member count is bound only to its own byte length, so a short vector is
+    // well-formed in isolation. Without this gate it reaches physics and comes
+    // back as `replayDivergence` at stage 'fitnessVector' — "the engine
+    // drifted" for a fault entirely inside the file.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        // Drop the last member AND decrement the header count, so the vector
+        // is WELL-FORMED on its own terms — its byte length still matches its
+        // declared count. That is what makes this a cross-component fault
+        // rather than one its own decoder could catch: header (22 B, count at
+        // offset 18) + N members of 48 B.
+        const v = new Uint8Array(record.components.fitnessVector).slice(0, -48);
+        const view = new DataView(v.buffer, v.byteOffset, v.byteLength);
+        view.setUint32(18, view.getUint32(18, true) - 1, true);
+        record.components.fitnessVector = v;
+      },
+    });
+    const before = globalThis.__replayProbe.evaluations;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/scores 5 members, but the generation holds 6 individuals/);
+    expect(err.context).toMatchObject({ memberCount: 5, populationCount: 6 });
+    expect(globalThis.__replayProbe.evaluations - before).toBe(0);
+  });
+
+  test('a fitness vector truncated inside its version prefix stays IN the taxonomy', async () => {
+    // `peekFitnessVectorVersions` is a foreign decoder: it fails in
+    // population-evaluation's dialect, a plain Error with NO `code`. Callers
+    // branch on `code`, so an untranslated escape here would leave both
+    // `resumeEvolutionRun` and the offline seam throwing something their own
+    // documented taxonomy says cannot happen.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = new Uint8Array(record.components.fitnessVector).slice(0, 6);
+      },
+    });
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.message).toMatch(/generation 0 fitness vector header is malformed/);
+    // The foreign decoder's own diagnosis rides along rather than being lost.
+    expect(err.cause, 'the original failure is preserved as cause').toBeDefined();
   });
 
   test('an onset at EXACTLY the executed step count is legal — captures are 0..maxSteps', async () => {

@@ -200,11 +200,16 @@ describe('fitness policy (v2 — the numerical-integrity gate)', () => {
 // --- Champion selection (pure) -----------------------------------------------
 
 describe('championFromEvaluation', () => {
-  // Rows carry `integrityStatus` because the selectors now enforce the fitness
-  // vector's row domain — a row that could not be SERIALIZED must not be
-  // RANKED either. Production rows have always carried it (evaluatePopulation
-  // emits it per member); these fixtures predate policy v2 and were simply
-  // omitting it.
+  // Rows carry `integrityStatus` because the selectors enforce the fitness
+  // vector's RANKING-RELEVANT row domain — id, validity, status, fitness, and
+  // the unselectable-carries-0 rule. Production rows have always carried it
+  // (evaluatePopulation emits it per member); these fixtures predate policy v2
+  // and were simply omitting it.
+  //
+  // They carry NO `integrityObservations`, and that is deliberate rather than
+  // an oversight: v3 made those an ENCODER requirement, not a ranking one —
+  // nothing here ranks on an observation and a ranker never persists. See
+  // championCandidate's docblock for why the two domains are not equal.
   const ev = (entries) => ({
     individuals: entries.map(([individualId, fitness, valid = true, integrityStatus = 'ok']) => (
       { individualId, fitness, valid, integrityStatus })),

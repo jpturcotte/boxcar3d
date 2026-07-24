@@ -37,7 +37,9 @@
 // DELIBERATE RE-LOCK 2026-07-24 — cause: fitness vector v3 (the five integrity
 // OBSERVATIONS are now persisted per member). The movement pattern is itself
 // the evidence that the change is REPRESENTATIONAL rather than semantic, and
-// the re-lock script asserted it rather than trusting it:
+// the throwaway re-lock script asserted it rather than trusting it (that
+// script is NOT committed — what enforces these literals at HEAD is
+// tests/evolution-determinism.test.js, which asserts every one of them live):
 //   MOVED     — every generation's fitnessVectorDigest and payloadByteLength
 //               (a member grew 14 -> 48 bytes), and therefore every downstream
 //               generationDigest, the historyDigest, and historyByteLength
@@ -47,7 +49,8 @@
 //               binds no vector version, and the other three components are
 //               untouched by what the vector records. A change here would have
 //               meant the physics or the operators moved, which this PR does
-//               not do; the script FAILS rather than re-locking if one moves.
+//               not do; the re-lock script FAILED rather than re-locking if
+//               one moved.
 //   Digest history: v1 'da573ca5…1ef20e55' -> v3 '8cab787f…5f0d01ff'.
 //
 // STRUCTURAL COVERAGE, asserted by the gate rather than assumed here:

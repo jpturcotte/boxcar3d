@@ -3,7 +3,7 @@
   "rationale": "The core-0.34 candidate is expected to fail EXACTLY the class-(c) golden/version assertions (the taxonomy §4.2 inventory) and NOTHING else. compare-spike-runs.js --mode classify reads the candidate's `npm test` and `test:browser` vitest --reporter=json output and enforces FOUR layers: (1) the observed failing (file -> count) set equals `node`/`browser` byFile exactly; (2) ASSERTION-LEVEL failure signatures — every failing assertion in an expected-red file must match an allowed {titleSubstring, messageRegex} signature at its exact count, so a failure MOVING to a different assertion inside the same red test (e.g. the staleness test's trace-version/record-size contracts, which precede its engine-version pin) is caught even at constant per-file count; (3) must-stay-green titles never appear in the failing set; (4) POSITIVE presence — the must-pass titles appear with status 'passed' at exact multiplicity (absence-of-failure cannot distinguish passed from renamed/skipped). Schema /2 added layers 2 and 4 plus nodeChromiumRequiredKeys (the exact required cross-env digest set for --mode invariants). Schema /3 (PR #20, fitness policy v2) adds MARKER-VALIDATED signatures: a signature carrying lockMarker (currently 'fitnessVector') requires the failure message to hold exactly one well-formed structured marker (src/sim/lock-markers.js, 'FITNESS_VECTOR_LOCK_MISMATCH expected=<8hex> actual=<8hex>') whose expected= field classify() validates against the authoritative digest in src/sim/population-locks.js AT ADJUDICATION TIME — the mutable production lock digest is deliberately NEVER copied into this file (the pre-/3 inventory hardcoded the then-current v1 digest inside a messageRegex and went stale on the first deliberate re-lock). --mode invariants extracts the cross-env digests from the same marker. See docs/engine-assertion-taxonomy-2026-07.md §4.2 and docs/rapier-034-spike-2026-07.md §4.",
   "node": {
     "reporter": "npm test (vitest run --reporter=json), Node, deterministic + ordinary flavors, tests/browser/** excluded",
-    "totalExpectedFailures": 15,
+    "totalExpectedFailures": 16,
     "byFile": {
       "tests/evaluation-determinism.test.js": {
         "expectedFailures": 5,
@@ -129,15 +129,21 @@
         ]
       },
       "tests/evolution-replay.test.js": {
-        "expectedFailures": 1,
+        "expectedFailures": 2,
         "class": "c",
-        "asserts": "independent v1 artifact producer/runtime identity pin",
+        "asserts": "independent v3 artifact producer/runtime identity pin, on both halves of the encode/resume pair",
         "allowedFailureSignatures": [
           {
-            "titleSubstring": "an independently produced Kimi artifact resumes and continues byte-identically",
+            "titleSubstring": "an independently encoded v3 artifact is byte-identical to a local run",
             "messageRegex": "engine changed — re-lock the independent evolution artifact deliberately",
             "count": 1,
             "why": "the fixture and candidate runtime versions are compared before byte equality or replay, so a planned engine spike fails at a stable identity tooth"
+          },
+          {
+            "titleSubstring": "...and it resumes and continues to the literal terminal digest",
+            "messageRegex": "engine changed — re-lock the independent evolution artifact deliberately",
+            "count": 1,
+            "why": "the resume/continue half carries the same runtime pin ahead of its locked terminal digest, so it reds on the deliberate message rather than on an unexplained digest mismatch"
           }
         ]
       }
@@ -239,7 +245,7 @@
       "tests/browser/evolution-determinism.test.js": {
         "expectedFailures": 2,
         "class": "c",
-        "asserts": "browser evolution runtime pin plus independent v1 artifact producer/runtime pin",
+        "asserts": "browser evolution runtime pin plus independent v3 artifact producer/runtime pin",
         "allowedFailureSignatures": [
           {
             "titleSubstring": "the committed artifact reproduces exactly in the browser",
@@ -248,7 +254,7 @@
             "why": "the browser golden gate checks runtime identity before component and history digests"
           },
           {
-            "titleSubstring": "Chromium continues the independent Kimi artifact byte-identically",
+            "titleSubstring": "Chromium continues the independent v3 artifact byte-identically",
             "messageRegex": "engine changed — re-lock the independent evolution artifact deliberately",
             "count": 1,
             "why": "the independent artifact test compares runtime identity before local bytes or replay"

@@ -1657,12 +1657,24 @@ export function deserializeFitnessVector(bytes) {
  * API under cover of hardening. Owned values decide; the caller's row is what
  * comes back.
  *
- * The domain is the fitness vector encoder's, so a row that could not be
- * SERIALIZED cannot be RANKED either: canonical id, strict boolean validity,
- * KNOWN integrity status, finite non-negative fitness, and the policy-v2
- * coherence rule that an unselectable member carries fitness 0. (The diagnostic
- * selector may still surface an unselectable row at a zero-fitness tie — that
- * is its documented job — but never an internally contradictory one.)
+ * The domain is the fitness vector encoder's RANKING-RELEVANT half: canonical
+ * id, strict boolean validity, KNOWN integrity status, finite non-negative
+ * fitness, and the policy-v2 coherence rule that an unselectable member carries
+ * fitness 0. (The diagnostic selector may still surface an unselectable row at
+ * a zero-fitness tie — that is its documented job — but never an internally
+ * contradictory one.)
+ *
+ * THE OBSERVATION BLOCK IS DELIBERATELY OUTSIDE IT, and the asymmetry is worth
+ * stating because an earlier version of this comment claimed the two domains
+ * were equal, which fitness vector v3 made false. `validatedObservations` is
+ * an ENCODER requirement — the five peaks and onsets have to be
+ * wire-representable and policy-coherent to be written down — and it has no
+ * bearing on which row is best: nothing here ranks on an observation, and a
+ * ranker never persists. Enforcing it would also break honest callers, since
+ * a row assembled for comparison need not carry evidence it will never write.
+ * Both production paths are closed anyway, in opposite ways: `evolution-run`
+ * ranks a vector it has just DECODED (so the decoder already applied the full
+ * observation domain), and `evaluatePopulation` serializes before it ranks.
  */
 function championCandidate(ind, i) {
   if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);

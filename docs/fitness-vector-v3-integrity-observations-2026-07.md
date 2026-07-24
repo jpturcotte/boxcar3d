@@ -138,11 +138,29 @@ gates in `evolution-replay.js`, called from the resume path between
 | 8a | `checkFitnessVectorCompatibility` | `unsupportedVersion` |
 | 8b | `verifyFitnessVectorMetadataCoherence` | `malformedHistory` |
 
-**They run after stage 8, not inside stage 5, and the position is the point.** A
-stale artifact still proves its framing, all four component digests, its chain
-and its whole-history digest before being refused for its format — which is what
-lets a superseded artifact keep serving as a regression witness instead of
-failing at the first byte it is judged on.
+**Two distinct properties are at stake here, and only one of them depends on the
+gates' position.** An earlier draft of this section — and of the comment in
+`evolution-replay.js` — credited the position with both; a sabotage pass that
+moved a gate one line earlier left every test green, which is how the overclaim
+was found.
+
+- *"A stale artifact still proves its framing, all four component digests, its
+  chain and its whole-history digest before being refused"* — what lets a
+  superseded artifact keep serving as a regression witness — is guaranteed by
+  the gates running **outside `verifyHistoryArtifact` at all**. Stages 3–7
+  complete before either check, so it holds wherever they sit afterwards.
+- *"Wrong artifact outranks unsupported format"* — the ordering against
+  `checkExpectedIdentity` — **does** depend on the position, and is the reason
+  the calls sit after it. When a caller holds an expected digest and the file is
+  both the wrong one *and* an old format, the actionable answer is
+  `staleOrWrongArtifact`: go find the right file. Telling them the format is
+  stale sends them to a migration they may not need. Pinned by the
+  `WRONG ARTIFACT outranks UNSUPPORTED FORMAT` test.
+
+Both gates also raise what the component walk **captured** rather than threw:
+a failure discovered at stage 5 that belongs to the malformed-current-format
+rung waits until after the chain, whole-history and identity checks, so a
+doubly-broken artifact is diagnosed by the more actionable of its two faults.
 
 The escalation ladder is preserved end to end:
 
@@ -166,18 +184,59 @@ crossing at exactly `executedSteps` is legal, and a `<` bound would reject
 correct artifacts, and only the most interesting ones. Each generation is
 checked against **its own** persisted metadata, never the header's spec.
 
+Gate B also refuses a vector whose **member count** disagrees with its
+generation's population component. This is the same shape of fault: the
+vector's `count` is bound only to its own byte length, so a vector scoring five
+of a generation's six individuals is perfectly well-formed in isolation,
+reaches physics, and comes back as `replayDivergence` at stage `fitnessVector`
+— "the engine drifted" for a fault entirely inside the file. The count comes
+from `peekPopulationSnapshotCount`, a count-only peek placed beside its own
+codec for the same reason `peekFitnessVectorVersions` is: decoding every
+snapshot to count it would cost a quarter of a million genotype decodes on a
+max-length artifact, and reading the `u32` at a hard-coded offset from another
+module would be a second interpretation of that layout, drifting the moment the
+header changes. It is compared against the *population component*, not the
+header's `populationSize`, so a forged header is still diagnosed by its cause
+(the header-versus-manifest check, which runs later) rather than by this
+symptom.
+
 Facts are collected during stage 5 as **scalars only**: a max is a complete
-check against an upper bound, so the worst offender's three numbers are all a
+check against an upper bound, so the worst offender's numbers are all a
 diagnosis needs. Retaining decoded rows would hold a second copy of every vector
-and break verification's documented one-payload-at-a-time memory model.
+and break verification's documented one-payload-at-a-time memory model. Nothing
+in that walk throws: a foreign decoder's failure — a truncated version prefix,
+an unreadable vector — is **captured** and re-raised by gate B, wearing this
+family's `code`. Throwing at stage 5 would let a content complaint preempt the
+chain, whole-history and identity checks, and would let
+`population-evaluation`'s dialect escape a verification call as a plain `Error`
+with no `code` for callers to branch on.
+
+### 4.1 A wider member also shrinks the capacity projection
+
+`assertHistoryCapacity` projects a run's worst-case artifact size from
+`fitnessVectorByteLength(populationSize)`, so a member growing 14 → 48 bytes
+moves a **public production refusal**: measured, population 20 is unchanged
+(still capped at 1024 generations), population 64 goes 940 → 912, and
+population 256 goes 235 → 228 maximum feasible generations. This is correct —
+the projection tracks the real format, and a gate that did not move would be
+the bug — but it is outside the four things this PR promises are unchanged
+(policy, selection, mutation, physics), and no committed literal records it, so
+it is recorded here for the next reader of a `resourceLimitExceeded`.
 
 `REPLAY_STAGES` is **not** modified — it is stage 10's per-component comparison
 vocabulary, not the verification ladder.
 
 ## 5. The lock movement, and what it proves
 
-Both re-lock scripts **assert** the unchanged half rather than trusting it: they
-refuse to write a lock if an unrelated digest moves.
+The re-lock was performed with throwaway scripts that asserted the unchanged
+half rather than trusting it — they refused to write a lock if an unrelated
+digest moved. **Those scripts are not committed**, so what enforces the table
+below at HEAD is not them: it is `tests/population-determinism.test.js` and
+`tests/evolution-determinism.test.js`, which assert every literal in both files
+live, plus the whole-suite fingerprint gates. Anyone re-locking again should
+expect to write that assertion themselves; the committed gates compare
+measurement against whatever literals are present, so they cannot on their own
+tell a deliberate re-lock from an accidental one.
 
 | | moved | unchanged |
 |---|---|---|
@@ -208,7 +267,7 @@ thresholds: the lock files must not assert a margin.
 ## 6. Oracles
 
 - **`tests/fixtures/evolution-v3-independent.base64`** — produced by
-  `scripts/generate-independent-evolution-artifact.mjs`, an encoder written from
+  `scripts/generate-independent-evolution-artifact.js`, an encoder written from
   the *written format spec*, importing nothing from `evolution-history.js`,
   `evolution-lineage.js`, `population.js` or `population-evaluation.js`, and
   hashing with `node:crypto`. It reproduces production's bytes exactly. Its

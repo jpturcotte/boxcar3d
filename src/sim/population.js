@@ -280,6 +280,31 @@ function decodeFail(path, value) {
  * prevent. Canonicality is enforced at the seams (validatePopulation on the
  * way in, serializePopulationSnapshot on the way out), never by immutability.
  */
+/**
+ * Read ONLY the member count out of a population snapshot stream.
+ *
+ * Beside its codec, for the reason `peekFitnessVectorVersions` sits beside
+ * its own: a cross-component check needs one scalar out of a component it
+ * does not own, and the alternatives are both worse — decoding the whole
+ * snapshot costs every genotype in it (a 1024-generation artifact would decode
+ * a quarter of a million genotypes to count them), and reading the u32 at a
+ * hard-coded offset from another module would be a second interpretation of
+ * this layout, drifting the moment the header changes.
+ *
+ * The version prefix is validated first, so an unknown layout is refused
+ * rather than guessed at.
+ */
+export function peekPopulationSnapshotCount(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const snapshotVersion = r.u16('snapshotVersion');
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) decodeFail('snapshotVersion', snapshotVersion);
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  const count = r.u32('individualCount');
+  if (count < 1) decodeFail('individualCount', count);
+  return count;
+}
+
 export function deserializePopulationSnapshot(bytes) {
   const r = createByteReader(bytes, decodeFail);
   const snapshotVersion = r.u16('snapshotVersion');

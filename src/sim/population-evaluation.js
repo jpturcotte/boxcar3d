@@ -1287,22 +1287,26 @@ export function serializeFitnessVector(evaluation) {
     // with no catastrophic step, and an eternal wire invariant here would
     // force a needless v4 bump. Under policy 1 a catastrophic crossing always
     // crosses the alert band on the same capture or earlier (the thresholds
-    // keep alert ≤ catastrophic — the drift tooth in the codec tests).
-    if (firstCatastrophicStep !== null && firstAlertStep === null) {
-      fail(`individual ${individualId} firstCatastrophicStep`,
-        `present (${firstCatastrophicStep}) without firstAlertStep — impossible under integrity policy v${INTEGRITY_POLICY_VERSION}`);
-    }
-    if (firstCatastrophicStep !== null && firstAlertStep > firstCatastrophicStep) {
-      fail(`individual ${individualId} firstAlertStep`,
-        `${firstAlertStep} must not follow firstCatastrophicStep ${firstCatastrophicStep}`);
-    }
-    if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
-      fail(`individual ${individualId} firstCatastrophicStep`,
-        `present (${firstCatastrophicStep}) on an 'ok' member — a catastrophic crossing is a selection failure under policy v${INTEGRITY_POLICY_VERSION}`);
-    }
-    if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
-      fail(`individual ${individualId} firstCatastrophicStep`,
-        `null on a numericalDivergence member — the classification requires the crossing step under policy v${INTEGRITY_POLICY_VERSION}`);
+    // keep alert ≤ catastrophic — the drift tooth in the codec tests). The
+    // guard is structural, not decorative: policy v2 must be able to relax
+    // these rules by changing ONLY the version constant.
+    if (INTEGRITY_POLICY_VERSION === 1) {
+      if (firstCatastrophicStep !== null && firstAlertStep === null) {
+        fail(`individual ${individualId} firstCatastrophicStep`,
+          `present (${firstCatastrophicStep}) without firstAlertStep — impossible under integrity policy v${INTEGRITY_POLICY_VERSION}`);
+      }
+      if (firstCatastrophicStep !== null && firstAlertStep > firstCatastrophicStep) {
+        fail(`individual ${individualId} firstAlertStep`,
+          `${firstAlertStep} must not follow firstCatastrophicStep ${firstCatastrophicStep}`);
+      }
+      if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
+        fail(`individual ${individualId} firstCatastrophicStep`,
+          `present (${firstCatastrophicStep}) on an 'ok' member — a catastrophic crossing is a selection failure under policy v${INTEGRITY_POLICY_VERSION}`);
+      }
+      if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
+        fail(`individual ${individualId} firstCatastrophicStep`,
+          `null on a numericalDivergence member — the classification requires the crossing step under policy v${INTEGRITY_POLICY_VERSION}`);
+      }
     }
     rows.push({
       individualId, valid, statusIndex, fitness,
@@ -1449,23 +1453,27 @@ export function deserializeFitnessVector(bytes) {
         `payload ${catPayload} under a cleared presence flag — absent must encode as exactly 0`);
     }
     const firstCatastrophicStep = catPresent ? catPayload : null;
-    // The encoder's policy-1 coherence teeth, mirrored verbatim (the header's
-    // integrityPolicyVersion was already pinned to 1 above).
-    if (firstCatastrophicStep !== null && firstAlertStep === null) {
-      vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
-        `present (${firstCatastrophicStep}) without firstAlertStep — impossible under integrity policy v${INTEGRITY_POLICY_VERSION}`);
-    }
-    if (firstCatastrophicStep !== null && firstAlertStep > firstCatastrophicStep) {
-      vectorDecodeFail(`individuals[${i}].firstAlertStep`,
-        `${firstAlertStep} must not follow firstCatastrophicStep ${firstCatastrophicStep}`);
-    }
-    if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
-      vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
-        `present (${firstCatastrophicStep}) on an 'ok' member — a catastrophic crossing is a selection failure under policy v${INTEGRITY_POLICY_VERSION}`);
-    }
-    if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
-      vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
-        `null on a numericalDivergence member — the classification requires the crossing step under policy v${INTEGRITY_POLICY_VERSION}`);
+    // The encoder's policy-1 coherence teeth, mirrored verbatim, and guarded
+    // by the WIRE'S OWN policy version (pinned to 1 above, so the guard is
+    // currently always taken) — a future policy relaxes these rules by
+    // version, never by rewriting the v1 branch.
+    if (integrityPolicyVersion === 1) {
+      if (firstCatastrophicStep !== null && firstAlertStep === null) {
+        vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+          `present (${firstCatastrophicStep}) without firstAlertStep — impossible under integrity policy v${INTEGRITY_POLICY_VERSION}`);
+      }
+      if (firstCatastrophicStep !== null && firstAlertStep > firstCatastrophicStep) {
+        vectorDecodeFail(`individuals[${i}].firstAlertStep`,
+          `${firstAlertStep} must not follow firstCatastrophicStep ${firstCatastrophicStep}`);
+      }
+      if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
+        vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+          `present (${firstCatastrophicStep}) on an 'ok' member — a catastrophic crossing is a selection failure under policy v${INTEGRITY_POLICY_VERSION}`);
+      }
+      if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
+        vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+          `null on a numericalDivergence member — the classification requires the crossing step under policy v${INTEGRITY_POLICY_VERSION}`);
+      }
     }
     individuals.push(Object.freeze({
       individualId,

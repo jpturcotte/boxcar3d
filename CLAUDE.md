@@ -2109,7 +2109,17 @@ history, replay, and strong artifact identity. Full contract:
   header digest as Kimi's, proving the header codec did not move), produced
   only by `scripts/relock-evolution-interop.js` as a reviewed re-lock: Node and
   Chromium reproduce its generation 0 bytes, resume it, and continue it to the
-  same terminal digest. The original cross-worktree check established
+  same terminal digest. That role is NOT circular:
+  `scripts/interop-v3-encoder.js` — importing nothing from `src/`, SHA-256
+  from Node's own `crypto`, its import list pinned STATICALLY by
+  `tests/interop-v3-independent.test.js` — re-encodes the fitness-vector v3
+  bytes and the whole framing/digest assembly from the written format spec
+  plus the captured-literals manifest
+  (`evolution-v3-interop.manifest.json`: derived population/metadata/lineage
+  and the header ride as opaque inputs, not evidence), byte-identical to the
+  fixture, and the independent bytes themselves verify, resume and continue
+  to the locked terminal digest. The original cross-worktree check
+  established
   byte-identical headers/components and mutual Claude/Kimi resume at codec
   genesis; the repository's own golden fixture remains a regression lock, not
   circular proof of its original semantics.

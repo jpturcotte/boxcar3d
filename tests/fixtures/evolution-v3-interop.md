@@ -9,9 +9,21 @@ standing EARLY-REFUSAL witness (a stale wire version must be refused as
 `unsupportedVersion` before any physics).
 
 - Producer: `scripts/relock-evolution-interop.js` (this implementation) at
-  fitness-vector v3 — unlike the Kimi fixture this is NOT an independent
-  implementation; its interoperability value is as a durable committed
-  oracle against silent encoding drift, re-locked only deliberately.
+  fitness-vector v3, which also captures
+  `evolution-v3-interop.manifest.json` — the declared component inputs
+  (header and derived population/metadata/lineage bytes as opaque base64,
+  fitness-vector content as SEMANTIC values).
+- Independence: `scripts/interop-v3-encoder.js` — a tool importing NOTHING
+  from `src/` and hashing with Node's own `crypto` — re-encodes the
+  fitness-vector v3 bytes and the entire framing / digest assembly from the
+  written format spec plus that manifest, BYTE-IDENTICAL to this fixture
+  (`tests/interop-v3-independent.test.js`, which also pins the encoder's
+  import list statically and resumes/continues the independent bytes to the
+  terminal digest below). The claim is deliberately narrow: derived
+  population and lineage content are captured literals — inputs, not
+  evidence — because recreating them independently would mean reimplementing
+  the GA transition. What is independently attested is the encoding and
+  assembly layer; re-locks remain deliberate and reviewed.
 - Artifact SHA-256: `58973f6205852217d4d4666642f4ddfba7a99a8ba4f0feb1b8d1d1b142e576e3`
 - Header digest: `312665978b18bdd920668a1ee3bc49b301a24b76d7497f9ef328732b6939bfce`
   (byte-identical to the Kimi fixture's header — the history format itself

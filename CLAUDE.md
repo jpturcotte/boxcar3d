@@ -330,7 +330,7 @@ success #1), and a load-bearing physics finding:**
   `SOFT_CCD_PREDICTION = 1` (metre; covers 60 m/s per step): every dynamic
   chassis/wheel body MUST set `.setCcdEnabled(true)` (convex-vs-convex cover)
   AND `.setSoftCcdPrediction(SOFT_CCD_PREDICTION)`. The assembly compiler
-  (next PR) must apply both to every body it emits.
+  (Next PR) must apply both to every body it emits.
 - Terrain/features/fingerprints untouched (adapter gained only the constant +
   policy comment); teeth verified both ways locally: gate fails with soft-CCD
   removed and with a GROUND-less filter.
@@ -2123,7 +2123,7 @@ history, replay, and strong artifact identity. Full contract:
   byte-identical headers/components and mutual Claude/Kimi resume at codec
   genesis; the repository's own golden fixture remains a regression lock, not
   circular proof of its original semantics.
-- **Fitness-vector v3 (PR #28): the five integrity observations are canonical
+- **Fitness-vector v3 (PR #30): the five integrity observations are canonical
   wire fields.** Each member row appends `peakBodySpeed`/`peakSpeedDelta`/
   `peakStepDisplacement` (f64, finite ≥ 0) and `firstAlertStep`/
   `firstCatastrophicStep` (u8 presence flag + u32 step; absent ⇒ payload

@@ -494,7 +494,7 @@ describe('ordered verification localizes the failure', () => {
 });
 
 // ============================================================================
-// (2b) THE PRE-PHYSICS FITNESS-VECTOR GATES — stages 8a/8b (PR #28)
+// (2b) THE PRE-PHYSICS FITNESS-VECTOR GATES — stages 8a/8b (PR #30)
 // ============================================================================
 
 // v3 member layout inside the fitnessVector component: a 22-byte vector

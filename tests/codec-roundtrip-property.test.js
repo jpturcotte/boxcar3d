@@ -106,6 +106,14 @@ const FITNESS_BOUNDARIES = Object.freeze([
   0, -0, 1, Number.MIN_VALUE, 2 ** -1022, 1 - Number.EPSILON / 2, Number.MAX_VALUE,
 ]);
 
+// Observation peaks are non-negative f64 leaves that ALSO admit +Infinity —
+// the legal policy-v1 output when a diverging sample is infinite — and -0
+// (>= 0 is true; the standing f64-leaf ruling, unreachable from the producer
+// but legal on the wire and it must round-trip bit-exactly).
+const PEAK_BOUNDARIES = Object.freeze([
+  0, -0, Number.MIN_VALUE, 1, Number.MAX_VALUE, Infinity,
+]);
+
 const AXLE_COUNTS = Object.freeze([0, 1, 2, 6]); // {0, 1, 2, max} — v1 caps at 6
 const MEMBER_COUNTS = Object.freeze([1, 2, 3]); // 0 is rejected by every count gate
 const RANGE_LENGTHS = Object.freeze([0, 1, 2, 255]); // {0, 1, 2, max} — the u8 wire bound
@@ -646,7 +654,36 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
         const selectable = valid && integrityStatus === 'ok';
         const fitness = selectable ? pick(rng, FITNESS_BOUNDARIES) : pick(rng, [0, -0]);
         if (selectable) seen.add(`fitness:${fmt(fitness)}`);
-        return { individualId, valid, integrityStatus, fitness };
+        // The five v3 observations. Peaks are drawn from their own boundary
+        // set on every row; onsets are drawn INSIDE the policy-1 coherence
+        // domain the encoder enforces — a numericalDivergence always carries a
+        // catastrophic onset with the alert at or before it, an 'ok' member
+        // never carries a catastrophic onset, and a nonFinite may share a
+        // catastrophic capture only alongside an alert.
+        const peakBodySpeed = pick(rng, PEAK_BOUNDARIES);
+        const peakSpeedDelta = pick(rng, PEAK_BOUNDARIES);
+        const peakStepDisplacement = pick(rng, PEAK_BOUNDARIES);
+        for (const p of [peakBodySpeed, peakSpeedDelta, peakStepDisplacement]) seen.add(`peak:${fmt(p)}`);
+        let firstAlertStep = null;
+        let firstCatastrophicStep = null;
+        if (integrityStatus === 'numericalDivergence') {
+          firstCatastrophicStep = pick(rng, U32_BOUNDARIES);
+          firstAlertStep = Math.min(pick(rng, U32_BOUNDARIES), firstCatastrophicStep);
+        } else if (rng.bool(0.5)) {
+          firstAlertStep = pick(rng, U32_BOUNDARIES);
+          if (integrityStatus === 'nonFinite' && rng.bool(0.5)) {
+            firstCatastrophicStep = Math.max(pick(rng, U32_BOUNDARIES), firstAlertStep);
+          }
+        }
+        seen.add(`alert:${firstAlertStep === null ? 'null' : 'present'}`);
+        seen.add(`cat:${firstCatastrophicStep === null ? 'null' : 'present'}`);
+        if (firstAlertStep !== null) seen.add(`step:${firstAlertStep}`);
+        if (firstCatastrophicStep !== null) seen.add(`step:${firstCatastrophicStep}`);
+        return {
+          individualId, valid, integrityStatus, fitness,
+          peakBodySpeed, peakSpeedDelta, peakStepDisplacement,
+          firstAlertStep, firstCatastrophicStep,
+        };
       });
       const evaluation = {
         individuals,
@@ -671,6 +708,9 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
       ...FITNESS_BOUNDARIES.map((v) => `fitness:${fmt(v)}`),
       ...INTEGRITY_STATUS.map((s) => `status:${s}`),
       ...MEMBER_COUNTS.map((n) => `members:${n}`),
+      ...PEAK_BOUNDARIES.map((v) => `peak:${fmt(v)}`),
+      ...U32_BOUNDARIES.map((v) => `step:${v}`),
+      'alert:null', 'alert:present', 'cat:null', 'cat:present',
     ], 'fitness vector');
   });
 });
@@ -709,6 +749,8 @@ describe('-0 is refused by every canonical uint32 seam', () => {
   };
   const row = (individualId) => ({
     individualId, valid: true, integrityStatus: 'ok', fitness: 1,
+    peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+    firstAlertStep: null, firstCatastrophicStep: null,
   });
 
   const SEAMS = Object.freeze([
@@ -747,6 +789,20 @@ describe('-0 is refused by every canonical uint32 seam', () => {
       individuals: [row(0)],
       populationSnapshotDigestState: 1,
       evaluationSpecDigestState: -0,
+    })],
+    // The two v3 onset steps: rows are coherent apart from the -0, so the
+    // canonical-u32 refusal is the ONLY reachable rejection.
+    ['fitness vector firstAlertStep', () => serializeFitnessVector({
+      individuals: [{ ...row(0), firstAlertStep: -0 }],
+      populationSnapshotDigestState: 1,
+      evaluationSpecDigestState: 2,
+    })],
+    ['fitness vector firstCatastrophicStep', () => serializeFitnessVector({
+      individuals: [{
+        ...row(0), integrityStatus: 'nonFinite', fitness: 0, firstAlertStep: 0, firstCatastrophicStep: -0,
+      }],
+      populationSnapshotDigestState: 1,
+      evaluationSpecDigestState: 2,
     })],
   ]);
 

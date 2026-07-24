@@ -146,13 +146,33 @@ describe('canonical codecs (Chromium)', () => {
   });
 
   test('fitness vector: round-trips through the digest-state input path', () => {
+    const quiet = {
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: null, firstCatastrophicStep: null,
+    };
     const evaluation = {
       spec: resolvedSpec(),
       populationSnapshotDigestState: 0xdeadbeef,
       individuals: [
-        { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922 },
-        { individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0 },
-        { individualId: 9, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+        {
+          individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922, ...quiet,
+        },
+        {
+          individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0, ...quiet,
+        },
+        // The v3 observations in the pinned browser: a +Infinity peak (a legal
+        // policy-v1 output) and both onset steps present.
+        {
+          individualId: 9,
+          valid: true,
+          integrityStatus: 'numericalDivergence',
+          fitness: 0,
+          peakBodySpeed: Infinity,
+          peakSpeedDelta: 31.5,
+          peakStepDisplacement: 0.75,
+          firstAlertStep: 0,
+          firstCatastrophicStep: 44,
+        },
       ],
     };
     const bytes = serializeFitnessVector(evaluation);
@@ -160,6 +180,11 @@ describe('canonical codecs (Chromium)', () => {
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([0, 4, 9]);
     expect(Object.is(decoded.individuals[0].fitness, 12.484905242919922)).toBe(true);
     expect(decoded.individuals[2].integrityStatus).toBe('numericalDivergence');
+    expect(decoded.individuals[2].peakBodySpeed).toBe(Infinity);
+    expect(Object.is(decoded.individuals[2].peakStepDisplacement, 0.75)).toBe(true);
+    expect(decoded.individuals[2].firstAlertStep).toBe(0);
+    expect(decoded.individuals[2].firstCatastrophicStep).toBe(44);
+    expect(decoded.individuals[0].firstAlertStep).toBe(null);
     expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 

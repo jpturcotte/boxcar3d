@@ -453,8 +453,23 @@ describe('evaluation-spec encoding v1', () => {
   });
 });
 
-describe('fitness-vector encoding v2', () => {
+describe('fitness-vector encoding v3', () => {
   // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
+  // Observations default by status to the QUIETEST legal v3 row: peaks 0 and
+  // no onsets for 'ok'/'nonFinite'; for 'numericalDivergence' the coherence
+  // teeth require both onsets, so the minimal pair alert 0 / catastrophic 0
+  // is used — chosen so the byte-diff test below stays a byte-precise claim.
+  const OBSERVATIONS = Object.freeze({
+    ok: {
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: null, firstCatastrophicStep: null,
+    },
+    nonFinite: {
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: null, firstCatastrophicStep: null,
+    },
+    numericalDivergence: {
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: 0, firstCatastrophicStep: 0,
+    },
+  });
   const synth = (entries) => ({
     spec: {
       deterministic: true,
@@ -466,15 +481,16 @@ describe('fitness-vector encoding v2', () => {
       terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
     },
     populationSnapshotDigestState: 0xdeadbeef,
-    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
-      { individualId, fitness, valid, integrityStatus })),
+    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => ({
+      individualId, fitness, valid, integrityStatus, ...(OBSERVATIONS[integrityStatus] ?? OBSERVATIONS.ok),
+    })),
   });
 
   test('hand-decoded header + per-individual walk; an invalid 0 and an integrity-failed 0 are each byte-distinct from a selectable 0', () => {
     const selectableZero = serializeFitnessVector(synth([[7, 0, true]]));
     const invalidZero = serializeFitnessVector(synth([[7, 0, false]]));
     const divergedZero = serializeFitnessVector(synth([[7, 0, true, 'numericalDivergence']]));
-    expect(selectableZero.length).toBe(22 + 14);
+    expect(selectableZero.length).toBe(22 + 48);
     const view = new DataView(selectableZero.buffer, selectableZero.byteOffset, selectableZero.byteLength);
     expect(view.getUint16(0, true)).toBe(FITNESS_VECTOR_VERSION);
     expect(view.getUint16(2, true)).toBe(FITNESS_POLICY_VERSION);
@@ -488,16 +504,18 @@ describe('fitness-vector encoding v2', () => {
     expect(view.getUint8(26)).toBe(1); // validity
     expect(view.getUint8(27)).toBe(0); // integrityStatus index ('ok' = 0)
     expect(view.getFloat64(28, true)).toBe(0);
-    // Each unselectable-zero differs from the selectable zero at EXACTLY its
-    // own byte: validity at 26, integrity status at 27 ('numericalDivergence'
-    // = index 2).
+    // The invalid-zero differs from the selectable zero at EXACTLY its own
+    // byte: validity at 26. The diverged-zero differs at its status byte 27
+    // ('numericalDivergence' = index 2) PLUS the two v3 presence flags its
+    // coherence demands (alert at 60, catastrophic at 65 — both step 0, so
+    // the u32 payloads stay zero and no other byte moves).
     const diffsAgainst = (other) => {
       const d = [];
       selectableZero.forEach((b, i) => { if (b !== other[i]) d.push(i); });
       return d;
     };
     expect(diffsAgainst(invalidZero)).toEqual([26]);
-    expect(diffsAgainst(divergedZero)).toEqual([27]);
+    expect(diffsAgainst(divergedZero)).toEqual([27, 60, 65]);
     expect(new DataView(divergedZero.buffer).getUint8(27)).toBe(2);
   });
 

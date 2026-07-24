@@ -236,9 +236,21 @@ const fitnessEvaluation = () => ({
   populationSnapshotDigestState: 12345,
   evaluationSpecDigestState: 67890,
   individuals: [
-    { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5 },
-    { individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0 },
-    { individualId: 2, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+    {
+      individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5,
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: null, firstCatastrophicStep: null,
+    },
+    {
+      individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0,
+      peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: null, firstCatastrophicStep: null,
+    },
+    {
+      individualId: 2, valid: true, integrityStatus: 'numericalDivergence', fitness: 0,
+      peakBodySpeed: 1200, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: 3, firstCatastrophicStep: 5,
+    },
   ],
 });
 
@@ -572,6 +584,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   deserializePopulationInitialization: 'exempt: TypedArray input',
   deserializeEvaluationSpec: 'exempt: TypedArray input',
   deserializeFitnessVector: 'exempt: TypedArray input',
+  peekFitnessVectorVersions: 'exempt: TypedArray input',
   decodeTraceRecord: 'exempt: TypedArray input',
   encodeTraceRecord: 'exempt: covered by trace.TraceWriter.record CASES row',
   TraceWriter: 'CASES row (trace.TraceWriter.record)',
@@ -1228,6 +1241,11 @@ describe('round-10 poison regressions', () => {
         get valid() { validReads += 1; return validReads < 3; },
         integrityStatus: 'ok',
         fitness: 1,
+        peakBodySpeed: 0,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: null,
+        firstCatastrophicStep: null,
       }],
     };
     const bytes = serializeFitnessVector(evaluation);

@@ -101,7 +101,7 @@ const {
 } = InitializerNS;
 const {
   SPAWN_CLEARANCE, canonicalizeEvaluationSpec, championFromEvaluation, deserializeEvaluationSpec,
-  deserializeFitnessVector, selectableChampionFromEvaluation,
+  deserializeFitnessVector, peekFitnessVectorVersions, selectableChampionFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } = EvaluationNS;
 
@@ -221,13 +221,34 @@ const resolvedFlat = () => ({
 });
 
 // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'] — the
-// tests/evaluation-codec.test.js shape.
+// tests/evaluation-codec.test.js shape, carrying the v3 observations (quiet
+// for the clean member; a coherent alert→catastrophic pair for the diverged).
 const synthEvaluation = () => ({
   spec: resolvedFlat(),
   populationSnapshotDigestState: 0xdeadbeef,
   individuals: [
-    { individualId: 0, fitness: 12.5, valid: true, integrityStatus: 'ok' },
-    { individualId: 3, fitness: 0, valid: false, integrityStatus: 'numericalDivergence' },
+    {
+      individualId: 0,
+      fitness: 12.5,
+      valid: true,
+      integrityStatus: 'ok',
+      peakBodySpeed: 0,
+      peakSpeedDelta: 0,
+      peakStepDisplacement: 0,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    },
+    {
+      individualId: 3,
+      fitness: 0,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      peakBodySpeed: 1200,
+      peakSpeedDelta: 0,
+      peakStepDisplacement: 0,
+      firstAlertStep: 3,
+      firstCatastrophicStep: 5,
+    },
   ],
 });
 
@@ -294,7 +315,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
     'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'fitnessVectorByteLength', 'isVehicleResultSelectable',
-    'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
+    'isVehicleResultValid', 'peekFitnessVectorVersions', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
   'evolution-operators.js': Object.freeze([
@@ -573,9 +594,14 @@ const EXPORT_ROLES = Object.freeze({
       name: 'serializeFitnessVector',
       kind: 'encoder',
       callerCollections: ['evaluation.individuals'],
-      callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
+      callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState',
+        'peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement', 'firstAlertStep', 'firstCatastrophicStep'],
     },
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // A prefix read of the version block only — the replay gate's early
+    // refusal seam. Still a decoder for ownership purposes: bytes in,
+    // module-owned frozen record out.
+    { name: 'peekFitnessVectorVersions', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     // Resolves the caller's spec once and returns the bytes PLUS the record
     // decoded from them; the returned spec shares nothing with the input.
     {
@@ -966,6 +992,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   'src/sim/population-evaluation.js': {
     deserializeEvaluationSpec: { intake: 'gated', invoke: (u) => deserializeEvaluationSpec(u) },
     deserializeFitnessVector: { intake: 'gated', invoke: (u) => deserializeFitnessVector(u) },
+    peekFitnessVectorVersions: { intake: 'gated', invoke: (u) => peekFitnessVectorVersions(u) },
     championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
     evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
     fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
@@ -1394,6 +1421,13 @@ const BYTE_CONSUMERS = Object.freeze([
     call: (b) => deserializeFitnessVector(b),
   },
   {
+    name: 'peekFitnessVectorVersions',
+    module: 'population-evaluation',
+    outcome: 'identical',
+    bytes: vectorBytes,
+    call: (b) => peekFitnessVectorVersions(b),
+  },
+  {
     name: 'deserializePopulationInitialization',
     module: 'population-initializer',
     outcome: 'identical',
@@ -1448,7 +1482,7 @@ describe('(2) shadowed geometry — a caller\'s CLAIM never changes a returned v
       'decodeTraceRecord', 'deserializeEvaluationSpec', 'deserializeFitnessVector',
       'deserializeGenotype', 'deserializePopulationInitialization',
       'deserializePopulationSnapshot', 'encodeTraceRecord', 'fnv1aFold', 'fnv1aHex',
-      'typedArrayByteLength',
+      'peekFitnessVectorVersions', 'typedArrayByteLength',
     ]);
     for (const c of BYTE_CONSUMERS) {
       expect(DIALECTS[c.module], c.name).toBeDefined();
@@ -1657,6 +1691,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   evaluatePopulation: 'notExercised',
   serializeFitnessVector: 'freshBytes',
   deserializeFitnessVector: 'ownedCopy',
+  peekFitnessVectorVersions: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
   selectablePoolFromEvaluation: 'ownedCopy',
@@ -1800,6 +1835,7 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    { name: 'peekFitnessVectorVersions', result: peekFitnessVectorVersions(vBytes), roots: [vBytes] },
     ...(() => {
       const evaluation = {
         fitnessPolicyVersion: 2,

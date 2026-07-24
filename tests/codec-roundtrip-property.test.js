@@ -106,6 +106,17 @@ const FITNESS_BOUNDARIES = Object.freeze([
   0, -0, 1, Number.MIN_VALUE, 2 ** -1022, 1 - Number.EPSILON / 2, Number.MAX_VALUE,
 ]);
 
+// Observation peaks are non-negative numbers with +Infinity ADMITTED (a legal
+// policy-v1 divergence peak — NaN and -Infinity are outside the domain).
+const PEAK_BOUNDARIES = Object.freeze([
+  0, -0, 1, Number.MIN_VALUE, 2 ** -1022, Number.MAX_VALUE, Infinity,
+]);
+
+// Onset steps are null-or-u32; null and step 0 are byte-distinct (flag+u32, no
+// sentinel), so both belong to the boundary set.
+const STEP_BOUNDARIES = Object.freeze([null, 0, 1, 2, 0xfffffffe, 0xffffffff]);
+const STEP_PRESENT_BOUNDARIES = Object.freeze([0, 1, 2, 0xfffffffe, 0xffffffff]);
+
 const AXLE_COUNTS = Object.freeze([0, 1, 2, 6]); // {0, 1, 2, max} — v1 caps at 6
 const MEMBER_COUNTS = Object.freeze([1, 2, 3]); // 0 is rejected by every count gate
 const RANGE_LENGTHS = Object.freeze([0, 1, 2, 255]); // {0, 1, 2, max} — the u8 wire bound
@@ -646,7 +657,34 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
         const selectable = valid && integrityStatus === 'ok';
         const fitness = selectable ? pick(rng, FITNESS_BOUNDARIES) : pick(rng, [0, -0]);
         if (selectable) seen.add(`fitness:${fmt(fitness)}`);
-        return { individualId, valid, integrityStatus, fitness };
+        // The v3 observations, drawn STATUS-COHERENT under policy v1: 'ok'
+        // carries no catastrophic step, 'numericalDivergence' always carries
+        // one, and a catastrophic step implies an alert step at or before it
+        // (the catastrophic thresholds exceed the alert ones arm-for-arm).
+        // 'nonFinite' is unconstrained. Peaks are free of the steps at THIS
+        // boundary — the peak<->alert equivalence needs the metadata's dtScale,
+        // so it is the replay gate's coherence check, never the codec's.
+        const integrityObservations = {
+          peakBodySpeed: pick(rng, PEAK_BOUNDARIES),
+          peakSpeedDelta: pick(rng, PEAK_BOUNDARIES),
+          peakStepDisplacement: pick(rng, PEAK_BOUNDARIES),
+          firstAlertStep: pick(rng, STEP_BOUNDARIES),
+          firstCatastrophicStep: integrityStatus === 'ok' ? null : pick(rng, STEP_BOUNDARIES),
+        };
+        if (integrityStatus === 'numericalDivergence' && integrityObservations.firstCatastrophicStep === null) {
+          integrityObservations.firstCatastrophicStep = pick(rng, STEP_PRESENT_BOUNDARIES);
+        }
+        if (integrityObservations.firstCatastrophicStep !== null
+          && (integrityObservations.firstAlertStep === null
+            || integrityObservations.firstAlertStep > integrityObservations.firstCatastrophicStep)) {
+          integrityObservations.firstAlertStep = integrityObservations.firstCatastrophicStep;
+        }
+        seen.add(`peak:${fmt(integrityObservations.peakBodySpeed)}`);
+        seen.add(`alertStep:${fmt(integrityObservations.firstAlertStep)}`);
+        seen.add(`catStep:${fmt(integrityObservations.firstCatastrophicStep)}`);
+        return {
+          individualId, valid, integrityStatus, fitness, integrityObservations,
+        };
       });
       const evaluation = {
         individuals,
@@ -670,6 +708,9 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
       ...U32_BOUNDARIES.map((v) => `id:${v}`),
       ...FITNESS_BOUNDARIES.map((v) => `fitness:${fmt(v)}`),
       ...INTEGRITY_STATUS.map((s) => `status:${s}`),
+      ...PEAK_BOUNDARIES.map((v) => `peak:${fmt(v)}`),
+      ...STEP_BOUNDARIES.map((v) => `alertStep:${fmt(v)}`),
+      ...STEP_BOUNDARIES.map((v) => `catStep:${fmt(v)}`),
       ...MEMBER_COUNTS.map((n) => `members:${n}`),
     ], 'fitness vector');
   });
@@ -708,7 +749,17 @@ describe('-0 is refused by every canonical uint32 seam', () => {
     };
   };
   const row = (individualId) => ({
-    individualId, valid: true, integrityStatus: 'ok', fitness: 1,
+    individualId,
+    valid: true,
+    integrityStatus: 'ok',
+    fitness: 1,
+    integrityObservations: {
+      peakBodySpeed: 0,
+      peakSpeedDelta: 0,
+      peakStepDisplacement: 0,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    },
   });
 
   const SEAMS = Object.freeze([

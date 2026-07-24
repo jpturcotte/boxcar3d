@@ -758,7 +758,17 @@ describe('-0 is refused by every canonical uint32 seam', () => {
     };
   };
   const row = (individualId) => ({
-    individualId, valid: true, integrityStatus: 'ok', fitness: 1,
+    individualId,
+    valid: true,
+    integrityStatus: 'ok',
+    fitness: 1,
+    integrityObservations: {
+      peakBodySpeed: 1,
+      peakSpeedDelta: 0,
+      peakStepDisplacement: 0,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    },
   });
 
   const SEAMS = Object.freeze([

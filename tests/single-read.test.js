@@ -231,14 +231,36 @@ const okVehicleResult = () => ({
   integrity: { policyVersion: INTEGRITY_POLICY_VERSION, status: 'ok' },
 });
 
+// The v3 observation blocks are ordinary nested own properties, so the
+// counting instrument reaches every one of their five fields without being
+// told about them — that is the point of instrumenting an input's whole shape
+// rather than a hand-listed set of paths.
+const observations = (firstAlertStep = null, firstCatastrophicStep = null) => ({
+  peakBodySpeed: 3.5,
+  peakSpeedDelta: 1.25,
+  peakStepDisplacement: 0.0625,
+  firstAlertStep,
+  firstCatastrophicStep,
+});
+
 const fitnessEvaluation = () => ({
   fitnessPolicyVersion: 2,
   populationSnapshotDigestState: 12345,
   evaluationSpecDigestState: 67890,
   individuals: [
-    { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5 },
-    { individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0 },
-    { individualId: 2, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+    {
+      individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5, integrityObservations: observations(),
+    },
+    {
+      individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0, integrityObservations: observations(4),
+    },
+    {
+      individualId: 2,
+      valid: true,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: observations(6, 11),
+    },
   ],
 });
 
@@ -572,6 +594,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   deserializePopulationInitialization: 'exempt: TypedArray input',
   deserializeEvaluationSpec: 'exempt: TypedArray input',
   deserializeFitnessVector: 'exempt: TypedArray input',
+  peekFitnessVectorVersions: 'exempt: TypedArray input',
   decodeTraceRecord: 'exempt: TypedArray input',
   encodeTraceRecord: 'exempt: covered by trace.TraceWriter.record CASES row',
   TraceWriter: 'CASES row (trace.TraceWriter.record)',
@@ -1228,6 +1251,7 @@ describe('round-10 poison regressions', () => {
         get valid() { validReads += 1; return validReads < 3; },
         integrityStatus: 'ok',
         fitness: 1,
+        integrityObservations: observations(),
       }],
     };
     const bytes = serializeFitnessVector(evaluation);

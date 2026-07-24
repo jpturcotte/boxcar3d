@@ -453,7 +453,33 @@ describe('evaluation-spec encoding v1', () => {
   });
 });
 
-describe('fitness-vector encoding v2', () => {
+describe('fitness-vector encoding v3', () => {
+  // A coherent per-status observation block, declared once. v3 persists the
+  // five measurements behind the integrity verdict; the walk below hand-decodes
+  // them at their declared offsets.
+  const OBS = Object.freeze({
+    ok: Object.freeze({
+      peakBodySpeed: 3.5,
+      peakSpeedDelta: 1.25,
+      peakStepDisplacement: 0.0625,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    }),
+    nonFinite: Object.freeze({
+      peakBodySpeed: 12,
+      peakSpeedDelta: 9,
+      peakStepDisplacement: 0.5,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    }),
+    numericalDivergence: Object.freeze({
+      peakBodySpeed: 4096,
+      peakSpeedDelta: 2048,
+      peakStepDisplacement: 64,
+      firstAlertStep: 6,
+      firstCatastrophicStep: 11,
+    }),
+  });
   // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
   const synth = (entries) => ({
     spec: {
@@ -466,15 +492,16 @@ describe('fitness-vector encoding v2', () => {
       terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
     },
     populationSnapshotDigestState: 0xdeadbeef,
-    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
-      { individualId, fitness, valid, integrityStatus })),
+    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => ({
+      individualId, fitness, valid, integrityStatus, integrityObservations: OBS[integrityStatus],
+    })),
   });
 
   test('hand-decoded header + per-individual walk; an invalid 0 and an integrity-failed 0 are each byte-distinct from a selectable 0', () => {
     const selectableZero = serializeFitnessVector(synth([[7, 0, true]]));
     const invalidZero = serializeFitnessVector(synth([[7, 0, false]]));
     const divergedZero = serializeFitnessVector(synth([[7, 0, true, 'numericalDivergence']]));
-    expect(selectableZero.length).toBe(22 + 14);
+    expect(selectableZero.length).toBe(22 + 48);
     const view = new DataView(selectableZero.buffer, selectableZero.byteOffset, selectableZero.byteLength);
     expect(view.getUint16(0, true)).toBe(FITNESS_VECTOR_VERSION);
     expect(view.getUint16(2, true)).toBe(FITNESS_POLICY_VERSION);
@@ -488,17 +515,38 @@ describe('fitness-vector encoding v2', () => {
     expect(view.getUint8(26)).toBe(1); // validity
     expect(view.getUint8(27)).toBe(0); // integrityStatus index ('ok' = 0)
     expect(view.getFloat64(28, true)).toBe(0);
-    // Each unselectable-zero differs from the selectable zero at EXACTLY its
-    // own byte: validity at 26, integrity status at 27 ('numericalDivergence'
-    // = index 2).
+    // v3: the three peaks, then the two flagged onsets.
+    expect(view.getFloat64(36, true)).toBe(OBS.ok.peakBodySpeed);
+    expect(view.getFloat64(44, true)).toBe(OBS.ok.peakSpeedDelta);
+    expect(view.getFloat64(52, true)).toBe(OBS.ok.peakStepDisplacement);
+    expect(view.getUint8(60)).toBe(0); // firstAlertStep ABSENT
+    expect(view.getUint32(61, true)).toBe(0); // ...so its payload is canonically 0
+    expect(view.getUint8(65)).toBe(0); // firstCatastrophicStep ABSENT
+    expect(view.getUint32(66, true)).toBe(0);
     const diffsAgainst = (other) => {
       const d = [];
       selectableZero.forEach((b, i) => { if (b !== other[i]) d.push(i); });
       return d;
     };
+    // The invalid zero shares the selectable zero's observations (an invalid
+    // vehicle can be integrity-clean), so it still differs at EXACTLY the
+    // validity byte.
     expect(diffsAgainst(invalidZero)).toEqual([26]);
-    expect(diffsAgainst(divergedZero)).toEqual([27]);
-    expect(new DataView(divergedZero.buffer).getUint8(27)).toBe(2);
+    // The diverged zero differs at the status byte AND across the observation
+    // region — necessarily, since v3 persists the measurements behind the
+    // verdict and a diverged vehicle's are different. Asserting [27] alone
+    // would now be false; asserting only "they differ" would be weaker than
+    // the v2 test. So: the status byte moved, every difference is at or after
+    // it, and the two onsets became PRESENT.
+    const divergedDiffs = diffsAgainst(divergedZero);
+    expect(divergedDiffs).toContain(27);
+    expect(Math.min(...divergedDiffs)).toBe(27);
+    const dView = new DataView(divergedZero.buffer, divergedZero.byteOffset, divergedZero.byteLength);
+    expect(dView.getUint8(27)).toBe(2); // 'numericalDivergence' = index 2
+    expect(dView.getUint8(60)).toBe(1);
+    expect(dView.getUint32(61, true)).toBe(OBS.numericalDivergence.firstAlertStep);
+    expect(dView.getUint8(65)).toBe(1);
+    expect(dView.getUint32(66, true)).toBe(OBS.numericalDivergence.firstCatastrophicStep);
   });
 
   test('exact f64 fitness round-trips bit-for-bit', () => {

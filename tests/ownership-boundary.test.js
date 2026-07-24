@@ -101,7 +101,7 @@ const {
 } = InitializerNS;
 const {
   SPAWN_CLEARANCE, canonicalizeEvaluationSpec, championFromEvaluation, deserializeEvaluationSpec,
-  deserializeFitnessVector, selectableChampionFromEvaluation,
+  deserializeFitnessVector, peekFitnessVectorVersions, selectableChampionFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } = EvaluationNS;
 
@@ -226,8 +226,32 @@ const synthEvaluation = () => ({
   spec: resolvedFlat(),
   populationSnapshotDigestState: 0xdeadbeef,
   individuals: [
-    { individualId: 0, fitness: 12.5, valid: true, integrityStatus: 'ok' },
-    { individualId: 3, fitness: 0, valid: false, integrityStatus: 'numericalDivergence' },
+    {
+      individualId: 0,
+      fitness: 12.5,
+      valid: true,
+      integrityStatus: 'ok',
+      integrityObservations: {
+        peakBodySpeed: 3.5,
+        peakSpeedDelta: 1.25,
+        peakStepDisplacement: 0.0625,
+        firstAlertStep: null,
+        firstCatastrophicStep: null,
+      },
+    },
+    {
+      individualId: 3,
+      fitness: 0,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      integrityObservations: {
+        peakBodySpeed: 4096,
+        peakSpeedDelta: 2048,
+        peakStepDisplacement: 64,
+        firstAlertStep: 6,
+        firstCatastrophicStep: 11,
+      },
+    },
   ],
 });
 
@@ -294,7 +318,8 @@ const EXPECTED_EXPORTS = Object.freeze({
     'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
     'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'fitnessVectorByteLength', 'isVehicleResultSelectable',
-    'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
+    'isVehicleResultValid', 'peekFitnessVectorVersions',
+    'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
   'evolution-operators.js': Object.freeze([
@@ -576,6 +601,8 @@ const EXPORT_ROLES = Object.freeze({
       callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
     },
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // Reads only the declared version prefix, through the same gated reader.
+    { name: 'peekFitnessVectorVersions', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     // Resolves the caller's spec once and returns the bytes PLUS the record
     // decoded from them; the returned spec shares nothing with the input.
     {
@@ -966,6 +993,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   'src/sim/population-evaluation.js': {
     deserializeEvaluationSpec: { intake: 'gated', invoke: (u) => deserializeEvaluationSpec(u) },
     deserializeFitnessVector: { intake: 'gated', invoke: (u) => deserializeFitnessVector(u) },
+    peekFitnessVectorVersions: { intake: 'gated', invoke: (u) => peekFitnessVectorVersions(u) },
     championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
     evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
     fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
@@ -1657,6 +1685,9 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   evaluatePopulation: 'notExercised',
   serializeFitnessVector: 'freshBytes',
   deserializeFitnessVector: 'ownedCopy',
+  // Returns frozen scalars derived from the caller's bytes: no caller object
+  // and no byte window is retained, so there is nothing to copy or alias.
+  peekFitnessVectorVersions: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
   selectablePoolFromEvaluation: 'ownedCopy',
@@ -1800,6 +1831,7 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    { name: 'peekFitnessVectorVersions', result: peekFitnessVectorVersions(vBytes), roots: [vBytes] },
     ...(() => {
       const evaluation = {
         fitnessPolicyVersion: 2,

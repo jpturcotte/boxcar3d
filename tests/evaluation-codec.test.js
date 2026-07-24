@@ -677,7 +677,13 @@ describe('fitness vector — synthetic coverage', () => {
     // null second row all leaked foreign TypeErrors from a public encoder.
     // The indexed preflight now snapshots every row into module-owned records
     // before allocation; the write pass re-reads nothing from the caller.
-    const good = { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 0 };
+    const good = {
+      individualId: 0,
+      valid: true,
+      integrityStatus: 'ok',
+      fitness: 0,
+      integrityObservations: OBSERVATIONS.ok,
+    };
     const sparse = [good]; sparse.length = 2;
     for (const [label, inds] of [
       ['[null]', [null]],
@@ -1155,7 +1161,11 @@ describe('fitness vector — the population/spec binding is UNVERIFIED (the deli
       spec: resolvedFixtureA(),
       populationSnapshotDigestState: snapshotState,
       individuals: alienIds.map((individualId, i) => ({
-        individualId, valid: true, integrityStatus: 'ok', fitness: i + 0.5,
+        individualId,
+        valid: true,
+        integrityStatus: 'ok',
+        fitness: i + 0.5,
+        integrityObservations: OBSERVATIONS.ok,
       })),
     };
     const bytes = serializeFitnessVector(evaluation); // no complaint

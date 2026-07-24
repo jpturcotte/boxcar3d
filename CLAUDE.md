@@ -2489,8 +2489,10 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**GA Phase 1B PR #27 landed — persist integrity observations in evolution
-history. Fitness vector v3; no policy, selection or mutation behaviour changed.**
+**GA Phase 1B PR #27 (open branch `pr27-persist-integrity-observations`, pending
+merge) — persist integrity observations in evolution history. Fitness vector v3;
+no policy, selection or mutation behaviour changed.** Everything below describes
+the PR-head behaviour; `main` still carries fitness vector v2 until this merges.
 - **The gap PR #27 closes:** PR 4 showed ~1 champion in 5 is Rapier
   constraint-solver divergence in the alert band (25–1000 m/s), which policy v2
   deliberately treats as an observation (`status: 'ok'`, fully selectable). But
@@ -2505,24 +2507,35 @@ history. Fitness vector v3; no policy, selection or mutation behaviour changed.*
   u8 firstCatastrophicStepPresent | u32 firstCatastrophicStep`. Flag+u32, no
   sentinel — `null` and step 0 are byte-distinct; absent ⇒ u32 payload exactly 0
   (canonical form, rejected when nonzero on decode). `+Infinity` peaks accepted
-  (legal policy-v1 output), `NaN` and `-Infinity` rejected.
+  (legal policy-v1 output); `NaN`, `-Infinity`, negatives AND encoded IEEE `-0`
+  rejected (the encoder normalizes a caller's `-0` to `+0`, so a `-0` byte
+  pattern is noncanonical and is refused by Gate B as `malformedHistory` before
+  physics; every accepted vector re-encodes byte-identically).
 - **Two pre-physics gates on the resume path** (after `checkExpectedIdentity`,
   before `checkRuntimeIdentity`): Gate A (`checkFitnessVectorCompatibility`) —
   layered version peek, `unsupportedVersion` naming the exact field; Gate B
-  (`verifyFitnessVectorMetadataCoherence`) — step bounds and peak↔alert
-  equivalence, `malformedHistory`. A stale v2 artifact reports
-  `unsupportedVersion` after its self-consistency legs pass and before physics;
-  a current-format artifact whose steps contradict its own metadata reports
-  `malformedHistory` also before physics. `EVOLUTION_HISTORY_VERSION` stays 1;
-  `headerDigest` did not move.
+  (`verifyFitnessVectorMetadataCoherence`) — step bounds, the capture-zero onset
+  rule (an onset at step 0 must be justified by the body-speed peak alone, since
+  speed-delta and displacement do not exist at capture zero) and peak↔alert /
+  peak↔catastrophic equivalence, `malformedHistory`. Gate B also owns the stable
+  taxonomy for a current-version but byte-malformed vector: the decoder's
+  exception is translated to `malformedHistory` (preserved as `cause`) at this
+  boundary, shared by both the resume path and the extraction seam. A stale v2
+  artifact reports `unsupportedVersion` after its self-consistency legs pass and
+  before physics; a current-format artifact whose steps contradict its own
+  metadata — or whose bytes are malformed — reports `malformedHistory` also
+  before physics. `EVOLUTION_HISTORY_VERSION` stays 1; `headerDigest` did not
+  move.
 - **Verified extraction seam** (`scripts/history-observations.js`):
   `extractHistoryObservations(historyBytes, { expectedHistoryDigestBytes? })`
-  runs `verifyHistoryArtifact` AND both R1 gates internally before decoding —
-  a tampered or stale artifact is refused, never read. Async (SHA-256); pure
-  with respect to filesystem, clock, randomness and physics. Returns per
-  generation and per individual the decoded row plus its observations and the
-  generation's `executedSteps`. NO aggregation, gates, sampling,
-  counterfactuals or policy analysis — those are PR #28's.
+  checks the 64 MiB ceiling on the intrinsic length BEFORE copying, then runs
+  `verifyHistoryArtifact` AND both R1 gates internally before decoding —
+  a tampered, oversized or stale artifact is refused, never read, and the seam
+  performs zero evaluations (no physics). Async (SHA-256); pure with respect to
+  filesystem, clock, randomness and physics. Returns per generation and per
+  individual the decoded row plus its observations and the generation's
+  `executedSteps`. NO aggregation, gates, sampling, counterfactuals or policy
+  analysis — those are PR #28's.
 - **Locks that moved:** `population-locks.js` `fitnessVectorDigest` (v2
   `a6d04f75` → v3 `fd4222eb`, +34 B/member × 20 members = +680 B/generation),
   `fitnessVectorVersion` 2→3, and per-individual `integrityObservations` (the
@@ -2535,10 +2548,10 @@ history. Fitness vector v3; no policy, selection or mutation behaviour changed.*
   the fitness vector version); every terrain/assembly/A–D digest byte-identical.
 - **What did NOT change:** `INTEGRITY_POLICY_VERSION` stays 1,
   `FITNESS_POLICY_VERSION` stays 2, defaults stay (0.05, 0.05). Alert-bearing
-  `ok` vehicles are **still selectable on main** — this PR persists evidence
-  and changes no behaviour. The solver defect remains; Option A masks rather
-  than fixes it; multibody deferred. No experiment/campaign code entered; no
-  dependency work appeared.
+  `ok` vehicles **remain fully selectable** — this PR persists evidence and
+  changes no behaviour (on `main` today, and unchanged on the branch). The
+  solver defect remains; Option A masks rather than fixes it; multibody
+  deferred. No experiment/campaign code entered; no dependency work appeared.
 - **Next:** PR #28 — measure alert-band selection exposure and decide
   escalation. The persisted observations and the extraction seam are the
   prerequisite; PR #28 owns the breeding-pool and false-negative measurements,

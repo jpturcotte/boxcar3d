@@ -54,8 +54,9 @@ import {
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, evolutionFail, isEvolutionUint32,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
+  MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, evolutionFail,
+  isEvolutionUint32,
 } from './evolution-contract.js';
 import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
 import {
@@ -399,7 +400,16 @@ export function checkFitnessVectorCompatibility(verified) {
  * malformed, not unsupported: `0 ≤ firstAlertStep ≤ executedSteps` and
  * `0 ≤ firstCatastrophicStep ≤ executedSteps`, using each generation's own
  * persisted metadata; plus the peak↔alert equivalence, which needs
- * `effectiveDt` for `dtScale`.
+ * `effectiveDt` for `dtScale`; plus the capture-zero onset rule (an onset at
+ * step 0 must be justified by the body-speed peak alone, because speed-delta
+ * and displacement do not exist at the post-realization capture zero).
+ *
+ * A current-version vector whose BYTES are malformed (bad flag, illegal peak,
+ * wrong length, noncanonical payload) is refused here as `malformedHistory`
+ * with the decoder's exception preserved as `cause` — the stable taxonomy is
+ * owned at this replay/extraction boundary, not in the generic decoder. Both
+ * `resumeEvolutionRun` and `extractHistoryObservations` reach this gate, so the
+ * translation is shared, never duplicated.
  */
 export function verifyFitnessVectorMetadataCoherence(verified) {
   const generationCount = verified.framing.generations.length;
@@ -414,7 +424,18 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
     const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
     const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed;
     const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
-    const vector = deserializeFitnessVector(payload.components.fitnessVector);
+    // A current-version but byte-malformed vector is malformed history, not a
+    // bare decoder exception: translate at this boundary, preserving the cause.
+    let vector;
+    try {
+      vector = deserializeFitnessVector(payload.components.fitnessVector);
+    } catch (cause) {
+      if (cause instanceof EvolutionError) throw cause;
+      evolutionFail('malformedHistory',
+        `generation ${i} fitness vector is malformed: ${cause && cause.message ? cause.message : String(cause)}`,
+        { generationIndex: i }, cause);
+      return; // unreachable — evolutionFail always throws; kept so `vector` can never be read undefined
+    }
     const individuals = vector.individuals;
     for (let j = 0; j < individuals.length; j += 1) {
       const ind = individuals[j];
@@ -430,6 +451,23 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
         evolutionFail('malformedHistory',
           `generation ${i} individual ${id} firstCatastrophicStep ${obs.firstCatastrophicStep} exceeds executedSteps ${executedSteps}`,
           { generationIndex: i, individualId: id, firstCatastrophicStep: obs.firstCatastrophicStep, executedSteps });
+      }
+      // Capture-zero onset: at step 0 (post-realization, before the first
+      // world.step) there is no previous sample, so speed-delta and step
+      // displacement do not exist yet — only body speed. An onset at step 0 is
+      // therefore justified by the body-speed peak ALONE; a later delta or
+      // displacement maximum cannot backdate an onset to capture zero. Strict
+      // `>`, matching the online detector: a peak exactly at threshold does not
+      // cross.
+      if (obs.firstAlertStep === 0 && !(obs.peakBodySpeed > alertSpeed)) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} firstAlertStep 0 requires peakBodySpeed > ${alertSpeed} at capture zero, got ${obs.peakBodySpeed}`,
+          { generationIndex: i, individualId: id, peakBodySpeed: obs.peakBodySpeed });
+      }
+      if (obs.firstCatastrophicStep === 0 && !(obs.peakBodySpeed > catastrophicSpeed)) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} firstCatastrophicStep 0 requires peakBodySpeed > ${catastrophicSpeed} at capture zero, got ${obs.peakBodySpeed}`,
+          { generationIndex: i, individualId: id, peakBodySpeed: obs.peakBodySpeed });
       }
       // Peak↔alert equivalence: an alert step is set iff at least one peak
       // exceeds its alert threshold (the peaks are whole-run maxima, so the

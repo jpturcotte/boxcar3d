@@ -7,8 +7,9 @@ surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
 **Status:** GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
-deterministic evolution engine. **PR #27 then persisted the integrity evidence:**
-fitness vector v3 canonically encodes the five integrity observations
+deterministic evolution engine. **PR #27 (open branch, pending merge) persists
+the integrity evidence:** fitness vector v3 canonically encodes the five
+integrity observations
 (`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
 `firstCatastrophicStep`) in every history artifact, replay rejects stale v2
 artifacts as `unsupportedVersion` and semantically malformed v3 artifacts as

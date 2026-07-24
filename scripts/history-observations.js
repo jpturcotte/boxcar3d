@@ -21,17 +21,29 @@
 // classification for no correctness gain.
 
 import {
+  MAX_EVOLUTION_HISTORY_BYTES,
   captureExpectedIdentity, checkExpectedIdentity,
   checkFitnessVectorCompatibility, verifyFitnessVectorMetadataCoherence,
   verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 import { evolutionFail } from '../src/sim/evolution-contract.js';
-import { copyOrdinaryBytes } from '../src/sim/bytes.js';
+import { copyOrdinaryBytes, typedArrayByteLength } from '../src/sim/bytes.js';
 import { decodeGenerationPayload, deserializeEvaluationMetadata } from '../src/sim/evolution-history.js';
 import { deserializeFitnessVector } from '../src/sim/population-evaluation.js';
 
 const bytesFail = (path, value) => evolutionFail('invalidConfig', `history-observations: invalid ${path}`, { value });
 const configBytesFail = (path, value) => evolutionFail('invalidConfig', `history-observations: invalid options.${path}`, { value });
+
+// The intake measurement must classify a non-ordinary input as invalid config
+// (matching the seam's other intake refusals) rather than leak the byte
+// helper's own error shape.
+function translateIntake(body) {
+  try {
+    return body();
+  } catch (cause) {
+    return bytesFail('historyBytes', cause && cause.message ? cause.message : String(cause));
+  }
+}
 
 /**
  * Extract integrity observations from a cryptographically verified history
@@ -50,7 +62,16 @@ const configBytesFail = (path, value) => evolutionFail('invalidConfig', `history
  *   the decoded fitness-vector rows (each carrying integrityObservations).
  */
 export async function extractHistoryObservations(historyBytes, options = {}) {
-  // Stages 1–2: owned-copy intake — the caller's buffer is copied before any
+  // Stage 1: the 64 MiB ceiling is checked on the INTRINSIC length BEFORE any
+  // copy — mirroring the production resume seam, so an oversized artifact is
+  // refused as resourceLimitExceeded without first allocating its own size.
+  const declaredLength = translateIntake(() => typedArrayByteLength(historyBytes));
+  if (declaredLength > MAX_EVOLUTION_HISTORY_BYTES) {
+    evolutionFail('resourceLimitExceeded',
+      `history byte length ${declaredLength} exceeds MAX_EVOLUTION_HISTORY_BYTES (${MAX_EVOLUTION_HISTORY_BYTES})`,
+      { byteLength: declaredLength, limit: MAX_EVOLUTION_HISTORY_BYTES });
+  }
+  // Stage 2: owned-copy intake — the caller's buffer is copied before any
   // await, so post-verification decoding reads only verified bytes (TOCTOU-safe).
   const owned = copyOrdinaryBytes(historyBytes, bytesFail);
   const expected = captureExpectedIdentity(options, (b) => copyOrdinaryBytes(b, configBytesFail));

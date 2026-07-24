@@ -229,14 +229,24 @@ describe('resume and continuation', () => {
     expect(globalThis.__replayProbe.evaluations).toBe(2);
   });
 
-  test('a v3 artifact re-assembled from decoded structures (no createEvolutionRun) verifies, resumes and continues byte-identically', async () => {
-    // THE INDEPENDENT-ASSEMBLY WITNESS (R2/DoD 4, post-Kimi): the artifact is
-    // decoded into its logical structures, then RE-ENCODED using only the
-    // low-level codec functions (serializeFitnessVector, encodeEvolutionHeader,
-    // encodeGenerationPayload, assembleHistory) — the createEvolutionRun path
-    // is never invoked for the re-assembly. Byte-identity proves the codec is
-    // lossless and the assembly path is self-sufficient; resume+continue proves
-    // the re-assembled artifact is accepted by the full verification ladder.
+  test('INTERNAL codec losslessness: a decoded v3 artifact re-encodes byte-identically, then resumes and continues (NOT an independent oracle)', async () => {
+    // INTERNAL LOSSLESSNESS / COMPOSABILITY TEST (honest scope). The artifact
+    // is decoded into its logical structures, then RE-ENCODED using this repo's
+    // own low-level codec functions (serializeFitnessVector,
+    // encodeEvolutionHeader, encodeGenerationPayload, assembleHistory) — the
+    // createEvolutionRun path is never invoked for the re-assembly.
+    //
+    // What this PROVES: the codec is lossless (decode∘encode = identity on a
+    // real artifact), the assembly path is self-sufficient, and a re-assembled
+    // artifact is accepted by the full verification ladder (resume + continue).
+    //
+    // What this does NOT prove: independent v3 wire semantics. Generation,
+    // encoding, decoding and assembly here share the same code, so a shared
+    // geometry bug could survive. The genuinely independent witness is the
+    // manual literal oracle below ('fitness vector — independent v3 wire
+    // oracle'), which writes the v3 bytes with a bare DataView and never calls
+    // the production serializer. The v2 Kimi fixture proves only the early
+    // unsupportedVersion refusal path.
     const { serializeFitnessVector, deserializeFitnessVector } = await import('../src/sim/population-evaluation.js');
     const { deserializeEvaluationMetadata, serializeEvaluationMetadata } = await import('../src/sim/evolution-history.js');
 
@@ -306,6 +316,122 @@ describe('resume and continuation', () => {
     const b = await resumedReassembled.advance();
     expect(b.kind).toBe(a.kind);
     expect(bytesToHex(resumedReassembled.historyBytes())).toBe(bytesToHex(resumedOriginal.historyBytes()));
+  });
+});
+
+// ============================================================================
+// (1b) INDEPENDENT v3 WIRE ORACLE — manual literal bytes, no production codec
+// ============================================================================
+
+describe('fitness vector — independent v3 wire oracle (manual literal bytes)', () => {
+  // A genuinely independent witness for the v3 wire semantics. The bytes below
+  // are written with a bare DataView at hard-coded little-endian offsets — the
+  // production serializer is NEVER called to produce them — then read back two
+  // ways: (a) by an independent reference walk in this test, and (b) by the
+  // production decoder, which must agree field-by-field. A shared geometry bug
+  // in the production encoder cannot hide here, because the oracle's offsets
+  // are expressed independently. Unavoidable version literals are pinned as
+  // literals (not imported), so a version bump forces a conscious update here.
+  const STATUS = ['ok', 'nonFinite', 'numericalDivergence'];
+  const HEADER_BYTES = 22;
+  const MEMBER_BYTES = 48;
+  const snapState = 0xdeadbeef;
+  const specState = 0x12345678;
+  // [id, valid, statusIndex, fitness, pBS, pSD, pSDp, alertFlag, alertStep, catFlag, catStep]
+  const members = [
+    [3, 1, 0, 12.5, 30, 0, 0, 1, 0, 0, 0],       // ok; alert AT step 0; +0 peaks
+    [7, 1, 0, 1.5, Infinity, 0, 0, 0, 0, 0, 0],  // ok; +Infinity peak; absent steps
+    [9, 0, 2, 0, 1500, 40, 20, 1, 3, 1, 5],      // numericalDivergence; cat step 5
+  ];
+
+  function buildOracleBytes() {
+    const total = HEADER_BYTES + MEMBER_BYTES * members.length;
+    const buf = new ArrayBuffer(total);
+    const v = new DataView(buf);
+    let o = 0;
+    v.setUint16(o, 3, true); o += 2;            // fitnessVectorVersion
+    v.setUint16(o, 2, true); o += 2;            // fitnessPolicyVersion
+    v.setUint16(o, 1, true); o += 2;            // integrityPolicyVersion
+    v.setUint16(o, 1, true); o += 2;            // snapshotVersion
+    v.setUint32(o, snapState, true); o += 4;    // populationSnapshotDigestState
+    v.setUint16(o, 1, true); o += 2;            // evaluationSpecVersion
+    v.setUint32(o, specState, true); o += 4;    // evaluationSpecDigestState
+    v.setUint32(o, members.length, true); o += 4; // count
+    for (const m of members) {
+      v.setUint32(o, m[0], true); o += 4;       // individualId
+      v.setUint8(o, m[1]); o += 1;              // valid
+      v.setUint8(o, m[2]); o += 1;              // statusIndex
+      v.setFloat64(o, m[3], true); o += 8;      // fitness
+      v.setFloat64(o, m[4], true); o += 8;      // peakBodySpeed
+      v.setFloat64(o, m[5], true); o += 8;      // peakSpeedDelta
+      v.setFloat64(o, m[6], true); o += 8;      // peakStepDisplacement
+      v.setUint8(o, m[7]); o += 1;              // alertPresent
+      v.setUint32(o, m[8], true); o += 4;       // alertStep
+      v.setUint8(o, m[9]); o += 1;              // catPresent
+      v.setUint32(o, m[10], true); o += 4;      // catStep
+    }
+    return new Uint8Array(buf);
+  }
+
+  test('the production decoder reads the hand-written v3 bytes field-by-field', async () => {
+    const { deserializeFitnessVector } = await import('../src/sim/population-evaluation.js');
+    const bytes = buildOracleBytes();
+    expect(bytes.length).toBe(HEADER_BYTES + MEMBER_BYTES * members.length);
+
+    const decoded = deserializeFitnessVector(bytes);
+    expect(decoded.fitnessVectorVersion).toBe(3);
+    expect(decoded.fitnessPolicyVersion).toBe(2);
+    expect(decoded.integrityPolicyVersion).toBe(1);
+    expect(decoded.populationSnapshotDigestState).toBe(snapState);
+    expect(decoded.evaluationSpecDigestState).toBe(specState);
+    expect(decoded.individuals.length).toBe(members.length);
+
+    decoded.individuals.forEach((ind, i) => {
+      const m = members[i];
+      expect(ind.individualId).toBe(m[0]);
+      expect(ind.valid).toBe(m[1] === 1);
+      expect(ind.integrityStatus).toBe(STATUS[m[2]]);
+      expect(Object.is(ind.fitness, m[3])).toBe(true);
+      const obs = ind.integrityObservations;
+      expect(Object.is(obs.peakBodySpeed, m[4])).toBe(true);
+      expect(Object.is(obs.peakSpeedDelta, m[5])).toBe(true);
+      expect(Object.is(obs.peakStepDisplacement, m[6])).toBe(true);
+      expect(obs.firstAlertStep).toBe(m[7] === 1 ? m[8] : null);
+      expect(obs.firstCatastrophicStep).toBe(m[9] === 1 ? m[10] : null);
+    });
+
+    // The v3-specific guarantees, called out explicitly:
+    // little-endian ordering (id 3 is 03 00 00 00, not 00 00 00 03);
+    expect(bytesToHex(bytes.subarray(HEADER_BYTES, HEADER_BYTES + 4))).toBe('03000000');
+    // +Infinity survives the wire (member 1 peakBodySpeed);
+    expect(decoded.individuals[1].integrityObservations.peakBodySpeed).toBe(Infinity);
+    // normalized +0 survives (member 0 peaks are +0, sign byte 0x00);
+    expect(Object.is(decoded.individuals[0].integrityObservations.peakSpeedDelta, 0)).toBe(true);
+    expect(bytes[HEADER_BYTES + 22 + 7]).toBe(0x00);
+    // step zero is distinct from null (member 0 alert step 0; member 1 null);
+    expect(decoded.individuals[0].integrityObservations.firstAlertStep).toBe(0);
+    expect(decoded.individuals[1].integrityObservations.firstAlertStep).toBeNull();
+    // an absent step carries a zero u32 payload (member 1 alert payload);
+    const m1 = HEADER_BYTES + MEMBER_BYTES;
+    expect(bytesToHex(bytes.subarray(m1 + 39, m1 + 43))).toBe('00000000');
+  });
+
+  test('the production serializer emits the SAME bytes as the independent oracle (differential)', async () => {
+    const { serializeFitnessVector } = await import('../src/sim/population-evaluation.js');
+    const evaluation = {
+      populationSnapshotDigestState: snapState,
+      evaluationSpecDigestState: specState,
+      individuals: members.map((m) => ({
+        individualId: m[0], valid: m[1] === 1, integrityStatus: STATUS[m[2]], fitness: m[3],
+        integrityObservations: {
+          peakBodySpeed: m[4], peakSpeedDelta: m[5], peakStepDisplacement: m[6],
+          firstAlertStep: m[7] === 1 ? m[8] : null,
+          firstCatastrophicStep: m[9] === 1 ? m[10] : null,
+        },
+      })),
+    };
+    const production = serializeFitnessVector(evaluation);
+    expect(bytesToHex(production)).toBe(bytesToHex(buildOracleBytes()));
   });
 });
 
@@ -1006,6 +1132,221 @@ describe('Gate B — metadata coherence refuses a self-consistent artifact befor
     globalThis.__replayProbe.evaluations = 0;
     const err = await expectCodeAsync(() => resumeEvolutionRun(fixture), 'unsupportedVersion', /fitnessVectorVersion/);
     expect(err.context.field).toBe('fitnessVectorVersion');
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+});
+
+// ============================================================================
+// (8) ISSUE 1: a CURRENT-VERSION but byte-malformed vector is malformedHistory
+// ============================================================================
+
+describe('Gate B translates a malformed current-version vector into the stable taxonomy', () => {
+  // Gate A only peeks the 22-byte version prefix, so a vector whose prefix is
+  // current but whose members are corrupt passes Gate A and is caught by Gate
+  // B's decode — which must surface as `malformedHistory` (with the decoder's
+  // exception preserved as `cause`), never a bare population-evaluation Error.
+  // Member 0 field offsets within the vector: valid@26, fitness@28,
+  // peakBodySpeed@36, alertPresent@60, alertStep@61.
+  function corruptVector(fvBytes, patches) {
+    const copy = new Uint8Array(fvBytes);
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+    for (const [offset, type, value] of patches) {
+      if (type === 'u8') view.setUint8(offset, value);
+      else if (type === 'f64') view.setFloat64(offset, value, true);
+      else if (type === 'u32') view.setUint32(offset, value, true);
+    }
+    return copy;
+  }
+
+  async function expectMalformed(mutateRecord, re) {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, { mutateRecord });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', re);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+    // The lower-level decoder exception is preserved as `cause`.
+    expect(err.cause).toBeInstanceOf(Error);
+    return err;
+  }
+
+  test('a flag byte outside {0,1} is malformedHistory (with decoder cause)', async () => {
+    await expectMalformed((record) => {
+      record.components.fitnessVector = corruptVector(record.components.fitnessVector, [
+        [60, 'u8', 5], // firstAlertStepPresent flag = 5 (not 0 or 1)
+      ]);
+    }, /malformed/);
+  });
+
+  test('a count inconsistent with the vector length is malformedHistory', async () => {
+    await expectMalformed((record) => {
+      // Keep the 22-byte header (count says 6) but truncate the members, so
+      // the decoder's exact-length identity fails.
+      record.components.fitnessVector = record.components.fitnessVector.slice(0, 22 + 10);
+    }, /malformed/);
+  });
+
+  test('an illegal NaN fitness is malformedHistory', async () => {
+    await expectMalformed((record) => {
+      record.components.fitnessVector = corruptVector(record.components.fitnessVector, [
+        [28, 'f64', Number.NaN], // member 0 fitness = NaN
+      ]);
+    }, /malformed/);
+  });
+
+  test('an illegal NaN peak is malformedHistory', async () => {
+    await expectMalformed((record) => {
+      record.components.fitnessVector = corruptVector(record.components.fitnessVector, [
+        [36, 'f64', Number.NaN], // member 0 peakBodySpeed = NaN
+      ]);
+    }, /malformed/);
+  });
+
+  test('an absent onset flag with a nonzero payload is malformedHistory', async () => {
+    await expectMalformed((record) => {
+      record.components.fitnessVector = corruptVector(record.components.fitnessVector, [
+        [60, 'u8', 0],  // firstAlertStepPresent = 0 (absent)
+        [61, 'u32', 7], // but payload nonzero — noncanonical
+      ]);
+    }, /malformed/);
+  });
+
+  test('an encoded -0 peak at any integrity offset is malformedHistory (noncanonical, with decoder cause)', async () => {
+    // The encoder normalizes a caller's -0 to +0, so a -0 byte pattern is
+    // noncanonical and must be refused by Gate B as malformedHistory before
+    // physics — tying the codec-level -0 canonicality into the replay taxonomy.
+    // Member 0 peak offsets (absolute): peakBodySpeed@36, peakSpeedDelta@44,
+    // peakStepDisplacement@52.
+    for (const offset of [36, 44, 52]) {
+      await expectMalformed((record) => {
+        record.components.fitnessVector = corruptVector(record.components.fitnessVector, [
+          [offset, 'f64', -0],
+        ]);
+      }, /noncanonical/);
+    }
+  });
+});
+
+// ============================================================================
+// (9) ISSUE 3: capture-zero onset semantics
+// ============================================================================
+
+describe('Gate B enforces capture-zero onset semantics', () => {
+  // At capture zero (post-realization, before the first world.step) there is no
+  // previous sample, so speed-delta and step displacement do not exist yet —
+  // only body speed. An onset at step 0 must therefore be justified by the
+  // body-speed peak ALONE; a later delta/displacement maximum cannot backdate an
+  // onset to zero. Member 0 offsets: peakBodySpeed@36 (M0+14),
+  // peakSpeedDelta@44 (M0+22), peakStepDisplacement@52 (M0+30),
+  // alertPresent@60 (M0+38), alertStep@61 (M0+39), catPresent@65 (M0+43),
+  // catStep@66 (M0+44).
+  const M0 = 22;
+  function patchMember0(fvBytes, patches) {
+    const copy = new Uint8Array(fvBytes);
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+    for (const [offset, type, value] of patches) {
+      if (type === 'f64') view.setFloat64(M0 + offset, value, true);
+      else if (type === 'u8') view.setUint8(M0 + offset, value);
+      else if (type === 'u32') view.setUint32(M0 + offset, value, true);
+    }
+    return copy;
+  }
+
+  test('alert onset 0 with sub-threshold body speed but above-threshold speed-delta is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 20],  // peakBodySpeed = 20 (< alertSpeed 25)
+          [22, 'f64', 31],  // peakSpeedDelta = 31 (> alertSpeedDelta 30)
+          [30, 'f64', 0],   // peakStepDisplacement = 0
+          [38, 'u8', 1], [39, 'u32', 0], // firstAlertStep = 0
+          [43, 'u8', 0], [44, 'u32', 0], // catastrophic absent
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstAlertStep 0 requires peakBodySpeed/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('alert onset 0 with sub-threshold body speed but above-threshold displacement is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 20],        // peakBodySpeed = 20 (< 25)
+          [22, 'f64', 0],         // peakSpeedDelta = 0
+          [30, 'f64', 25 / 60 + 0.1], // peakStepDisplacement > alertStepDisplacement (25/60)
+          [38, 'u8', 1], [39, 'u32', 0], // firstAlertStep = 0
+          [43, 'u8', 0], [44, 'u32', 0],
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstAlertStep 0 requires peakBodySpeed/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('catastrophic onset 0 with sub-catastrophic body speed but above-threshold catastrophic displacement is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [5, 'u8', 2],           // statusIndex = 2 (numericalDivergence) — decoder requires cat step
+          [6, 'f64', 0],          // fitness = 0 (unselectable)
+          [14, 'f64', 500],       // peakBodySpeed = 500 (> 25 alert, < 1000 catastrophic)
+          [22, 'f64', 0],
+          [30, 'f64', 1000 / 60 + 1], // peakStepDisplacement > catastrophicStepDisplacement
+          [38, 'u8', 1], [39, 'u32', 0], // firstAlertStep = 0 (alert justified: 500 > 25)
+          [43, 'u8', 1], [44, 'u32', 0], // firstCatastrophicStep = 0
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstCatastrophicStep 0 requires peakBodySpeed/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('legal alert onset 0 caused by above-threshold body speed passes Gate B', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 30],  // peakBodySpeed = 30 (> alertSpeed 25)
+          [22, 'f64', 0],
+          [30, 'f64', 0],
+          [38, 'u8', 1], [39, 'u32', 0], // firstAlertStep = 0 — justified by body speed
+          [43, 'u8', 0], [44, 'u32', 0],
+        ]);
+      },
+    });
+    const verified = await verifyHistoryArtifact(reforged);
+    expect(() => verifyFitnessVectorMetadataCoherence(verified)).not.toThrow();
+  });
+
+  test('exact-threshold body speed at onset 0 remains non-triggering (strict >)', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [5, 'u8', 0],           // statusIndex = 0 (ok)
+          [6, 'f64', 10],         // fitness finite
+          [14, 'f64', 25],        // peakBodySpeed = 25 (== alertSpeed; NOT > under strict >)
+          [22, 'f64', 0],
+          [30, 'f64', 0],
+          [38, 'u8', 1], [39, 'u32', 0], // firstAlertStep = 0
+          [43, 'u8', 0], [44, 'u32', 0],
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    // 25 is not > 25, so onset 0 is NOT justified by body speed — malformed.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstAlertStep 0 requires peakBodySpeed/);
+    expect(err.context.generationIndex).toBe(0);
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 });

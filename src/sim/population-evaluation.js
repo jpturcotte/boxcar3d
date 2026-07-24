@@ -1396,12 +1396,18 @@ export function deserializeFitnessVector(bytes) {
         `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
     }
     // --- Integrity observations (mirror the encoder's R4 validation) ---
+    // Peaks admit +0, positive finites and +Infinity; reject NaN, negatives and
+    // -Infinity via `>= 0`. Encoded IEEE -0 is ALSO rejected: the encoder
+    // normalizes a caller's -0 to +0, so a -0 byte pattern is noncanonical and
+    // would break the exact-inverse contract (decode then re-encode would flip
+    // 0x80…00 to 0x00…00). `Object.is(peak, -0)` is the only test that
+    // distinguishes -0 from +0 (`-0 >= 0` is true).
     const peakBodySpeed = r.f64(`individuals[${i}].peakBodySpeed`);
-    if (!(peakBodySpeed >= 0)) vectorDecodeFail(`individuals[${i}].peakBodySpeed`, peakBodySpeed);
+    if (!(peakBodySpeed >= 0) || Object.is(peakBodySpeed, -0)) vectorDecodeFail(`individuals[${i}].peakBodySpeed`, `noncanonical ${Object.is(peakBodySpeed, -0) ? '-0' : peakBodySpeed}`);
     const peakSpeedDelta = r.f64(`individuals[${i}].peakSpeedDelta`);
-    if (!(peakSpeedDelta >= 0)) vectorDecodeFail(`individuals[${i}].peakSpeedDelta`, peakSpeedDelta);
+    if (!(peakSpeedDelta >= 0) || Object.is(peakSpeedDelta, -0)) vectorDecodeFail(`individuals[${i}].peakSpeedDelta`, `noncanonical ${Object.is(peakSpeedDelta, -0) ? '-0' : peakSpeedDelta}`);
     const peakStepDisplacement = r.f64(`individuals[${i}].peakStepDisplacement`);
-    if (!(peakStepDisplacement >= 0)) vectorDecodeFail(`individuals[${i}].peakStepDisplacement`, peakStepDisplacement);
+    if (!(peakStepDisplacement >= 0) || Object.is(peakStepDisplacement, -0)) vectorDecodeFail(`individuals[${i}].peakStepDisplacement`, `noncanonical ${Object.is(peakStepDisplacement, -0) ? '-0' : peakStepDisplacement}`);
     const alertPresent = r.flag(`individuals[${i}].firstAlertStepPresent`);
     const alertStepRaw = r.u32(`individuals[${i}].firstAlertStep`);
     if (!alertPresent && alertStepRaw !== 0) {

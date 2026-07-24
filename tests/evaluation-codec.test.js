@@ -952,6 +952,66 @@ describe('fitness vector — v3 observation region refusal boundaries (R3/R4)', 
       firstAlertStep: 3, firstCatastrophicStep: null,
     }]]))).toThrow(/firstCatastrophicStep/);
   });
+
+  test('the decoder REJECTS encoded -0 peaks as noncanonical (exact-inverse contract)', () => {
+    // The encoder normalizes a caller's -0 to +0, so a -0 byte pattern can never
+    // be the output of a canonical encode; the decoder must refuse it, or
+    // decode-then-re-encode would silently flip 0x80…00 to 0x00…00. `>= 0`
+    // alone admits -0, so the decoder needs the extra `Object.is(peak, -0)`.
+    const peakOffsets = [14, 22, 30];
+    const peakNames = ['peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement'];
+    for (let p = 0; p < peakOffsets.length; p += 1) {
+      const bytes = base();
+      new DataView(bytes.buffer).setFloat64(MEMBER(0) + peakOffsets[p], -0, true);
+      // The sign byte is now 0x80 (IEEE -0), not 0x00 (+0).
+      expect(new DataView(bytes.buffer).getUint8(MEMBER(0) + peakOffsets[p] + 7)).toBe(0x80);
+      expect(() => deserializeFitnessVector(bytes), `${peakNames[p]} = -0`)
+        .toThrow(new RegExp(`individuals\\[0\\]\\.${peakNames[p]}`));
+    }
+    // +0 at the same offsets is still accepted (the canonical zero).
+    for (const offset of peakOffsets) {
+      const bytes = base();
+      new DataView(bytes.buffer).setFloat64(MEMBER(0) + offset, 0, true);
+      expect(() => deserializeFitnessVector(bytes)).not.toThrow();
+    }
+  });
+
+  test('canonicality: every accepted v3 vector re-encodes byte-identically (decode∘encode = id on accepted inputs)', () => {
+    // Representative canonical vectors spanning the v3 additions: zero and
+    // positive peaks, +Infinity, +0, present steps (including step 0) and
+    // absent steps (null). Each must round-trip to the exact same bytes.
+    const cases = [
+      synth([[0, 1, true, 'ok', {
+        peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      }]]),
+      synth([[0, 12.5, true, 'ok', {
+        peakBodySpeed: 30, peakSpeedDelta: 31, peakStepDisplacement: 0.5,
+        firstAlertStep: 0, firstCatastrophicStep: null,
+      }]]),
+      synth([[0, 1, true, 'ok', {
+        peakBodySpeed: Infinity, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      }]]),
+      synth([[0, 0, false, 'numericalDivergence', {
+        peakBodySpeed: 1500, peakSpeedDelta: 40, peakStepDisplacement: 20,
+        firstAlertStep: 3, firstCatastrophicStep: 5,
+      }]]),
+    ];
+    for (const evaluation of cases) {
+      const bytes = serializeFitnessVector(evaluation);
+      const reencoded = serializeFitnessVector(deserializeFitnessVector(bytes));
+      expect(bytesEqual(reencoded, bytes)).toBe(true);
+    }
+    // -0 is the canonicality trap, covered explicitly rather than by random
+    // generation: it is NOT an accepted input, so it cannot violate the
+    // property — the decoder rejects it at every peak offset.
+    for (const offset of [14, 22, 30]) {
+      const bytes = base();
+      new DataView(bytes.buffer).setFloat64(MEMBER(0) + offset, -0, true);
+      expect(() => deserializeFitnessVector(bytes)).toThrow(/noncanonical/);
+    }
+  });
 });
 
 describe('fitness vector — the population/spec binding is UNVERIFIED (the deliberate boundary)', () => {

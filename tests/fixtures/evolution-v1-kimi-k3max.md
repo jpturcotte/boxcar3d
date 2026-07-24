@@ -22,10 +22,14 @@ Chromium tests: population seed `20260721`, terrain seed `20260722`, population
 4, 60 steps, 3 generations, deterministic physics, mutation probability `0.5`,
 and magnitude `0.1`.
 
-**Post-PR-27 role (early-refusal witness):** Since PR #27 bumped the fitness
-vector to v3, this v2 artifact passes self-consistency verification (stages 3–7)
-but is refused at Gate A (stage 8a) as `unsupportedVersion` naming
-`fitnessVectorVersion`, before physics. The tests assert this refusal path.
-The successful-replay role is now filled by the independent-assembly witness in
-`tests/evolution-replay.test.js` (a v3 artifact re-encoded from decoded
-structures without `createEvolutionRun`, then resumed and continued).
+**Role under PR #27 (open branch, pending merge) — early-refusal witness:** On
+that branch the fitness vector is bumped to v3, so this v2 artifact passes
+self-consistency verification (stages 3–7) but is refused at Gate A (stage 8a)
+as `unsupportedVersion` naming `fitnessVectorVersion`, before physics. The tests
+assert this refusal path. (`main` still reads v2, where this artifact is current.)
+The successful-resume role is now filled by two tests in
+`tests/evolution-replay.test.js`: an INTERNAL codec-losslessness reassembly test
+(a v3 artifact re-encoded from decoded structures without `createEvolutionRun`,
+then resumed and continued — not an independent oracle), and a genuinely
+independent v3 wire oracle that hand-writes the v3 bytes with a bare DataView
+and never calls the production serializer.

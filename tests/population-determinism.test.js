@@ -175,6 +175,13 @@ describe('population evaluation gate (deterministic flavor)', () => {
           stepAtMaxForwardDistance: i.diagnostics.stepAtMaxForwardDistance,
           forwardDistance: i.diagnostics.forwardDistance,
           maxBackwardDistance: i.diagnostics.maxBackwardDistance,
+          // The five v3 observations — lock literals so the codec contract
+          // test can reconstruct the vector without physics.
+          peakBodySpeed: i.peakBodySpeed,
+          peakSpeedDelta: i.peakSpeedDelta,
+          peakStepDisplacement: i.peakStepDisplacement,
+          firstAlertStep: i.firstAlertStep,
+          firstCatastrophicStep: i.firstCatastrophicStep,
         })),
         champion: { individualId: champion.individualId, fitness: champion.fitness },
       };

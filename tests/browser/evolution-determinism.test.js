@@ -21,6 +21,7 @@ import { describe, test, expect } from 'vitest';
 import { EVOLUTION_GOLDEN_LOCKS } from '../../src/sim/evolution-locks.js';
 import { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } from '../../src/sim/evolution-fixtures.js';
 import { createEvolutionRun, resumeEvolutionRun } from '../../src/sim/evolution-run.js';
+import { EvolutionError } from '../../src/sim/evolution-contract.js';
 import {
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata,
@@ -29,9 +30,10 @@ import { deserializeLineage } from '../../src/sim/evolution-lineage.js';
 import { bytesToHex } from '../../src/sim/bytes.js';
 import { sha256 } from '../../src/platform/sha256.js';
 import KIMI_FIXTURE_BASE64 from '../fixtures/evolution-v1-kimi-k3max.base64?raw';
+import INTEROP_FIXTURE_BASE64 from '../fixtures/evolution-v3-interop.base64?raw';
 
 const LOCK = EVOLUTION_GOLDEN_LOCKS[EVOLUTION_FIXTURE_A.name];
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
+const INTEROP_TERMINAL_HISTORY_DIGEST = 'bc53c425b88c3cb549285749abc82282162a580f93b741632702028a6cbf247b';
 
 const INTEROP_CONFIG = {
   initialization: { seed: 20260721, populationSize: 4 },
@@ -126,9 +128,9 @@ describe('evolution golden locks (Chromium)', () => {
     expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(bytes));
   });
 
-  test('Chromium continues the independent Kimi artifact byte-identically', { timeout: 240000 }, async () => {
-    const fixture = decodeBase64(KIMI_FIXTURE_BASE64);
-    expect(fixture.length).toBe(4024);
+  test('Chromium continues the committed v3 interop artifact byte-identically', { timeout: 240000 }, async () => {
+    const fixture = decodeBase64(INTEROP_FIXTURE_BASE64);
+    expect(fixture.length).toBe(4160);
     expect(fixture[14 + 18]).toBe(0);
 
     const control = createEvolutionRun(INTEROP_CONFIG);
@@ -136,7 +138,7 @@ describe('evolution golden locks (Chromium)', () => {
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
     const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
     expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
+      'engine changed — re-lock the interop evolution artifact deliberately (scripts/relock-evolution-interop.js)')
       .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
@@ -146,6 +148,18 @@ describe('evolution golden locks (Chromium)', () => {
       expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
       expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
     }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(INTEROP_TERMINAL_HISTORY_DIGEST);
+  });
+
+  test('Chromium refuses the Kimi v2 artifact before any physics (the early-refusal witness)', { timeout: 240000 }, async () => {
+    const fixture = decodeBase64(KIMI_FIXTURE_BASE64);
+    expect(fixture.length).toBe(4024);
+    let threw = null;
+    try { await resumeEvolutionRun(fixture); } catch (e) { threw = e; }
+    expect(threw).toBeInstanceOf(EvolutionError);
+    expect(threw.code).toBe('unsupportedVersion');
+    expect(threw.message).toMatch(/fitnessVectorVersion is 2; this build implements 3/);
+    expect(threw.context.stored).toBe(2);
+    expect(threw.context.current).toBe(3);
   });
 });

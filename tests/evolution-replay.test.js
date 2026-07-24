@@ -73,7 +73,11 @@ const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
   'base64',
 ));
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
+const interopFixtureBytes = () => new Uint8Array(Buffer.from(
+  readFileSync(new URL('./fixtures/evolution-v3-interop.base64', import.meta.url), 'utf8').trim(),
+  'base64',
+));
+const INTEROP_TERMINAL_HISTORY_DIGEST = 'bc53c425b88c3cb549285749abc82282162a580f93b741632702028a6cbf247b';
 
 const config = (overrides = {}) => ({
   initialization: { seed: POPULATION_SEED, populationSize: 6 },
@@ -169,9 +173,9 @@ function expectCodeSync(fn, code, re) {
 // ============================================================================
 
 describe('resume and continuation', () => {
-  test('an independently produced Kimi artifact resumes and continues byte-identically', async () => {
-    const fixture = kimiFixtureBytes();
-    expect(fixture.length).toBe(4024);
+  test('the committed v3 interop artifact resumes and continues byte-identically', async () => {
+    const fixture = interopFixtureBytes();
+    expect(fixture.length).toBe(4160);
     expect(fixture[14 + 18]).toBe(0); // outer prefix + format-owned flavor byte
 
     const control = createEvolutionRun(INTEROP_CONFIG);
@@ -179,7 +183,7 @@ describe('resume and continuation', () => {
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
     const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
     expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
+      'engine changed — re-lock the interop evolution artifact deliberately (scripts/relock-evolution-interop.js)')
       .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
@@ -190,7 +194,23 @@ describe('resume and continuation', () => {
       expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
       expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
     }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(INTEROP_TERMINAL_HISTORY_DIGEST);
+  });
+
+  test('the independently produced Kimi v2 artifact is REFUSED before any physics (the early-refusal witness)', async () => {
+    // The fixture's bytes are deliberately unmodified since its v2-era
+    // production: its fitness vectors carry wire version 2, so the resume
+    // path must refuse it at stage 8a — as staleness, never as corruption,
+    // and with ZERO evaluations.
+    const fixture = kimiFixtureBytes();
+    expect(fixture.length).toBe(4024);
+    const err = await expectCodeAsync(() => resumeEvolutionRun(fixture), 'unsupportedVersion',
+      /fitnessVectorVersion is 2; this build implements 3/);
+    expect(err.context.field).toBe('fitnessVectorVersion');
+    expect(err.context.generationIndex).toBe(0);
+    expect(err.context.stored).toBe(2);
+    expect(err.context.current).toBe(3);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
   test('a mid-run history resumes to the same status and the same bytes', async () => {

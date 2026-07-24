@@ -106,6 +106,19 @@ const FITNESS_BOUNDARIES = Object.freeze([
   0, -0, 1, Number.MIN_VALUE, 2 ** -1022, 1 - Number.EPSILON / 2, Number.MAX_VALUE,
 ]);
 
+// Integrity PEAKS are non-negative but NOT required to be finite: an infinite
+// linear velocity yields peakBodySpeed = Infinity, and the fold reaches the
+// catastrophic predicate before the non-finite one, so a legal policy-v1 row
+// can carry it. -0 is included for the same reason it is legal for fitness —
+// setFloat64 preserves the sign bit, so the codec must not normalize it.
+const PEAK_BOUNDARIES = Object.freeze([
+  0, -0, 1, Number.MIN_VALUE, 2 ** -1022, Number.MAX_VALUE, Infinity,
+]);
+
+// Optional onset steps. 0 is the value the presence flag exists to distinguish
+// from absence; the u32 max is the wire bound.
+const STEP_BOUNDARIES = Object.freeze([0, 1, 2, 0xfffffffe, 0xffffffff]);
+
 const AXLE_COUNTS = Object.freeze([0, 1, 2, 6]); // {0, 1, 2, max} — v1 caps at 6
 const MEMBER_COUNTS = Object.freeze([1, 2, 3]); // 0 is rejected by every count gate
 const RANGE_LENGTHS = Object.freeze([0, 1, 2, 255]); // {0, 1, 2, max} — the u8 wire bound
@@ -646,7 +659,40 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
         const selectable = valid && integrityStatus === 'ok';
         const fitness = selectable ? pick(rng, FITNESS_BOUNDARIES) : pick(rng, [0, -0]);
         if (selectable) seen.add(`fitness:${fmt(fitness)}`);
-        return { individualId, valid, integrityStatus, fitness };
+        // v3 observations. Peaks draw from a set that INCLUDES +Infinity (a
+        // legal policy-v1 peak — see integrity.js's fold order) and excludes
+        // NaN/-Infinity, which the codec refuses. The two optional steps are
+        // drawn under the policy-v1 coherence rules so the sample never
+        // constructs a stream its own encoder must reject: a catastrophic
+        // onset requires an alert onset at or before it, and only a
+        // 'numericalDivergence' row may carry one at all.
+        // 'numericalDivergence' REQUIRES a catastrophic onset and 'ok' forbids
+        // one. 'nonFinite' may carry either: status is latched at its first
+        // failure, so a body that went non-finite at capture 3 keeps that
+        // status even if another body crosses catastrophically at capture 5.
+        let catastrophic = null;
+        if (integrityStatus === 'numericalDivergence') catastrophic = pick(rng, STEP_BOUNDARIES);
+        else if (integrityStatus === 'nonFinite' && rng.bool(0.5)) {
+          catastrophic = pick(rng, STEP_BOUNDARIES);
+        }
+        const alert = catastrophic !== null
+          ? pick(rng, STEP_BOUNDARIES.filter((s) => s <= catastrophic))
+          : pick(rng, [null, ...STEP_BOUNDARIES]);
+        seen.add(`alert:${String(alert)}`);
+        seen.add(`catastrophic:${String(catastrophic)}`);
+        const integrityObservations = {
+          peakBodySpeed: pick(rng, PEAK_BOUNDARIES),
+          peakSpeedDelta: pick(rng, PEAK_BOUNDARIES),
+          peakStepDisplacement: pick(rng, PEAK_BOUNDARIES),
+          firstAlertStep: alert,
+          firstCatastrophicStep: catastrophic,
+        };
+        for (const p of ['peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement']) {
+          seen.add(`peak:${fmt(integrityObservations[p])}`);
+        }
+        return {
+          individualId, valid, integrityStatus, fitness, integrityObservations,
+        };
       });
       const evaluation = {
         individuals,
@@ -671,6 +717,10 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
       ...FITNESS_BOUNDARIES.map((v) => `fitness:${fmt(v)}`),
       ...INTEGRITY_STATUS.map((s) => `status:${s}`),
       ...MEMBER_COUNTS.map((n) => `members:${n}`),
+      ...PEAK_BOUNDARIES.map((v) => `peak:${fmt(v)}`),
+      // Both optional-step states must be reached in BOTH fields, including
+      // the null-vs-0 pair that the flag byte exists to separate.
+      'alert:null', 'alert:0', 'catastrophic:null', 'catastrophic:0',
     ], 'fitness vector');
   });
 });

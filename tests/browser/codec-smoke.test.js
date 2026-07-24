@@ -146,20 +146,66 @@ describe('canonical codecs (Chromium)', () => {
   });
 
   test('fitness vector: round-trips through the digest-state input path', () => {
+    // The v3 rows exercise, in Chromium, every observation shape the format
+    // admits: both onsets absent; an alert-bearing SELECTABLE row (the
+    // contamination class this encoding exists to persist); step 0 PRESENT,
+    // which shares its four payload bytes with absence and is separated only
+    // by the flag; and a +Infinity peak, which is legal policy-v1 output.
     const evaluation = {
       spec: resolvedSpec(),
       populationSnapshotDigestState: 0xdeadbeef,
       individuals: [
-        { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922 },
-        { individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0 },
-        { individualId: 9, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+        {
+          individualId: 0,
+          valid: true,
+          integrityStatus: 'ok',
+          fitness: 12.484905242919922,
+          integrityObservations: {
+            peakBodySpeed: 3.5,
+            peakSpeedDelta: 1.25,
+            peakStepDisplacement: 0.0625,
+            firstAlertStep: null,
+            firstCatastrophicStep: null,
+          },
+        },
+        {
+          individualId: 4,
+          valid: false,
+          integrityStatus: 'ok',
+          fitness: 0,
+          integrityObservations: {
+            peakBodySpeed: 142.375,
+            peakSpeedDelta: 30.5,
+            peakStepDisplacement: 0.5,
+            firstAlertStep: 0,
+            firstCatastrophicStep: null,
+          },
+        },
+        {
+          individualId: 9,
+          valid: true,
+          integrityStatus: 'numericalDivergence',
+          fitness: 0,
+          integrityObservations: {
+            peakBodySpeed: Infinity,
+            peakSpeedDelta: 2048,
+            peakStepDisplacement: 64,
+            firstAlertStep: 6,
+            firstCatastrophicStep: 11,
+          },
+        },
       ],
     };
     const bytes = serializeFitnessVector(evaluation);
+    expect(bytes.length).toBe(22 + 3 * 48);
     const decoded = deserializeFitnessVector(bytes);
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([0, 4, 9]);
     expect(Object.is(decoded.individuals[0].fitness, 12.484905242919922)).toBe(true);
     expect(decoded.individuals[2].integrityStatus).toBe('numericalDivergence');
+    expect(decoded.individuals[0].integrityObservations.firstAlertStep).toBeNull();
+    // Step 0 present must NOT come back as null in a second JS engine either.
+    expect(decoded.individuals[1].integrityObservations.firstAlertStep).toBe(0);
+    expect(decoded.individuals[2].integrityObservations.peakBodySpeed).toBe(Infinity);
     expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 

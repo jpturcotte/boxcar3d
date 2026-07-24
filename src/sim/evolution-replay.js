@@ -23,12 +23,23 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
-//   9. deterministic flavor + exact Rapier version (before physics)
-//  10. deterministic replay, stopping at the first byte divergence
+//   9. fitness-vector format compatibility         (unsupported format)
+//  10. fitness-vector metadata coherence           (malformed current format)
+//  11. deterministic flavor + exact Rapier version (before physics)
+//  12. deterministic replay, stopping at the first byte divergence
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-9 are the two small checks below; 10 is the run's own replay loop.
+// 8-11 are the small checks below; 12 is the run's own replay loop. The two
+// fitness-vector gates (9-10) sit BETWEEN external identity and the runtime
+// gate, so the escalation ladder reads: corruption -> wrong artifact ->
+// unsupported format -> malformed current format -> runtime mismatch ->
+// deterministic divergence. Their INPUTS are collected while walking the
+// components at stage 5 (per-generation version fields and coherence
+// verdicts — scalars and at most one failure descriptor per gate, never rows
+// — so the memory model below holds unchanged); the RAISE happens after
+// stage 8, never mid-walk, so a corruption or staleness verdict is never
+// masked by a format one.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
@@ -38,13 +49,18 @@
 // (whose views alias the caller's already-owned buffer). Replay decodes each
 // payload again, on demand, one at a time. That is two decodes of each payload
 // in exchange for a retention bound of: the artifact, ONE decoded payload, and
-// the current/next working populations — which is the documented peak.
+// the current/next working populations — which is the documented peak. The
+// stage-5 gate collection adds two TRANSIENT decodes (the fitness vector and
+// its sibling metadata, only when the vector's versions are current) inside
+// the same one-payload window; what is retained is per-gate scalars or a
+// single first-failure descriptor, so the bound above is unchanged.
 
 import { typedArrayByteLength } from './bytes.js';
 import {
   SHA256_DIGEST_BYTES, COMPONENT_KINDS, EVALUATION_METADATA_VERSION,
   GENERATION_RECORD_VERSION,
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
+  deserializeEvaluationMetadata,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
@@ -56,6 +72,14 @@ import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
 } from './evolution-operators.js';
+import {
+  EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
+  deserializeFitnessVector, peekFitnessVectorVersions,
+} from './population-evaluation.js';
+import { POPULATION_SNAPSHOT_VERSION } from './population.js';
+import {
+  INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
+} from './integrity.js';
 
 /** The replay stages, in the order a record's components are compared. */
 export const REPLAY_STAGES = Object.freeze([
@@ -150,6 +174,10 @@ async function verifyFramedArtifact(framing) {
   // Stage 5: every component digest, in generation order. One payload at a
   // time; nothing decoded is retained (see the memory model above).
   const records = [];
+  // The stages 9-10 gate inputs, collected inside the same walk: the FIRST
+  // failure descriptor per gate, or null when every generation passes.
+  let fitnessVectorCompatibilityFailure = null;
+  let fitnessVectorCoherenceFailure = null;
   const generationCount = framing.generations.length;
   for (let i = 0; i < generationCount; i += 1) {
     const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
@@ -173,6 +201,15 @@ async function verifyFramedArtifact(framing) {
           `generation ${i} component '${kind}' does not match its stored digest`,
           { generationIndex: i, component: kind });
       }
+    }
+    // GATE COLLECTION (stages 9-10's inputs). Nothing raises here: the gates
+    // fire after stage 8, so a corruption (stages 3-7) or staleness (stage 8)
+    // verdict is never masked by a format one — and the walk continues, so
+    // every component digest still verifies.
+    if (fitnessVectorCompatibilityFailure === null || fitnessVectorCoherenceFailure === null) {
+      const gates = collectFitnessVectorGateInputs(payload.components, i);
+      if (fitnessVectorCompatibilityFailure === null) fitnessVectorCompatibilityFailure = gates.compatibility;
+      if (fitnessVectorCoherenceFailure === null) fitnessVectorCoherenceFailure = gates.coherence;
     }
     records.push(Object.freeze({
       generationIndex: i, terminalReason: payload.terminalReason,
@@ -203,7 +240,128 @@ async function verifyFramedArtifact(framing) {
     historyDigestBytes: framing.historyDigestBytes,
     finalGenerationIndex: generationCount - 1,
     finalTerminalReason: records[generationCount - 1].terminalReason,
+    // The stages 9-10 gate inputs: the FIRST failure descriptor per gate, or
+    // null when every generation passed. Raised by the two checks below,
+    // after external identity — never mid-walk.
+    fitnessVectorCompatibilityFailure,
+    fitnessVectorCoherenceFailure,
   });
+}
+
+/**
+ * Stage 5's gate collection, per generation: peek the fitness vector's
+ * declared versions (Gate A's input) and — ONLY when every one is current —
+ * decode the vector and its sibling metadata TRANSIENTLY to evaluate
+ * observation coherence (Gate B's input). Returns
+ * `{ compatibility, coherence }`: the first failure descriptor for each gate,
+ * or null. Decoded rows are discarded in place; the descriptors carry scalars
+ * (plus the thrown cause on the malformed paths), honouring the memory model.
+ */
+function collectFitnessVectorGateInputs(components, generationIndex) {
+  let compatibility = null;
+  let peeked = null;
+  try {
+    peeked = peekFitnessVectorVersions(components.fitnessVector);
+  } catch (cause) {
+    // A truncated or structurally unreadable prefix is malformed, not
+    // unsupported — the layered peek never got far enough to name a version.
+    compatibility = Object.freeze({ generationIndex, unreadablePrefix: true, cause });
+  }
+  if (compatibility === null && peeked.fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
+    // The layered peek stopped at byte 2: the version field is the only thing
+    // readable without assuming the unknown layout that follows.
+    compatibility = Object.freeze({
+      generationIndex,
+      field: 'fitnessVectorVersion',
+      stored: peeked.fitnessVectorVersion,
+      current: FITNESS_VECTOR_VERSION,
+    });
+  }
+  if (compatibility === null) {
+    // The vector version is current, so the remaining four declared offsets
+    // are meaningful — compare them in declared order and name the first
+    // disagreement exactly.
+    const remaining = [
+      ['fitnessPolicyVersion', FITNESS_POLICY_VERSION],
+      ['integrityPolicyVersion', INTEGRITY_POLICY_VERSION],
+      ['snapshotVersion', POPULATION_SNAPSHOT_VERSION],
+      ['evaluationSpecVersion', EVALUATION_SPEC_VERSION],
+    ];
+    for (let f = 0; f < remaining.length; f += 1) {
+      const [field, current] = remaining[f];
+      if (peeked[field] !== current) {
+        compatibility = Object.freeze({
+          generationIndex, field, stored: peeked[field], current,
+        });
+        break;
+      }
+    }
+  }
+  let coherence = null;
+  if (compatibility === null) {
+    // Gate B reads the vector against its OWN generation's persisted metadata
+    // (executedSteps and effectiveDt). A decode failure here is malformed
+    // current format — recorded, not raised, so the ladder holds.
+    try {
+      const metadata = deserializeEvaluationMetadata(components.evaluationMetadata);
+      const vector = deserializeFitnessVector(components.fitnessVector);
+      coherence = fitnessVectorCoherenceVerdict(vector, metadata, generationIndex);
+    } catch (cause) {
+      coherence = Object.freeze({ generationIndex, undecodable: true, cause });
+    }
+  }
+  return { compatibility, coherence };
+}
+
+/**
+ * Gate B's per-generation verdict, or null when the vector agrees with its
+ * own metadata. Two coherence rules:
+ *
+ *   - an onset step must lie inside the executed captures (0..executedSteps —
+ *   captures are 0..maxSteps inclusive and executedSteps IS maxSteps, so a
+ *   first crossing at exactly executedSteps is legal);
+ *   - the peak<->alert equivalence: the online detector records a first alert
+ *   step IFF some capture crossed an alert threshold, and the whole-run peaks
+ *   saw every sample — so "an alert step is present" and "a peak exceeds its
+ *   applied alert threshold" must agree exactly, per member.
+ *
+ * The applied alert thresholds are recomputed with the SAME arithmetic the
+ * producer used (createIntegrityState: dtScale first, then the multiply), so
+ * the comparison is bit-identical, never an approximation of it. Gate A has
+ * already established the current versions — this verdict therefore runs
+ * under integrity policy v1 semantics by construction.
+ */
+function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
+  const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+  const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
+  const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
+  const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+  const executedSteps = metadata.executedSteps;
+  const rows = vector.individuals;
+  const rowCount = rows.length;
+  for (let m = 0; m < rowCount; m += 1) {
+    const observations = rows[m].integrityObservations;
+    const individualId = rows[m].individualId;
+    if (observations.firstAlertStep !== null && observations.firstAlertStep > executedSteps) {
+      return Object.freeze({
+        generationIndex, individualId, rule: 'stepBeyondExecutedSteps', stepField: 'firstAlertStep', stored: observations.firstAlertStep, executedSteps,
+      });
+    }
+    if (observations.firstCatastrophicStep !== null && observations.firstCatastrophicStep > executedSteps) {
+      return Object.freeze({
+        generationIndex, individualId, rule: 'stepBeyondExecutedSteps', stepField: 'firstCatastrophicStep', stored: observations.firstCatastrophicStep, executedSteps,
+      });
+    }
+    const alertImplied = observations.peakBodySpeed > alertSpeed
+      || observations.peakSpeedDelta > alertSpeedDelta
+      || observations.peakStepDisplacement > alertStepDisplacement;
+    if ((observations.firstAlertStep !== null) !== alertImplied) {
+      return Object.freeze({
+        generationIndex, individualId, rule: 'peakAlertEquivalence', firstAlertStep: observations.firstAlertStep, alertImplied,
+      });
+    }
+  }
+  return null;
 }
 
 /**
@@ -276,7 +434,78 @@ export function checkExpectedIdentity(verified, expected) {
 }
 
 /**
- * Stage 9 — the runtime gate, run BEFORE any physics.
+ * Stage 9 — fitness-vector format compatibility, raised from the stage-5
+ * collection AFTER external identity and before the runtime gate. A stale v2
+ * artifact reports `unsupportedVersion` naming the exact field, the
+ * generation that carries it, and the stored and current values — never a
+ * false replay drift discovered after a re-simulation. A truncated or
+ * structurally unreadable version prefix reports `malformedHistory` instead:
+ * without a readable prefix there is no version to call unsupported.
+ */
+export function checkFitnessVectorCompatibility(verified) {
+  const failure = verified.fitnessVectorCompatibilityFailure;
+  if (failure === null) return;
+  if (failure.unreadablePrefix === true) {
+    evolutionFail('malformedHistory',
+      `generation ${failure.generationIndex} fitness vector has a truncated or unreadable version prefix`,
+      { generationIndex: failure.generationIndex },
+      failure.cause);
+  }
+  evolutionFail('unsupportedVersion',
+    `generation ${failure.generationIndex} fitness vector ${failure.field} is ${failure.stored}; this build implements ${failure.current}`,
+    {
+      field: failure.field,
+      generationIndex: failure.generationIndex,
+      stored: failure.stored,
+      current: failure.current,
+    });
+}
+
+/**
+ * Stage 10 — fitness-vector metadata coherence (`malformedHistory`). A
+ * CURRENT-format artifact whose observations contradict its own per-
+ * generation metadata is malformed, not unsupported: onset steps must lie
+ * inside the executed captures, and a recorded first alert step must agree
+ * with the whole-run peaks under that generation's own effectiveDt. Without
+ * this gate, an artifact declaring `executedSteps: 45` and
+ * `firstAlertStep: 4_000_000_000` passed every digest, version and runtime
+ * check and then surfaced as `replayDivergence` after a full generation-0
+ * re-simulation — the exact misleading class this stage exists to remove.
+ */
+export function verifyFitnessVectorMetadataCoherence(verified) {
+  const failure = verified.fitnessVectorCoherenceFailure;
+  if (failure === null) return;
+  if (failure.undecodable === true) {
+    evolutionFail('malformedHistory',
+      `generation ${failure.generationIndex} fitness vector or evaluation metadata is malformed`,
+      { generationIndex: failure.generationIndex },
+      failure.cause);
+  }
+  if (failure.rule === 'peakAlertEquivalence') {
+    evolutionFail('malformedHistory',
+      `generation ${failure.generationIndex} individual ${failure.individualId} contradicts its own observations: `
+      + `firstAlertStep is ${String(failure.firstAlertStep)} but the whole-run peaks `
+      + `${failure.alertImplied ? 'cross' : 'never cross'} the alert thresholds under this generation's effectiveDt`,
+      {
+        generationIndex: failure.generationIndex,
+        individualId: failure.individualId,
+        firstAlertStep: failure.firstAlertStep,
+        alertImplied: failure.alertImplied,
+      });
+  }
+  evolutionFail('malformedHistory',
+    `generation ${failure.generationIndex} individual ${failure.individualId} ${failure.stepField} ${failure.stored} exceeds executedSteps ${failure.executedSteps} (captures run 0..executedSteps)`,
+    {
+      generationIndex: failure.generationIndex,
+      individualId: failure.individualId,
+      field: failure.stepField,
+      stored: failure.stored,
+      executedSteps: failure.executedSteps,
+    });
+}
+
+/**
+ * Stage 11 — the runtime gate, run BEFORE any physics.
  *
  * Deterministic replay compares bytes produced by a physics engine. If the
  * engine is not the one the artifact was produced by, the honest report is

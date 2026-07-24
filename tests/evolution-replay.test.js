@@ -41,39 +41,35 @@ const {
   MAX_EVOLUTION_POPULATION_SIZE,
 } = await import('../src/sim/evolution-contract.js');
 const {
-  deserializeEvaluationSpec, serializeEvaluationSpec,
+  deserializeEvaluationSpec, deserializeFitnessVector, serializeEvaluationSpec, serializeFitnessVector,
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
   decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
   digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
-const { REPLAY_STAGES, firstByteDifference } = await import('../src/sim/evolution-replay.js');
+const { REPLAY_STAGES, firstByteDifference, verifyHistoryArtifact } = await import('../src/sim/evolution-replay.js');
+const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
+const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
 
-const INTEROP_CONFIG = Object.freeze({
-  initialization: { seed: 20260721, populationSize: 4 },
-  evaluationSpec: {
-    terrain: {
-      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
-      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
-    },
-    maxSteps: 60,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
-  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
-});
-
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
   'base64',
 ));
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
+// The v2 fixture's self-consistency literals (tests/fixtures/evolution-v1-kimi-k3max.md).
+const KIMI_HEADER_DIGEST = '312665978b18bdd920668a1ee3bc49b301a24b76d7497f9ef328732b6939bfce';
+const KIMI_HISTORY_DIGEST = '3717df1acd2debc9f6aec79425da49032687b238ae1d0edb60a620c4d902575d';
+
+// The independent v3 interop artifact (tests/fixtures/evolution-v1-fitness-vector-v3-kimi.md).
+const v3FixtureBytes = () => new Uint8Array(Buffer.from(
+  readFileSync(new URL('./fixtures/evolution-v1-fitness-vector-v3-kimi.base64', import.meta.url), 'utf8').trim(),
+  'base64',
+));
 
 const config = (overrides = {}) => ({
   initialization: { seed: POPULATION_SEED, populationSize: 6 },
@@ -169,28 +165,60 @@ function expectCodeSync(fn, code, re) {
 // ============================================================================
 
 describe('resume and continuation', () => {
-  test('an independently produced Kimi artifact resumes and continues byte-identically', async () => {
+  test('the v2 Kimi artifact is now an EARLY-REFUSAL witness: self-consistent, refused at the compatibility gate', async () => {
+    // PR 29 R2: this artifact's successful-replay role is historical (pinned
+    // to the pre-PR-29 commit in its .md). It still carries a v2 fitness
+    // vector, so the compatibility gate must refuse it — AFTER every
+    // self-consistency leg passes and BEFORE any physics, naming the exact
+    // field, generation, stored and current values.
     const fixture = kimiFixtureBytes();
     expect(fixture.length).toBe(4024);
     expect(fixture[14 + 18]).toBe(0); // outer prefix + format-owned flavor byte
+    // The self-consistency legs ALL pass: framing, the header digest, every
+    // component digest, the chain, the whole-history digest.
+    const verified = await verifyHistoryArtifact(fixture);
+    expect(verified.finalGenerationIndex).toBe(0);
+    expect(bytesToHex(verified.framing.headerDigestBytes)).toBe(KIMI_HEADER_DIGEST);
+    expect(bytesToHex(verified.historyDigestBytes)).toBe(KIMI_HISTORY_DIGEST);
+    // …and only THEN does the gate refuse the stale v2 vector.
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(fixture), 'unsupportedVersion', /fitnessVectorVersion/);
+    expect(err.context).toMatchObject({
+      field: 'fitnessVectorVersion', generationIndex: 0, stored: 2, current: 3,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
 
-    const control = createEvolutionRun(INTEROP_CONFIG);
+  test('the independently assembled v3 artifact verifies, resumes and continues byte-identically', async () => {
+    // PR 29 R2's successful-replay role: an artifact whose v3 vector and
+    // framing/digest assembly were encoded by a tool importing nothing from
+    // the implementation under test (its narrow, encoding-layer-only claim is
+    // in tests/fixtures/evolution-v1-fitness-vector-v3-kimi.md). The local
+    // implementation's generation-0 artifact must be BYTE-IDENTICAL to it,
+    // and resuming the static bytes must continue to the committed lock's
+    // terminal digest.
+    const fixture = v3FixtureBytes();
+    expect(fixture.length).toBe(5682);
+    expect(fixture[14 + 18]).toBe(0); // outer prefix + format-owned flavor byte
+    const control = createEvolutionRun(evolutionRunConfigFor(EVOLUTION_FIXTURE_A));
     await control.advance();
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
     const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
     expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
+      'engine changed — regenerate the independent v3 artifact deliberately')
       .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
-
     while (control.status().phase !== 'terminal') {
       const a = await control.advance();
       const b = await resumed.advance();
       expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
       expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
     }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    // The terminal continuation reproduces the committed evolution lock's
+    // whole-history digest (read through the imported lock — never duplicated).
+    expect(bytesToHex(control.historyBytes().slice(-32)))
+      .toBe(EVOLUTION_GOLDEN_LOCKS[EVOLUTION_FIXTURE_A.name].historyDigest);
   });
 
   test('a mid-run history resumes to the same status and the same bytes', async () => {
@@ -584,13 +612,19 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.generationIndex).toBe(0);
   });
 
-  test("a changed fitness value diverges at stage 'fitnessVector'", async () => {
+  test("changed fitness-vector content diverges at stage 'fitnessVector'", async () => {
     const artifact = await runGenerations(1);
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
         const v = new Uint8Array(record.components.fitnessVector);
-        // The last member's f64 fitness, at the end of the fixed-stride vector.
-        new DataView(v.buffer).setFloat64(v.length - 8, 1234.5, true);
+        // A byte inside the population-snapshot digest state (offset 8): the
+        // one vector mutation that is ALWAYS codec-legal (an opaque u32 — no
+        // coherence rule touches it), so the artifact passes the pre-physics
+        // gates and the divergence must be found by REPLAYING. Under v3 a raw
+        // tail write no longer lands on fitness — it lands inside the
+        // observation walk, where it can trip the gates instead and mask the
+        // very stage this test names.
+        v[8] ^= 0xff;
         record.components.fitnessVector = v;
       },
     });
@@ -790,5 +824,259 @@ describe('the resume intake seam', () => {
     expect(a.buffer).not.toBe(artifact.buffer);
     a[0] ^= 0xff;
     expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(artifact));
+  });
+});
+
+
+// ============================================================================
+// (7) THE FITNESS-VECTOR PRE-PHYSICS GATES (PR 29)
+// ============================================================================
+// Gate A (compatibility -> `unsupportedVersion`) and Gate B (metadata
+// coherence -> `malformedHistory`) fire AFTER every self-consistency leg and
+// the external-identity check, and BEFORE the runtime gate and any physics.
+// The reforge helper keeps every artifact self-consistent, so only the named
+// gate can fire.
+
+describe('the fitness-vector gates: unsupported format, then malformed current format', () => {
+  // A v2 vector for generation 0's six members, hand-built under the OLD
+  // layout (22 B header + 14 B/member): a stale but otherwise coherent
+  // artifact — the class PR 29 exists to report accurately.
+  const v2VectorBytes = () => {
+    const bytes = new Uint8Array(22 + 6 * 14);
+    const view = new DataView(bytes.buffer);
+    let o = 0;
+    view.setUint16(o, 2, true); o += 2; // fitnessVectorVersion 2 — the stale one
+    view.setUint16(o, 2, true); o += 2;
+    view.setUint16(o, 1, true); o += 2;
+    view.setUint16(o, 1, true); o += 2;
+    view.setUint32(o, 1, true); o += 4; // snapshot digest state (opaque to the gate)
+    view.setUint16(o, 1, true); o += 2;
+    view.setUint32(o, 2, true); o += 4; // spec digest state
+    view.setUint32(o, 6, true); o += 4;
+    for (let id = 0; id < 6; id += 1) {
+      view.setUint32(o, id, true); o += 4;
+      view.setUint8(o, 1); o += 1;
+      view.setUint8(o, 0); o += 1;
+      view.setFloat64(o, id + 0.5, true); o += 8;
+    }
+    return bytes;
+  };
+
+  // Decode generation 0's vector, rewrite ONE member, and re-encode through
+  // the production encoder (guaranteed codec-legal), so only Gate B can fire.
+  const reforgeVector = async (artifact, rewriteMemberZero) => reforge(artifact, {
+    mutateRecord: (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const individuals = decoded.individuals.map((row, i) => (i === 0 ? rewriteMemberZero(row) : row));
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals,
+      });
+    },
+  });
+
+  test('a stale v2 vector inside an otherwise-current artifact is `unsupportedVersion`, named exactly, before physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => { record.components.fitnessVector = v2VectorBytes(); },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', /fitnessVectorVersion/);
+    expect(err.context).toMatchObject({
+      field: 'fitnessVectorVersion', generationIndex: 0, stored: 2, current: 3,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  // The layered peek: the vector version is read first; only when current are
+  // the remaining four declared fields compared — each names ITSELF.
+  test.each([
+    ['fitnessPolicyVersion', 2, 2],
+    ['integrityPolicyVersion', 4, 1],
+    ['snapshotVersion', 6, 1],
+    ['evaluationSpecVersion', 12, 1],
+  ])('a current vector whose %s is stale names THAT field, not the vector version', async (field, offset, current) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        new DataView(v.buffer).setUint16(offset, 9, true);
+        record.components.fitnessVector = v;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', new RegExp(field));
+    expect(err.context).toMatchObject({
+      field, generationIndex: 0, stored: 9, current,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test.each([[1], [10]])('a %s-byte vector component is `malformedHistory`, not unsupported — the prefix is unreadable', async (length) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = record.components.fitnessVector.slice(0, length);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory', /prefix/);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a TWO-byte component naming a STALE version is `unsupportedVersion` — the peek is layered, not greedy', async () => {
+    // The layered peek reads fitnessVectorVersion (2 bytes) and STOPS when it
+    // is not current, so a stale version is reportable from its two readable
+    // bytes. A greedy peek would try the remaining current-layout fields,
+    // hit the truncation, and misreport `malformedHistory`.
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = Uint8Array.of(2, 0); // fitnessVectorVersion 2, nothing else
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', /fitnessVectorVersion/);
+    expect(err.context).toMatchObject({ field: 'fitnessVectorVersion', stored: 2, current: 3 });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('THE LADDER, gate A before gate B: unsupported format beats malformed current format', async () => {
+    // Generation 0 carries a Gate-B violation (an onset step beyond
+    // executedSteps); generation 1 carries a Gate-A violation (a stale
+    // fitnessPolicyVersion). The compatibility verdict must surface FIRST —
+    // "unsupported format" precedes "malformed current format" in the
+    // documented escalation ladder.
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        if (i === 0) {
+          new DataView(v.buffer).setUint8(22 + 38, 1);
+          new DataView(v.buffer).setUint32(22 + 39, 4000000000, true);
+        } else {
+          new DataView(v.buffer).setUint16(2, 9, true); // fitnessPolicyVersion 9
+        }
+        record.components.fitnessVector = v;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', /fitnessPolicyVersion/);
+    expect(err.context).toMatchObject({ field: 'fitnessPolicyVersion', generationIndex: 1, stored: 9, current: 2 });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('an onset step beyond the generation’s own executedSteps is `malformedHistory` BEFORE physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const v = new Uint8Array(record.components.fitnessVector);
+        const view = new DataView(v.buffer);
+        // Member 0's firstAlertStep: present, payload 4_000_000_000 — a legal
+        // u32 and a legal codec row, absurd against executedSteps 45. Without
+        // Gate B this passed every digest, version and runtime check and
+        // surfaced as `replayDivergence` after a full re-simulation.
+        view.setUint8(22 + 38, 1);
+        view.setUint32(22 + 39, 4000000000, true);
+        record.components.fitnessVector = v;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /firstAlertStep 4000000000 exceeds executedSteps 45/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0, field: 'firstAlertStep', stored: 4000000000, executedSteps: 45,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a catastrophic step beyond executedSteps names its own field', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeVector(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        // alert <= cat and both u32-legal, so the codec accepts; the
+        // catastrophic step is absurd against executedSteps 45.
+        peakBodySpeed: 1500,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: 10,
+        firstCatastrophicStep: 4000000000,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /firstCatastrophicStep 4000000000 exceeds executedSteps 45/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0, field: 'firstCatastrophicStep', stored: 4000000000, executedSteps: 45,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test.each([
+    ['a peak over the alert threshold with NO alert step recorded',
+      { peakBodySpeed: 100 }, null, true],
+    ['an alert step recorded with peaks that never cross',
+      { peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0 }, 3, false],
+  ])('the peak<->alert equivalence is enforced per member: %s is `malformedHistory`', async (_name, peaks, alertStep, alertImplied) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeVector(artifact, (row) => ({
+      ...row,
+      integrityObservations: {
+        ...row.integrityObservations,
+        ...peaks,
+        firstAlertStep: alertStep,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /contradicts its own observations/,
+    );
+    expect(err.context).toMatchObject({ generationIndex: 0, alertImplied });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a byte flipped INSIDE the v3 observation region is `componentDigestMismatch` — the observations are inside component identity', async () => {
+    const artifact = await runGenerations(1);
+    const framing = decodeHistoryFraming(artifact);
+    const payload = decodeGenerationPayload(framing.generations[0].payloadBytes);
+    const payloadStart = 8 + 2 + 4 + framing.headerBytes.length + SHA256_DIGEST_BYTES + 4 + 4;
+    // Payload header (u16 + u32 + u8), then the population and metadata
+    // frames (u32 length + bytes + 32-byte digest each), then the vector's
+    // own u32 length: member 0's peakBodySpeed sits at vector + 22 + 14.
+    const vectorStart = payloadStart + 2 + 4 + 1
+      + 4 + payload.components.population.length + SHA256_DIGEST_BYTES
+      + 4 + payload.components.evaluationMetadata.length + SHA256_DIGEST_BYTES
+      + 4;
+    const broken = new Uint8Array(artifact);
+    broken[vectorStart + 22 + 14] ^= 0xff;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'componentDigestMismatch');
+    expect(err.context.component).toBe('fitnessVector');
+    expect(err.context.generationIndex).toBe(0);
+  });
+
+  test('THE LADDER: corruption beats format — an in-place flip on the stale v2 fixture is `componentDigestMismatch`', async () => {
+    const fixture = kimiFixtureBytes();
+    const framing = decodeHistoryFraming(fixture);
+    const payloadStart = 8 + 2 + 4 + framing.headerBytes.length + SHA256_DIGEST_BYTES + 4 + 4;
+    const broken = new Uint8Array(fixture);
+    broken[payloadStart + 2 + 4 + 1 + 4 + 10] ^= 0xff; // inside the population component
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'componentDigestMismatch');
+    expect(err.context.component).toBe('population');
+  });
+
+  test('THE LADDER: staleness beats format — the stale v2 fixture with a wrong expectation is `staleOrWrongArtifact`', async () => {
+    const fixture = kimiFixtureBytes();
+    const wrongDigest = await sha256(Uint8Array.of(0));
+    await expectCodeAsync(
+      () => resumeEvolutionRun(fixture, { expectedHistoryDigestBytes: wrongDigest }),
+      'staleOrWrongArtifact',
+    );
   });
 });

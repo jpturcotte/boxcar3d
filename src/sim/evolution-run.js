@@ -85,7 +85,8 @@ import {
 } from './evolution-lineage.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
-  checkRuntimeIdentity, failReplayDivergence, verifyHistoryArtifact,
+  checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
+  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from './evolution-replay.js';
 import { decodeGenerationPayload } from './evolution-history.js';
 
@@ -935,6 +936,14 @@ async function resumeFromOwnedBytes(owned, expected) {
   const verified = await verifyHistoryArtifact(owned);
   // Stage 8: external expected identity — staleness, distinct from corruption.
   checkExpectedIdentity(verified, expected);
+  // Stages 9-10: fitness-vector compatibility (unsupported format) and
+  // metadata coherence (malformed current format), raised from the stage-5
+  // collection AFTER external identity and BEFORE the runtime gate — the
+  // escalation ladder is corruption -> wrong artifact -> unsupported ->
+  // malformed -> runtime mismatch -> deterministic divergence. This is a
+  // named resume-path insertion only; the generation transition is untouched.
+  checkFitnessVectorCompatibility(verified);
+  verifyFitnessVectorMetadataCoherence(verified);
   const header = verified.header;
   const spec = translate('malformedHistory', 'history evaluation spec is malformed',
     () => deserializeEvaluationSpec(header.evaluationSpecBytes));
@@ -957,12 +966,12 @@ async function resumeFromOwnedBytes(owned, expected) {
   }
   assertEvaluationWork(populationSize, spec.maxSteps);
 
-  // Stage 9: the runtime gate, after all product-level resource/coherence
+  // Stage 11: the runtime gate, after all product-level resource/coherence
   // checks but before a single world is created.
   const runtime = await readDeterministicRuntimeIdentity();
   checkRuntimeIdentity(header, runtime);
 
-  // Stage 10a: recreate generation 0 from the decoded manifest and compare its
+  // Stage 12a: recreate generation 0 from the decoded manifest and compare its
   // population and lineage BYTES. This is the only stage that can fail with
   // stage 'initialization' — everything later is a derived generation.
   const initialization = translate('malformedHistory',

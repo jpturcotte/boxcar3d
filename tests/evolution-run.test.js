@@ -249,6 +249,16 @@ describe('run creation validates the complete configuration', () => {
     );
     expect(err.context.projectedBytes).toBeGreaterThan(err.context.limit);
     expect(err.context.maximumFeasibleGenerations).toBeLessThan(MAX_EVOLUTION_GENERATIONS);
+    // THE V3 PIN. `fitnessVectorByteLength` is the projection's single
+    // geometry source, so a member-stride change tracks automatically — but
+    // this is a real production gate, so the projected value is pinned
+    // outright: at v3 (48 B/member ⇒ 12,310 B of vector per generation at
+    // population 256, +8,704 B over v2) exactly 228 generations fit
+    // (measured; v2's projection was 235, re-derived by executing main's own
+    // gate). A representation change that
+    // forgot the gate — or a stride change that did not flow through — moves
+    // this number and fails HERE, not inside a 300 MB projection.
+    expect(err.context.maximumFeasibleGenerations).toBe(228);
     expect(probe.populations).toHaveLength(0);
   });
 

@@ -164,6 +164,13 @@ describe('population evaluation gate (deterministic flavor)', () => {
     // The re-lock workflow: a null digest fails loud with the FULL measured
     // record as paste-ready JSON (exact f64s — JSON round-trips doubles).
     if (LOCK.fitnessVectorDigest === null) {
+      // v3 admits +Infinity peaks; JSON cannot carry one, so refuse the print
+      // path rather than silently pasting `null` over a real measurement.
+      if (b.individuals.some((i) => !Number.isFinite(i.integrityObservations.peakBodySpeed)
+        || !Number.isFinite(i.integrityObservations.peakSpeedDelta)
+        || !Number.isFinite(i.integrityObservations.peakStepDisplacement))) {
+        throw new Error('RE-LOCK: an observation peak is non-finite — JSON cannot carry it; extend the lock record representation deliberately');
+      }
       const champion = championFromEvaluation(b);
       const measured = {
         fitnessVectorDigest: b.fitnessVector.digest,
@@ -175,6 +182,11 @@ describe('population evaluation gate (deterministic flavor)', () => {
           stepAtMaxForwardDistance: i.diagnostics.stepAtMaxForwardDistance,
           forwardDistance: i.diagnostics.forwardDistance,
           maxBackwardDistance: i.diagnostics.maxBackwardDistance,
+          peakBodySpeed: i.integrityObservations.peakBodySpeed,
+          peakSpeedDelta: i.integrityObservations.peakSpeedDelta,
+          peakStepDisplacement: i.integrityObservations.peakStepDisplacement,
+          firstAlertStep: i.integrityObservations.firstAlertStep,
+          firstCatastrophicStep: i.integrityObservations.firstCatastrophicStep,
         })),
         champion: { individualId: champion.individualId, fitness: champion.fitness },
       };
@@ -201,6 +213,13 @@ describe('population evaluation gate (deterministic flavor)', () => {
       expect(ind.diagnostics.stepAtMaxForwardDistance).toBe(locked.stepAtMaxForwardDistance);
       expect(Object.is(ind.diagnostics.forwardDistance, locked.forwardDistance)).toBe(true);
       expect(Object.is(ind.diagnostics.maxBackwardDistance, locked.maxBackwardDistance)).toBe(true);
+      // The v3 observation literals — the diagnosable form of the vector's
+      // observation region, asserted per member like the fitness literals.
+      expect(Object.is(ind.integrityObservations.peakBodySpeed, locked.peakBodySpeed), `individual ${ind.individualId} peakBodySpeed`).toBe(true);
+      expect(Object.is(ind.integrityObservations.peakSpeedDelta, locked.peakSpeedDelta), `individual ${ind.individualId} peakSpeedDelta`).toBe(true);
+      expect(Object.is(ind.integrityObservations.peakStepDisplacement, locked.peakStepDisplacement), `individual ${ind.individualId} peakStepDisplacement`).toBe(true);
+      expect(ind.integrityObservations.firstAlertStep).toBe(locked.firstAlertStep);
+      expect(ind.integrityObservations.firstCatastrophicStep).toBe(locked.firstCatastrophicStep);
     });
     const champion = championFromEvaluation(b);
     expect(champion.individualId).toBe(LOCK.champion.individualId);

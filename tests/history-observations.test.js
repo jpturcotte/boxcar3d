@@ -28,6 +28,23 @@ vi.mock('../src/sim/population-evaluation.js', async (importOriginal) => {
   };
 });
 
+// The STRONGER zero-physics tooth: count world constructions at the one seam
+// every physics world passes through (`createPhysics` in the adapter). The
+// evaluation probe above catches the replay path; this one also catches a
+// future implementation that constructs a world through ANY other entry point
+// (the extraction module transitively imports the adapter for constants, so a
+// static import test cannot make this distinction — the runtime probe can).
+vi.mock('../src/sim/physics/adapter.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    createPhysics: async (...args) => {
+      if (globalThis.__extractProbe) globalThis.__extractProbe.worlds += 1;
+      return original.createPhysics(...args);
+    },
+  };
+});
+
 // Issue 4 tooth: spy on the copy so an over-ceiling input can be proven NOT
 // copied (the ceiling fires on the intrinsic length BEFORE any allocation of
 // the artifact's own size).
@@ -98,7 +115,7 @@ async function reforge(bytes, mutateRecord) {
 
 describe('extractHistoryObservations — the verified extraction seam', () => {
   beforeEach(() => {
-    globalThis.__extractProbe = { evaluations: 0 };
+    globalThis.__extractProbe = { evaluations: 0, worlds: 0 };
     copyOrdinaryBytes.mockClear();
   });
 
@@ -232,15 +249,23 @@ describe('extractHistoryObservations — the verified extraction seam', () => {
   // --------------------------------------------------------------------------
   // Issue 5: extraction performs ZERO evaluations and creates no physics world.
   // --------------------------------------------------------------------------
-  test('extraction performs ZERO evaluations (probe stays 0; a replay would not)', async () => {
+  test('extraction performs ZERO evaluations and constructs ZERO physics worlds', async () => {
     const bytes = await runFixture();
-    // The fixture run evaluated; reset so only the seam under test is measured.
+    // Probe liveness: the fixture run itself MUST have built worlds — a zero
+    // below cannot be the probe silently not firing.
+    expect(globalThis.__extractProbe.worlds).toBeGreaterThan(0);
+    expect(globalThis.__extractProbe.evaluations).toBeGreaterThan(0);
+    // Reset so only the seam under test is measured.
     globalThis.__extractProbe.evaluations = 0;
+    globalThis.__extractProbe.worlds = 0;
     const result = await extractHistoryObservations(bytes);
     expect(result.generations.length).toBe(3);
     // A future implementation that secretly calls resumeEvolutionRun (a replay)
-    // would re-evaluate every committed generation and fail this assertion.
+    // would re-evaluate every committed generation and fail the first probe;
+    // one that constructs a world through ANY other entry point still passes
+    // the adapter's createPhysics seam and fails the second.
     expect(globalThis.__extractProbe.evaluations).toBe(0);
+    expect(globalThis.__extractProbe.worlds).toBe(0);
   });
 
   // --------------------------------------------------------------------------
@@ -329,9 +354,18 @@ describe('extractHistoryObservations — the verified extraction seam', () => {
   // --------------------------------------------------------------------------
   // Issue 4: an over-ceiling input is refused BEFORE the copy, as
   // resourceLimitExceeded, without digest verification or physics.
+  // ONE shared 64 MiB + 1 allocation serves both ceiling tests — the property
+  // under test is precisely that the seam never copies or mutates it, so
+  // sharing is safe and halves the suite's transient memory pressure.
   // --------------------------------------------------------------------------
+  let oversizedShared = null;
+  const oversizedInput = () => {
+    if (oversizedShared === null) oversizedShared = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    return oversizedShared;
+  };
+
   test('an over-ceiling input is resourceLimitExceeded and is NOT copied first', async () => {
-    const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    const oversized = oversizedInput();
     copyOrdinaryBytes.mockClear();
     let caught = null;
     let rejected = null;
@@ -348,7 +382,7 @@ describe('extractHistoryObservations — the verified extraction seam', () => {
   });
 
   test('the over-ceiling refusal happens in the synchronous prologue (no await needed to observe it)', async () => {
-    const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    const oversized = oversizedInput();
     // The body runs synchronously up to the first await; the ceiling throws
     // there, so the returned promise is ALREADY rejected on the same tick.
     const promise = extractHistoryObservations(oversized);

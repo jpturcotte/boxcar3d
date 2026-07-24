@@ -169,6 +169,25 @@ describe('fitness policy (v2 — the numerical-integrity gate)', () => {
     expect(isVehicleResultValid(bare)).toBe(true);
   });
 
+  test('THE CAPTURE BOUNDARY (PR 29 R5): the v3 observations live BEYOND the shared capture — the three public predicates never read them', () => {
+    // captureEvaluationMemberResult is a NEW seam beside captureVehicleResult,
+    // not an extension of it: extending the shared capture would let a
+    // malformed or missing observations block change what
+    // isVehicleResultValid throws on — a production semantic change in the one
+    // PR whose central promise is that nothing behavioural changes. A poison
+    // observations getter proves the public predicates never touch the block.
+    const result = vr({
+      integrity: Object.fromEntries(Object.entries(integrityBlock()).filter(([k]) => k !== 'observations')),
+    });
+    Object.defineProperty(result.integrity, 'observations', {
+      configurable: true,
+      get() { throw new Error('the observations block was read through a public predicate — the R5 boundary is broken'); },
+    });
+    expect(isVehicleResultValid(result)).toBe(true);
+    expect(isVehicleResultSelectable(result)).toBe(true);
+    expect(Object.is(fitnessFromVehicleResult(result), 12.345678901234567)).toBe(true);
+  });
+
   // The short-circuit regression class: integrity is validated BEFORE the
   // validity check, so an INVALID result with missing/null/malformed
   // integrity is refused LOUD — never silently `false`/`0`. (The old
@@ -453,8 +472,24 @@ describe('evaluation-spec encoding v1', () => {
   });
 });
 
-describe('fitness-vector encoding v2', () => {
-  // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
+describe('fitness-vector encoding v3', () => {
+  // Status-coherent observation defaults (policy v1): 'ok'/'nonFinite' rows
+  // carry no onset steps; 'numericalDivergence' must carry a catastrophic step
+  // with an alert step at or before it. The evaluation-codec suite owns the
+  // full v3 domain/coherence battery; this block hand-decodes the walk.
+  const observationsFor = (integrityStatus, overrides = {}) => ({
+    peakBodySpeed: 0,
+    peakSpeedDelta: 0,
+    peakStepDisplacement: 0,
+    firstAlertStep: null,
+    firstCatastrophicStep: null,
+    ...(integrityStatus === 'numericalDivergence'
+      ? { peakBodySpeed: 1500, firstAlertStep: 12, firstCatastrophicStep: 12 }
+      : {}),
+    ...overrides,
+  });
+
+  // Entry tuple: [individualId, fitness, valid, integrityStatus='ok', observationOverrides].
   const synth = (entries) => ({
     spec: {
       deterministic: true,
@@ -466,15 +501,21 @@ describe('fitness-vector encoding v2', () => {
       terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
     },
     populationSnapshotDigestState: 0xdeadbeef,
-    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
-      { individualId, fitness, valid, integrityStatus })),
+    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok', observations]) => (
+      {
+        individualId,
+        fitness,
+        valid,
+        integrityStatus,
+        integrityObservations: observationsFor(integrityStatus, observations),
+      })),
   });
 
   test('hand-decoded header + per-individual walk; an invalid 0 and an integrity-failed 0 are each byte-distinct from a selectable 0', () => {
     const selectableZero = serializeFitnessVector(synth([[7, 0, true]]));
     const invalidZero = serializeFitnessVector(synth([[7, 0, false]]));
     const divergedZero = serializeFitnessVector(synth([[7, 0, true, 'numericalDivergence']]));
-    expect(selectableZero.length).toBe(22 + 14);
+    expect(selectableZero.length).toBe(22 + 48);
     const view = new DataView(selectableZero.buffer, selectableZero.byteOffset, selectableZero.byteLength);
     expect(view.getUint16(0, true)).toBe(FITNESS_VECTOR_VERSION);
     expect(view.getUint16(2, true)).toBe(FITNESS_POLICY_VERSION);
@@ -488,17 +529,36 @@ describe('fitness-vector encoding v2', () => {
     expect(view.getUint8(26)).toBe(1); // validity
     expect(view.getUint8(27)).toBe(0); // integrityStatus index ('ok' = 0)
     expect(view.getFloat64(28, true)).toBe(0);
-    // Each unselectable-zero differs from the selectable zero at EXACTLY its
-    // own byte: validity at 26, integrity status at 27 ('numericalDivergence'
-    // = index 2).
+    // The v3 observation walk, member 0: peaks f64 x3 @36, @44, @52;
+    // firstAlertStepPresent u8 @60, firstAlertStep u32 @61;
+    // firstCatastrophicStepPresent u8 @65, firstCatastrophicStep u32 @66.
+    expect(view.getFloat64(36, true)).toBe(0); // peakBodySpeed
+    expect(view.getFloat64(44, true)).toBe(0); // peakSpeedDelta
+    expect(view.getFloat64(52, true)).toBe(0); // peakStepDisplacement
+    expect(view.getUint8(60)).toBe(0); // alert absent
+    expect(view.getUint32(61, true)).toBe(0); // absent => payload exactly 0
+    expect(view.getUint8(65)).toBe(0); // catastrophic absent
+    expect(view.getUint32(66, true)).toBe(0);
+    // The invalid zero differs from the selectable zero at EXACTLY its own
+    // byte: validity at 26.
     const diffsAgainst = (other) => {
       const d = [];
       selectableZero.forEach((b, i) => { if (b !== other[i]) d.push(i); });
       return d;
     };
     expect(diffsAgainst(invalidZero)).toEqual([26]);
-    expect(diffsAgainst(divergedZero)).toEqual([27]);
-    expect(new DataView(divergedZero.buffer).getUint8(27)).toBe(2);
+    // The diverged zero differs at its status byte (27, 'numericalDivergence'
+    // = index 2) AND in the observation region it must carry under policy v1:
+    // peakBodySpeed 1500 (f64 LE 00 00 00 00 00 80 93 40, at 36..43), alert
+    // flag/step @60/@61, catastrophic flag/step @65/@66 (both step 12).
+    expect(diffsAgainst(divergedZero)).toEqual([27, 41, 42, 43, 60, 61, 65, 66]);
+    const divergedView = new DataView(divergedZero.buffer);
+    expect(divergedView.getUint8(27)).toBe(2);
+    expect(divergedView.getFloat64(36, true)).toBe(1500);
+    expect(divergedView.getUint8(60)).toBe(1);
+    expect(divergedView.getUint32(61, true)).toBe(12);
+    expect(divergedView.getUint8(65)).toBe(1);
+    expect(divergedView.getUint32(66, true)).toBe(12);
   });
 
   test('exact f64 fitness round-trips bit-for-bit', () => {

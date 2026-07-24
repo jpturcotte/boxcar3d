@@ -236,9 +236,36 @@ const fitnessEvaluation = () => ({
   populationSnapshotDigestState: 12345,
   evaluationSpecDigestState: 67890,
   individuals: [
-    { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 2.5 },
-    { individualId: 1, valid: false, integrityStatus: 'ok', fitness: 0 },
-    { individualId: 2, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+    {
+      individualId: 0,
+      valid: true,
+      integrityStatus: 'ok',
+      fitness: 2.5,
+      integrityObservations: {
+        peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      },
+    },
+    {
+      individualId: 1,
+      valid: false,
+      integrityStatus: 'ok',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      },
+    },
+    {
+      individualId: 2,
+      valid: true,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: 12, firstCatastrophicStep: 12,
+      },
+    },
   ],
 });
 
@@ -572,6 +599,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   deserializePopulationInitialization: 'exempt: TypedArray input',
   deserializeEvaluationSpec: 'exempt: TypedArray input',
   deserializeFitnessVector: 'exempt: TypedArray input',
+  peekFitnessVectorVersions: 'exempt: TypedArray input',
   decodeTraceRecord: 'exempt: TypedArray input',
   encodeTraceRecord: 'exempt: covered by trace.TraceWriter.record CASES row',
   TraceWriter: 'CASES row (trace.TraceWriter.record)',
@@ -635,7 +663,9 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   failReplayDivergence: 'exempt: scalars + TypedArray inputs; always throws',
   verifyHistoryArtifact: 'exempt: TypedArray input',
   checkExpectedIdentity: 'exempt: module-owned capture in',
+  checkFitnessVectorCompatibility: 'exempt: module-owned verified record in',
   checkRuntimeIdentity: 'exempt: two string records in',
+  verifyFitnessVectorMetadataCoherence: 'exempt: module-owned verified record in',
   captureExpectedIdentity: 'CASES row',
   resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',
 });
@@ -1228,6 +1258,10 @@ describe('round-10 poison regressions', () => {
         get valid() { validReads += 1; return validReads < 3; },
         integrityStatus: 'ok',
         fitness: 1,
+        integrityObservations: {
+          peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+          firstAlertStep: null, firstCatastrophicStep: null,
+        },
       }],
     };
     const bytes = serializeFitnessVector(evaluation);

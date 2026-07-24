@@ -101,7 +101,7 @@ const {
 } = InitializerNS;
 const {
   SPAWN_CLEARANCE, canonicalizeEvaluationSpec, championFromEvaluation, deserializeEvaluationSpec,
-  deserializeFitnessVector, selectableChampionFromEvaluation,
+  deserializeFitnessVector, peekFitnessVectorVersions, selectableChampionFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } = EvaluationNS;
 
@@ -220,14 +220,33 @@ const resolvedFlat = () => ({
   terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
 });
 
-// Entry tuple: [individualId, fitness, valid, integrityStatus='ok'] — the
-// tests/evaluation-codec.test.js shape.
+// Entry tuple shape follows tests/evaluation-codec.test.js: rows carry the
+// four selection fields plus the v3 integrityObservations (status-coherent
+// under policy v1: 'numericalDivergence' must carry a catastrophic step).
 const synthEvaluation = () => ({
   spec: resolvedFlat(),
   populationSnapshotDigestState: 0xdeadbeef,
   individuals: [
-    { individualId: 0, fitness: 12.5, valid: true, integrityStatus: 'ok' },
-    { individualId: 3, fitness: 0, valid: false, integrityStatus: 'numericalDivergence' },
+    {
+      individualId: 0,
+      fitness: 12.5,
+      valid: true,
+      integrityStatus: 'ok',
+      integrityObservations: {
+        peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      },
+    },
+    {
+      individualId: 3,
+      fitness: 0,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      integrityObservations: {
+        peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: 12, firstCatastrophicStep: 12,
+      },
+    },
   ],
 });
 
@@ -294,7 +313,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
     'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'fitnessVectorByteLength', 'isVehicleResultSelectable',
-    'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
+    'isVehicleResultValid', 'peekFitnessVectorVersions', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
   'evolution-operators.js': Object.freeze([
@@ -323,8 +342,8 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   'evolution-replay.js': Object.freeze([
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
-    'checkExpectedIdentity', 'checkRuntimeIdentity', 'failReplayDivergence',
-    'firstByteDifference', 'verifyHistoryArtifact',
+    'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity', 'failReplayDivergence',
+    'firstByteDifference', 'verifyFitnessVectorMetadataCoherence', 'verifyHistoryArtifact',
   ]),
   'evolution-history.js': Object.freeze([
     'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
@@ -573,9 +592,12 @@ const EXPORT_ROLES = Object.freeze({
       name: 'serializeFitnessVector',
       kind: 'encoder',
       callerCollections: ['evaluation.individuals'],
-      callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
+      callerNumbers: ['individualId', 'fitness', 'integrityObservations.*', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
     },
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // The replay gate's layered version prefix-peek: reads bytes, returns a
+    // frozen record of version scalars, never a full decode.
+    { name: 'peekFitnessVectorVersions', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     // Resolves the caller's spec once and returns the bytes PLUS the record
     // decoded from them; the returned spec shares nothing with the input.
     {
@@ -645,7 +667,11 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'failReplayDivergence', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: [] },
     { name: 'verifyHistoryArtifact', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'checkExpectedIdentity', kind: 'validator', callerCollections: [], callerNumbers: ['expected.generationIndex'] },
+    // Consumes the module-owned verified record (the stage-5 collection),
+    // never caller bytes — like checkRuntimeIdentity below.
+    { name: 'checkFitnessVectorCompatibility', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
   'evolution-history.js': Object.freeze([
@@ -966,6 +992,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   'src/sim/population-evaluation.js': {
     deserializeEvaluationSpec: { intake: 'gated', invoke: (u) => deserializeEvaluationSpec(u) },
     deserializeFitnessVector: { intake: 'gated', invoke: (u) => deserializeFitnessVector(u) },
+    peekFitnessVectorVersions: { intake: 'gated', invoke: (u) => peekFitnessVectorVersions(u) },
     championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
     evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
     fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
@@ -1007,7 +1034,9 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
       invoke: (u) => captureExpectedIdentity({ expectedHistoryDigestBytes: u }, (b) => copyOrdinaryBytes(b)),
     },
     checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
+    checkFitnessVectorCompatibility: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
+    verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
   },
   'src/sim/evolution-history.js': {
     // Every one of these accepts caller bytes, and every one refuses fancy
@@ -1657,6 +1686,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   evaluatePopulation: 'notExercised',
   serializeFitnessVector: 'freshBytes',
   deserializeFitnessVector: 'ownedCopy',
+  peekFitnessVectorVersions: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
   selectablePoolFromEvaluation: 'ownedCopy',
@@ -1800,6 +1830,7 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    { name: 'peekFitnessVectorVersions', result: peekFitnessVectorVersions(vBytes), roots: [vBytes] },
     ...(() => {
       const evaluation = {
         fitnessPolicyVersion: 2,

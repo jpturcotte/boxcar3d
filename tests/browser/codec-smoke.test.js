@@ -146,13 +146,15 @@ describe('canonical codecs (Chromium)', () => {
   });
 
   test('fitness vector: round-trips through the digest-state input path', () => {
+    const OBS_OK = { peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: null, firstCatastrophicStep: null };
+    const OBS_DIVERGENCE = { peakBodySpeed: 1500, peakSpeedDelta: 200, peakStepDisplacement: 50, firstAlertStep: 5, firstCatastrophicStep: 10 };
     const evaluation = {
       spec: resolvedSpec(),
       populationSnapshotDigestState: 0xdeadbeef,
       individuals: [
-        { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922 },
-        { individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0 },
-        { individualId: 9, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+        { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922, integrityObservations: OBS_OK },
+        { individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0, integrityObservations: OBS_OK },
+        { individualId: 9, valid: true, integrityStatus: 'numericalDivergence', fitness: 0, integrityObservations: OBS_DIVERGENCE },
       ],
     };
     const bytes = serializeFitnessVector(evaluation);

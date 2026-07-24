@@ -646,7 +646,29 @@ describe(`fitness vector codec — ${N} boundary-sprinkled samples (seed ${SEED}
         const selectable = valid && integrityStatus === 'ok';
         const fitness = selectable ? pick(rng, FITNESS_BOUNDARIES) : pick(rng, [0, -0]);
         if (selectable) seen.add(`fitness:${fmt(fitness)}`);
-        return { individualId, valid, integrityStatus, fitness };
+        // v3: the five integrity observations. Policy-v1 coherence:
+        // 'ok' => no catastrophic; 'numericalDivergence' => catastrophic required.
+        let integrityObservations;
+        if (integrityStatus === 'numericalDivergence') {
+          const catStep = pick(rng, U32_BOUNDARIES.filter((v) => v > 0));
+          const alertStep = pick(rng, [0, Math.max(0, catStep - 1), catStep]);
+          integrityObservations = {
+            peakBodySpeed: pick(rng, [0, 1500, Infinity]),
+            peakSpeedDelta: pick(rng, [0, 200, Infinity]),
+            peakStepDisplacement: pick(rng, [0, 50, Infinity]),
+            firstAlertStep: alertStep,
+            firstCatastrophicStep: catStep,
+          };
+        } else {
+          integrityObservations = {
+            peakBodySpeed: pick(rng, [0, 5, 24.9]),
+            peakSpeedDelta: pick(rng, [0, 3, 29]),
+            peakStepDisplacement: pick(rng, [0, 1, 10]),
+            firstAlertStep: null,
+            firstCatastrophicStep: null,
+          };
+        }
+        return { individualId, valid, integrityStatus, fitness, integrityObservations };
       });
       const evaluation = {
         individuals,
@@ -709,6 +731,7 @@ describe('-0 is refused by every canonical uint32 seam', () => {
   };
   const row = (individualId) => ({
     individualId, valid: true, integrityStatus: 'ok', fitness: 1,
+    integrityObservations: { peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: null, firstCatastrophicStep: null },
   });
 
   const SEAMS = Object.freeze([

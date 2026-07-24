@@ -45,35 +45,24 @@ const {
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
-  decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
-  digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
+  decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
+  digestComponent, digestGeneration, digestHeader, encodeEvolutionHeader,
+  encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
-const { REPLAY_STAGES, firstByteDifference } = await import('../src/sim/evolution-replay.js');
+const {
+  REPLAY_STAGES, firstByteDifference, verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+} = await import('../src/sim/evolution-replay.js');
+const { INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS } = await import('../src/sim/integrity.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
 
-const INTEROP_CONFIG = Object.freeze({
-  initialization: { seed: 20260721, populationSize: 4 },
-  evaluationSpec: {
-    terrain: {
-      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
-      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
-    },
-    maxSteps: 60,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
-  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
-});
-
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
   'base64',
 ));
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
 
 const config = (overrides = {}) => ({
   initialization: { seed: POPULATION_SEED, populationSize: 6 },
@@ -169,28 +158,21 @@ function expectCodeSync(fn, code, re) {
 // ============================================================================
 
 describe('resume and continuation', () => {
-  test('an independently produced Kimi artifact resumes and continues byte-identically', async () => {
+  test('the v2 Kimi artifact passes self-consistency but is refused as unsupportedVersion (pre-PR-27 role: historical)', async () => {
     const fixture = kimiFixtureBytes();
     expect(fixture.length).toBe(4024);
     expect(fixture[14 + 18]).toBe(0); // outer prefix + format-owned flavor byte
 
-    const control = createEvolutionRun(INTEROP_CONFIG);
-    await control.advance();
-    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
-    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
-    expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
-      .toBe(fixtureHeader.rapierVersion);
-    expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
-    const resumed = await resumeEvolutionRun(fixture);
+    // Self-consistency legs (stages 3-7) still pass — the artifact is
+    // well-framed and authentic; it is merely produced under an older codec.
+    const verified = await verifyHistoryArtifact(fixture);
+    expect(verified.finalGenerationIndex).toBe(0);
 
-    while (control.status().phase !== 'terminal') {
-      const a = await control.advance();
-      const b = await resumed.advance();
-      expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
-      expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
-    }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    // Resume is refused at Gate A (stage 8a) — unsupportedVersion naming the
+    // fitness-vector field — AFTER self-consistency and BEFORE physics.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(fixture), 'unsupportedVersion');
+    expect(err.context.field).toBe('fitnessVectorVersion');
+    expect(err.context.generationIndex).toBe(0);
   });
 
   test('a mid-run history resumes to the same status and the same bytes', async () => {
@@ -245,6 +227,85 @@ describe('resume and continuation', () => {
     await resumeEvolutionRun(artifact);
     // Two committed records, so two generations are re-evaluated.
     expect(globalThis.__replayProbe.evaluations).toBe(2);
+  });
+
+  test('a v3 artifact re-assembled from decoded structures (no createEvolutionRun) verifies, resumes and continues byte-identically', async () => {
+    // THE INDEPENDENT-ASSEMBLY WITNESS (R2/DoD 4, post-Kimi): the artifact is
+    // decoded into its logical structures, then RE-ENCODED using only the
+    // low-level codec functions (serializeFitnessVector, encodeEvolutionHeader,
+    // encodeGenerationPayload, assembleHistory) — the createEvolutionRun path
+    // is never invoked for the re-assembly. Byte-identity proves the codec is
+    // lossless and the assembly path is self-sufficient; resume+continue proves
+    // the re-assembled artifact is accepted by the full verification ladder.
+    const { serializeFitnessVector, deserializeFitnessVector } = await import('../src/sim/population-evaluation.js');
+    const { deserializeEvaluationMetadata, serializeEvaluationMetadata } = await import('../src/sim/evolution-history.js');
+
+    // Produce a 2-generation artifact via the normal run path.
+    const run = createEvolutionRun(config({ evolution: { maxGenerations: 4 } }));
+    await run.advance();
+    await run.advance();
+    const original = run.historyBytes();
+
+    // Decode everything.
+    const framing = decodeHistoryFraming(original);
+    const header = decodeEvolutionHeader(framing.headerBytes);
+
+    // Re-encode the header from its decoded structure.
+    const reHeaderBytes = encodeEvolutionHeader(header);
+    expect(bytesToHex(reHeaderBytes)).toBe(bytesToHex(framing.headerBytes));
+
+    // Re-encode each generation from decoded structures.
+    const reHeaderDigest = await digestHeader(reHeaderBytes);
+    const generations = [];
+    let previous = reHeaderDigest;
+    for (let i = 0; i < framing.generations.length; i += 1) {
+      const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
+
+      // Re-serialize the fitness vector from its decoded individuals — this
+      // exercises the v3 encoder independently of the run path.
+      const decodedVector = deserializeFitnessVector(payload.components.fitnessVector);
+      const reVector = serializeFitnessVector(decodedVector);
+      expect(bytesToHex(reVector)).toBe(bytesToHex(payload.components.fitnessVector));
+
+      // Re-serialize metadata from decoded form.
+      const decodedMeta = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
+      const reMeta = serializeEvaluationMetadata(decodedMeta);
+      expect(bytesToHex(reMeta)).toBe(bytesToHex(payload.components.evaluationMetadata));
+
+      // Re-assemble the generation payload with recomputed digests.
+      const components = {
+        ...payload.components,
+        fitnessVector: reVector,
+        evaluationMetadata: reMeta,
+      };
+      const digests = {};
+      for (const kind of COMPONENT_KINDS) digests[kind] = await digestComponent(kind, components[kind]);
+      const payloadBytes = encodeGenerationPayload(
+        { generationIndex: payload.generationIndex, terminalReason: payload.terminalReason, components },
+        digests,
+      );
+      const generationDigestBytes = await digestGeneration(previous, payloadBytes);
+      previous = generationDigestBytes;
+      generations.push({ payloadBytes, generationDigestBytes });
+    }
+
+    // Re-assemble the full history.
+    const reassembled = (await assembleHistory({
+      headerBytes: reHeaderBytes, headerDigestBytes: reHeaderDigest, generations,
+    })).bytes;
+
+    // BYTE-IDENTICAL to the original — the codec is lossless and the assembly
+    // path is self-sufficient (no createEvolutionRun was used above).
+    expect(bytesToHex(reassembled)).toBe(bytesToHex(original));
+
+    // The re-assembled artifact verifies, resumes and continues identically.
+    const resumedOriginal = await resumeEvolutionRun(original);
+    const resumedReassembled = await resumeEvolutionRun(reassembled);
+    expect(resumedReassembled.status()).toEqual(resumedOriginal.status());
+    const a = await resumedOriginal.advance();
+    const b = await resumedReassembled.advance();
+    expect(b.kind).toBe(a.kind);
+    expect(bytesToHex(resumedReassembled.historyBytes())).toBe(bytesToHex(resumedOriginal.historyBytes()));
   });
 });
 
@@ -589,8 +650,9 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
         const v = new Uint8Array(record.components.fitnessVector);
-        // The last member's f64 fitness, at the end of the fixed-stride vector.
-        new DataView(v.buffer).setFloat64(v.length - 8, 1234.5, true);
+        // v3 member layout: fitness is at member offset 6 (after u32 id + u8
+        // valid + u8 status). Last member's fitness at v.length - 48 + 6.
+        new DataView(v.buffer).setFloat64(v.length - 42, 1234.5, true);
         record.components.fitnessVector = v;
       },
     });
@@ -790,5 +852,160 @@ describe('the resume intake seam', () => {
     expect(a.buffer).not.toBe(artifact.buffer);
     a[0] ^= 0xff;
     expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(artifact));
+  });
+});
+
+// ============================================================================
+// (7) GATE B: FITNESS-VECTOR METADATA COHERENCE (malformedHistory)
+// ============================================================================
+
+describe('Gate B — metadata coherence refuses a self-consistent artifact before physics', () => {
+  // The reforge helper recomputes all digests, so the artifact passes stages
+  // 3–7 (verification) cleanly. Gate B then catches the semantic contradiction
+  // between the fitness vector's observations and the generation's metadata.
+  // Member 0 observation offsets within the fitness vector component bytes:
+  //   peakBodySpeed @ 22+14=36, peakSpeedDelta @ 22+22=44,
+  //   peakStepDisplacement @ 22+30=52, alertPresent @ 22+38=60,
+  //   alertStep @ 22+39=61, catPresent @ 22+43=65, catStep @ 22+44=66.
+  const M0 = 22; // first member start in fitness vector bytes
+
+  function patchMember0(fvBytes, patches) {
+    const copy = new Uint8Array(fvBytes);
+    const view = new DataView(copy.buffer, copy.byteOffset, copy.byteLength);
+    for (const [offset, type, value] of patches) {
+      if (type === 'f64') view.setFloat64(M0 + offset, value, true);
+      else if (type === 'u8') view.setUint8(M0 + offset, value);
+      else if (type === 'u32') view.setUint32(M0 + offset, value, true);
+    }
+    return copy;
+  }
+
+  test('firstAlertStep exceeding executedSteps is malformedHistory, zero evaluations', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 30],   // peakBodySpeed > alertSpeed(25) — passes decoder coherence
+          [38, 'u8', 1],     // alertPresent = 1
+          [39, 'u32', 9999], // firstAlertStep = 9999 > executedSteps(45)
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstAlertStep.*exceeds executedSteps/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(err.context.firstAlertStep).toBe(9999);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('firstCatastrophicStep exceeding executedSteps is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [5, 'u8', 2],      // statusIndex = 2 (numericalDivergence) — decoder requires cat step
+          [6, 'f64', 0],     // fitness = 0 (unselectable)
+          [14, 'f64', 1500], // peakBodySpeed > catastrophicSpeed(1000)
+          [38, 'u8', 1],     // alertPresent = 1
+          [39, 'u32', 3],    // firstAlertStep = 3 (within bounds)
+          [43, 'u8', 1],     // catPresent = 1
+          [44, 'u32', 9999], // firstCatastrophicStep = 9999 > executedSteps
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /firstCatastrophicStep.*exceeds executedSteps/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('alert step declared with all peaks below threshold is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 0],    // peakBodySpeed = 0 (below alert)
+          [22, 'f64', 0],    // peakSpeedDelta = 0
+          [30, 'f64', 0],    // peakStepDisplacement = 0
+          [38, 'u8', 1],     // alertPresent = 1
+          [39, 'u32', 5],    // firstAlertStep = 5 (within bounds)
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /no peak exceeds the alert threshold/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('peak exceeding alert threshold with no alert step is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    const reforged = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', 30],   // peakBodySpeed > alertSpeed(25)
+          [38, 'u8', 0],     // alertPresent = 0
+          [39, 'u32', 0],    // payload = 0 (canonical absent)
+        ]);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(reforged), 'malformedHistory', /peak exceeding the alert threshold but no firstAlertStep/);
+    expect(err.context.generationIndex).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('peaks EXACTLY AT thresholds with absent steps are coherent (strict >, operator parity)', async () => {
+    // The online detector fires strictly ABOVE a threshold (integrity.js uses
+    // `>`), so a whole-run peak exactly equal to a threshold legitimately has
+    // no alert/catastrophic step. Gate B must agree operator-for-operator: an
+    // `>=` drift would spuriously refuse this artifact as malformedHistory.
+    const artifact = await runGenerations(1);
+    const framing = decodeHistoryFraming(artifact);
+    const payload = decodeGenerationPayload(framing.generations[0].payloadBytes);
+    const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
+    const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+
+    // All three alert-band peaks sit exactly on their (scaled) thresholds,
+    // with the alert step canonically absent.
+    const atAlert = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', INTEGRITY_THRESHOLDS.alertSpeed],
+          [22, 'f64', INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale],
+          [30, 'f64', INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale],
+          [38, 'u8', 0], [39, 'u32', 0],  // alert absent (canonical)
+          [43, 'u8', 0], [44, 'u32', 0],  // catastrophic absent (canonical)
+        ]);
+      },
+    });
+    const verifiedAlert = await verifyHistoryArtifact(atAlert);
+    expect(() => verifyFitnessVectorMetadataCoherence(verifiedAlert)).not.toThrow();
+
+    // Both catastrophic-band peaks sit exactly on their thresholds: the alert
+    // step is required (1000 > 25) but the catastrophic step stays absent.
+    const atCatastrophic = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.fitnessVector = patchMember0(record.components.fitnessVector, [
+          [14, 'f64', INTEGRITY_THRESHOLDS.catastrophicSpeed],
+          [22, 'f64', 0],
+          [30, 'f64', INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale],
+          [38, 'u8', 1], [39, 'u32', 1],  // alert present (peaks exceed alert band)
+          [43, 'u8', 0], [44, 'u32', 0],  // catastrophic absent — legal under strict >
+        ]);
+      },
+    });
+    const verifiedCat = await verifyHistoryArtifact(atCatastrophic);
+    expect(() => verifyFitnessVectorMetadataCoherence(verifiedCat)).not.toThrow();
+  });
+
+  test('Gate B runs AFTER Gate A: a v2 artifact still gets unsupportedVersion, not malformedHistory', async () => {
+    // The Kimi v2 fixture is a valid self-consistent artifact with old versions.
+    // Gate A (version check) must fire before Gate B ever reads the vector.
+    const fixture = kimiFixtureBytes();
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(fixture), 'unsupportedVersion', /fitnessVectorVersion/);
+    expect(err.context.field).toBe('fitnessVectorVersion');
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 });

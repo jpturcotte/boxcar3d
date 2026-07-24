@@ -42,7 +42,7 @@ export const POPULATION_GOLDEN_LOCKS = Object.freeze({
     populationSnapshotVersion: 1,
     populationInitializerVersion: 1,
     fitnessPolicyVersion: 2, // v2: the numerical-integrity gate (deliberate re-lock, 2026-07-14)
-    fitnessVectorVersion: 2, // v2: +integrityPolicyVersion header, +integrityStatus byte
+    fitnessVectorVersion: 3, // v3: +integrityObservations (3 peaks + 2 onset steps) per member
     integrityPolicyVersion: 1,
     evaluationSpecVersion: 1,
     genotypeVersion: 1,
@@ -66,29 +66,35 @@ export const POPULATION_GOLDEN_LOCKS = Object.freeze({
     // from the v1 lock, as are the champion and the champion trace — only the
     // vector bytes moved (new header field + per-member status byte).
     // v1 digest was 'bded0d30'.
-    fitnessVectorDigest: 'a6d04f75',
+    // Deliberate re-lock 2026-07-23 (cause: fitness-vector encoding v3 —
+    // +integrityObservations per member: 3 f64 peaks + 2 flag+u32 onset
+    // steps, +34 B/member). All 20 members are integrity-clean (status 'ok',
+    // firstAlertStep/firstCatastrophicStep null); peaks are the measured
+    // per-member maxima from the deterministic physics evaluation.
+    // v2 digest was 'a6d04f75'.
+    fitnessVectorDigest: 'fd4222eb',
     orderedIndividualIds: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]),
     individuals: Object.freeze([
-    Object.freeze({ individualId: 0, valid: true, fitness: 1.0603141784667969, stepAtMaxForwardDistance: 300, forwardDistance: 1.0603141784667969, maxBackwardDistance: 0.0081024169921875 }),
-    Object.freeze({ individualId: 1, valid: true, fitness: 4.735980987548828, stepAtMaxForwardDistance: 300, forwardDistance: 4.735980987548828, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 2, valid: true, fitness: 0.042156219482421875, stepAtMaxForwardDistance: 19, forwardDistance: 0.02285003662109375, maxBackwardDistance: 0.000087738037109375 }),
-    Object.freeze({ individualId: 3, valid: true, fitness: 1.3441314697265625, stepAtMaxForwardDistance: 300, forwardDistance: 1.3441314697265625, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 4, valid: true, fitness: 0.000125885009765625, stepAtMaxForwardDistance: 3, forwardDistance: -0.01741790771484375, maxBackwardDistance: 0.017669677734375 }),
-    Object.freeze({ individualId: 5, valid: true, fitness: 4.643791198730469, stepAtMaxForwardDistance: 300, forwardDistance: 4.643791198730469, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 6, valid: true, fitness: 7.176685333251953, stepAtMaxForwardDistance: 300, forwardDistance: 7.176685333251953, maxBackwardDistance: 0.015254974365234375 }),
-    Object.freeze({ individualId: 7, valid: true, fitness: 0.004093170166015625, stepAtMaxForwardDistance: 11, forwardDistance: 0.004062652587890625, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 8, valid: true, fitness: 10.002880096435547, stepAtMaxForwardDistance: 300, forwardDistance: 10.002880096435547, maxBackwardDistance: 0.0002593994140625 }),
-    Object.freeze({ individualId: 9, valid: true, fitness: 6.701698303222656, stepAtMaxForwardDistance: 300, forwardDistance: 6.701698303222656, maxBackwardDistance: 0.0000762939453125 }),
-    Object.freeze({ individualId: 10, valid: true, fitness: 12.484905242919922, stepAtMaxForwardDistance: 300, forwardDistance: 12.484905242919922, maxBackwardDistance: 0.00008392333984375 }),
-    Object.freeze({ individualId: 11, valid: true, fitness: 2.154022216796875, stepAtMaxForwardDistance: 300, forwardDistance: 2.154022216796875, maxBackwardDistance: 0.000286102294921875 }),
-    Object.freeze({ individualId: 12, valid: true, fitness: 4.95892333984375, stepAtMaxForwardDistance: 300, forwardDistance: 4.95892333984375, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 13, valid: true, fitness: 0.0159912109375, stepAtMaxForwardDistance: 134, forwardDistance: 0.0159912109375, maxBackwardDistance: 0.00035858154296875 }),
-    Object.freeze({ individualId: 14, valid: true, fitness: 2.3569869995117188, stepAtMaxForwardDistance: 300, forwardDistance: 2.3569869995117188, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 15, valid: true, fitness: 0.00270843505859375, stepAtMaxForwardDistance: 6, forwardDistance: -0.00016021728515625, maxBackwardDistance: 0.002208709716796875 }),
-    Object.freeze({ individualId: 16, valid: true, fitness: 1.4877967834472656, stepAtMaxForwardDistance: 300, forwardDistance: 1.4877967834472656, maxBackwardDistance: 0 }),
-    Object.freeze({ individualId: 17, valid: true, fitness: 2.2039833068847656, stepAtMaxForwardDistance: 300, forwardDistance: 2.2039833068847656, maxBackwardDistance: 0.00058746337890625 }),
-    Object.freeze({ individualId: 18, valid: true, fitness: 2.441539764404297, stepAtMaxForwardDistance: 300, forwardDistance: 2.441539764404297, maxBackwardDistance: 0.00370025634765625 }),
-    Object.freeze({ individualId: 19, valid: true, fitness: 2.9453811645507812, stepAtMaxForwardDistance: 300, forwardDistance: 2.9453811645507812, maxBackwardDistance: 0.00012969970703125 }),
+    Object.freeze({ individualId: 0, valid: true, fitness: 1.0603141784667969, stepAtMaxForwardDistance: 300, forwardDistance: 1.0603141784667969, maxBackwardDistance: 0.0081024169921875, integrityObservations: Object.freeze({ peakBodySpeed: 4.866147928493386, peakSpeedDelta: 6.22009893862003, peakStepDisplacement: 0.07696947219761231, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 1, valid: true, fitness: 4.735980987548828, stepAtMaxForwardDistance: 300, forwardDistance: 4.735980987548828, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 3.5134561129146, peakSpeedDelta: 4.289247714619823, peakStepDisplacement: 0.05568582269245267, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 2, valid: true, fitness: 0.042156219482421875, stepAtMaxForwardDistance: 19, forwardDistance: 0.02285003662109375, maxBackwardDistance: 0.000087738037109375, integrityObservations: Object.freeze({ peakBodySpeed: 1.9369101602637975, peakSpeedDelta: 1.740568919681537, peakStepDisplacement: 0.021902955662343352, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 3, valid: true, fitness: 1.3441314697265625, stepAtMaxForwardDistance: 300, forwardDistance: 1.3441314697265625, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 1.824292031484697, peakSpeedDelta: 2.156656327170236, peakStepDisplacement: 0.02976897345292663, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 4, valid: true, fitness: 0.000125885009765625, stepAtMaxForwardDistance: 3, forwardDistance: -0.01741790771484375, maxBackwardDistance: 0.017669677734375, integrityObservations: Object.freeze({ peakBodySpeed: 2.814040157771497, peakSpeedDelta: 2.738803715497257, peakStepDisplacement: 0.0485579591354311, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 5, valid: true, fitness: 4.643791198730469, stepAtMaxForwardDistance: 300, forwardDistance: 4.643791198730469, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 2.2116540831309215, peakSpeedDelta: 2.9738339219715044, peakStepDisplacement: 0.035074366467182316, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 6, valid: true, fitness: 7.176685333251953, stepAtMaxForwardDistance: 300, forwardDistance: 7.176685333251953, maxBackwardDistance: 0.015254974365234375, integrityObservations: Object.freeze({ peakBodySpeed: 4.004056300770826, peakSpeedDelta: 4.422937726609698, peakStepDisplacement: 0.06414881432056625, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 7, valid: true, fitness: 0.004093170166015625, stepAtMaxForwardDistance: 11, forwardDistance: 0.004062652587890625, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 0.9696206229712776, peakSpeedDelta: 0.9434531485773165, peakStepDisplacement: 0.008721709251403809, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 8, valid: true, fitness: 10.002880096435547, stepAtMaxForwardDistance: 300, forwardDistance: 10.002880096435547, maxBackwardDistance: 0.0002593994140625, integrityObservations: Object.freeze({ peakBodySpeed: 3.3110230626671413, peakSpeedDelta: 1.2056025774551193, peakStepDisplacement: 0.0547225708371257, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 9, valid: true, fitness: 6.701698303222656, stepAtMaxForwardDistance: 300, forwardDistance: 6.701698303222656, maxBackwardDistance: 0.0000762939453125, integrityObservations: Object.freeze({ peakBodySpeed: 2.9644735969000386, peakSpeedDelta: 3.035085996429706, peakStepDisplacement: 0.05064967498014771, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 10, valid: true, fitness: 12.484905242919922, stepAtMaxForwardDistance: 300, forwardDistance: 12.484905242919922, maxBackwardDistance: 0.00008392333984375, integrityObservations: Object.freeze({ peakBodySpeed: 3.7633596294807523, peakSpeedDelta: 4.256978942177334, peakStepDisplacement: 0.06239007489524749, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 11, valid: true, fitness: 2.154022216796875, stepAtMaxForwardDistance: 300, forwardDistance: 2.154022216796875, maxBackwardDistance: 0.000286102294921875, integrityObservations: Object.freeze({ peakBodySpeed: 2.414884651790115, peakSpeedDelta: 2.3204978252917705, peakStepDisplacement: 0.03960630999723536, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 12, valid: true, fitness: 4.95892333984375, stepAtMaxForwardDistance: 300, forwardDistance: 4.95892333984375, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 1.831612224936828, peakSpeedDelta: 1.1050082508116286, peakStepDisplacement: 0.030599422792142974, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 13, valid: true, fitness: 0.0159912109375, stepAtMaxForwardDistance: 134, forwardDistance: 0.0159912109375, maxBackwardDistance: 0.00035858154296875, integrityObservations: Object.freeze({ peakBodySpeed: 2.0013578271953296, peakSpeedDelta: 2.190111963817691, peakStepDisplacement: 0.0336933120840956, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 14, valid: true, fitness: 2.3569869995117188, stepAtMaxForwardDistance: 300, forwardDistance: 2.3569869995117188, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 1.098151798636097, peakSpeedDelta: 0.9983765953840953, peakStepDisplacement: 0.014804885905842781, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 15, valid: true, fitness: 0.00270843505859375, stepAtMaxForwardDistance: 6, forwardDistance: -0.00016021728515625, maxBackwardDistance: 0.002208709716796875, integrityObservations: Object.freeze({ peakBodySpeed: 1.4319554631731326, peakSpeedDelta: 1.5797641883844016, peakStepDisplacement: 0.02058054888166356, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 16, valid: true, fitness: 1.4877967834472656, stepAtMaxForwardDistance: 300, forwardDistance: 1.4877967834472656, maxBackwardDistance: 0, integrityObservations: Object.freeze({ peakBodySpeed: 1.948402147512017, peakSpeedDelta: 1.9012776562016642, peakStepDisplacement: 0.030516296484534522, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 17, valid: true, fitness: 2.2039833068847656, stepAtMaxForwardDistance: 300, forwardDistance: 2.2039833068847656, maxBackwardDistance: 0.00058746337890625, integrityObservations: Object.freeze({ peakBodySpeed: 3.5996592815753092, peakSpeedDelta: 4.381491857354145, peakStepDisplacement: 0.05678263486402957, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 18, valid: true, fitness: 2.441539764404297, stepAtMaxForwardDistance: 300, forwardDistance: 2.441539764404297, maxBackwardDistance: 0.00370025634765625, integrityObservations: Object.freeze({ peakBodySpeed: 3.622157970330868, peakSpeedDelta: 4.9250854955347965, peakStepDisplacement: 0.05749016793076816, firstAlertStep: null, firstCatastrophicStep: null }) }),
+    Object.freeze({ individualId: 19, valid: true, fitness: 2.9453811645507812, stepAtMaxForwardDistance: 300, forwardDistance: 2.9453811645507812, maxBackwardDistance: 0.00012969970703125, integrityObservations: Object.freeze({ peakBodySpeed: 1.7458189343243806, peakSpeedDelta: 1.7384820584757403, peakStepDisplacement: 0.026444689677209487, firstAlertStep: null, firstCatastrophicStep: null }) }),
     ]),
     champion: Object.freeze({
       individualId: 10,

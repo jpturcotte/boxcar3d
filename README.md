@@ -7,7 +7,20 @@ surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
 **Status:** GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
-deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
+deterministic evolution engine. **PR #27 then persisted the integrity evidence:**
+fitness vector v3 canonically encodes the five integrity observations
+(`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
+`firstCatastrophicStep`) in every history artifact, replay rejects stale v2
+artifacts as `unsupportedVersion` and semantically malformed v3 artifacts as
+`malformedHistory` — both before physics — and `scripts/history-observations.js`
+extracts observations from a cryptographically verified artifact without
+re-simulation. **No policy, selection or mutation behaviour changed** —
+`INTEGRITY_POLICY_VERSION` stays 1, `FITNESS_POLICY_VERSION` stays 2, defaults
+stay (0.05, 0.05); alert-bearing `ok` vehicles are **still selectable on main**.
+This PR persists evidence and changes no behaviour; the solver defect remains;
+Option A masks rather than fixes it; multibody deferred. PR #28 owns the
+breeding-pool and false-negative measurements that consume the persisted
+observations. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
 screening on seeds 20260744–20260755 then held-out confirmation on the disjoint
 20260756–20260787, 70 minutes, all from one clean commit) shows mutation-only
@@ -393,7 +406,7 @@ The why behind each rule lives in `docs/boxcar3d-red-team-2026-07.md`.
 ## Phase 1B PR 2 operators
 
 `selectablePoolFromEvaluation` creates an immutable v1 in-memory selection
-pool from a v2 fitness evaluation: it retains every evaluated id in ascending
+pool from a v3 fitness evaluation: it retains every evaluated id in ascending
 order, and only `valid && integrityStatus === 'ok'` members can compete.
 `evolution-operators.js` applies a three-draw tournament with replacement
 (higher fitness, then lower id) and returns up to two canonical, owned elites.

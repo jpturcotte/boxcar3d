@@ -23,12 +23,17 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
+//   8a. fitness-vector compatibility               (unsupportedVersion)
+//   8b. fitness-vector metadata coherence           (malformedHistory)
 //   9. deterministic flavor + exact Rapier version (before physics)
 //  10. deterministic replay, stopping at the first byte divergence
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-9 are the two small checks below; 10 is the run's own replay loop.
+// 8 is `checkExpectedIdentity`; 8a-8b are the fitness-vector compatibility and
+// metadata-coherence gates (`checkFitnessVectorCompatibility` and
+// `verifyFitnessVectorMetadataCoherence`); 9 is `checkRuntimeIdentity`;
+// 10 is the run's own replay loop.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
@@ -45,6 +50,7 @@ import {
   SHA256_DIGEST_BYTES, COMPONENT_KINDS, EVALUATION_METADATA_VERSION,
   GENERATION_RECORD_VERSION,
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
+  deserializeEvaluationMetadata,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
@@ -56,6 +62,10 @@ import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
 } from './evolution-operators.js';
+import { peekFitnessVectorVersions, deserializeFitnessVector } from './population-evaluation.js';
+import {
+  INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
+} from './integrity.js';
 
 /** The replay stages, in the order a record's components are compared. */
 export const REPLAY_STAGES = Object.freeze([
@@ -349,4 +359,107 @@ export function captureExpectedIdentity(options, copy) {
     generationIndex = rawIndex;
   }
   return { historyDigestBytes, generationIndex };
+}
+
+/**
+ * Stage 8a — fitness-vector compatibility (Gate A).
+ *
+ * Layered version check owned by `population-evaluation.js`: reads
+ * `fitnessVectorVersion` first; if unsupported, stops and reports it without
+ * assuming an unknown layout. Only when current, reads and compares the
+ * remaining four declared fields. A truncated or structurally unreadable
+ * prefix is `malformedHistory`, not `unsupportedVersion`.
+ */
+export function checkFitnessVectorCompatibility(verified) {
+  const generationCount = verified.framing.generations.length;
+  for (let i = 0; i < generationCount; i += 1) {
+    const payload = decodeGenerationPayload(verified.framing.generations[i].payloadBytes);
+    const fvBytes = payload.components.fitnessVector;
+    let mismatch;
+    try {
+      mismatch = peekFitnessVectorVersions(fvBytes);
+    } catch (cause) {
+      evolutionFail('malformedHistory',
+        `generation ${i} fitness vector is structurally unreadable: ${cause && cause.message ? cause.message : String(cause)}`,
+        { generationIndex: i });
+      return; // unreachable
+    }
+    if (mismatch !== null) {
+      evolutionFail('unsupportedVersion',
+        `generation ${i} fitness vector ${mismatch.field} is ${mismatch.stored}; this build implements ${mismatch.current}`,
+        { generationIndex: i, field: mismatch.field, stored: mismatch.stored, current: mismatch.current });
+    }
+  }
+}
+
+/**
+ * Stage 8b — fitness-vector metadata coherence (Gate B).
+ *
+ * A current-format artifact whose observations contradict its own metadata is
+ * malformed, not unsupported: `0 ≤ firstAlertStep ≤ executedSteps` and
+ * `0 ≤ firstCatastrophicStep ≤ executedSteps`, using each generation's own
+ * persisted metadata; plus the peak↔alert equivalence, which needs
+ * `effectiveDt` for `dtScale`.
+ */
+export function verifyFitnessVectorMetadataCoherence(verified) {
+  const generationCount = verified.framing.generations.length;
+  for (let i = 0; i < generationCount; i += 1) {
+    const payload = decodeGenerationPayload(verified.framing.generations[i].payloadBytes);
+    const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
+    const executedSteps = metadata.executedSteps;
+    const effectiveDt = metadata.effectiveDt;
+    const dtScale = effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+    const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed;
+    const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
+    const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+    const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed;
+    const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
+    const vector = deserializeFitnessVector(payload.components.fitnessVector);
+    const individuals = vector.individuals;
+    for (let j = 0; j < individuals.length; j += 1) {
+      const ind = individuals[j];
+      const obs = ind.integrityObservations;
+      const id = ind.individualId;
+      // Step bounds: 0 ≤ step ≤ executedSteps.
+      if (obs.firstAlertStep !== null && obs.firstAlertStep > executedSteps) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} firstAlertStep ${obs.firstAlertStep} exceeds executedSteps ${executedSteps}`,
+          { generationIndex: i, individualId: id, firstAlertStep: obs.firstAlertStep, executedSteps });
+      }
+      if (obs.firstCatastrophicStep !== null && obs.firstCatastrophicStep > executedSteps) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} firstCatastrophicStep ${obs.firstCatastrophicStep} exceeds executedSteps ${executedSteps}`,
+          { generationIndex: i, individualId: id, firstCatastrophicStep: obs.firstCatastrophicStep, executedSteps });
+      }
+      // Peak↔alert equivalence: an alert step is set iff at least one peak
+      // exceeds its alert threshold (the peaks are whole-run maxima, so the
+      // equivalence holds by construction from the same capture loop).
+      const alertPeakExceeded = obs.peakBodySpeed > alertSpeed
+        || obs.peakSpeedDelta > alertSpeedDelta
+        || obs.peakStepDisplacement > alertStepDisplacement;
+      if (obs.firstAlertStep !== null && !alertPeakExceeded) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} declares firstAlertStep ${obs.firstAlertStep} but no peak exceeds the alert threshold`,
+          { generationIndex: i, individualId: id, firstAlertStep: obs.firstAlertStep });
+      }
+      if (obs.firstAlertStep === null && alertPeakExceeded) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} has a peak exceeding the alert threshold but no firstAlertStep`,
+          { generationIndex: i, individualId: id });
+      }
+      // Peak↔catastrophic equivalence (speed or displacement).
+      const catPeakExceeded = obs.peakBodySpeed > catastrophicSpeed
+        || obs.peakStepDisplacement > catastrophicStepDisplacement;
+      if (obs.firstCatastrophicStep !== null && !catPeakExceeded) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} declares firstCatastrophicStep ${obs.firstCatastrophicStep} but no peak exceeds the catastrophic threshold`,
+          { generationIndex: i, individualId: id, firstCatastrophicStep: obs.firstCatastrophicStep });
+      }
+      if (obs.firstCatastrophicStep === null && catPeakExceeded) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${id} has a peak exceeding the catastrophic threshold but no firstCatastrophicStep`,
+          { generationIndex: i, individualId: id });
+      }
+    }
+  }
 }

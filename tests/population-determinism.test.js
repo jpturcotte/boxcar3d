@@ -175,6 +175,7 @@ describe('population evaluation gate (deterministic flavor)', () => {
           stepAtMaxForwardDistance: i.diagnostics.stepAtMaxForwardDistance,
           forwardDistance: i.diagnostics.forwardDistance,
           maxBackwardDistance: i.diagnostics.maxBackwardDistance,
+          integrityObservations: i.integrityObservations,
         })),
         champion: { individualId: champion.individualId, fitness: champion.fitness },
       };

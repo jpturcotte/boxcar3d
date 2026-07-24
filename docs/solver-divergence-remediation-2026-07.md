@@ -74,6 +74,12 @@ pressure.
    speed, first alert step) are **persisted in the fitness vector** first (a
    versioned encoding change) — today the vector stores only status, which is
    why PR 4's diagnosis needed a forensic re-run.
+   **DISCHARGED by PR #27** (fitness vector v3): the five observations
+   (`peakBodySpeed`, `peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
+   `firstCatastrophicStep`) are now canonically persisted in every history
+   artifact, and `scripts/history-observations.js` extracts them from a
+   cryptographically verified artifact without re-simulation. PR #28 owns the
+   breeding-pool and false-negative measurements that consume them.
 4. The policy bump is a deliberate re-lock (Node 3-OS + pinned Chromium).
 
 **Effort:** small–moderate, all in-repo, no dependency change.

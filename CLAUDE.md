@@ -2053,10 +2053,17 @@ history, replay, and strong artifact identity. Full contract:
   getters, then a fresh exactly-sized array. NOT `new Uint8Array(bytes)`, which
   reads the caller's shadowable `length` (measured: a 4-byte array claiming
   `length: 2` copies a PREFIX).
-- **Ordered replay (10 stages, each with its own code):** storage + the 64 MiB
+- **Ordered replay (12 stages, each with its own code):** storage + the 64 MiB
   ceiling BEFORE the copy → copy BEFORE any await → framing → header digest +
   version agreement → every component digest in generation order → the chain →
-  the whole-history digest → external expected identity → the runtime gate →
+  the whole-history digest → external expected identity → Gate A
+  (fitness-vector version compatibility: a stale wire version is
+  `unsupportedVersion` naming `fitnessVectorVersion`, via the layered prefix
+  peek — nothing beyond the first u16 is trusted on a foreign version) →
+  Gate B (fitness-vector ↔ metadata coherence: onset bounds against
+  `executedSteps`, then peak↔onset equivalence at the thresholds the record's
+  own `effectiveDt` scales — a contradiction is `malformedHistory` localized to
+  the first offending individual) → the runtime gate →
   deterministic replay stopping at the first byte divergence (reporting `stage`,
   `generationIndex`, `byteOffset`, `expectedByte`/`actualByte`, and
   `lastAgreedGenerationIndex`). Twelve stable error codes; lower-level module
@@ -2080,23 +2087,46 @@ history, replay, and strong artifact identity. Full contract:
 - **Locks:** fixture `evolution-a-small-flat` v1 (seeds **20260742** population /
   **20260743** terrain; 6 individuals × 3 generations × 45 steps on the flat pad,
   terminating on the generation limit) — header `6b872cad…bfcce51b`, history
-  `da573ca5…1ef20e55`, plus every generation's four component digests, its
-  chained digest, and every lineage row. `test:determinism` gained
+  `8cab787f…0f0d01ff` (deliberately re-locked 2026-07-24 for fitness-vector v3
+  — +34 bytes per member; the v2 history digest was `da573ca5…1ef20e55` and
+  the header digest did NOT move), plus every generation's four component
+  digests, its chained digest, and every lineage row. `test:determinism` gained
   `tests/evolution-determinism.test.js`; pinned Chromium
   (`tests/browser/evolution-determinism.test.js`) reproduced every literal —
   including the SHA-256 seam, PR 3's one genuinely new cross-runtime dependency —
   **on the first run**. The gate also asserts STRUCTURAL coverage (elites exist,
   both mutation branches occur incl. a zero-selection child, the last record is
   terminal), so a fixture change cannot quietly narrow what the locks prove.
-- **Independent interoperability oracle:**
+- **Interoperability oracles — two roles since fitness-vector v3:**
   `tests/fixtures/evolution-v1-kimi-k3max.base64` is a static 4,024-byte
   one-generation artifact produced by the isolated Kimi implementation, with
-  provenance and literal digests in the adjacent Markdown file. Node and
+  provenance and literal digests in the adjacent Markdown file. Since v3 it is
+  the standing EARLY-REFUSAL WITNESS: Node and Chromium prove it verifies
+  self-consistently and is then refused at Gate A as `unsupportedVersion`
+  naming `fitnessVectorVersion` (stored 2, current 3) with ZERO evaluations —
+  its bytes are deliberately never regenerated. The successful-replay role
+  moved to `tests/fixtures/evolution-v3-interop.base64` (4,160 bytes; same
+  header digest as Kimi's, proving the header codec did not move), produced
+  only by `scripts/relock-evolution-interop.js` as a reviewed re-lock: Node and
   Chromium reproduce its generation 0 bytes, resume it, and continue it to the
-  same terminal digest. The final cross-worktree check also established
-  byte-identical headers/components and mutual Claude/Kimi resume. This is the
-  independent oracle for codec genesis; the repository's own golden fixture is
-  a regression lock, not circular proof of its original semantics.
+  same terminal digest. The original cross-worktree check established
+  byte-identical headers/components and mutual Claude/Kimi resume at codec
+  genesis; the repository's own golden fixture remains a regression lock, not
+  circular proof of its original semantics.
+- **Fitness-vector v3 (PR #28): the five integrity observations are canonical
+  wire fields.** Each member row appends `peakBodySpeed`/`peakSpeedDelta`/
+  `peakStepDisplacement` (f64, finite ≥ 0) and `firstAlertStep`/
+  `firstCatastrophicStep` (u8 presence flag + u32 step; absent ⇒ payload
+  exactly 0 — canonical form, decoder-enforced), +34 bytes per member. ONE
+  capture (`captureEvaluationMemberResult`) produces validity, status, fitness
+  and the observations from a single reading of the vehicle result. Offline
+  consumers read them only through the verified seam
+  (`scripts/history-observations.js` → `extractHistoryObservations`): stages
+  3–7, expected identity, Gate A, Gate B, then decode from the module-owned
+  copy — zero physics, proven by the same evaluation-counting probe as the
+  replay suite. `summarizeEvolutionHistory` runs Gate A before any component
+  decode, so pre-v3 histories refuse as `unsupportedVersion` rather than dying
+  in the codec.
 - **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
   comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
   selectors (it was a single-block lookup by filename, which would have silently

@@ -73,7 +73,10 @@ pressure.
 3. Both of the above are far easier if the integrity **observations** (peak body
    speed, first alert step) are **persisted in the fitness vector** first (a
    versioned encoding change) — today the vector stores only status, which is
-   why PR 4's diagnosis needed a forensic re-run.
+   why PR 4's diagnosis needed a forensic re-run. *(DONE — PR #28 landed
+   fitness-vector v3: all five observations are canonical wire fields, and
+   `scripts/history-observations.js` reads them from any committed history
+   through the verified, zero-physics seam.)*
 4. The policy bump is a deliberate re-lock (Node 3-OS + pinned Chromium).
 
 **Effort:** small–moderate, all in-repo, no dependency change.
@@ -166,6 +169,7 @@ it.**
 **Concrete sequence:**
 1. Persist integrity observations in the fitness vector (enables A's pool +
    false-negative measurements, and makes contamination readable from history).
+   *(DONE — PR #28, fitness-vector v3, 2026-07-24.)*
 2. Land A (alert-band escalation) with the false-negative acceptance test —
    the version bump + re-lock.
 3. Re-run PR 4's protocol on the now-clean signal → take the mutation-default

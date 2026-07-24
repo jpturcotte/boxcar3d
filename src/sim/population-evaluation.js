@@ -97,7 +97,7 @@ export const FITNESS_POLICY_VERSION = 2; // v2: the numerical-integrity gate (se
 // This is deliberately an in-memory selection view, not a new wire format.
 // A later generation/replacement layer owns any persisted evolution history.
 export const SELECTION_POOL_VERSION = 1;
-export const FITNESS_VECTOR_VERSION = 3; // v3: +the five per-member integrity observations (PR #27)
+export const FITNESS_VECTOR_VERSION = 3; // v3: +the five per-member integrity observations (PR #28)
 export const EVALUATION_SPEC_VERSION = 1;
 export const POPULATION_WORLD_MODE = 'isolatedWorlds'; // see the world-mode ruling above
 export const REALIZABLE_SUSPENSION_TYPES = Object.freeze(['S0', 'S1']); // engine capability, not policy
@@ -1494,7 +1494,7 @@ export function deserializeFitnessVector(bytes) {
 
 /**
  * Read ONLY the version block of an encoded fitness vector — the replay
- * pre-physics gate's early refusal seam (PR #27 gate A). Layered by design:
+ * pre-physics gate's early refusal seam (PR #28 gate A). Layered by design:
  * fitnessVectorVersion is read FIRST, and if it is not the current version the
  * peek STOPS — the rest of the header belongs to a schema this module does not
  * speak, and decoding v2 bytes with v3 offsets would report fields that were

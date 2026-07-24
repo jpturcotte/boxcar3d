@@ -30,7 +30,7 @@
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-9 (including the PR #27 gates 8a/8b) are the small checks below; 10 is the
+// 8-9 (including the PR #28 gates 8a/8b) are the small checks below; 10 is the
 // run's own replay loop.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.

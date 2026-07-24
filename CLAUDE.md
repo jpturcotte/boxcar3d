@@ -2088,15 +2088,18 @@ history, replay, and strong artifact identity. Full contract:
   **on the first run**. The gate also asserts STRUCTURAL coverage (elites exist,
   both mutation branches occur incl. a zero-selection child, the last record is
   terminal), so a fixture change cannot quietly narrow what the locks prove.
-- **Independent interoperability oracle:**
+- **Independent interoperability oracle (post-PR-27 role):**
   `tests/fixtures/evolution-v1-kimi-k3max.base64` is a static 4,024-byte
   one-generation artifact produced by the isolated Kimi implementation, with
-  provenance and literal digests in the adjacent Markdown file. Node and
-  Chromium reproduce its generation 0 bytes, resume it, and continue it to the
-  same terminal digest. The final cross-worktree check also established
-  byte-identical headers/components and mutual Claude/Kimi resume. This is the
-  independent oracle for codec genesis; the repository's own golden fixture is
-  a regression lock, not circular proof of its original semantics.
+  provenance and literal digests in the adjacent Markdown file. Since PR #27
+  bumped the fitness vector to v3, this v2 artifact is preserved as an
+  EARLY-REFUSAL WITNESS: it passes self-consistency (stages 3–7) but is refused
+  at Gate A (stage 8a) as `unsupportedVersion` naming `fitnessVectorVersion`,
+  before physics. The successful-replay role is now filled by the
+  independent-assembly witness in `tests/evolution-replay.test.js`: a v3
+  artifact decoded into logical structures and re-encoded using only the
+  low-level codec functions (no `createEvolutionRun`), proving byte-identity,
+  then resumed and continued to a byte-identical terminal digest.
 - **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
   comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
   selectors (it was a single-block lookup by filename, which would have silently
@@ -2485,6 +2488,63 @@ single clean commit `9c5f24c`):**
   screening terrain · 20260756–20260771 confirmation population ·
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
+
+**GA Phase 1B PR #27 landed — persist integrity observations in evolution
+history. Fitness vector v3; no policy, selection or mutation behaviour changed.**
+- **The gap PR #27 closes:** PR 4 showed ~1 champion in 5 is Rapier
+  constraint-solver divergence in the alert band (25–1000 m/s), which policy v2
+  deliberately treats as an observation (`status: 'ok'`, fully selectable). But
+  the fitness vector persisted only the integrity STATUS — the five observations
+  the online detector already computes (`peakBodySpeed`, `peakSpeedDelta`,
+  `peakStepDisplacement`, `firstAlertStep`, `firstCatastrophicStep`) were
+  returned in diagnostics and discarded, so PR 4's diagnosis needed a forensic
+  re-run. PR #27 persists them canonically.
+- **Fitness vector v3 wire format** (header unchanged at 22 B; member 14 → 48 B):
+  appended per member: `f64 peakBodySpeed | f64 peakSpeedDelta |
+  f64 peakStepDisplacement | u8 firstAlertStepPresent | u32 firstAlertStep |
+  u8 firstCatastrophicStepPresent | u32 firstCatastrophicStep`. Flag+u32, no
+  sentinel — `null` and step 0 are byte-distinct; absent ⇒ u32 payload exactly 0
+  (canonical form, rejected when nonzero on decode). `+Infinity` peaks accepted
+  (legal policy-v1 output), `NaN` and `-Infinity` rejected.
+- **Two pre-physics gates on the resume path** (after `checkExpectedIdentity`,
+  before `checkRuntimeIdentity`): Gate A (`checkFitnessVectorCompatibility`) —
+  layered version peek, `unsupportedVersion` naming the exact field; Gate B
+  (`verifyFitnessVectorMetadataCoherence`) — step bounds and peak↔alert
+  equivalence, `malformedHistory`. A stale v2 artifact reports
+  `unsupportedVersion` after its self-consistency legs pass and before physics;
+  a current-format artifact whose steps contradict its own metadata reports
+  `malformedHistory` also before physics. `EVOLUTION_HISTORY_VERSION` stays 1;
+  `headerDigest` did not move.
+- **Verified extraction seam** (`scripts/history-observations.js`):
+  `extractHistoryObservations(historyBytes, { expectedHistoryDigestBytes? })`
+  runs `verifyHistoryArtifact` AND both R1 gates internally before decoding —
+  a tampered or stale artifact is refused, never read. Async (SHA-256); pure
+  with respect to filesystem, clock, randomness and physics. Returns per
+  generation and per individual the decoded row plus its observations and the
+  generation's `executedSteps`. NO aggregation, gates, sampling,
+  counterfactuals or policy analysis — those are PR #28's.
+- **Locks that moved:** `population-locks.js` `fitnessVectorDigest` (v2
+  `a6d04f75` → v3 `fd4222eb`, +34 B/member × 20 members = +680 B/generation),
+  `fitnessVectorVersion` 2→3, and per-individual `integrityObservations` (the
+  measured peaks from the deterministic physics evaluation; all 20 members are
+  integrity-clean with `firstAlertStep`/`firstCatastrophicStep` null).
+  `evolution-locks.js`: `fitnessVectorVersion` 3, `historyByteLength`
+  12126→12738 (+612 = 3 gens × 6 members × 34 B), `historyDigest`, and all
+  three generations' `fitnessVectorDigest`, `generationDigest`,
+  `payloadByteLength`. **`headerDigest` UNCHANGED** (the header does not bind
+  the fitness vector version); every terrain/assembly/A–D digest byte-identical.
+- **What did NOT change:** `INTEGRITY_POLICY_VERSION` stays 1,
+  `FITNESS_POLICY_VERSION` stays 2, defaults stay (0.05, 0.05). Alert-bearing
+  `ok` vehicles are **still selectable on main** — this PR persists evidence
+  and changes no behaviour. The solver defect remains; Option A masks rather
+  than fixes it; multibody deferred. No experiment/campaign code entered; no
+  dependency work appeared.
+- **Next:** PR #28 — measure alert-band selection exposure and decide
+  escalation. The persisted observations and the extraction seam are the
+  prerequisite; PR #28 owns the breeding-pool and false-negative measurements,
+  the experiment schema, the campaign, retained workspace histories, the
+  forensic adjudicator, counterfactual analysis, empirical gates, and the
+  escalation verdict.
 
 ### Phase 1B PR 2 operator boundary
 

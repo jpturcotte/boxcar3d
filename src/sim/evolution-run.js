@@ -85,7 +85,8 @@ import {
 } from './evolution-lineage.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
-  checkRuntimeIdentity, failReplayDivergence, verifyHistoryArtifact,
+  checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
+  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from './evolution-replay.js';
 import { decodeGenerationPayload } from './evolution-history.js';
 
@@ -935,6 +936,10 @@ async function resumeFromOwnedBytes(owned, expected) {
   const verified = await verifyHistoryArtifact(owned);
   // Stage 8: external expected identity — staleness, distinct from corruption.
   checkExpectedIdentity(verified, expected);
+  // Stage 8a: fitness-vector compatibility — unsupportedVersion before physics.
+  checkFitnessVectorCompatibility(verified);
+  // Stage 8b: fitness-vector metadata coherence — malformedHistory before physics.
+  verifyFitnessVectorMetadataCoherence(verified);
   const header = verified.header;
   const spec = translate('malformedHistory', 'history evaluation spec is malformed',
     () => deserializeEvaluationSpec(header.evaluationSpecBytes));

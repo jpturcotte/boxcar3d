@@ -10,7 +10,7 @@
 // time. A decoder stricter than its encoder is not an inverse. That case is
 // asserted positively below.
 //
-// The committed a6d04f75 fitness vector is reconstructed WITHOUT re-running
+// The committed fd4222eb fitness vector is reconstructed WITHOUT re-running
 // evaluatePopulation (which tests/population-determinism.test.js already runs
 // in the same suite): the snapshot state comes from the physics-free fixture
 // builder and the per-member rows come from the imported lock, so this file
@@ -481,12 +481,25 @@ describe('evaluation spec — malformed streams fail loud', () => {
 
 // --- Fitness vector ----------------------------------------------------------
 
-// Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
+// Entry tuple: [individualId, fitness, valid, integrityStatus='ok', integrityObservations?].
+const DEFAULT_OBS = Object.freeze({
+  peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+  firstAlertStep: null, firstCatastrophicStep: null,
+});
+// numericalDivergence requires a catastrophic step (policy-v1 coherence).
+const DIVERGENCE_OBS = Object.freeze({
+  peakBodySpeed: 1500, peakSpeedDelta: 200, peakStepDisplacement: 50,
+  firstAlertStep: 5, firstCatastrophicStep: 10,
+});
+function defaultObsFor(status) {
+  if (status === 'numericalDivergence') return DIVERGENCE_OBS;
+  return DEFAULT_OBS;
+}
 const synth = (entries, spec = resolvedFlat()) => ({
   spec,
   populationSnapshotDigestState: 0xdeadbeef,
-  individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
-    { individualId, fitness, valid, integrityStatus })),
+  individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok', integrityObservations]) => (
+    { individualId, fitness, valid, integrityStatus, integrityObservations: integrityObservations ?? defaultObsFor(integrityStatus) })),
 });
 
 function assertVectorLeafEqual(decoded, evaluation, specState) {
@@ -503,6 +516,13 @@ function assertVectorLeafEqual(decoded, evaluation, specState) {
     expect(decoded.individuals[i].valid).toBe(ind.valid);
     expect(decoded.individuals[i].integrityStatus).toBe(ind.integrityStatus);
     expect(Object.is(decoded.individuals[i].fitness, ind.fitness), `fitness[${i}]`).toBe(true);
+    const obs = ind.integrityObservations ?? DEFAULT_OBS;
+    const dObs = decoded.individuals[i].integrityObservations;
+    expect(Object.is(dObs.peakBodySpeed, obs.peakBodySpeed), `peakBodySpeed[${i}]`).toBe(true);
+    expect(Object.is(dObs.peakSpeedDelta, obs.peakSpeedDelta), `peakSpeedDelta[${i}]`).toBe(true);
+    expect(Object.is(dObs.peakStepDisplacement, obs.peakStepDisplacement), `peakStepDisplacement[${i}]`).toBe(true);
+    expect(dObs.firstAlertStep).toBe(obs.firstAlertStep);
+    expect(dObs.firstCatastrophicStep).toBe(obs.firstCatastrophicStep);
   });
 }
 
@@ -515,11 +535,14 @@ describe('fitness vector — the committed contract (reconstructed without physi
       populationSnapshotDigestState: snapshotState,
       // All 20 members are integrity-clean in the committed fixture (recorded
       // in population-locks.js), so the lock's rows fully determine the vector.
+      // v3: each member carries the five integrity observations; the lock
+      // stores the measured peaks from the deterministic physics evaluation.
       individuals: LOCK.individuals.map((m) => ({
         individualId: m.individualId,
         valid: m.valid,
         integrityStatus: 'ok',
         fitness: m.fitness,
+        integrityObservations: m.integrityObservations,
       })),
     };
   };
@@ -588,7 +611,7 @@ describe('fitness vector — synthetic coverage', () => {
     for (const entries of cases) {
       const evaluation = synth(entries);
       const bytes = serializeFitnessVector(evaluation);
-      expect(bytes.length).toBe(22 + entries.length * 14);
+      expect(bytes.length).toBe(22 + entries.length * 48);
       const decoded = deserializeFitnessVector(bytes);
       assertVectorLeafEqual(decoded, evaluation);
       expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
@@ -601,7 +624,7 @@ describe('fitness vector — synthetic coverage', () => {
     // null second row all leaked foreign TypeErrors from a public encoder.
     // The indexed preflight now snapshots every row into module-owned records
     // before allocation; the write pass re-reads nothing from the caller.
-    const good = { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 0 };
+    const good = { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 0, integrityObservations: DEFAULT_OBS };
     const sparse = [good]; sparse.length = 2;
     for (const [label, inds] of [
       ['[null]', [null]],
@@ -634,7 +657,7 @@ describe('fitness vector — synthetic coverage', () => {
         .toThrow(/population-evaluation: invalid .* at evaluation\.individuals/);
     }
     expect(() => { const a = []; a.length = 0x100000000; }).toThrow(RangeError);
-    expect(serializeFitnessVector(evaluation).length).toBe(36);
+    expect(serializeFitnessVector(evaluation).length).toBe(70);
   });
 
   test('an unselectable member may legally carry -0, and its sign bit survives', () => {
@@ -672,7 +695,7 @@ describe('fitness vector — synthetic coverage', () => {
     const evaluation = synth([[1, 1.5, true], [2, 2.5, true], [3, 0, false]]);
     evaluation.individuals[Symbol.iterator] = function* short() { yield evaluation.individuals[0]; };
     const bytes = serializeFitnessVector(evaluation);
-    expect(bytes.length).toBe(22 + 3 * 14);
+    expect(bytes.length).toBe(22 + 3 * 48);
     const decoded = deserializeFitnessVector(bytes);
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([1, 2, 3]);
     expect(decoded.individuals[1].fitness).toBe(2.5);
@@ -699,8 +722,10 @@ describe('fitness vector — malformed streams fail loud', () => {
   const base = () => serializeFitnessVector(synth([[3, 2.5, true], [9, 0, false]]));
   // Header: vectorVersion@0, policyVersion@2, integrityPolicyVersion@4,
   // snapshotVersion@6, snapshotState@8, specVersion@12, specState@14, count@18.
-  // Member i at 22 + 14i: id u32, valid u8, status u8, fitness f64.
-  const MEMBER = (i) => 22 + 14 * i;
+  // Member i at 22 + 48i: id u32, valid u8, status u8, fitness f64,
+  // peakBodySpeed f64, peakSpeedDelta f64, peakStepDisplacement f64,
+  // alertPresent u8, alertStep u32, catPresent u8, catStep u32.
+  const MEMBER = (i) => 22 + 48 * i;
 
   test('each of the five header versions must match its current constant', () => {
     for (const [offset, field] of [[0, 'fitnessVectorVersion'], [2, 'fitnessPolicyVersion'],
@@ -764,13 +789,13 @@ describe('fitness vector — malformed streams fail loud', () => {
 
   test('truncation and trailing bytes', () => {
     const full = base();
-    for (const cut of [0, 1, 12, 18, 21, 22, 30, 35, full.length - 1]) {
+    for (const cut of [0, 1, 12, 18, 21, 22, 30, 35, 69, 70, full.length - 1]) {
       expect(() => deserializeFitnessVector(full.slice(0, cut)), `cut ${cut}`)
         .toThrow(/population-evaluation: invalid encoded fitness vector/);
     }
     const extended = new Uint8Array(full.length + 1);
     extended.set(full);
-    expect(() => deserializeFitnessVector(extended)).toThrow(/at byteLength \(51 \(expected 50/);
+    expect(() => deserializeFitnessVector(extended)).toThrow(/at byteLength \(119 \(expected 118/);
   });
 
   test('input bytes are not mutated and a subarray view decodes its own window', () => {
@@ -782,6 +807,150 @@ describe('fitness vector — malformed streams fail loud', () => {
     parent.set(bytes, 8);
     const decoded = deserializeFitnessVector(parent.subarray(8, 8 + bytes.length));
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([3, 9]);
+  });
+});
+
+describe('fitness vector — v3 observation region refusal boundaries (R3/R4)', () => {
+  const base = () => serializeFitnessVector(synth([[3, 2.5, true], [9, 0, false]]));
+  const MEMBER = (i) => 22 + 48 * i;
+  // Member layout: id@0 u32, valid@4 u8, status@5 u8, fitness@6 f64,
+  // peakBodySpeed@14 f64, peakSpeedDelta@22 f64, peakStepDisplacement@30 f64,
+  // alertPresent@38 u8, alertStep@39 u32, catPresent@43 u8, catStep@44 u32.
+
+  test('NaN, -Infinity and negative peaks at each f64 offset are REJECTED', () => {
+    const peakOffsets = [14, 22, 30]; // peakBodySpeed, peakSpeedDelta, peakStepDisplacement
+    const peakNames = ['peakBodySpeed', 'peakSpeedDelta', 'peakStepDisplacement'];
+    for (let p = 0; p < peakOffsets.length; p += 1) {
+      for (const bad of [NaN, -Infinity, -1, -0.001]) {
+        const bytes = base();
+        new DataView(bytes.buffer).setFloat64(MEMBER(0) + peakOffsets[p], bad, true);
+        expect(() => deserializeFitnessVector(bytes), `${peakNames[p]} = ${bad}`)
+          .toThrow(new RegExp(`individuals\\[0\\]\\.${peakNames[p]}`));
+      }
+    }
+  });
+
+  test('+Infinity peaks are ACCEPTED (legal policy-v1 output)', () => {
+    const peakOffsets = [14, 22, 30];
+    for (const offset of peakOffsets) {
+      const bytes = base();
+      new DataView(bytes.buffer).setFloat64(MEMBER(0) + offset, Infinity, true);
+      const decoded = deserializeFitnessVector(bytes);
+      expect(decoded.individuals[0].integrityObservations[
+        offset === 14 ? 'peakBodySpeed' : offset === 22 ? 'peakSpeedDelta' : 'peakStepDisplacement'
+      ]).toBe(Infinity);
+    }
+  });
+
+  test('flag bytes > 1 are REJECTED (non-canonical)', () => {
+    for (const flagOffset of [38, 43]) { // alertPresent, catPresent
+      for (const badFlag of [2, 3, 255]) {
+        const bytes = base();
+        new DataView(bytes.buffer).setUint8(MEMBER(0) + flagOffset, badFlag);
+        expect(() => deserializeFitnessVector(bytes), `flag@${flagOffset} = ${badFlag}`)
+          .toThrow(/population-evaluation: invalid encoded fitness vector/);
+      }
+    }
+  });
+
+  test('absent flag with nonzero u32 payload is REJECTED (R3 canonical form)', () => {
+    // alertPresent=0 but alertStep=42
+    const b1 = base();
+    const v1 = new DataView(b1.buffer);
+    v1.setUint8(MEMBER(0) + 38, 0);
+    v1.setUint32(MEMBER(0) + 39, 42, true);
+    expect(() => deserializeFitnessVector(b1)).toThrow(/firstAlertStep/);
+    // catPresent=0 but catStep=99
+    const b2 = base();
+    const v2 = new DataView(b2.buffer);
+    v2.setUint8(MEMBER(0) + 43, 0);
+    v2.setUint32(MEMBER(0) + 44, 99, true);
+    expect(() => deserializeFitnessVector(b2)).toThrow(/firstCatastrophicStep/);
+  });
+
+  test('flag=1 with step=0 is LEGAL and distinct from absent (null vs step 0)', () => {
+    // Craft: alertPresent=1, alertStep=0, peaks above threshold for coherence.
+    const bytes = base();
+    const view = new DataView(bytes.buffer);
+    view.setFloat64(MEMBER(0) + 14, 30, true); // peakBodySpeed > alertSpeed(25)
+    view.setUint8(MEMBER(0) + 38, 1);
+    view.setUint32(MEMBER(0) + 39, 0, true);
+    const decoded = deserializeFitnessVector(bytes);
+    expect(decoded.individuals[0].integrityObservations.firstAlertStep).toBe(0);
+    // Contrast: absent (flag=0, payload=0) decodes to null.
+    const b2 = base();
+    const decoded2 = deserializeFitnessVector(b2);
+    expect(decoded2.individuals[0].integrityObservations.firstAlertStep).toBeNull();
+  });
+
+  test('policy-v1 coherence: catastrophic without alert is REJECTED (decoder)', () => {
+    const bytes = base();
+    const view = new DataView(bytes.buffer);
+    view.setFloat64(MEMBER(0) + 14, 1500, true); // peakBodySpeed > catastrophic
+    view.setUint8(MEMBER(0) + 38, 0); // alertPresent = 0
+    view.setUint32(MEMBER(0) + 39, 0, true);
+    view.setUint8(MEMBER(0) + 43, 1); // catPresent = 1
+    view.setUint32(MEMBER(0) + 44, 5, true);
+    expect(() => deserializeFitnessVector(bytes)).toThrow(/firstAlertStep/);
+  });
+
+  test('policy-v1 coherence: ok status with catastrophic step is REJECTED (decoder)', () => {
+    const bytes = base();
+    const view = new DataView(bytes.buffer);
+    view.setFloat64(MEMBER(0) + 14, 1500, true);
+    view.setUint8(MEMBER(0) + 5, 0); // statusIndex = 0 (ok)
+    view.setUint8(MEMBER(0) + 38, 1);
+    view.setUint32(MEMBER(0) + 39, 3, true);
+    view.setUint8(MEMBER(0) + 43, 1);
+    view.setUint32(MEMBER(0) + 44, 5, true);
+    expect(() => deserializeFitnessVector(bytes)).toThrow(/firstCatastrophicStep/);
+  });
+
+  test('policy-v1 coherence: numericalDivergence without catastrophic is REJECTED (decoder)', () => {
+    const bytes = base();
+    const view = new DataView(bytes.buffer);
+    view.setUint8(MEMBER(0) + 5, 2); // statusIndex = 2 (numericalDivergence)
+    view.setFloat64(MEMBER(0) + 6, 0, true); // fitness must be 0 for unselectable
+    view.setFloat64(MEMBER(0) + 14, 30, true); // peak above alert
+    view.setUint8(MEMBER(0) + 38, 1);
+    view.setUint32(MEMBER(0) + 39, 3, true);
+    view.setUint8(MEMBER(0) + 43, 0); // catPresent = 0
+    view.setUint32(MEMBER(0) + 44, 0, true);
+    expect(() => deserializeFitnessVector(bytes)).toThrow(/firstCatastrophicStep/);
+  });
+
+  test('encoder rejects -0 peaks by normalizing to +0 (canonical form)', () => {
+    const evaluation = synth([[0, 1, true, 'ok', {
+      peakBodySpeed: -0, peakSpeedDelta: -0, peakStepDisplacement: -0,
+      firstAlertStep: null, firstCatastrophicStep: null,
+    }]]);
+    const bytes = serializeFitnessVector(evaluation);
+    const view = new DataView(bytes.buffer);
+    // All three peak sign bytes must be +0 (0x00), not -0 (0x80).
+    expect(view.getUint8(MEMBER(0) + 14 + 7)).toBe(0x00);
+    expect(view.getUint8(MEMBER(0) + 22 + 7)).toBe(0x00);
+    expect(view.getUint8(MEMBER(0) + 30 + 7)).toBe(0x00);
+    // Round-trips to +0.
+    const decoded = deserializeFitnessVector(bytes);
+    expect(Object.is(decoded.individuals[0].integrityObservations.peakBodySpeed, 0)).toBe(true);
+  });
+
+  test('encoder rejects incoherent observations (policy-v1 coherence teeth)', () => {
+    // catastrophic without alert
+    expect(() => serializeFitnessVector(synth([[0, 0, true, 'numericalDivergence', {
+      peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: null, firstCatastrophicStep: 5,
+    }]]))).toThrow(/firstAlertStep/);
+    // ok with catastrophic
+    expect(() => serializeFitnessVector(synth([[0, 1, true, 'ok', {
+      peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: 3, firstCatastrophicStep: 5,
+    }]]))).toThrow(/firstCatastrophicStep/);
+    // numericalDivergence without catastrophic
+    expect(() => serializeFitnessVector(synth([[0, 0, true, 'numericalDivergence', {
+      peakBodySpeed: 30, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: 3, firstCatastrophicStep: null,
+    }]]))).toThrow(/firstCatastrophicStep/);
   });
 });
 
@@ -821,6 +990,7 @@ describe('fitness vector — the population/spec binding is UNVERIFIED (the deli
       populationSnapshotDigestState: snapshotState,
       individuals: alienIds.map((individualId, i) => ({
         individualId, valid: true, integrityStatus: 'ok', fitness: i + 0.5,
+        integrityObservations: DEFAULT_OBS,
       })),
     };
     const bytes = serializeFitnessVector(evaluation); // no complaint

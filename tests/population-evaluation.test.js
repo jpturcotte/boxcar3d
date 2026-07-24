@@ -453,8 +453,10 @@ describe('evaluation-spec encoding v1', () => {
   });
 });
 
-describe('fitness-vector encoding v2', () => {
+describe('fitness-vector encoding v3', () => {
   // Entry tuple: [individualId, fitness, valid, integrityStatus='ok'].
+  const OBS_OK = { peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0, firstAlertStep: null, firstCatastrophicStep: null };
+  const OBS_DIVERGENCE = { peakBodySpeed: 1500, peakSpeedDelta: 200, peakStepDisplacement: 50, firstAlertStep: 5, firstCatastrophicStep: 10 };
   const synth = (entries) => ({
     spec: {
       deterministic: true,
@@ -466,15 +468,17 @@ describe('fitness-vector encoding v2', () => {
       terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
     },
     populationSnapshotDigestState: 0xdeadbeef,
-    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => (
-      { individualId, fitness, valid, integrityStatus })),
+    individuals: entries.map(([individualId, fitness, valid, integrityStatus = 'ok']) => ({
+      individualId, fitness, valid, integrityStatus,
+      integrityObservations: integrityStatus === 'numericalDivergence' ? OBS_DIVERGENCE : OBS_OK,
+    })),
   });
 
   test('hand-decoded header + per-individual walk; an invalid 0 and an integrity-failed 0 are each byte-distinct from a selectable 0', () => {
     const selectableZero = serializeFitnessVector(synth([[7, 0, true]]));
     const invalidZero = serializeFitnessVector(synth([[7, 0, false]]));
     const divergedZero = serializeFitnessVector(synth([[7, 0, true, 'numericalDivergence']]));
-    expect(selectableZero.length).toBe(22 + 14);
+    expect(selectableZero.length).toBe(22 + 48);
     const view = new DataView(selectableZero.buffer, selectableZero.byteOffset, selectableZero.byteLength);
     expect(view.getUint16(0, true)).toBe(FITNESS_VECTOR_VERSION);
     expect(view.getUint16(2, true)).toBe(FITNESS_POLICY_VERSION);
@@ -488,16 +492,18 @@ describe('fitness-vector encoding v2', () => {
     expect(view.getUint8(26)).toBe(1); // validity
     expect(view.getUint8(27)).toBe(0); // integrityStatus index ('ok' = 0)
     expect(view.getFloat64(28, true)).toBe(0);
-    // Each unselectable-zero differs from the selectable zero at EXACTLY its
-    // own byte: validity at 26, integrity status at 27 ('numericalDivergence'
-    // = index 2).
+    // Each unselectable-zero differs from the selectable zero: validity at
+    // 26 for the invalid case; status byte at 27 PLUS the observation fields
+    // (36..69) for the diverged case.
     const diffsAgainst = (other) => {
       const d = [];
       selectableZero.forEach((b, i) => { if (b !== other[i]) d.push(i); });
       return d;
     };
     expect(diffsAgainst(invalidZero)).toEqual([26]);
-    expect(diffsAgainst(divergedZero)).toEqual([27]);
+    const divergedDiffs = diffsAgainst(divergedZero);
+    expect(divergedDiffs).toContain(27); // integrity status byte
+    expect(divergedDiffs.every((i) => i === 27 || (i >= 36 && i <= 69))).toBe(true);
     expect(new DataView(divergedZero.buffer).getUint8(27)).toBe(2);
   });
 

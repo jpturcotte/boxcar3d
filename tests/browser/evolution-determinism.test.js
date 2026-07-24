@@ -21,6 +21,7 @@ import { describe, test, expect } from 'vitest';
 import { EVOLUTION_GOLDEN_LOCKS } from '../../src/sim/evolution-locks.js';
 import { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } from '../../src/sim/evolution-fixtures.js';
 import { createEvolutionRun, resumeEvolutionRun } from '../../src/sim/evolution-run.js';
+import { verifyHistoryArtifact } from '../../src/sim/evolution-replay.js';
 import {
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata,
@@ -31,21 +32,6 @@ import { sha256 } from '../../src/platform/sha256.js';
 import KIMI_FIXTURE_BASE64 from '../fixtures/evolution-v1-kimi-k3max.base64?raw';
 
 const LOCK = EVOLUTION_GOLDEN_LOCKS[EVOLUTION_FIXTURE_A.name];
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
-
-const INTEROP_CONFIG = {
-  initialization: { seed: 20260721, populationSize: 4 },
-  evaluationSpec: {
-    terrain: {
-      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
-      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
-    },
-    maxSteps: 60,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
-  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
-};
 
 function decodeBase64(text) {
   const binary = globalThis.atob(text.trim());
@@ -126,26 +112,27 @@ describe('evolution golden locks (Chromium)', () => {
     expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(bytes));
   });
 
-  test('Chromium continues the independent Kimi artifact byte-identically', { timeout: 240000 }, async () => {
+  test('the v2 Kimi artifact is refused as unsupportedVersion (pre-PR-27 role: historical)', { timeout: 240000 }, async () => {
     const fixture = decodeBase64(KIMI_FIXTURE_BASE64);
     expect(fixture.length).toBe(4024);
     expect(fixture[14 + 18]).toBe(0);
 
-    const control = createEvolutionRun(INTEROP_CONFIG);
-    await control.advance();
-    const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
-    const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
-    expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
-      .toBe(fixtureHeader.rapierVersion);
-    expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
-    const resumed = await resumeEvolutionRun(fixture);
-    while (control.status().phase !== 'terminal') {
-      const a = await control.advance();
-      const b = await resumed.advance();
-      expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
-      expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
+    // The v2 artifact passes self-consistency (framing, header, digests, chain)
+    // but is refused as unsupportedVersion before physics — the fitness vector
+    // version is 2, this build implements 3.
+    const verified = await verifyHistoryArtifact(fixture);
+    expect(verified.finalGenerationIndex).toBe(0);
+
+    // Resume fails with unsupportedVersion naming the fitness-vector field.
+    let caught = null;
+    try {
+      await resumeEvolutionRun(fixture);
+    } catch (err) {
+      caught = err;
     }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    expect(caught).not.toBeNull();
+    expect(caught.code).toBe('unsupportedVersion');
+    expect(caught.context.field).toBe('fitnessVectorVersion');
+    expect(caught.context.generationIndex).toBe(0);
   });
 });

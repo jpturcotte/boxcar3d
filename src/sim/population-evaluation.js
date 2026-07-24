@@ -63,20 +63,25 @@
 //   scalars as f64; ranges as u8 length + f64s; featureTypeWeights as
 //   u8 count + (u8 declared-type index + f64) in WEIGHT_KEYS order.
 //
-// FITNESS-VECTOR ENCODING v2 (FITNESS_VECTOR_VERSION): binds the SNAPSHOT
+// FITNESS-VECTOR ENCODING v3 (FITNESS_VECTOR_VERSION): binds the SNAPSHOT
 // digest (content identity — never the initialization manifest), the spec
 // digest, AND the integrity policy version, then per individual in
 // ascending-individualId order the exact f64 fitness with an explicit
-// validity byte and an integrity-status byte (an integrity-failed 0 is never
-// indistinguishable from a merely-poor valid 0). Engine identity is
-// deliberately NOT in the vector — it is a lock-layer attestation, and a
-// source-built engine can truthfully misreport its version string:
+// validity byte, an integrity-status byte, and the five integrity
+// observations (three f64 peaks + two flag+u32 onset steps). Engine
+// identity is deliberately NOT in the vector — it is a lock-layer
+// attestation, and a source-built engine can truthfully misreport its
+// version string:
 //   u16 fitnessVectorVersion | u16 fitnessPolicyVersion
 //   u16 integrityPolicyVersion | u16 snapshotVersion
 //   u32 populationSnapshotDigestState | u16 evaluationSpecVersion
 //   u32 evaluationSpecDigestState | u32 count
 //   per individual: u32 individualId | u8 validity
 //                 | u8 integrityStatus (INTEGRITY_STATUS index) | f64 fitness
+//                 | f64 peakBodySpeed | f64 peakSpeedDelta
+//                 | f64 peakStepDisplacement
+//                 | u8 firstAlertStepPresent | u32 firstAlertStep
+//                 | u8 firstCatastrophicStepPresent | u32 firstCatastrophicStep
 
 import { runEvaluation } from './evaluation.js';
 import { TERRAIN_DEFAULTS } from './terrain.js';
@@ -97,7 +102,7 @@ export const FITNESS_POLICY_VERSION = 2; // v2: the numerical-integrity gate (se
 // This is deliberately an in-memory selection view, not a new wire format.
 // A later generation/replacement layer owns any persisted evolution history.
 export const SELECTION_POOL_VERSION = 1;
-export const FITNESS_VECTOR_VERSION = 2; // v2: +integrityPolicyVersion header, +integrityStatus byte
+export const FITNESS_VECTOR_VERSION = 3; // v3: +integrityObservations (3 peaks + 2 onset steps) per member
 export const EVALUATION_SPEC_VERSION = 1;
 export const POPULATION_WORLD_MODE = 'isolatedWorlds'; // see the world-mode ruling above
 export const REALIZABLE_SUSPENSION_TYPES = Object.freeze(['S0', 'S1']); // engine capability, not policy
@@ -154,6 +159,48 @@ function captureVehicleResult(vehicleResult) {
   return {
     valid, block, policyVersion, status, maxForwardDistance: vehicleResult.maxForwardDistance,
   };
+}
+
+/**
+ * THE EVALUATION-MEMBER CAPTURE (R5). Produces validity, integrity status,
+ * fitness AND all five integrity observations from one module-owned snapshot
+ * of a vehicle result. `captureVehicleResult` and `isVehicleResultValid`
+ * keep their exact contracts — extending the existing helper would let
+ * `isVehicleResultValid` throw on a malformed or missing observations block,
+ * a production semantic change in the one PR whose central promise is that
+ * nothing behavioural changes.
+ *
+ * The observations block is read ONCE into module-owned locals. A missing or
+ * malformed block fails loud in this module's dialect — the encoder's
+ * preflight would otherwise surface a foreign TypeError off `.peakBodySpeed`.
+ */
+export function captureEvaluationMemberResult(vehicleResult) {
+  const captured = captureVehicleResult(vehicleResult);
+  const status = requireIntegrity(captured);
+  const fitness = (captured.valid && status === 'ok')
+    ? (() => { const raw = captured.maxForwardDistance; if (!isCanonicalFitness(raw)) fail('vehicleResult.maxForwardDistance', raw); return raw; })()
+    : 0;
+  // The observations block is MANDATORY on every result the fitness vector
+  // encodes — the runner emits it unconditionally via finalizeIntegrity.
+  const block = captured.block;
+  const obs = block.observations;
+  if (typeof obs !== 'object' || obs === null) {
+    fail('vehicleResult.integrity.observations', obs);
+  }
+  const peakBodySpeed = obs.peakBodySpeed;
+  const peakSpeedDelta = obs.peakSpeedDelta;
+  const peakStepDisplacement = obs.peakStepDisplacement;
+  const firstAlertStep = obs.firstAlertStep;
+  const firstCatastrophicStep = obs.firstCatastrophicStep;
+  return Object.freeze({
+    valid: captured.valid,
+    integrityStatus: status,
+    fitness,
+    integrityObservations: Object.freeze({
+      peakBodySpeed, peakSpeedDelta, peakStepDisplacement,
+      firstAlertStep, firstCatastrophicStep,
+    }),
+  });
 }
 
 export function isVehicleResultValid(vehicleResult) {
@@ -1043,16 +1090,20 @@ export async function evaluatePopulation(population, evaluationSpec) {
     if (effectiveDt === null) effectiveDt = r.effectiveDt;
     else if (r.effectiveDt !== effectiveDt) fail('effectiveDt', `${r.effectiveDt} drifted from ${effectiveDt}`);
     const v = r.vehicles[0];
+    // R5: one capture produces validity, integrity status, fitness AND the
+    // five observations — the encoder's preflight then validates them all.
+    const memberResult = captureEvaluationMemberResult(v);
     individuals.push({
       individualId,
-      fitness: fitnessFromVehicleResult(v),
-      valid: isVehicleResultValid(v),
+      fitness: memberResult.fitness,
+      valid: memberResult.valid,
+      integrityStatus: memberResult.integrityStatus,
+      integrityObservations: memberResult.integrityObservations,
       // The integrity classification rides at member level (serialized into
       // the fitness vector) AND in full inside diagnostics — an
       // integrity-failed individual stays OBSERVABLE (status, first failure
       // step, reasons, bounded observations, raw task metrics), never
       // silently converted to a bare zero.
-      integrityStatus: v.integrity.status,
       diagnostics: {
         forwardDistance: v.forwardDistance,
         maxForwardDistance: v.maxForwardDistance,
@@ -1121,7 +1172,7 @@ function resolveSpecDigestState(evaluation) {
 // decoder's exact-length identity cannot drift apart (the genotypeByteLength
 // precedent — GENOTYPE_BASE_BYTES / GENOTYPE_AXLE_STRIDE in assembly.js).
 const FITNESS_VECTOR_HEADER_BYTES = 2 + 2 + 2 + 2 + 4 + 2 + 4 + 4; // 22
-const FITNESS_VECTOR_MEMBER_BYTES = 4 + 1 + 1 + 8; // 14
+const FITNESS_VECTOR_MEMBER_BYTES = 4 + 1 + 1 + 8 + 8 + 8 + 8 + 1 + 4 + 1 + 4; // 48
 
 /** Exact byte length of a canonical fitness vector carrying `count` members. */
 export function fitnessVectorByteLength(count) {
@@ -1148,31 +1199,25 @@ export function serializeFitnessVector(evaluation) {
   const specState = resolveSpecDigestState(evaluation);
   // ONE indexed preflight builds a module-owned snapshot of every row —
   // structural shape, canonical id, strictly-ascending order, strict boolean
-  // validity, known integrity status, finite non-negative fitness, and the
-  // policy-v2 coherence tooth — BEFORE the buffer exists. The write pass
-  // below is then a pure encoding pass over already-validated module-owned
-  // rows: it re-reads nothing from the caller, so nothing can differ from
-  // what was checked (the validatedMembers ruling in population.js). The
-  // former shape read `individuals[i].individualId` in the ordering pass and
-  // again in the write pass, and dereferenced rows without a shape check —
-  // `[null]` or a sparse array leaked a foreign TypeError from a public
-  // encoder.
+  // validity, known integrity status, finite non-negative fitness, the
+  // policy-v2 coherence tooth, AND the five integrity observations (R4) —
+  // BEFORE the buffer exists. The write pass below is then a pure encoding
+  // pass over already-validated module-owned rows: it re-reads nothing from
+  // the caller, so nothing can differ from what was checked (the
+  // validatedMembers ruling in population.js).
   const rows = [];
   const count = individuals.length;
   for (let i = 0; i < count; i += 1) {
     const ind = individuals[i];
     if (typeof ind !== 'object' || ind === null) fail(`evaluation.individuals[${i}]`, ind);
-    // ALL FOUR FIELDS CAPTURED BEFORE ANY CHECK. The former shape read each
-    // one two or three times — the guard, the coherence tooth, and then again
-    // when building the "module-owned" row — so the row could carry values no
-    // check had seen. Measured (round-10): a `valid` getter answering
-    // true, true, false was guarded as valid and ENCODED as invalid-carrying-
-    // fitness-1, a member combination the decoder correctly refuses; the
-    // encoder produced bytes its own inverse rejects.
+    // ALL NINE FIELDS CAPTURED BEFORE ANY CHECK (extended from the former
+    // four to include the five integrity observations — same ruling: the row
+    // carries exactly what was validated, never a re-read).
     const individualId = ind.individualId;
     const valid = ind.valid;
     const integrityStatus = ind.integrityStatus;
     const fitness = ind.fitness;
+    const obs = ind.integrityObservations;
     if (!isCanonicalUint32(individualId)) fail('individualId', individualId);
     if (i > 0 && !(individualId > rows[i - 1].individualId)) {
       fail(`evaluation.individuals[${i}].individualId`, 'must be strictly ascending');
@@ -1180,19 +1225,63 @@ export function serializeFitnessVector(evaluation) {
     if (typeof valid !== 'boolean') fail(`individual ${individualId} valid`, valid);
     const statusIndex = INTEGRITY_STATUS.indexOf(integrityStatus);
     if (statusIndex === -1) fail(`individual ${individualId} integrityStatus`, integrityStatus);
-    // The fitness contract is a non-negative finite score: NaN/Infinity would
-    // emit implementation-defined bytes (the cross-engine hazard the codec
-    // exists to prevent), and a negative fitness contradicts the max-progress
-    // policy (maxForwardDistance ≥ 0, unselectable ⇒ 0). Reject an internally
-    // contradictory vector rather than faithfully serialize it: fitness must
-    // be 0 unless the member is BOTH valid and integrity-clean (policy v2).
     if (!isCanonicalFitness(fitness)) fail(`individual ${individualId} fitness`, fitness);
     if ((!valid || integrityStatus !== 'ok') && fitness !== 0) {
       fail(`individual ${individualId} fitness`,
         `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
     }
+    // --- Integrity observations validation (R4) ---
+    if (typeof obs !== 'object' || obs === null) fail(`individual ${individualId} integrityObservations`, obs);
+    const peakBodySpeed = obs.peakBodySpeed;
+    const peakSpeedDelta = obs.peakSpeedDelta;
+    const peakStepDisplacement = obs.peakStepDisplacement;
+    const firstAlertStep = obs.firstAlertStep;
+    const firstCatastrophicStep = obs.firstCatastrophicStep;
+    // Peaks: typeof number AND >= 0 — admits +Infinity (legal policy-v1
+    // output, grounding 2), rejects NaN and -Infinity. -0 is normalized to
+    // +0 for canonical form (one logical value, one byte encoding).
+    if (typeof peakBodySpeed !== 'number' || !(peakBodySpeed >= 0)) {
+      fail(`individual ${individualId} peakBodySpeed`, peakBodySpeed);
+    }
+    if (typeof peakSpeedDelta !== 'number' || !(peakSpeedDelta >= 0)) {
+      fail(`individual ${individualId} peakSpeedDelta`, peakSpeedDelta);
+    }
+    if (typeof peakStepDisplacement !== 'number' || !(peakStepDisplacement >= 0)) {
+      fail(`individual ${individualId} peakStepDisplacement`, peakStepDisplacement);
+    }
+    const canonicalPeakBodySpeed = peakBodySpeed === 0 ? 0 : peakBodySpeed;
+    const canonicalPeakSpeedDelta = peakSpeedDelta === 0 ? 0 : peakSpeedDelta;
+    const canonicalPeakStepDisplacement = peakStepDisplacement === 0 ? 0 : peakStepDisplacement;
+    // Steps: null or canonical u32.
+    if (firstAlertStep !== null && !isCanonicalUint32(firstAlertStep)) {
+      fail(`individual ${individualId} firstAlertStep`, firstAlertStep);
+    }
+    if (firstCatastrophicStep !== null && !isCanonicalUint32(firstCatastrophicStep)) {
+      fail(`individual ${individualId} firstCatastrophicStep`, firstCatastrophicStep);
+    }
+    // Policy-conditional coherence (conditioned on integrityPolicyVersion 1).
+    if (INTEGRITY_POLICY_VERSION === 1) {
+      if (firstCatastrophicStep !== null) {
+        if (firstAlertStep === null || firstAlertStep > firstCatastrophicStep) {
+          fail(`individual ${individualId} firstAlertStep`,
+            `catastrophic at ${firstCatastrophicStep} requires alert at or before it, got ${firstAlertStep}`);
+        }
+      }
+      if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
+        fail(`individual ${individualId} firstCatastrophicStep`,
+          `status 'ok' must have no catastrophic step, got ${firstCatastrophicStep}`);
+      }
+      if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
+        fail(`individual ${individualId} firstCatastrophicStep`,
+          'status numericalDivergence requires a catastrophic step');
+      }
+    }
     rows.push({
       individualId, valid, statusIndex, fitness,
+      peakBodySpeed: canonicalPeakBodySpeed,
+      peakSpeedDelta: canonicalPeakSpeedDelta,
+      peakStepDisplacement: canonicalPeakStepDisplacement,
+      firstAlertStep, firstCatastrophicStep,
     });
   }
   const view = new DataView(new ArrayBuffer(fitnessVectorByteLength(rows.length)));
@@ -1210,6 +1299,16 @@ export function serializeFitnessVector(evaluation) {
     view.setUint8(o, rows[i].valid ? 1 : 0); o += 1;
     view.setUint8(o, rows[i].statusIndex); o += 1;
     view.setFloat64(o, rows[i].fitness, true); o += 8;
+    view.setFloat64(o, rows[i].peakBodySpeed, true); o += 8;
+    view.setFloat64(o, rows[i].peakSpeedDelta, true); o += 8;
+    view.setFloat64(o, rows[i].peakStepDisplacement, true); o += 8;
+    // Flag+u32, no sentinel: absent ⇒ the u32 payload is exactly 0.
+    const alertPresent = rows[i].firstAlertStep !== null;
+    view.setUint8(o, alertPresent ? 1 : 0); o += 1;
+    view.setUint32(o, alertPresent ? rows[i].firstAlertStep : 0, true); o += 4;
+    const catPresent = rows[i].firstCatastrophicStep !== null;
+    view.setUint8(o, catPresent ? 1 : 0); o += 1;
+    view.setUint32(o, catPresent ? rows[i].firstCatastrophicStep : 0, true); o += 4;
   }
   // receiver `view` is the module-owned DataView this encoder allocated.
   // eslint-disable-next-line no-restricted-syntax
@@ -1296,7 +1395,51 @@ export function deserializeFitnessVector(bytes) {
       vectorDecodeFail(`individuals[${i}].fitness`,
         `unselectable individual (valid ${valid}, integrity ${integrityStatus}) must have fitness 0, got ${fitness}`);
     }
-    individuals.push(Object.freeze({ individualId, valid, integrityStatus, fitness }));
+    // --- Integrity observations (mirror the encoder's R4 validation) ---
+    const peakBodySpeed = r.f64(`individuals[${i}].peakBodySpeed`);
+    if (!(peakBodySpeed >= 0)) vectorDecodeFail(`individuals[${i}].peakBodySpeed`, peakBodySpeed);
+    const peakSpeedDelta = r.f64(`individuals[${i}].peakSpeedDelta`);
+    if (!(peakSpeedDelta >= 0)) vectorDecodeFail(`individuals[${i}].peakSpeedDelta`, peakSpeedDelta);
+    const peakStepDisplacement = r.f64(`individuals[${i}].peakStepDisplacement`);
+    if (!(peakStepDisplacement >= 0)) vectorDecodeFail(`individuals[${i}].peakStepDisplacement`, peakStepDisplacement);
+    const alertPresent = r.flag(`individuals[${i}].firstAlertStepPresent`);
+    const alertStepRaw = r.u32(`individuals[${i}].firstAlertStep`);
+    if (!alertPresent && alertStepRaw !== 0) {
+      vectorDecodeFail(`individuals[${i}].firstAlertStep`,
+        `absent flag with nonzero payload ${alertStepRaw}`);
+    }
+    const firstAlertStep = alertPresent ? alertStepRaw : null;
+    const catPresent = r.flag(`individuals[${i}].firstCatastrophicStepPresent`);
+    const catStepRaw = r.u32(`individuals[${i}].firstCatastrophicStep`);
+    if (!catPresent && catStepRaw !== 0) {
+      vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+        `absent flag with nonzero payload ${catStepRaw}`);
+    }
+    const firstCatastrophicStep = catPresent ? catStepRaw : null;
+    // Policy-conditional coherence (conditioned on integrityPolicyVersion 1).
+    if (integrityPolicyVersion === 1) {
+      if (firstCatastrophicStep !== null) {
+        if (firstAlertStep === null || firstAlertStep > firstCatastrophicStep) {
+          vectorDecodeFail(`individuals[${i}].firstAlertStep`,
+            `catastrophic at ${firstCatastrophicStep} requires alert at or before it, got ${firstAlertStep}`);
+        }
+      }
+      if (integrityStatus === 'ok' && firstCatastrophicStep !== null) {
+        vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+          `status 'ok' must have no catastrophic step, got ${firstCatastrophicStep}`);
+      }
+      if (integrityStatus === 'numericalDivergence' && firstCatastrophicStep === null) {
+        vectorDecodeFail(`individuals[${i}].firstCatastrophicStep`,
+          'status numericalDivergence requires a catastrophic step');
+      }
+    }
+    individuals.push(Object.freeze({
+      individualId, valid, integrityStatus, fitness,
+      integrityObservations: Object.freeze({
+        peakBodySpeed, peakSpeedDelta, peakStepDisplacement,
+        firstAlertStep, firstCatastrophicStep,
+      }),
+    }));
   }
   r.expectEnd('fitnessVector');
   return Object.freeze({
@@ -1309,6 +1452,44 @@ export function deserializeFitnessVector(bytes) {
     evaluationSpecDigestState,
     individuals: Object.freeze(individuals),
   });
+}
+
+/**
+ * LAYERED VERSION PEEK (R1 Gate A). Reads the five versioned dependencies
+ * from a fitness vector's bytes WITHOUT decoding the full member payload.
+ * Layered: read `fitnessVectorVersion` first; if unsupported, stop and report
+ * it without assuming an unknown layout; only when current, read and compare
+ * the remaining four declared fields. Returns a frozen record naming the
+ * exact field that failed, or null when all five agree with this build.
+ *
+ * Truncated or structurally unreadable prefix ⇒ the caller reports
+ * `malformedHistory` (the peek throws through vectorDecodeFail).
+ */
+export function peekFitnessVectorVersions(bytes) {
+  const r = createByteReader(bytes, vectorDecodeFail);
+  const fitnessVectorVersion = r.u16('fitnessVectorVersion');
+  if (fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
+    return Object.freeze({ field: 'fitnessVectorVersion', stored: fitnessVectorVersion, current: FITNESS_VECTOR_VERSION });
+  }
+  const fitnessPolicyVersion = r.u16('fitnessPolicyVersion');
+  if (fitnessPolicyVersion !== FITNESS_POLICY_VERSION) {
+    return Object.freeze({ field: 'fitnessPolicyVersion', stored: fitnessPolicyVersion, current: FITNESS_POLICY_VERSION });
+  }
+  const integrityPolicyVersion = r.u16('integrityPolicyVersion');
+  if (integrityPolicyVersion !== INTEGRITY_POLICY_VERSION) {
+    return Object.freeze({ field: 'integrityPolicyVersion', stored: integrityPolicyVersion, current: INTEGRITY_POLICY_VERSION });
+  }
+  const snapshotVersion = r.u16('snapshotVersion');
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) {
+    return Object.freeze({ field: 'snapshotVersion', stored: snapshotVersion, current: POPULATION_SNAPSHOT_VERSION });
+  }
+  // Skip populationSnapshotDigestState (u32) to reach evaluationSpecVersion.
+  r.u32('populationSnapshotDigestState');
+  const evaluationSpecVersion = r.u16('evaluationSpecVersion');
+  if (evaluationSpecVersion !== EVALUATION_SPEC_VERSION) {
+    return Object.freeze({ field: 'evaluationSpecVersion', stored: evaluationSpecVersion, current: EVALUATION_SPEC_VERSION });
+  }
+  return null; // all five agree
 }
 
 /**

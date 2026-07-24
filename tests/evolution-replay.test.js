@@ -474,6 +474,128 @@ describe('ordered verification localizes the failure', () => {
 });
 
 // ============================================================================
+// (2b) THE PRE-PHYSICS FITNESS-VECTOR GATES — stages 8a/8b (PR #27)
+// ============================================================================
+
+// v3 member layout inside the fitnessVector component: a 22-byte vector
+// header, then 48 bytes per member. Relative to a member's base: id u32 @0,
+// valid u8 @4, status u8 @5, fitness f64 @6, peakBodySpeed f64 @14,
+// peakSpeedDelta f64 @22, peakStepDisplacement f64 @30, alert flag u8 @38 +
+// step u32 @39, catastrophic flag u8 @43 + step u32 @44. The mutations below
+// write RAW BYTES on purpose — the encoder refuses these vectors, so only a
+// reforged artifact can carry them, which is exactly the gate's threat model.
+const memberBase = (j) => 22 + j * 48;
+const mutateVectorMember = (record, j, mutate) => {
+  const vector = new Uint8Array(record.components.fitnessVector);
+  mutate(new DataView(vector.buffer, vector.byteOffset, vector.byteLength), memberBase(j));
+  record.components.fitnessVector = vector;
+};
+
+describe('the pre-physics fitness-vector gates (8a compatibility, 8b coherence)', () => {
+  test('Gate A: a stale fitnessVectorVersion is `unsupportedVersion`, named and localized, with zero evaluations', async () => {
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i !== 1) return; // only generation 1 goes stale — the error must say so
+        const vector = new Uint8Array(record.components.fitnessVector);
+        new DataView(vector.buffer, vector.byteOffset, vector.byteLength).setUint16(0, 2, true);
+        record.components.fitnessVector = vector;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'unsupportedVersion', /fitnessVectorVersion is 2; this build implements 3/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'fitnessVectorVersion', generationIndex: 1, stored: 2, current: 3,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('Gate A: a vector prefix too short to answer is `malformedHistory` — corruption, not staleness', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      // 4 bytes: the current version u16 plus one more field — the layered
+      // peek must run out of prefix, not misread garbage.
+      mutateRecord: (record) => {
+        record.components.fitnessVector = record.components.fitnessVector.slice(0, 4);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /too short to carry its version prefix/,
+    );
+    expect(err.context).toMatchObject({ generationIndex: 0 });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('Gate B: an alert onset past executedSteps is `malformedHistory`, localized, with zero evaluations', async () => {
+    const artifact = await runGenerations(1); // maxSteps 45 ⇒ executedSteps 45
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => mutateVectorMember(record, 0, (view, base) => {
+        view.setFloat64(base + 14, 30, true); // peakBodySpeed 30: the alert band fires…
+        view.setUint8(base + 38, 1); // …and is declared…
+        view.setUint32(base + 39, 46, true); // …one capture past executedSteps
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /firstAlertStep 46 exceeds executedSteps 45/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstAlertStep', generationIndex: 0, individualId: 0, onset: 46, executedSteps: 45,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('Gate B: an alert onset with every peak below its alert threshold is `malformedHistory`', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => mutateVectorMember(record, 0, (view, base) => {
+        view.setFloat64(base + 14, 0, true); // all three peaks quiet…
+        view.setFloat64(base + 22, 0, true);
+        view.setFloat64(base + 30, 0, true);
+        view.setUint8(base + 38, 1); // …yet an alert onset is declared
+        view.setUint32(base + 39, 0, true);
+        view.setUint8(base + 43, 0); // and no catastrophic onset
+        view.setUint32(base + 44, 0, true);
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /declares firstAlertStep 0 but no retained peak exceeds an alert threshold/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstAlertStep', generationIndex: 0, individualId: 0, firstAlertStep: 0,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('Gate B: a catastrophic peak with no catastrophic onset is `malformedHistory`', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => mutateVectorMember(record, 0, (view, base) => {
+        view.setFloat64(base + 14, 1200, true); // peakBodySpeed above catastrophicSpeed 1000
+        view.setUint8(base + 38, 1); // the alert onset IS coherently declared…
+        view.setUint32(base + 39, 0, true);
+        view.setUint8(base + 43, 0); // …but the catastrophic onset is denied
+        view.setUint32(base + 44, 0, true);
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /declares no catastrophic onset but a retained peak exceeds a catastrophic threshold/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstCatastrophicStep', generationIndex: 0, individualId: 0, peakBodySpeed: 1200,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+});
+
+// ============================================================================
 // (3) THE RUNTIME GATE
 // ============================================================================
 
@@ -589,8 +711,8 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
         const v = new Uint8Array(record.components.fitnessVector);
-        // The last member's f64 fitness, at the end of the fixed-stride vector.
-        new DataView(v.buffer).setFloat64(v.length - 8, 1234.5, true);
+        // The last member's f64 fitness, at +6 within its 48-byte stride.
+        new DataView(v.buffer).setFloat64(v.length - 48 + 6, 1234.5, true);
         record.components.fitnessVector = v;
       },
     });

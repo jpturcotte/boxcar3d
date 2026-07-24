@@ -23,12 +23,15 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
+//  8a. fitness-vector version compatibility        (stale wire ⇒ unsupportedVersion)
+//  8b. fitness-vector ↔ metadata coherence         (contradiction ⇒ malformedHistory)
 //   9. deterministic flavor + exact Rapier version (before physics)
 //  10. deterministic replay, stopping at the first byte divergence
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-9 are the two small checks below; 10 is the run's own replay loop.
+// 8-9 (including the PR #27 gates 8a/8b) are the small checks below; 10 is the
+// run's own replay loop.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
@@ -45,17 +48,27 @@ import {
   SHA256_DIGEST_BYTES, COMPONENT_KINDS, EVALUATION_METADATA_VERSION,
   GENERATION_RECORD_VERSION,
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
+  deserializeEvaluationMetadata,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, evolutionFail, isEvolutionUint32,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
+  MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, evolutionFail,
+  isEvolutionUint32,
 } from './evolution-contract.js';
 import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
 } from './evolution-operators.js';
+import {
+  INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
+} from './integrity.js';
+import { POPULATION_SNAPSHOT_VERSION } from './population.js';
+import {
+  EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
+  deserializeFitnessVector, peekFitnessVectorVersions,
+} from './population-evaluation.js';
 
 /** The replay stages, in the order a record's components are compared. */
 export const REPLAY_STAGES = Object.freeze([
@@ -271,6 +284,154 @@ export function checkExpectedIdentity(verified, expected) {
       evolutionFail('staleOrWrongArtifact',
         `the artifact's final committed generation is ${verified.finalGenerationIndex}, not the expected ${expected.generationIndex}`,
         { expected: expected.generationIndex, actual: verified.finalGenerationIndex });
+    }
+  }
+}
+
+// A gate-local decode guard: a payload that passed every digest can still
+// carry component bytes the CURRENT decoders refuse (they were digested as
+// opaque bytes). Foreign decoder dialects are translated into the taxonomy;
+// an error already in the taxonomy passes through untouched.
+function gateDecode(code, message, context, body) {
+  try {
+    return body();
+  } catch (cause) {
+    if (cause instanceof EvolutionError) throw cause;
+    evolutionFail(code, `${message}: ${cause && cause.message ? cause.message : String(cause)}`, context, cause);
+    return undefined; // unreachable; evolutionFail always throws
+  }
+}
+
+/**
+ * Stage 8a — Gate A: fitness-vector version compatibility, BEFORE any physics.
+ *
+ * The fitness vector is digested as opaque bytes, so stages 3-7 prove it is
+ * the vector the artifact was built with — not that THIS build can read it.
+ * A stale wire version must be refused as `unsupportedVersion` (the remedy is
+ * a different build or a fresh run), never surfaced as a decode error halfway
+ * through replay. The check uses the LAYERED prefix peek: on a foreign
+ * `fitnessVectorVersion` nothing beyond that first u16 is trusted, because
+ * later prefix fields may not even exist under the stored layout. A prefix too
+ * short to answer is `malformedHistory` — corruption, not staleness.
+ */
+export function checkFitnessVectorCompatibility(verified) {
+  const generations = verified.framing.generations;
+  for (let i = 0; i < generations.length; i += 1) {
+    const payload = decodeGenerationPayload(generations[i].payloadBytes);
+    const peeked = gateDecode('malformedHistory',
+      `generation ${i} fitness vector is too short to carry its version prefix`,
+      { generationIndex: i },
+      () => peekFitnessVectorVersions(payload.components.fitnessVector));
+    const checks = [
+      ['fitnessVectorVersion', peeked.fitnessVectorVersion, FITNESS_VECTOR_VERSION],
+      ['fitnessPolicyVersion', peeked.fitnessPolicyVersion, FITNESS_POLICY_VERSION],
+      ['integrityPolicyVersion', peeked.integrityPolicyVersion, INTEGRITY_POLICY_VERSION],
+      ['snapshotVersion', peeked.snapshotVersion, POPULATION_SNAPSHOT_VERSION],
+      ['evaluationSpecVersion', peeked.evaluationSpecVersion, EVALUATION_SPEC_VERSION],
+    ];
+    for (let k = 0; k < checks.length; k += 1) {
+      const [name, stored, current] = checks[k];
+      if (stored !== current) {
+        evolutionFail('unsupportedVersion',
+          `generation ${i} fitness vector ${name} is ${stored}; this build implements ${current}`,
+          { field: name, generationIndex: i, stored, current });
+      }
+    }
+  }
+}
+
+/**
+ * Stage 8b — Gate B: fitness-vector ↔ metadata coherence, BEFORE any physics.
+ *
+ * Runs only after Gate A, so every vector decodes under THIS build's layout.
+ * The five persisted observations are not free-standing scalars: policy v1
+ * defines them against the SAME evaluation the record's metadata describes,
+ * and a contradiction means the artifact is lying about its own provenance —
+ * `malformedHistory`, localized to the first offending individual.
+ *
+ * Two families of teeth, in canonical order (generations, then individuals,
+ * then onset bounds before peak equivalence):
+ *   - ONSET BOUNDS: an onset is a capture index of the recorded run, so
+ *     `0 ≤ onset ≤ executedSteps` (the u32 wire already guarantees ≥ 0).
+ *   - PEAK ↔ ONSET EQUIVALENCE: policy v1's predicates are strict `>` over
+ *     per-capture samples, and the three retained peaks are maxima over those
+ *     same samples — so "an onset exists" must EQUAL "some peak exceeds its
+ *     threshold", both directions, at the thresholds the metadata's own
+ *     effectiveDt scales (the exact createIntegrityState arithmetic:
+ *     dtScale = effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT; the two speed
+ *     bounds are absolute, the per-capture bounds scale).
+ * The codec's own coherence teeth (status ↔ onsets, alert ≤ catastrophic) are
+ * NOT repeated here — deserializeFitnessVector already enforces them.
+ */
+export function verifyFitnessVectorMetadataCoherence(verified) {
+  const generations = verified.framing.generations;
+  for (let i = 0; i < generations.length; i += 1) {
+    const payload = decodeGenerationPayload(generations[i].payloadBytes);
+    const metadata = gateDecode('malformedHistory',
+      `generation ${i} evaluation metadata is malformed`, { generationIndex: i },
+      () => deserializeEvaluationMetadata(payload.components.evaluationMetadata));
+    const vector = gateDecode('malformedHistory',
+      `generation ${i} fitness vector is malformed`, { generationIndex: i },
+      () => deserializeFitnessVector(payload.components.fitnessVector));
+    const executedSteps = metadata.executedSteps;
+    const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+    const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
+    const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
+    const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+    const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed; // absolute
+    const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
+    const individuals = vector.individuals;
+    for (let j = 0; j < individuals.length; j += 1) {
+      const row = individuals[j];
+      const individualId = row.individualId;
+      const onsets = [
+        ['firstAlertStep', row.firstAlertStep],
+        ['firstCatastrophicStep', row.firstCatastrophicStep],
+      ];
+      for (let k = 0; k < onsets.length; k += 1) {
+        const [name, onset] = onsets[k];
+        if (onset !== null && onset > executedSteps) {
+          evolutionFail('malformedHistory',
+            `generation ${i} individual ${individualId} ${name} ${onset} exceeds executedSteps ${executedSteps}`,
+            {
+              field: name, generationIndex: i, individualId, onset, executedSteps,
+            });
+        }
+      }
+      const alertFires = row.peakBodySpeed > alertSpeed
+        || row.peakSpeedDelta > alertSpeedDelta
+        || row.peakStepDisplacement > alertStepDisplacement;
+      if ((row.firstAlertStep !== null) !== alertFires) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${individualId} ${row.firstAlertStep !== null
+            ? `declares firstAlertStep ${row.firstAlertStep} but no retained peak exceeds an alert threshold`
+            : 'declares no alert onset but a retained peak exceeds an alert threshold'}`,
+          {
+            field: 'firstAlertStep',
+            generationIndex: i,
+            individualId,
+            firstAlertStep: row.firstAlertStep,
+            peakBodySpeed: row.peakBodySpeed,
+            peakSpeedDelta: row.peakSpeedDelta,
+            peakStepDisplacement: row.peakStepDisplacement,
+          });
+      }
+      const catastropheFires = row.peakBodySpeed > catastrophicSpeed
+        || row.peakStepDisplacement > catastrophicStepDisplacement;
+      if ((row.firstCatastrophicStep !== null) !== catastropheFires) {
+        evolutionFail('malformedHistory',
+          `generation ${i} individual ${individualId} ${row.firstCatastrophicStep !== null
+            ? `declares firstCatastrophicStep ${row.firstCatastrophicStep} but no retained peak exceeds a catastrophic threshold`
+            : 'declares no catastrophic onset but a retained peak exceeds a catastrophic threshold'}`,
+          {
+            field: 'firstCatastrophicStep',
+            generationIndex: i,
+            individualId,
+            firstCatastrophicStep: row.firstCatastrophicStep,
+            peakBodySpeed: row.peakBodySpeed,
+            peakStepDisplacement: row.peakStepDisplacement,
+          });
+      }
     }
   }
 }

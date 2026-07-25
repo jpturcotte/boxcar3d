@@ -71,7 +71,7 @@ import {
   assembleHistory, decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata, digestComponent, digestGeneration, digestHeader,
   digestHistoryBody, digestsEqual, encodeEvolutionHeader, encodeGenerationPayload,
-  projectEvolutionHistoryCapacity, serializeEvaluationMetadata,
+  peekEvaluationMetadataVersion, projectEvolutionHistoryCapacity, serializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import { sha256 } from '../src/platform/sha256.js';
 import {
@@ -353,8 +353,8 @@ const EXPECTED_EXPORTS = Object.freeze({
     'assembleHistory', 'decodeEvolutionHeader', 'decodeGenerationPayload',
     'decodeHistoryFraming', 'deserializeEvaluationMetadata', 'digestComponent',
     'digestGeneration', 'digestHeader', 'digestHistoryBody', 'digestsEqual',
-    'encodeEvolutionHeader', 'encodeGenerationPayload', 'projectEvolutionHistoryCapacity',
-    'serializeEvaluationMetadata',
+    'encodeEvolutionHeader', 'encodeGenerationPayload', 'peekEvaluationMetadataVersion',
+    'projectEvolutionHistoryCapacity', 'serializeEvaluationMetadata',
   ]),
   // The platform adapter is INSIDE this family by ruling, not beside it: it is
   // a byte seam whose output is persisted artifact identity.
@@ -690,6 +690,9 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'projectEvolutionHistoryCapacity', kind: 'pure', callerCollections: ['componentByteLengths'], callerNumbers: ['initializationManifestByteLength', 'evaluationSpecByteLength', 'generationCount'] },
     { name: 'serializeEvaluationMetadata', kind: 'encoder', callerCollections: [], callerNumbers: ['metadata.effectiveDt', 'metadata.executedSteps'] },
     { name: 'deserializeEvaluationMetadata', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // The replay gate's nested-version peek: reads bytes, returns a frozen
+    // record holding the one declared version scalar, never a full decode.
+    { name: 'peekEvaluationMetadataVersion', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'encodeEvolutionHeader', kind: 'encoder', callerCollections: ['header.initializationManifestBytes', 'header.evaluationSpecBytes'], callerNumbers: ['header.populationSize', 'header.maxGenerations'] },
     { name: 'decodeEvolutionHeader', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'encodeGenerationPayload', kind: 'encoder', callerCollections: ['record.components', 'componentDigests'], callerNumbers: ['record.generationIndex'] },
@@ -1043,6 +1046,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     // storage SYNCHRONOUSLY — which is why `assembleHistory` is not an `async
     // function` (a rejected promise would make this battery untestable).
     deserializeEvaluationMetadata: { intake: 'gated', invoke: (u) => deserializeEvaluationMetadata(u) },
+    peekEvaluationMetadataVersion: { intake: 'gated', invoke: (u) => peekEvaluationMetadataVersion(u) },
     decodeEvolutionHeader: { intake: 'gated', invoke: (u) => decodeEvolutionHeader(u) },
     decodeGenerationPayload: { intake: 'gated', invoke: (u) => decodeGenerationPayload(u) },
     decodeHistoryFraming: { intake: 'gated', invoke: (u) => decodeHistoryFraming(u) },
@@ -1715,6 +1719,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   // (serializeEvaluationMetadata reads only scalars — no callerCollections row,
   // so it declares no verdict, by the table's own rule.)
   deserializeEvaluationMetadata: 'ownedCopy',
+  peekEvaluationMetadataVersion: 'ownedCopy',
   encodeEvolutionHeader: 'freshBytes',
   decodeEvolutionHeader: 'ownedCopy',
   encodeGenerationPayload: 'freshBytes',
@@ -1880,6 +1885,7 @@ function ownedCopyCases() {
       };
       return [
         { name: 'deserializeEvaluationMetadata', result: deserializeEvaluationMetadata(metadataBytes), roots: [metadataBytes] },
+        { name: 'peekEvaluationMetadataVersion', result: peekEvaluationMetadataVersion(metadataBytes), roots: [metadataBytes] },
         { name: 'decodeEvolutionHeader', result: decodeEvolutionHeader(headerBytes), roots: [headerBytes] },
         { name: 'decodeGenerationPayload', result: decodeGenerationPayload(payloadBytes), roots: [payloadBytes] },
         {

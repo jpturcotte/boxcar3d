@@ -184,6 +184,27 @@ describe('extractHistoryObservations', () => {
     expect(err.context).toMatchObject({ field: 'fitnessVectorVersion', stored: 2, current: 3 });
   });
 
+  test('a stale evaluationMetadataVersion is REFUSED as unsupportedVersion — the same taxonomy as resume', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const m = new Uint8Array(record.components.evaluationMetadata);
+      new DataView(m.buffer).setUint16(0, 0, true); // evaluationMetadataVersion 1 -> 0
+      record.components.evaluationMetadata = m;
+    });
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'unsupportedVersion', /evaluationMetadataVersion/,
+    );
+    expect(err.context).toMatchObject({ field: 'evaluationMetadataVersion', generationIndex: 0, stored: 0, current: 1 });
+  });
+
+  test('a truncated metadata component is REFUSED as malformedHistory — the same taxonomy as resume', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      record.components.evaluationMetadata = record.components.evaluationMetadata.slice(0, 1);
+    });
+    await expectCodeAsync(() => extractHistoryObservations(broken), 'malformedHistory', /malformed/);
+  });
+
   test('the expected-digest freshness contract matches resume semantics', async () => {
     const artifact = await fixtureArtifact();
     const framing = decodeHistoryFraming(artifact);

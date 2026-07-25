@@ -23,7 +23,9 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
-//   9. fitness-vector format compatibility         (unsupported format)
+//   9. nested format compatibility                 (unsupported format:
+//      the fitness-vector versions and the evaluation-metadata version,
+//      each read through its OWN module's layered peek)
 //  10. fitness-vector metadata coherence           (malformed current format)
 //  11. deterministic flavor + exact Rapier version (before physics)
 //  12. deterministic replay, stopping at the first byte divergence
@@ -60,7 +62,7 @@ import {
   SHA256_DIGEST_BYTES, COMPONENT_KINDS, EVALUATION_METADATA_VERSION,
   GENERATION_RECORD_VERSION,
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
-  deserializeEvaluationMetadata,
+  deserializeEvaluationMetadata, peekEvaluationMetadataVersion,
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
@@ -86,6 +88,12 @@ export const REPLAY_STAGES = Object.freeze([
   'initialization', 'population', 'evaluationMetadata', 'fitnessVector',
   'terminalReason', 'lineage',
 ]);
+
+/** Human-readable labels for the two nested components the gates read. */
+const COMPONENT_LABELS = Object.freeze({
+  fitnessVector: 'fitness vector',
+  evaluationMetadata: 'evaluation metadata',
+});
 
 /** The 64 MiB intake ceiling, checked before the first copy. Re-exported so the
  * resume seam and this module cannot disagree about the number. */
@@ -249,13 +257,23 @@ async function verifyFramedArtifact(framing) {
 }
 
 /**
- * Stage 5's gate collection, per generation: peek the fitness vector's
- * declared versions (Gate A's input) and — ONLY when every one is current —
+ * Stage 5's gate collection, per generation: peek BOTH nested components'
+ * declared versions (Gate A's inputs) and — ONLY when every one is current —
  * decode the vector and its sibling metadata TRANSIENTLY to evaluate
  * observation coherence (Gate B's input). Returns
  * `{ compatibility, coherence }`: the first failure descriptor for each gate,
  * or null. Decoded rows are discarded in place; the descriptors carry scalars
  * (plus the thrown cause on the malformed paths), honouring the memory model.
+ *
+ * OWNERSHIP, stated because two formats meet here: the fitness vector's
+ * versions are read through population-evaluation.js's own layered peek, and
+ * the evaluation metadata's version through evolution-history.js's — each
+ * nested component retains ownership of its version interpretation, and no
+ * format offset is duplicated into this module. The vector's peek is
+ * evaluated first (it is this gate's primary subject); a stale nested version
+ * of EITHER kind reports `unsupportedVersion`, while a prefix too short to
+ * reveal its version reports `malformedHistory` — the same classification for
+ * both components.
  */
 function collectFitnessVectorGateInputs(components, generationIndex) {
   let compatibility = null;
@@ -265,13 +283,16 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
   } catch (cause) {
     // A truncated or structurally unreadable prefix is malformed, not
     // unsupported — the layered peek never got far enough to name a version.
-    compatibility = Object.freeze({ generationIndex, unreadablePrefix: true, cause });
+    compatibility = Object.freeze({
+      generationIndex, component: 'fitnessVector', unreadablePrefix: true, cause,
+    });
   }
   if (compatibility === null && peeked.fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
     // The layered peek stopped at byte 2: the version field is the only thing
     // readable without assuming the unknown layout that follows.
     compatibility = Object.freeze({
       generationIndex,
+      component: 'fitnessVector',
       field: 'fitnessVectorVersion',
       stored: peeked.fitnessVectorVersion,
       current: FITNESS_VECTOR_VERSION,
@@ -291,23 +312,60 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
       const [field, current] = remaining[f];
       if (peeked[field] !== current) {
         compatibility = Object.freeze({
-          generationIndex, field, stored: peeked[field], current,
+          generationIndex, component: 'fitnessVector', field, stored: peeked[field], current,
         });
         break;
       }
+    }
+  }
+  if (compatibility === null) {
+    // The evaluation metadata component owns its OWN nested version: read it
+    // through evolution-history.js's layered peek, with the same
+    // unsupported-vs-malformed classification as the vector's.
+    let peekedMetadata = null;
+    try {
+      peekedMetadata = peekEvaluationMetadataVersion(components.evaluationMetadata);
+    } catch (cause) {
+      compatibility = Object.freeze({
+        generationIndex, component: 'evaluationMetadata', unreadablePrefix: true, cause,
+      });
+    }
+    if (compatibility === null && peekedMetadata.evaluationMetadataVersion !== EVALUATION_METADATA_VERSION) {
+      compatibility = Object.freeze({
+        generationIndex,
+        component: 'evaluationMetadata',
+        field: 'evaluationMetadataVersion',
+        stored: peekedMetadata.evaluationMetadataVersion,
+        current: EVALUATION_METADATA_VERSION,
+      });
     }
   }
   let coherence = null;
   if (compatibility === null) {
     // Gate B reads the vector against its OWN generation's persisted metadata
     // (executedSteps and effectiveDt). A decode failure here is malformed
-    // current format — recorded, not raised, so the ladder holds.
+    // current format — recorded with the failing component named, not raised,
+    // so the ladder holds.
+    let metadata = null;
+    let vector = null;
     try {
-      const metadata = deserializeEvaluationMetadata(components.evaluationMetadata);
-      const vector = deserializeFitnessVector(components.fitnessVector);
-      coherence = fitnessVectorCoherenceVerdict(vector, metadata, generationIndex);
+      metadata = deserializeEvaluationMetadata(components.evaluationMetadata);
     } catch (cause) {
-      coherence = Object.freeze({ generationIndex, undecodable: true, cause });
+      coherence = Object.freeze({
+        generationIndex, component: 'evaluationMetadata', undecodable: true, cause,
+      });
+    }
+    if (coherence === null) {
+      try {
+        vector = deserializeFitnessVector(components.fitnessVector);
+      } catch (cause) {
+        coherence = Object.freeze({
+          generationIndex, component: 'fitnessVector', undecodable: true, cause,
+        });
+      }
+    }
+    if (coherence === null) {
+      coherence = fitnessVectorCoherenceVerdict(vector, metadata, generationIndex);
     }
   }
   return { compatibility, coherence };
@@ -315,7 +373,8 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
 
 /**
  * Gate B's per-generation verdict, or null when the vector agrees with its
- * own metadata. Two coherence rules:
+ * own metadata. The policy-v1 coherence rules, evaluated per member in
+ * declaration order:
  *
  *   - an onset step must lie inside the executed captures (0..executedSteps —
  *   captures are 0..maxSteps inclusive and executedSteps IS maxSteps, so a
@@ -323,19 +382,31 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
  *   - the peak<->alert equivalence: the online detector records a first alert
  *   step IFF some capture crossed an alert threshold, and the whole-run peaks
  *   saw every sample — so "an alert step is present" and "a peak exceeds its
- *   applied alert threshold" must agree exactly, per member.
+ *   applied alert threshold" must agree exactly;
+ *   - the peak<->catastrophic equivalence, the SAME producer contract one band
+ *   up: a catastrophic step is recorded IFF either catastrophic arm crossed —
+ *   peakBodySpeed over the ABSOLUTE catastrophic speed, or
+ *   peakStepDisplacement over the scaled catastrophic step displacement
+ *   (there is deliberately NO catastrophic speed-delta arm: the producer has
+ *   none). So "a catastrophic step is present" and "a catastrophic arm
+ *   crossed" must agree exactly.
  *
- * The applied alert thresholds are recomputed with the SAME arithmetic the
- * producer used (createIntegrityState: dtScale first, then the multiply), so
- * the comparison is bit-identical, never an approximation of it. Gate A has
- * already established the current versions — this verdict therefore runs
- * under integrity policy v1 semantics by construction.
+ * The applied thresholds are recomputed with the SAME arithmetic the producer
+ * used (createIntegrityState: dtScale first — this generation's OWN persisted
+ * effectiveDt divided by INTEGRITY_REFERENCE_CAPTURE_DT — then the multiply,
+ * strict `>` throughout, so a value exactly at a threshold does not cross and
+ * +Infinity does). Bit-identical by construction, never an approximation, and
+ * never a global or current-runtime timestep. Gate A has already established
+ * the current versions — this verdict therefore runs under integrity policy
+ * v1 semantics by construction.
  */
 function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
   const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
   const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
   const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
   const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+  const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed; // absolute — never scaled
+  const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
   const executedSteps = metadata.executedSteps;
   const rows = vector.individuals;
   const rowCount = rows.length;
@@ -358,6 +429,13 @@ function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
     if ((observations.firstAlertStep !== null) !== alertImplied) {
       return Object.freeze({
         generationIndex, individualId, rule: 'peakAlertEquivalence', firstAlertStep: observations.firstAlertStep, alertImplied,
+      });
+    }
+    const catastrophicImplied = observations.peakBodySpeed > catastrophicSpeed
+      || observations.peakStepDisplacement > catastrophicStepDisplacement;
+    if ((observations.firstCatastrophicStep !== null) !== catastrophicImplied) {
+      return Object.freeze({
+        generationIndex, individualId, rule: 'peakCatastrophicEquivalence', firstCatastrophicStep: observations.firstCatastrophicStep, catastrophicImplied,
       });
     }
   }
@@ -445,14 +523,15 @@ export function checkExpectedIdentity(verified, expected) {
 export function checkFitnessVectorCompatibility(verified) {
   const failure = verified.fitnessVectorCompatibilityFailure;
   if (failure === null) return;
+  const componentLabel = COMPONENT_LABELS[failure.component];
   if (failure.unreadablePrefix === true) {
     evolutionFail('malformedHistory',
-      `generation ${failure.generationIndex} fitness vector has a truncated or unreadable version prefix`,
+      `generation ${failure.generationIndex} ${componentLabel} has a truncated or unreadable version prefix`,
       { generationIndex: failure.generationIndex },
       failure.cause);
   }
   evolutionFail('unsupportedVersion',
-    `generation ${failure.generationIndex} fitness vector ${failure.field} is ${failure.stored}; this build implements ${failure.current}`,
+    `generation ${failure.generationIndex} ${componentLabel} ${failure.field} is ${failure.stored}; this build implements ${failure.current}`,
     {
       field: failure.field,
       generationIndex: failure.generationIndex,
@@ -477,7 +556,7 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
   if (failure === null) return;
   if (failure.undecodable === true) {
     evolutionFail('malformedHistory',
-      `generation ${failure.generationIndex} fitness vector or evaluation metadata is malformed`,
+      `generation ${failure.generationIndex} ${COMPONENT_LABELS[failure.component]} is malformed`,
       { generationIndex: failure.generationIndex },
       failure.cause);
   }
@@ -489,8 +568,22 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
       {
         generationIndex: failure.generationIndex,
         individualId: failure.individualId,
+        rule: failure.rule,
         firstAlertStep: failure.firstAlertStep,
         alertImplied: failure.alertImplied,
+      });
+  }
+  if (failure.rule === 'peakCatastrophicEquivalence') {
+    evolutionFail('malformedHistory',
+      `generation ${failure.generationIndex} individual ${failure.individualId} contradicts its own observations: `
+      + `firstCatastrophicStep is ${String(failure.firstCatastrophicStep)} but the whole-run peaks `
+      + `${failure.catastrophicImplied ? 'cross' : 'never cross'} the catastrophic thresholds under this generation's effectiveDt`,
+      {
+        generationIndex: failure.generationIndex,
+        individualId: failure.individualId,
+        rule: failure.rule,
+        firstCatastrophicStep: failure.firstCatastrophicStep,
+        catastrophicImplied: failure.catastrophicImplied,
       });
   }
   evolutionFail('malformedHistory',
@@ -498,6 +591,7 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
     {
       generationIndex: failure.generationIndex,
       individualId: failure.individualId,
+      rule: failure.rule,
       field: failure.stepField,
       stored: failure.stored,
       executedSteps: failure.executedSteps,

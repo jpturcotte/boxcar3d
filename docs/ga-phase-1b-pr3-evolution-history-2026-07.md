@@ -524,16 +524,26 @@ unchanged; both RAISE after stage 8.
   `integrityPolicyVersion`, `snapshotVersion`, `evaluationSpecVersion`)
   compared in declared order. The error names the exact field, the
   generation, and the stored and current values. A truncated or structurally
-  unreadable prefix is `malformedHistory`, not unsupported.
+  unreadable prefix is `malformedHistory`, not unsupported. The evaluation
+  metadata component owns its OWN nested version the same way, through
+  `peekEvaluationMetadataVersion` (owned by `evolution-history.js`): a stale
+  `evaluationMetadataVersion` is `unsupportedVersion` naming the field, the
+  generation, and the stored and current values — never `malformedHistory` —
+  while a prefix too short to reveal the version is malformed.
 - **Gate B — `verifyFitnessVectorMetadataCoherence` (`malformedHistory`).** A
   current-format artifact whose observations contradict its own per-
   generation metadata: an onset step beyond that generation's own
   `executedSteps` (captures are `0..executedSteps` inclusive, so a first
-  crossing at exactly `executedSteps` is legal), or a recorded first alert
-  step that disagrees with the whole-run peaks under that generation's
-  `effectiveDt` (the peak↔alert equivalence, recomputed with the producer's
-  exact threshold arithmetic — Gate A has already established policy v1).
-  Without it, an artifact declaring `executedSteps: 45` and
+  crossing at exactly `executedSteps` is legal), or a recorded onset step
+  that disagrees with the whole-run peaks under that generation's OWN
+  `effectiveDt` — the peak↔alert AND peak↔catastrophic equivalences,
+  recomputed with the producer's exact arithmetic (`dtScale` first, then the
+  multiply; strict `>`, so a value exactly at a threshold does not cross and
+  `+Infinity` does; Gate A has already established policy v1). The
+  catastrophic arm set mirrors the producer exactly: `peakBodySpeed` over the
+  absolute catastrophic speed, or `peakStepDisplacement` over the scaled
+  catastrophic step displacement — there is deliberately NO catastrophic
+  speed-delta arm. Without it, an artifact declaring `executedSteps: 45` and
   `firstAlertStep: 4_000_000_000` passed every digest, version and runtime
   check and surfaced as `replayDivergence` after a full generation-0
   re-simulation — the misleading class this stage exists to remove.

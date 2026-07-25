@@ -647,6 +647,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   copyOrdinaryBytes: 'exempt: TypedArray input',
   // evolution-history.js / src/platform/sha256.js
   deserializeEvaluationMetadata: 'exempt: TypedArray input',
+  peekEvaluationMetadataVersion: 'exempt: TypedArray input',
   decodeEvolutionHeader: 'exempt: TypedArray input',
   decodeGenerationPayload: 'exempt: TypedArray input',
   decodeHistoryFraming: 'exempt: TypedArray input',

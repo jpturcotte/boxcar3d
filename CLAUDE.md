@@ -2487,9 +2487,10 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**GA Phase 1B PR 29 landed — integrity observations persisted in evolution
-history (fitness-vector v3), two pre-physics format gates, and a verified
-offline extraction seam. NO policy, selection or mutation behaviour change:**
+**GA Phase 1B PR 29 (this branch — OPEN, not yet merged to `main`) —
+integrity observations persisted in evolution history (fitness-vector v3),
+two pre-physics format gates, and a verified offline extraction seam. NO
+policy, selection or mutation behaviour change:**
 - **The gap closed.** Integrity policy v1 makes only the CATASTROPHIC band a
   selection failure; the alert band is an observation, so a diverging vehicle
   reports `status: 'ok'` and stays selectable. PR 4 measured that exposure by
@@ -2532,11 +2533,18 @@ offline extraction seam. NO policy, selection or mutation behaviour change:**
   stops when unsupported (never assumes an unknown layout); only when current
   are the remaining four declared versions compared — the error names the
   exact field, generation, stored and current values; a truncated or
-  unreadable prefix is `malformedHistory`. Gate B
+  unreadable prefix is `malformedHistory`. The evaluation metadata component
+  owns its OWN nested version the same way, through
+  `peekEvaluationMetadataVersion` in `evolution-history.js` — a stale
+  `evaluationMetadataVersion` is `unsupportedVersion` (never
+  `malformedHistory`); a prefix too short to reveal it is malformed. Gate B
   (`verifyFitnessVectorMetadataCoherence`): onset steps ≤ each generation's
   OWN persisted `executedSteps` (captures are 0..maxSteps inclusive, so a
   first crossing at exactly `executedSteps` is legal), plus the peak↔alert
-  equivalence recomputed with the producer's exact dtScale arithmetic.
+  AND peak↔catastrophic equivalences recomputed with the producer's exact
+  dtScale arithmetic (strict `>`; a value exactly at a threshold does not
+  cross; `+Infinity` does; there is NO catastrophic speed-delta arm — the
+  producer has none).
   `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 12 stages.
 - **Locks moved, exactly as named.** Population `fitnessVectorDigest`
   `a6d04f75` → `fd4222eb` (+ `fitnessVectorVersion` 2 → 3; the rows gained

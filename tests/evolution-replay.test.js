@@ -45,8 +45,9 @@ const {
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
-  decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
-  digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
+  decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
+  digestComponent, digestGeneration,
+  digestHeader, encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
 const { REPLAY_STAGES, firstByteDifference, verifyHistoryArtifact } = await import('../src/sim/evolution-replay.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
@@ -1078,5 +1079,337 @@ describe('the fitness-vector gates: unsupported format, then malformed current f
       () => resumeEvolutionRun(fixture, { expectedHistoryDigestBytes: wrongDigest }),
       'staleOrWrongArtifact',
     );
+  });
+});
+
+
+// ============================================================================
+// (8) THE CATASTROPHIC COHERENCE RULE AND THE NESTED METADATA-VERSION GATE
+// ============================================================================
+// The peak<->catastrophic equivalence is the SAME producer contract one band
+// up from the alert rule: firstCatastrophicStep is present IFF either
+// catastrophic arm crossed (peakBodySpeed > catastrophicSpeed, ABSOLUTE, or
+// peakStepDisplacement > catastrophicStepDisplacement * dtScale — there is NO
+// catastrophic speed-delta arm). And the evaluation metadata component owns
+// its own nested version: a stale one is `unsupportedVersion`, never
+// `malformedHistory`. Every artifact below is a self-consistent reforge, so
+// only the named gate can fire.
+
+describe('the peak<->catastrophic equivalence and the nested metadata version', () => {
+  // Rewrite ONE generation-0 member's observation row (and, when a case needs
+  // it, its status/validity) and re-encode through the production encoder, so
+  // every artifact is codec-legal and only Gate B's semantics can fire.
+  const reforgeMemberZero = async (artifact, rewrite) => reforge(artifact, {
+    mutateRecord: (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const individuals = decoded.individuals.map((row, i) => (i === 0 ? rewrite(row) : row));
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals,
+      });
+    },
+  });
+
+  const okRow = (observations) => (row) => ({
+    ...row,
+    valid: false,
+    integrityStatus: 'ok',
+    fitness: 0,
+    integrityObservations: { ...row.integrityObservations, ...observations },
+  });
+
+  // The applied displacement thresholds for the fixture's persisted
+  // effectiveDt (0.01666666753590107 = Math.fround(1/60)), computed OFFLINE
+  // from the frozen policy constants — copy-declared here, never derived from
+  // the gate under test:
+  //   dtScale = 0.01666666753590107 / (1/60) = 1.0000000521540642
+  //   catastrophic step displacement = (1000/60) * dtScale
+  const CAT_DISP_APPLIED = 16.66666753590107; // exactly at the applied threshold
+  const CAT_DISP_ONE_ABOVE = 16.666667535901073; // one representable value above
+  // A foreign persisted dt (Math.fround(1/30) = 0.03333333507180214) doubles
+  // the scale, so the SAME peak (20 m/capture) is a catastrophic crossing
+  // under the fixture's real dt but not under the foreign one:
+  //   real:    20 > 16.66666753590107   (crossing)
+  //   foreign: 20 < 33.33333507180214   (no crossing)
+  const FOREIGN_DT = 0.03333333507180214; // Math.fround(1/30)
+
+  const withForeignDt = async (artifact) => reforge(artifact, {
+    mutateRecord: (record) => {
+      const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+      record.components.evaluationMetadata = serializeEvaluationMetadata({
+        ...metadata, effectiveDt: FOREIGN_DT,
+      });
+    },
+  });
+
+  test.each([
+    ['peakBodySpeed above the absolute catastrophic speed, no step recorded',
+      { peakBodySpeed: 1500, firstAlertStep: 2, firstCatastrophicStep: null }],
+    ['peakStepDisplacement above the scaled catastrophic threshold, no step recorded',
+      { peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null }],
+    ['one representable value above the catastrophic speed, no step recorded',
+      { peakBodySpeed: 1000.0000000000001, firstAlertStep: 2, firstCatastrophicStep: null }],
+    ['one representable value above the scaled displacement threshold, no step recorded',
+      { peakStepDisplacement: CAT_DISP_ONE_ABOVE, firstAlertStep: 2, firstCatastrophicStep: null }],
+  ])('a catastrophic arm crossed with no catastrophic step is `malformedHistory` (%s)', async (_name, observations) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeMemberZero(artifact, okRow(observations));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /peaks cross the catastrophic thresholds/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      individualId: 0,
+      rule: 'peakCatastrophicEquivalence',
+      firstCatastrophicStep: null,
+      catastrophicImplied: true,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a catastrophic step with NEITHER arm crossed is `malformedHistory`, naming the recorded step', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeMemberZero(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        // 40 m/s crosses the ALERT band (coherent with the recorded alert
+        // step) but not the catastrophic one — so only the catastrophic rule
+        // can fire.
+        peakBodySpeed: 40,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: 2,
+        firstCatastrophicStep: 4,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /peaks never cross the catastrophic thresholds/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      individualId: 0,
+      rule: 'peakCatastrophicEquivalence',
+      firstCatastrophicStep: 4,
+      catastrophicImplied: false,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test.each([
+    ['body speed EXACTLY at the catastrophic threshold', { peakBodySpeed: 1000, firstAlertStep: 2, firstCatastrophicStep: null }],
+    ['step displacement EXACTLY at its applied threshold', { peakStepDisplacement: CAT_DISP_APPLIED, firstAlertStep: 2, firstCatastrophicStep: null }],
+  ])('a value exactly at a threshold does not cross — the row is accepted (%s)', async (_name, observations) => {
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeMemberZero(artifact, okRow(observations));
+    globalThis.__replayProbe.evaluations = 0;
+    // The gate passes; only replay finds the mutated vector differs from the
+    // derived one — which is exactly what proves the gate accepted the row.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+    expect(globalThis.__replayProbe.evaluations).toBeGreaterThan(0);
+  });
+
+  test('+Infinity implies a catastrophic crossing — accepted when the step is recorded', async () => {
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeMemberZero(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: Infinity,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: 2,
+        firstCatastrophicStep: 2,
+      },
+    }));
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+  });
+
+  test.each([
+    ['with a later catastrophic crossing its peaks imply', {
+      peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: 2, firstCatastrophicStep: 4,
+    }],
+    ['with no crossing at all', {
+      peakBodySpeed: 12, peakSpeedDelta: 0, peakStepDisplacement: 0,
+      firstAlertStep: null, firstCatastrophicStep: null,
+    }],
+  ])("a 'nonFinite' row remains legal %s", async (_name, observations) => {
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeMemberZero(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'nonFinite',
+      fitness: 0,
+      integrityObservations: { ...row.integrityObservations, ...observations },
+    }));
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+  });
+
+  test('the verdict follows the PERSISTED effectiveDt — the same peak flips with the metadata, never a global assumption', async () => {
+    const artifact = await runGenerations(1);
+    const row = okRow({ peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null });
+    // Under the fixture's real dt, 20 m/capture crosses the scaled threshold.
+    const realDt = await reforgeMemberZero(artifact, row);
+    globalThis.__replayProbe.evaluations = 0;
+    await expectCodeAsync(() => resumeEvolutionRun(realDt), 'malformedHistory', /catastrophic/);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+    // The SAME row under a foreign persisted dt does not cross — the gate
+    // accepts (replay then reports the mutated metadata, proving the verdict
+    // was computed from the persisted dt and not the runtime's).
+    const foreignDt = await reforgeMemberZero(await withForeignDt(artifact), row);
+    const err = await expectCodeAsync(() => resumeEvolutionRun(foreignDt), 'replayDivergence');
+    expect(err.context.stage).toBe('evaluationMetadata');
+  });
+
+  test('each generation is judged against its OWN metadata — a foreign dt in generation 0 does not leak into generation 1', async () => {
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i !== 0) return;
+        const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+        record.components.evaluationMetadata = serializeEvaluationMetadata({
+          ...metadata, effectiveDt: FOREIGN_DT,
+        });
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        const individuals = decoded.individuals.map((row, m) => (m === 0 ? okRow({
+          peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null,
+        })(row) : row));
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+          individuals,
+        });
+      },
+    });
+    // Generation 0's row is coherent under ITS OWN (foreign) metadata and
+    // generation 1 is untouched: the gate passes both (replay then reports
+    // generation 0's mutated metadata). A global-dt bug would misreport
+    // malformedHistory here.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
+    expect(err.context.stage).toBe('evaluationMetadata');
+    expect(err.context.generationIndex).toBe(0);
+  });
+
+  test('a current fitness vector with a STALE evaluationMetadataVersion is `unsupportedVersion`, named exactly, before physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const m = new Uint8Array(record.components.evaluationMetadata);
+        new DataView(m.buffer).setUint16(0, 0, true); // evaluationMetadataVersion 1 -> 0
+        record.components.evaluationMetadata = m;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'unsupportedVersion', /evaluationMetadataVersion/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'evaluationMetadataVersion', generationIndex: 0, stored: 0, current: 1,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test.each([
+    ['a ONE-byte metadata component (the version prefix itself is unreadable)', 1],
+    ['a ten-byte metadata component (a current version, then truncation)', 10],
+  ])('truncated metadata is `malformedHistory`, not unsupported — %s', async (_name, length) => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        record.components.evaluationMetadata = record.components.evaluationMetadata.slice(0, length);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory', /malformed/);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a current metadata version followed by INVALID content is `malformedHistory`, naming the component', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const m = new Uint8Array(record.components.evaluationMetadata);
+        new DataView(m.buffer).setFloat64(3, NaN, true); // effectiveDt must be finite and > 0
+        record.components.evaluationMetadata = m;
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /evaluation metadata is malformed/,
+    );
+    expect(err.cause).toBeInstanceOf(Error);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('THE LADDER, nested versions: component corruption beats the nested version error', async () => {
+    const artifact = await runGenerations(1);
+    const framing = decodeHistoryFraming(artifact);
+    const payload = decodeGenerationPayload(framing.generations[0].payloadBytes);
+    const payloadStart = 8 + 2 + 4 + framing.headerBytes.length + SHA256_DIGEST_BYTES + 4 + 4;
+    // Inside the evaluationMetadata component's effectiveDt field — the
+    // digest stage must catch this BEFORE any version interpretation.
+    const metadataStart = payloadStart + 2 + 4 + 1
+      + 4 + payload.components.population.length + SHA256_DIGEST_BYTES + 4;
+    const broken = new Uint8Array(artifact);
+    broken[metadataStart + 5] ^= 0xff;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'componentDigestMismatch');
+    expect(err.context.component).toBe('evaluationMetadata');
+  });
+
+  test('THE LADDER, nested versions: external staleness beats the nested version error', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const m = new Uint8Array(record.components.evaluationMetadata);
+        new DataView(m.buffer).setUint16(0, 0, true);
+        record.components.evaluationMetadata = m;
+      },
+    });
+    const wrongDigest = await sha256(Uint8Array.of(0));
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken, { expectedHistoryDigestBytes: wrongDigest }),
+      'staleOrWrongArtifact',
+    );
+  });
+
+  test('THE LADDER, nested versions: unsupported format beats current-format incoherence', async () => {
+    // Generation 0 carries a Gate-B violation (an onset step beyond
+    // executedSteps); generation 1 carries the stale metadata version.
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i === 0) {
+          const v = new Uint8Array(record.components.fitnessVector);
+          new DataView(v.buffer).setUint8(22 + 38, 1);
+          new DataView(v.buffer).setUint32(22 + 39, 4000000000, true);
+          record.components.fitnessVector = v;
+        } else {
+          const m = new Uint8Array(record.components.evaluationMetadata);
+          new DataView(m.buffer).setUint16(0, 0, true);
+          record.components.evaluationMetadata = m;
+        }
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', /evaluationMetadataVersion/);
+    expect(err.context).toMatchObject({ field: 'evaluationMetadataVersion', generationIndex: 1 });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a valid current metadata component passes the nested-version gate unchanged', async () => {
+    const artifact = await runGenerations(1);
+    const resumed = await resumeEvolutionRun(artifact);
+    expect(resumed.status().lastCommittedGenerationIndex).toBe(0);
   });
 });

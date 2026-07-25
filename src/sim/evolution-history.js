@@ -378,6 +378,23 @@ export function deserializeEvaluationMetadata(bytes) {
   });
 }
 
+/**
+ * Read ONLY the declared evaluationMetadataVersion, for the replay layer's
+ * pre-physics compatibility gate. This component OWNS its nested version:
+ * the peek reads exactly one u16 and never touches the remaining layout —
+ * which is also what makes a component too short to reveal its version
+ * MALFORMED (the reader's truncation failure) rather than unsupported, and a
+ * current version followed by invalid content the full decoder's job to
+ * reject. A prefix PEEK, never a decode: no world mode, no f64s, no
+ * end-of-input identity (a full component legitimately continues past the
+ * field read here).
+ */
+export function peekEvaluationMetadataVersion(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const evaluationMetadataVersion = r.u16('evaluationMetadataVersion');
+  return Object.freeze({ evaluationMetadataVersion });
+}
+
 // --- Header ------------------------------------------------------------------
 
 function encodeUtf8Field(value, path) {

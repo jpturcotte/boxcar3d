@@ -6,9 +6,11 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR 29 — **integrity observations now persist in
-evolution history**, so the alert-band exposure PR 4 had to re-simulate is now
-readable from a saved run with no physics at all. The fitness vector is v3
+**Status:** `main` is unchanged at GA Phase 1B PR 4. This branch carries
+**PR #29 (open, not yet merged)**, which adds **integrity-observation
+persistence to evolution history** — so the alert-band exposure PR 4 had to
+re-simulate becomes readable from a saved run with no physics at all. On this
+branch the fitness vector is v3
 (`FITNESS_VECTOR_VERSION = 3`): every member row canonically carries the five
 observations the online detector already computed (peak body speed, peak speed
 delta, peak step displacement, first alert step, first catastrophic step —
@@ -23,7 +25,7 @@ verification and both gates before decoding anything, and a structurally
 independent v3 oracle artifact
 (`tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64`) verifies,
 resumes and continues byte-identically while the v2 Kimi artifact becomes the
-early-refusal witness for stale formats. **This PR changes no behaviour:**
+early-refusal witness for stale formats. **PR #29 changes no behaviour:**
 policy stays integrity v1 / fitness v2, the mutation defaults stay
 (0.05, 0.05), and an alert-bearing `ok` vehicle is STILL selectable on main —
 v3 persists the evidence; it does not act on it. The solver defect itself

@@ -74,7 +74,8 @@ pressure.
 3. ~~Both of the above are far easier if the integrity **observations** (peak body
    speed, first alert step) are **persisted in the fitness vector** first (a
    versioned encoding change) — today the vector stores only status, which is
-   why PR 4's diagnosis needed a forensic re-run.~~ **DISCHARGED (PR 29):**
+   why PR 4's diagnosis needed a forensic re-run.~~ **DISCHARGED on the PR #29
+   branch (pending merge):**
    fitness-vector v3 persists all five observations (the three peaks and both
    onset steps) per member, a verified offline seam
    (`scripts/history-observations.js`) reads them from a digest-verified
@@ -175,8 +176,9 @@ it.**
 **Concrete sequence:**
 1. ~~Persist integrity observations in the fitness vector (enables A's pool +
    false-negative measurements, and makes contamination readable from history).~~
-   **DISCHARGED (PR 29)** — fitness-vector v3, the two pre-physics gates, and
-   the verified extraction seam; representation only, no behaviour change.
+   **DISCHARGED on the PR #29 branch (pending merge)** — fitness-vector v3, the
+   two pre-physics gates, and the verified extraction seam; representation
+   only, no behaviour change.
 2. **→ Next PR:** measure the alert-band selection exposure A would remove —
    the breeding-pool and false-negative measurements above, from the persisted
    observations — then decide: land A (alert-band escalation) with the

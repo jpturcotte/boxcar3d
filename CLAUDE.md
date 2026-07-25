@@ -2524,9 +2524,11 @@ policy, selection or mutation behaviour change:**
 - **R1 — history version stays 1; two pre-physics gates after external
   identity.** `EVOLUTION_HISTORY_VERSION` and `headerDigest` do not move (the
   header binds no vector version). Verification stage 5 now collects the
-  gates' inputs while walking components — scalars plus at most one failure
-  descriptor per gate, NEVER rows, so the documented memory model holds — and
-  the RAISE happens after stage 8. The ladder: corruption → wrong artifact →
+  gates' inputs while walking components; before any vector-row decode, its
+  fixed byte geometry must not exceed the capped header population (≤256).
+  Transient rows are discarded immediately and only scalars plus one failure
+  descriptor per gate are retained, so the documented memory model holds. The
+  RAISE happens after stage 8. The ladder: corruption → wrong artifact →
   **unsupported format** → **malformed current format** → runtime mismatch →
   deterministic divergence. Gate A (`checkFitnessVectorCompatibility`):
   layered `peekFitnessVectorVersions` reads `fitnessVectorVersion` first and
@@ -2545,9 +2547,13 @@ policy, selection or mutation behaviour change:**
   stale version somewhere else. Gate B
   (`verifyFitnessVectorMetadataCoherence`): onset steps ≤ each generation's
   OWN persisted `executedSteps` (captures are 0..maxSteps inclusive, so a
-  first crossing at exactly `executedSteps` is legal), plus the peak↔alert
-  AND peak↔catastrophic equivalences recomputed with the producer's exact
-  dtScale arithmetic (strict `>`; a value exactly at a threshold does not
+  first crossing at exactly `executedSteps` is legal); an onset at capture 0
+  requires the corresponding body-speed crossing because the producer has no
+  previous sample for delta/displacement arms there. That is a necessary
+  condition only: v3 stores whole-run peaks, so a body-speed peak can establish
+  that a crossing occurred but not prove it occurred at capture 0. Gate B also
+  checks the peak↔alert AND peak↔catastrophic equivalences with the producer's
+  exact dtScale arithmetic (strict `>`; a value exactly at a threshold does not
   cross; `+Infinity` does; there is NO catastrophic speed-delta arm — the
   producer has none).
   `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 12 stages.
@@ -2599,14 +2605,15 @@ policy, selection or mutation behaviour change:**
   committed v3 history yields observations with ZERO evaluations, and that
   tampered, incoherent and stale artifacts are refused with the production
   codes rather than read as evidence.
-- **Deliberate sabotage: 12 mutations, ALL BITE** (gate ordering, the layered
+- **Deliberate sabotage: 15 mutations, ALL BITE** (gate ordering, the layered
   peek, absent-payload canonicality, the +Infinity acceptance, the three
   policy-conditional coherence rules independently, the executed-steps bound,
-  the peak↔alert equivalence, the capture boundary, the seam's gates, the
-  seam's verification, the member stride against the capacity pin). The 'ok'
-  rule's first tooth was unfalsifiable — the catastrophic-implies-alert rule
-  fired first and hid it — and now carries a coherent alert step so ONLY the
-  'ok' rule is reachable.
+  the peak↔alert equivalence, the capture boundary, both capture-zero cause
+  constraints, header/vector geometry, the seam's gates, the seam's
+  verification, the member stride against the capacity pin). The 'ok' rule's
+  first tooth was unfalsifiable —
+  the catastrophic-implies-alert rule fired first and hid it — and now carries
+  a coherent alert step so ONLY the 'ok' rule is reachable.
 - **What did NOT change.** `INTEGRITY_POLICY_VERSION` 1,
   `FITNESS_POLICY_VERSION` 2, the mutation defaults (0.05, 0.05); every
   production integrity, fitness and mutation behaviour;

@@ -1020,6 +1020,31 @@ describe('the fitness-vector gates: unsupported format, then malformed current f
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
+  test('a vector whose byte length exceeds the capped header population is `malformedHistory` BEFORE allocation or physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => {
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        const last = decoded.individuals.at(-1);
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+          individuals: [...decoded.individuals, { ...last, individualId: last.individualId + 1 }],
+        });
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /header populationSize 6/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'fitnessVectorPopulationSizeOverflow',
+      populationSize: 6,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
   test.each([
     ['a peak over the alert threshold with NO alert step recorded',
       { peakBodySpeed: 100 }, null, true],
@@ -1041,6 +1066,52 @@ describe('the fitness-vector gates: unsupported format, then malformed current f
     );
     expect(err.context).toMatchObject({ generationIndex: 0, alertImplied });
     expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('an alert onset at capture 0 requires a body-speed crossing BEFORE physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeVector(artifact, (row) => ({
+      ...row,
+      integrityObservations: {
+        ...row.integrityObservations,
+        peakBodySpeed: 0,
+        peakSpeedDelta: 100,
+        peakStepDisplacement: 0,
+        firstAlertStep: 0,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /capture 0.*body-speed/i,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      individualId: 0,
+      rule: 'captureZeroAlertCause',
+      firstAlertStep: 0,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a capture-0 alert is not provably malformed when the whole-run body-speed peak crossed', async () => {
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeVector(artifact, (row) => ({
+      ...row,
+      integrityObservations: {
+        ...row.integrityObservations,
+        peakBodySpeed: 100,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: 0,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    // v3's aggregate cannot prove WHEN the body-speed peak occurred. Reaching
+    // replay divergence proves Gate B correctly abstained from claiming that
+    // the capture-0 timestamp itself was attested.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+    expect(globalThis.__replayProbe.evaluations).toBeGreaterThan(0);
   });
 
   test('a byte flipped INSIDE the v3 observation region is `componentDigestMismatch` — the observations are inside component identity', async () => {
@@ -1090,10 +1161,11 @@ describe('the fitness-vector gates: unsupported format, then malformed current f
 // up from the alert rule: firstCatastrophicStep is present IFF either
 // catastrophic arm crossed (peakBodySpeed > catastrophicSpeed, ABSOLUTE, or
 // peakStepDisplacement > catastrophicStepDisplacement * dtScale — there is NO
-// catastrophic speed-delta arm). And the evaluation metadata component owns
-// its own nested version: a stale one is `unsupportedVersion`, never
-// `malformedHistory`. Every artifact below is a self-consistent reforge, so
-// only the named gate can fire.
+// catastrophic speed-delta arm). At capture 0 only body speed is available;
+// there is no previous sample from which to derive displacement. And the
+// evaluation metadata component owns its own nested version: a stale one is
+// `unsupportedVersion`, never `malformedHistory`. Every artifact below is a
+// self-consistent reforge, so only the named gate can fire.
 
 describe('the peak<->catastrophic equivalence and the nested metadata version', () => {
   // Rewrite ONE generation-0 member's observation row (and, when a case needs
@@ -1199,6 +1271,58 @@ describe('the peak<->catastrophic equivalence and the nested metadata version', 
       catastrophicImplied: false,
     });
     expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a catastrophic onset at capture 0 requires a body-speed crossing BEFORE physics', async () => {
+    const artifact = await runGenerations(1);
+    const broken = await reforgeMemberZero(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: 30,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 20,
+        firstAlertStep: 0,
+        firstCatastrophicStep: 0,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /capture 0.*body-speed/i,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      individualId: 0,
+      rule: 'captureZeroCatastrophicCause',
+      firstCatastrophicStep: 0,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a capture-0 catastrophic onset is not provably malformed when the whole-run body-speed peak crossed', async () => {
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeMemberZero(artifact, (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: 1500,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 0,
+        firstAlertStep: 0,
+        firstCatastrophicStep: 0,
+      },
+    }));
+    globalThis.__replayProbe.evaluations = 0;
+    // The persisted peak is a necessary-cause witness, not a timestamp. Replay
+    // divergence proves the semantic gate abstained when it could not disprove
+    // capture 0 from v3's aggregates alone.
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+    expect(globalThis.__replayProbe.evaluations).toBeGreaterThan(0);
   });
 
   test.each([

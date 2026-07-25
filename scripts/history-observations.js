@@ -64,7 +64,17 @@ export async function extractHistoryObservations(historyBytes, options = undefin
   // The intake seam mirrors resume's: ceiling on the INTRINSIC length before
   // the copy, then owned bytes, then copied expectations — no caller buffer is
   // borrowed across an `await`.
-  const declaredLength = typedArrayByteLength(historyBytes);
+  let declaredLength;
+  try {
+    declaredLength = typedArrayByteLength(historyBytes);
+  } catch (cause) {
+    evolutionFail(
+      'malformedHistory',
+      'history-observations: historyBytes are not valid persisted bytes',
+      { path: 'historyBytes' },
+      cause,
+    );
+  }
   if (declaredLength > MAX_EVOLUTION_HISTORY_BYTES) {
     evolutionFail('resourceLimitExceeded',
       `history byte length ${declaredLength} exceeds MAX_EVOLUTION_HISTORY_BYTES (${MAX_EVOLUTION_HISTORY_BYTES})`,

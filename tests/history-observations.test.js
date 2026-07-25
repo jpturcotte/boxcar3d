@@ -90,6 +90,13 @@ async function expectCodeAsync(promiseFn, code, re) {
 }
 
 describe('extractHistoryObservations', () => {
+  test('invalid history-byte storage uses the production malformedHistory taxonomy', async () => {
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations({}), 'malformedHistory', /historyBytes/,
+    );
+    expect(err.context).toMatchObject({ path: 'historyBytes' });
+  });
+
   test('a committed v3 history yields its observations with NO physics', async () => {
     const artifact = await fixtureArtifact();
     globalThis.__observationsProbe.evaluations = 0;
@@ -175,6 +182,72 @@ describe('extractHistoryObservations', () => {
       record.components.fitnessVector = v;
     });
     await expectCodeAsync(() => extractHistoryObservations(broken), 'malformedHistory', /exceeds executedSteps/);
+  });
+
+  test.each([
+    ['alert', (row) => ({
+      ...row,
+      integrityObservations: {
+        ...row.integrityObservations,
+        peakBodySpeed: 0,
+        peakSpeedDelta: 100,
+        peakStepDisplacement: 0,
+        firstAlertStep: 0,
+      },
+    }), 'captureZeroAlertCause'],
+    ['catastrophic', (row) => ({
+      ...row,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      fitness: 0,
+      integrityObservations: {
+        peakBodySpeed: 30,
+        peakSpeedDelta: 0,
+        peakStepDisplacement: 20,
+        firstAlertStep: 0,
+        firstCatastrophicStep: 0,
+      },
+    }), 'captureZeroCatastrophicCause'],
+  ])('a forged capture-zero %s onset without the required body-speed crossing is REFUSED before physics', async (_band, rewrite, rule) => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const individuals = decoded.individuals.map((row, i) => (i === 0 ? rewrite(row) : row));
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals,
+      });
+    });
+    globalThis.__observationsProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /capture 0.*body-speed/i,
+    );
+    expect(err.context).toMatchObject({ generationIndex: 0, individualId: 0, rule });
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('a vector larger than the capped header population is REFUSED before row materialization or physics', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const last = decoded.individuals.at(-1);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals: [...decoded.individuals, { ...last, individualId: last.individualId + 1 }],
+      });
+    });
+    globalThis.__observationsProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /header populationSize 6/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'fitnessVectorPopulationSizeOverflow',
+      populationSize: 6,
+    });
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('the stale v2 Kimi artifact is REFUSED (unsupportedVersion) — the seam shares Gate A', async () => {

@@ -217,9 +217,11 @@ would collapse every corruption class into "the history digest is wrong":
 6. the generation chain, from the header digest forward
 7. the whole-history digest
 8. external expected identity (staleness, *not* corruption)
-9. decoded spec requires `deterministic: true`, then deterministic flavor +
+9. nested component format compatibility — **before physics**
+10. current-format fitness-vector metadata coherence — **before physics**
+11. decoded spec requires `deterministic: true`, then deterministic flavor +
    exact Rapier version — **before physics**
-10. deterministic replay, stopping at the first byte divergence
+12. deterministic replay, stopping at the first byte divergence
 
 `resumeEvolutionRun` is **not** an `async function`: the artifact and any
 expected-identity bytes are validated and copied in its synchronous prologue, so
@@ -511,10 +513,13 @@ gate, so the escalation order reads: corruption → wrong artifact →
 **unsupported format** → **malformed current format** → runtime mismatch →
 deterministic divergence. (`REPLAY_STAGES` — the deterministic-replay
 comparison vocabulary, not the verification ladder — is unchanged; the
-ordered-stage docblock in `src/sim/evolution-replay.js` is now 12 stages.) Both gates' inputs are
-collected while walking the components at stage 5 — scalars plus at most one
-failure descriptor per gate, never rows — so §5's peak-memory model is
-unchanged; both RAISE after stage 8.
+ordered-stage docblock in `src/sim/evolution-replay.js` is now 12 stages.) Both
+gates' inputs are collected while walking the components at stage 5. Before a
+fitness vector is decoded, its fixed byte geometry must not exceed the capped
+header population (≤256), preventing an attacker-sized row allocation. Decoded
+rows are transient; only scalars plus at most one failure descriptor per gate
+are retained, so §5's peak-memory model is unchanged. Both gates RAISE after
+stage 8.
 
 - **Gate A — `checkFitnessVectorCompatibility` (`unsupportedVersion`).** A
   layered peek (`peekFitnessVectorVersions`, owned by
@@ -537,16 +542,21 @@ unchanged; both RAISE after stage 8.
   current-format artifact whose observations contradict its own per-
   generation metadata: an onset step beyond that generation's own
   `executedSteps` (captures are `0..executedSteps` inclusive, so a first
-  crossing at exactly `executedSteps` is legal), or a recorded onset step
-  that disagrees with the whole-run peaks under that generation's OWN
-  `effectiveDt` — the peak↔alert AND peak↔catastrophic equivalences,
-  recomputed with the producer's exact arithmetic (`dtScale` first, then the
-  multiply; strict `>`, so a value exactly at a threshold does not cross and
-  `+Infinity` does; Gate A has already established policy v1). The
-  catastrophic arm set mirrors the producer exactly: `peakBodySpeed` over the
-  absolute catastrophic speed, or `peakStepDisplacement` over the scaled
-  catastrophic step displacement — there is deliberately NO catastrophic
-  speed-delta arm. Without it, an artifact declaring `executedSteps: 45` and
+  crossing at exactly `executedSteps` is legal), a capture-zero onset without
+  the corresponding body-speed crossing (the producer has no previous sample
+  for delta/displacement arms at capture 0), or a recorded onset step that
+  disagrees with the whole-run peaks under that generation's OWN `effectiveDt`
+  — the peak↔alert AND peak↔catastrophic equivalences, recomputed with the
+  producer's exact arithmetic (`dtScale` first, then the multiply; strict `>`,
+  so a value exactly at a threshold does not cross and `+Infinity` does; Gate A
+  has already established policy v1). The capture-zero rule is deliberately a
+  necessary-condition rejection, not timestamp attestation: v3's whole-run
+  body-speed peak proves only that some capture crossed, not that capture 0 did.
+  The catastrophic arm set mirrors the
+  producer exactly: `peakBodySpeed` over the absolute catastrophic speed, or
+  `peakStepDisplacement` over the scaled catastrophic step displacement —
+  there is deliberately NO catastrophic speed-delta arm. Without it, an
+  artifact declaring `executedSteps: 45` and
   `firstAlertStep: 4_000_000_000` passed every digest, version and runtime
   check and surfaced as `replayDivergence` after a full generation-0
   re-simulation — the misleading class this stage exists to remove.

@@ -792,12 +792,22 @@ export function captureExpectedIdentity(options, copy) {
   const rawIndex = options.expectedGenerationIndex;
   let historyDigestBytes = null;
   if (rawDigest !== undefined) {
-    historyDigestBytes = copy(rawDigest);
-    if (typedArrayByteLength(historyDigestBytes) !== SHA256_DIGEST_BYTES) {
+    // Refuse an impossible length before allocating a caller-sized owned copy.
+    // Invalid storage remains an invalidConfig verdict at this public seam.
+    let declaredDigestLength;
+    try {
+      declaredDigestLength = typedArrayByteLength(rawDigest);
+    } catch (cause) {
+      evolutionFail('invalidConfig',
+        `resume option expectedHistoryDigestBytes is not valid persisted bytes: ${cause && cause.message ? cause.message : String(cause)}`,
+        {}, cause);
+    }
+    if (declaredDigestLength !== SHA256_DIGEST_BYTES) {
       evolutionFail('invalidConfig',
         `expectedHistoryDigestBytes must be exactly ${SHA256_DIGEST_BYTES} bytes`,
-        { byteLength: typedArrayByteLength(historyDigestBytes) });
+        { byteLength: declaredDigestLength });
     }
+    historyDigestBytes = copy(rawDigest);
   }
   let generationIndex = null;
   if (rawIndex !== undefined) {

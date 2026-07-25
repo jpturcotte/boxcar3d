@@ -49,7 +49,9 @@ const {
   digestComponent, digestGeneration,
   digestHeader, encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
-const { REPLAY_STAGES, firstByteDifference, verifyHistoryArtifact } = await import('../src/sim/evolution-replay.js');
+const {
+  REPLAY_STAGES, captureExpectedIdentity, firstByteDifference, verifyHistoryArtifact,
+} = await import('../src/sim/evolution-replay.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
@@ -782,6 +784,19 @@ describe('the external expected-identity contract', () => {
       'staleOrWrongArtifact',
     );
     expect(SHA256_DIGEST_BYTES).toBe(32);
+  });
+
+  test('an impossible expected-digest length is refused before an owned copy is allocated', () => {
+    const copy = vi.fn((bytes) => new Uint8Array(bytes));
+    const err = expectCodeSync(
+      () => captureExpectedIdentity(
+        { expectedHistoryDigestBytes: new Uint8Array(SHA256_DIGEST_BYTES + 1) },
+        copy,
+      ),
+      'invalidConfig', /exactly 32 bytes/,
+    );
+    expect(err.context.byteLength).toBe(SHA256_DIGEST_BYTES + 1);
+    expect(copy).not.toHaveBeenCalled();
   });
 });
 

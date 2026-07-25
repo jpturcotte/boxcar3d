@@ -27,7 +27,8 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
-import { URL } from 'node:url';
+import { resolve } from 'node:path';
+import { URL, pathToFileURL } from 'node:url';
 
 const INPUTS_URL = new URL('../tests/fixtures/evolution-v1-fitness-vector-v3-oracle-inputs.json', import.meta.url);
 const OUT_URL = new URL('../tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64', import.meta.url);
@@ -102,7 +103,7 @@ function generationDigest(domain, previousDigestBytes, payload) {
 
 // --- The v3 fitness vector, encoded from DECLARED rows ------------------------
 
-function encodeFitnessVectorV3(vector) {
+export function encodeFitnessVectorV3(vector) {
   const rows = vector.individuals;
   if (!Array.isArray(rows) || rows.length === 0) fail('fitnessVector.individuals', rows);
   for (const field of [
@@ -188,36 +189,40 @@ function encodeGenerationPayload({ generationIndex, terminalReason, components }
   return bytes;
 }
 
-// --- Main ---------------------------------------------------------------------
+// --- Pure artifact builder ----------------------------------------------------
 
-const inputs = JSON.parse(readFileSync(INPUTS_URL, 'utf8'));
-if (inputs.schema !== 'boxcar3d.evolution-v3-oracle-inputs/v1') fail('schema', inputs.schema);
+/**
+ * Build the complete one-generation artifact from the committed declared
+ * inputs. Keeping this pure lets the test suite execute the independent
+ * producer without rewriting the checked-in fixture.
+ */
+export function encodeInteropArtifact(inputs) {
+  if (inputs.schema !== 'boxcar3d.evolution-v3-oracle-inputs/v1') fail('schema', inputs.schema);
 
-const headerBytes = hexToBytes(inputs.headerBytesHex);
-const fitnessVectorBytes = encodeFitnessVectorV3(inputs.generation.components.fitnessVector);
-const components = {
-  population: hexToBytes(inputs.generation.components.populationHex),
-  evaluationMetadata: hexToBytes(inputs.generation.components.evaluationMetadataHex),
-  fitnessVector: fitnessVectorBytes,
-  lineage: hexToBytes(inputs.generation.components.lineageHex),
-};
-const payloadBytes = encodeGenerationPayload({
-  generationIndex: inputs.generation.generationIndex,
-  terminalReason: inputs.generation.terminalReason,
-  components,
-});
+  const headerBytes = hexToBytes(inputs.headerBytesHex);
+  const fitnessVectorBytes = encodeFitnessVectorV3(inputs.generation.components.fitnessVector);
+  const components = {
+    population: hexToBytes(inputs.generation.components.populationHex),
+    evaluationMetadata: hexToBytes(inputs.generation.components.evaluationMetadataHex),
+    fitnessVector: fitnessVectorBytes,
+    lineage: hexToBytes(inputs.generation.components.lineageHex),
+  };
+  const payloadBytes = encodeGenerationPayload({
+    generationIndex: inputs.generation.generationIndex,
+    terminalReason: inputs.generation.terminalReason,
+    components,
+  });
 
-const headerDigestBytes = domainDigest(DOMAINS.header, headerBytes);
-const generationDigestBytes = generationDigest(DOMAINS.generation, headerDigestBytes, payloadBytes);
+  const headerDigestBytes = domainDigest(DOMAINS.header, headerBytes);
+  const generationDigestBytes = generationDigest(DOMAINS.generation, headerDigestBytes, payloadBytes);
 
-// The outer framing: magic | u16 historyVersion | u32 headerByteLength |
-// header | headerDigest | u32 recordCount | (u32 payloadLength | payload |
-// generationDigest) x1 | historyDigest trailer. The history digest covers the
-// body (magic .. final generation digest), never itself.
-const bodyLength = 8 + 2 + 4 + headerBytes.length + SHA256_DIGEST_BYTES + 4
-  + 4 + payloadBytes.length + SHA256_DIGEST_BYTES;
-const artifact = new Uint8Array(bodyLength + SHA256_DIGEST_BYTES);
-{
+  // The outer framing: magic | u16 historyVersion | u32 headerByteLength |
+  // header | headerDigest | u32 recordCount | (u32 payloadLength | payload |
+  // generationDigest) x1 | historyDigest trailer. The history digest covers the
+  // body (magic .. final generation digest), never itself.
+  const bodyLength = 8 + 2 + 4 + headerBytes.length + SHA256_DIGEST_BYTES + 4
+    + 4 + payloadBytes.length + SHA256_DIGEST_BYTES;
+  const artifact = new Uint8Array(bodyLength + SHA256_DIGEST_BYTES);
   const view = new DataView(artifact.buffer);
   let o = 0;
   artifact.set(MAGIC, o); o += MAGIC.length;
@@ -230,16 +235,39 @@ const artifact = new Uint8Array(bodyLength + SHA256_DIGEST_BYTES);
   artifact.set(payloadBytes, o); o += payloadBytes.length;
   artifact.set(generationDigestBytes, o); o += SHA256_DIGEST_BYTES;
   if (o !== bodyLength) fail('history body byte length', `${o} !== ${bodyLength}`);
-  artifact.set(domainDigest(DOMAINS.history, artifact.slice(0, bodyLength)), o);
+  const historyDigestBytes = domainDigest(DOMAINS.history, artifact.slice(0, bodyLength));
+  artifact.set(historyDigestBytes, o);
+
+  return {
+    artifact,
+    fitnessVectorBytes,
+    headerDigestBytes,
+    generationDigestBytes,
+    historyDigestBytes,
+  };
 }
 
-writeFileSync(OUT_URL, `${Buffer.from(artifact).toString('base64')}\n`);
-console.log(JSON.stringify({
-  fixture: OUT_URL.pathname.split('/').pop(),
-  byteLength: artifact.length,
-  artifactSha256: sha256(artifact).toString('hex'),
-  headerDigest: bytesToHex(headerDigestBytes),
-  generationDigest: bytesToHex(generationDigestBytes),
-  historyDigest: bytesToHex(artifact.slice(bodyLength)),
-  fitnessVectorBytes: fitnessVectorBytes.length,
-}, null, 2));
+// --- CLI ----------------------------------------------------------------------
+
+function main() {
+  const inputs = JSON.parse(readFileSync(INPUTS_URL, 'utf8'));
+  const {
+    artifact, fitnessVectorBytes, headerDigestBytes, generationDigestBytes, historyDigestBytes,
+  } = encodeInteropArtifact(inputs);
+
+  writeFileSync(OUT_URL, `${Buffer.from(artifact).toString('base64')}\n`);
+  console.log(JSON.stringify({
+    fixture: OUT_URL.pathname.split('/').pop(),
+    byteLength: artifact.length,
+    artifactSha256: sha256(artifact).toString('hex'),
+    headerDigest: bytesToHex(headerDigestBytes),
+    generationDigest: bytesToHex(generationDigestBytes),
+    historyDigest: bytesToHex(historyDigestBytes),
+    fitnessVectorBytes: fitnessVectorBytes.length,
+  }, null, 2));
+}
+
+if (process.argv[1] !== undefined
+  && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+  main();
+}

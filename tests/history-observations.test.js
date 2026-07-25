@@ -24,6 +24,25 @@ vi.mock('../src/sim/population-evaluation.js', async (importOriginal) => {
   };
 });
 
+vi.mock('../src/sim/physics/adapter.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    createPhysics: async (...args) => {
+      if (globalThis.__observationsProbe) globalThis.__observationsProbe.worlds += 1;
+      return original.createPhysics(...args);
+    },
+  };
+});
+
+vi.mock('../src/sim/bytes.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    copyOrdinaryBytes: vi.fn((...args) => original.copyOrdinaryBytes(...args)),
+  };
+});
+
 const { createEvolutionRun } = await import('../src/sim/evolution-run.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
@@ -33,8 +52,9 @@ const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeGenerationPayload,
   decodeHistoryFraming, digestComponent, digestGeneration, encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
+const { MAX_EVOLUTION_HISTORY_BYTES } = await import('../src/sim/evolution-replay.js');
 const { deserializeFitnessVector, serializeFitnessVector } = await import('../src/sim/population-evaluation.js');
-const { bytesToHex } = await import('../src/sim/bytes.js');
+const { bytesToHex, copyOrdinaryBytes } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
 const LOCK = EVOLUTION_GOLDEN_LOCKS[EVOLUTION_FIXTURE_A.name];
@@ -44,7 +64,10 @@ const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   'base64',
 ));
 
-beforeEach(() => { globalThis.__observationsProbe = { evaluations: 0 }; });
+beforeEach(() => {
+  globalThis.__observationsProbe = { evaluations: 0, worlds: 0 };
+  copyOrdinaryBytes.mockClear();
+});
 
 async function fixtureArtifact() {
   const run = createEvolutionRun(evolutionRunConfigFor(EVOLUTION_FIXTURE_A));
@@ -95,13 +118,24 @@ describe('extractHistoryObservations', () => {
       () => extractHistoryObservations({}), 'malformedHistory', /historyBytes/,
     );
     expect(err.context).toMatchObject({ path: 'historyBytes' });
+
+    const shared = await expectCodeAsync(
+      () => extractHistoryObservations(new Uint8Array(new SharedArrayBuffer(64))),
+      'malformedHistory', /historyBytes/,
+    );
+    expect(shared.context).toMatchObject({ path: 'historyBytes' });
   });
 
   test('a committed v3 history yields its observations with NO physics', async () => {
     const artifact = await fixtureArtifact();
+    // Prove both probes are live before measuring the extraction seam itself.
+    expect(globalThis.__observationsProbe.evaluations).toBeGreaterThan(0);
+    expect(globalThis.__observationsProbe.worlds).toBeGreaterThan(0);
     globalThis.__observationsProbe.evaluations = 0;
+    globalThis.__observationsProbe.worlds = 0;
     const extracted = await extractHistoryObservations(artifact);
     expect(globalThis.__observationsProbe.evaluations).toBe(0);
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
 
     expect(bytesToHex(extracted.historyDigestBytes)).toBe(LOCK.historyDigest);
     expect(Object.isFrozen(extracted)).toBe(true);
@@ -341,13 +375,51 @@ describe('extractHistoryObservations', () => {
     expect(extracted.generations).toHaveLength(3);
   });
 
+  test('a wrong-length expected digest is refused before it is copied', async () => {
+    const artifact = await fixtureArtifact();
+    const wrongLength = new Uint8Array(SHA256_DIGEST_BYTES + 1);
+    copyOrdinaryBytes.mockClear();
+
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(artifact, { expectedHistoryDigestBytes: wrongLength }),
+      'invalidConfig', /exactly 32 bytes/,
+    );
+    expect(err.context.byteLength).toBe(SHA256_DIGEST_BYTES + 1);
+    expect(copyOrdinaryBytes).toHaveBeenCalledTimes(1); // history only
+    expect(copyOrdinaryBytes.mock.calls[0][0]).toBe(artifact);
+  });
+
+  test('history and expected-digest inputs are owned before the first await', async () => {
+    const artifact = await fixtureArtifact();
+    const pristine = new Uint8Array(artifact);
+    const expected = pristine.slice(-SHA256_DIGEST_BYTES);
+    const pending = extractHistoryObservations(artifact, { expectedHistoryDigestBytes: expected });
+    artifact.fill(0);
+    expected.fill(0);
+
+    const extracted = await pending;
+    expect(extracted.generations).toHaveLength(3);
+    expect(bytesToHex(extracted.historyDigestBytes))
+      .toBe(bytesToHex(pristine.slice(-SHA256_DIGEST_BYTES)));
+
+    const wrongExpected = pristine.slice(-SHA256_DIGEST_BYTES);
+    wrongExpected[0] ^= 0xff;
+    const rejected = extractHistoryObservations(pristine, {
+      expectedHistoryDigestBytes: wrongExpected,
+    });
+    wrongExpected[0] ^= 0xff; // repaired after invocation — too late
+    await expectCodeAsync(() => rejected, 'staleOrWrongArtifact');
+  });
+
   test('an over-ceiling artifact is refused BEFORE the copy', async () => {
-    const oversized = new Uint8Array(64 * 1024 * 1024 + 1);
+    const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    copyOrdinaryBytes.mockClear();
     let threw = null;
     try {
       await extractHistoryObservations(oversized);
     } catch (e) { threw = e; }
     expect(threw).toBeInstanceOf(EvolutionError);
     expect(threw.code).toBe('resourceLimitExceeded');
+    expect(copyOrdinaryBytes).not.toHaveBeenCalled();
   });
 });

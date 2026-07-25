@@ -169,7 +169,13 @@ describe('canonical codecs (Chromium)', () => {
           valid: false,
           integrityStatus: 'ok',
           fitness: 0,
-          integrityObservations: { ...observationDefaults },
+          integrityObservations: {
+            ...observationDefaults,
+            peakBodySpeed: 142.375,
+            peakSpeedDelta: 30.5,
+            peakStepDisplacement: 0.5,
+            firstAlertStep: 0,
+          },
         },
         {
           individualId: 9,
@@ -196,7 +202,8 @@ describe('canonical codecs (Chromium)', () => {
     expect(Object.is(decoded.individuals[0].integrityObservations.peakBodySpeed, 9.5)).toBe(true);
     expect(Object.is(decoded.individuals[2].integrityObservations.peakBodySpeed, Infinity)).toBe(true);
     expect(decoded.individuals[2].integrityObservations.firstCatastrophicStep).toBe(4);
-    expect(decoded.individuals[1].integrityObservations.firstAlertStep).toBeNull();
+    // Presence is carried by the flag, so a present step 0 must not decode as null.
+    expect(decoded.individuals[1].integrityObservations.firstAlertStep).toBe(0);
     expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 

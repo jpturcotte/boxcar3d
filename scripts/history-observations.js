@@ -108,14 +108,27 @@ export async function extractHistoryObservations(historyBytes, options = undefin
     }
     const rawDigest = options.expectedHistoryDigestBytes; // ONE read
     if (rawDigest !== undefined) {
+      // Exactly 32 bytes are legal, so validate the intrinsic length before
+      // allocating an owned copy of an arbitrarily large caller buffer.
+      let declaredDigestLength;
+      try {
+        declaredDigestLength = typedArrayByteLength(rawDigest);
+      } catch (cause) {
+        evolutionFail(
+          'invalidConfig',
+          'history-observations: expectedHistoryDigestBytes are not valid persisted bytes',
+          { path: 'expectedHistoryDigestBytes' },
+          cause,
+        );
+      }
+      if (declaredDigestLength !== SHA256_DIGEST_BYTES) {
+        evolutionFail('invalidConfig',
+          `history-observations: expectedHistoryDigestBytes must be exactly ${SHA256_DIGEST_BYTES} bytes (${declaredDigestLength})`,
+          { byteLength: declaredDigestLength });
+      }
       expectedDigestBytes = copyOrdinaryBytes(rawDigest, (path, value) => {
         evolutionFail('invalidConfig', `history-observations: invalid option ${path} (${String(value)})`, { path });
       });
-      if (expectedDigestBytes.length !== SHA256_DIGEST_BYTES) {
-        evolutionFail('invalidConfig',
-          `history-observations: expectedHistoryDigestBytes must be exactly ${SHA256_DIGEST_BYTES} bytes (${expectedDigestBytes.length})`,
-          { byteLength: expectedDigestBytes.length });
-      }
     }
   }
 

@@ -107,6 +107,13 @@ const {
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
 const POPULATION_SIZE = 6;
+// Independently measured public history-capacity boundaries for the declared
+// config below. These literals must not be derived from the projection helper
+// they are intended to pin.
+const HISTORY_CAPACITY_BOUNDARIES = Object.freeze([
+  Object.freeze({ populationSize: 64, maximumFeasibleGenerations: 912 }),
+  Object.freeze({ populationSize: 256, maximumFeasibleGenerations: 228 }),
+]);
 
 // A small, fast, exactly-flat evaluation: craters and features off, a short
 // step budget. Physics realism is not the subject here — engine mechanics are.
@@ -261,6 +268,30 @@ describe('run creation validates the complete configuration', () => {
     expect(err.context.maximumFeasibleGenerations).toBe(228);
     expect(probe.populations).toHaveLength(0);
   });
+
+  test.each(HISTORY_CAPACITY_BOUNDARIES)(
+    'population $populationSize accepts exactly $maximumFeasibleGenerations history generations',
+    ({ populationSize, maximumFeasibleGenerations }) => {
+      expect(() => createEvolutionRun(config({
+        initialization: { populationSize },
+        evolution: { maxGenerations: maximumFeasibleGenerations },
+      }))).not.toThrow();
+    },
+  );
+
+  test.each(HISTORY_CAPACITY_BOUNDARIES)(
+    'population $populationSize refuses one history generation past $maximumFeasibleGenerations',
+    ({ populationSize, maximumFeasibleGenerations }) => {
+      const err = expectCode(
+        () => createEvolutionRun(config({
+          initialization: { populationSize },
+          evolution: { maxGenerations: maximumFeasibleGenerations + 1 },
+        })),
+        'resourceLimitExceeded', /history.*MAX_EVOLUTION_HISTORY_BYTES/i,
+      );
+      expect(err.context.maximumFeasibleGenerations).toBe(maximumFeasibleGenerations);
+    },
+  );
 
   test('a practical 20-member campaign remains legal at the generation ceiling', () => {
     const run = createEvolutionRun(config({

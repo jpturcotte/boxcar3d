@@ -2537,7 +2537,12 @@ policy, selection or mutation behaviour change:**
   owns its OWN nested version the same way, through
   `peekEvaluationMetadataVersion` in `evolution-history.js` — a stale
   `evaluationMetadataVersion` is `unsupportedVersion` (never
-  `malformedHistory`); a prefix too short to reveal it is malformed. Gate B
+  `malformedHistory`); a prefix too short to reveal it is malformed. The two
+  peeks run INDEPENDENTLY per generation, and unsupported-format and
+  malformed-prefix failures are collected SEPARATELY across every generation,
+  so the precedence is global: the first unsupported version anywhere reports
+  `unsupportedVersion`, and a malformed prefix anywhere can never mask a
+  stale version somewhere else. Gate B
   (`verifyFitnessVectorMetadataCoherence`): onset steps ≤ each generation's
   OWN persisted `executedSteps` (captures are 0..maxSteps inclusive, so a
   first crossing at exactly `executedSteps` is legal), plus the peak↔alert

@@ -1412,4 +1412,122 @@ describe('the peak<->catastrophic equivalence and the nested metadata version', 
     const resumed = await resumeEvolutionRun(artifact);
     expect(resumed.status().lastCommittedGenerationIndex).toBe(0);
   });
+
+  // THE BLOCKING-CLASS PRECEDENCE, made global: unsupported format beats
+  // malformed current format across EVERY generation and BOTH nested
+  // components — a malformed prefix anywhere must never mask a stale version
+  // anywhere else. Helpers mutate one generation's two nested components.
+  const staleVector = (record) => {
+    const v = new Uint8Array(record.components.fitnessVector);
+    new DataView(v.buffer).setUint16(0, 2, true); // fitnessVectorVersion 3 -> 2 (readable, stale)
+    record.components.fitnessVector = v;
+  };
+  const staleMetadata = (record) => {
+    const m = new Uint8Array(record.components.evaluationMetadata);
+    new DataView(m.buffer).setUint16(0, 0, true); // evaluationMetadataVersion 1 -> 0 (readable, stale)
+    record.components.evaluationMetadata = m;
+  };
+  const truncateVector = (record) => {
+    record.components.fitnessVector = record.components.fitnessVector.slice(0, 1);
+  };
+  const truncateMetadata = (record) => {
+    record.components.evaluationMetadata = record.components.evaluationMetadata.slice(0, 1);
+  };
+
+  test.each([
+    ['cross-generation: malformed vector prefix at 0, stale metadata version at 1',
+      [truncateVector, staleMetadata], 'evaluationMetadataVersion', 1],
+    ['cross-generation: stale metadata version at 0, malformed vector prefix at 1',
+      [staleMetadata, truncateVector], 'evaluationMetadataVersion', 0],
+    ['cross-generation: malformed metadata prefix at 0, stale vector version at 1',
+      [truncateMetadata, staleVector], 'fitnessVectorVersion', 1],
+    ['cross-generation: stale vector version at 0, malformed metadata prefix at 1',
+      [staleVector, truncateMetadata], 'fitnessVectorVersion', 0],
+    ['same generation: malformed vector prefix + stale metadata version',
+      [(r) => { truncateVector(r); staleMetadata(r); }], 'evaluationMetadataVersion', 0],
+    ['same generation: stale vector version + malformed metadata prefix',
+      [(r) => { staleVector(r); truncateMetadata(r); }], 'fitnessVectorVersion', 0],
+  ])('unsupported format wins globally — %s', async (_name, mutations, field, generationIndex) => {
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i < mutations.length) mutations[i](record);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'unsupportedVersion', new RegExp(field));
+    expect(err.context).toMatchObject({ field, generationIndex });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('with NO unsupported failure anywhere, a malformed prefix still reports `malformedHistory`', async () => {
+    const artifact = await runGenerations(2);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => { if (i === 1) truncateVector(record); },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory', /version prefix/);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('each generation is judged against its OWN metadata — the same threshold-straddling row under two different persisted timesteps', async () => {
+    // The row (peakStepDisplacement 20, alert step 2, no catastrophic step)
+    // straddles the scaled catastrophic displacement threshold: a crossing
+    // under generation 1's real dt (applied ≈ 16.667), NOT a crossing under
+    // generation 0's foreign dt (applied ≈ 33.333). The correct verdict is a
+    // refusal at GENERATION 1 only — a defect applying generation 0's
+    // metadata to generation 1 would accept both, and one applying generation
+    // 1's metadata to generation 0 would refuse at generation 0.
+    const artifact = await runGenerations(2);
+    const straddlingRow = okRow({
+      peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null,
+    });
+    const rewriteRow = (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const individuals = decoded.individuals.map((row, m) => (m === 0 ? straddlingRow(row) : row));
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals,
+      });
+    };
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i === 0) {
+          const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+          record.components.evaluationMetadata = serializeEvaluationMetadata({
+            ...metadata, effectiveDt: FOREIGN_DT,
+          });
+        }
+        rewriteRow(record);
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /catastrophic/,
+    );
+    expect(err.context).toMatchObject({
+      // Member 0 of generation 1 — ids are allocated per generation, so it is
+      // individualId 6 (generation 0's member 0 is individualId 0).
+      generationIndex: 1, individualId: 6, rule: 'peakCatastrophicEquivalence', catastrophicImplied: true,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a huge peakSpeedDelta alone does NOT imply a catastrophic crossing — there is no catastrophic speed-delta arm', async () => {
+    // Sub-catastrophic body speed and displacement, an alert-implying peak
+    // (coherent with the recorded alert step), and a peakSpeedDelta far above
+    // the catastrophic SPEED: if a phantom catastrophic delta arm existed at
+    // any threshold <= 5000 this row would be refused.
+    const artifact = await runGenerations(1);
+    const accepted = await reforgeMemberZero(artifact, okRow({
+      peakBodySpeed: 100,
+      peakSpeedDelta: 5000,
+      peakStepDisplacement: 5,
+      firstAlertStep: 2,
+      firstCatastrophicStep: null,
+    }));
+    const err = await expectCodeAsync(() => resumeEvolutionRun(accepted), 'replayDivergence');
+    expect(err.context.stage).toBe('fitnessVector');
+  });
 });

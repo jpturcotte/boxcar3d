@@ -23,9 +23,10 @@
 //   6. the generation chain, from the header digest forward
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
-//   9. nested format compatibility                 (unsupported format:
-//      the fitness-vector versions and the evaluation-metadata version,
-//      each read through its OWN module's layered peek)
+//   9. nested format compatibility                 (unsupported format, raised
+//      FIRST GLOBALLY: the fitness-vector versions and the evaluation-metadata
+//      version, each peeked independently through its OWN module's layered
+//      peek — a malformed prefix anywhere never masks a stale version)
 //  10. fitness-vector metadata coherence           (malformed current format)
 //  11. deterministic flavor + exact Rapier version (before physics)
 //  12. deterministic replay, stopping at the first byte divergence
@@ -53,9 +54,9 @@
 // in exchange for a retention bound of: the artifact, ONE decoded payload, and
 // the current/next working populations — which is the documented peak. The
 // stage-5 gate collection adds two TRANSIENT decodes (the fitness vector and
-// its sibling metadata, only when the vector's versions are current) inside
-// the same one-payload window; what is retained is per-gate scalars or a
-// single first-failure descriptor, so the bound above is unchanged.
+// its sibling metadata, only when BOTH components' versions are current)
+// inside the same one-payload window; what is retained is one first-failure
+// descriptor of each kind per gate, so the bound above is unchanged.
 
 import { typedArrayByteLength } from './bytes.js';
 import {
@@ -183,8 +184,12 @@ async function verifyFramedArtifact(framing) {
   // time; nothing decoded is retained (see the memory model above).
   const records = [];
   // The stages 9-10 gate inputs, collected inside the same walk: the FIRST
-  // failure descriptor per gate, or null when every generation passes.
-  let fitnessVectorCompatibilityFailure = null;
+  // failure descriptor of EACH kind, or null. Unsupported-format and
+  // malformed-format failures are tracked SEPARATELY (a malformed prefix in
+  // one generation must never mask a stale version in another — the ladder
+  // raises unsupported format first, globally).
+  let nestedFormatUnsupportedFailure = null;
+  let nestedFormatMalformedFailure = null;
   let fitnessVectorCoherenceFailure = null;
   const generationCount = framing.generations.length;
   for (let i = 0; i < generationCount; i += 1) {
@@ -214,9 +219,12 @@ async function verifyFramedArtifact(framing) {
     // fire after stage 8, so a corruption (stages 3-7) or staleness (stage 8)
     // verdict is never masked by a format one — and the walk continues, so
     // every component digest still verifies.
-    if (fitnessVectorCompatibilityFailure === null || fitnessVectorCoherenceFailure === null) {
+    if (nestedFormatUnsupportedFailure === null
+      || nestedFormatMalformedFailure === null
+      || fitnessVectorCoherenceFailure === null) {
       const gates = collectFitnessVectorGateInputs(payload.components, i);
-      if (fitnessVectorCompatibilityFailure === null) fitnessVectorCompatibilityFailure = gates.compatibility;
+      if (nestedFormatUnsupportedFailure === null) nestedFormatUnsupportedFailure = gates.unsupported;
+      if (nestedFormatMalformedFailure === null) nestedFormatMalformedFailure = gates.malformedPrefix;
       if (fitnessVectorCoherenceFailure === null) fitnessVectorCoherenceFailure = gates.coherence;
     }
     records.push(Object.freeze({
@@ -248,22 +256,35 @@ async function verifyFramedArtifact(framing) {
     historyDigestBytes: framing.historyDigestBytes,
     finalGenerationIndex: generationCount - 1,
     finalTerminalReason: records[generationCount - 1].terminalReason,
-    // The stages 9-10 gate inputs: the FIRST failure descriptor per gate, or
-    // null when every generation passed. Raised by the two checks below,
-    // after external identity — never mid-walk.
-    fitnessVectorCompatibilityFailure,
+    // The stages 9-10 gate inputs: the FIRST failure descriptor of each kind,
+    // or null. Raised by the two checks below, after external identity —
+    // never mid-walk: the unsupported-format failure first (globally), then
+    // the malformed-prefix failure, then the coherence failure.
+    nestedFormatUnsupportedFailure,
+    nestedFormatMalformedFailure,
     fitnessVectorCoherenceFailure,
   });
 }
 
 /**
  * Stage 5's gate collection, per generation: peek BOTH nested components'
- * declared versions (Gate A's inputs) and — ONLY when every one is current —
- * decode the vector and its sibling metadata TRANSIENTLY to evaluate
- * observation coherence (Gate B's input). Returns
- * `{ compatibility, coherence }`: the first failure descriptor for each gate,
- * or null. Decoded rows are discarded in place; the descriptors carry scalars
- * (plus the thrown cause on the malformed paths), honouring the memory model.
+ * declared versions INDEPENDENTLY (Gate A's inputs) and — ONLY when both are
+ * current-format — decode the vector and its sibling metadata TRANSIENTLY to
+ * evaluate observation coherence (Gate B's input). Returns
+ * `{ unsupported, malformedPrefix, coherence }`: the generation's failure
+ * descriptor of each kind, or null. Decoded rows are discarded in place; the
+ * descriptors carry scalars (plus the thrown cause on the malformed paths),
+ * honouring the memory model.
+ *
+ * INDEPENDENCE, and why it is the point: a malformed unreadable prefix in one
+ * component must NEVER stop the sibling's version from being read, and a
+ * malformed prefix in one GENERATION must never mask a stale version in
+ * another. Unsupported-format failures (a readable but stale version) and
+ * malformed-format failures (a prefix too short to reveal one) are therefore
+ * collected separately for both components of every generation, and the gate
+ * raises unsupported format FIRST, globally — the ladder's "unsupported
+ * format → malformed current format" precedence holds across generations and
+ * components, not merely within one descriptor slot.
  *
  * OWNERSHIP, stated because two formats meet here: the fitness vector's
  * versions are read through population-evaluation.js's own layered peek, and
@@ -276,21 +297,22 @@ async function verifyFramedArtifact(framing) {
  * both components.
  */
 function collectFitnessVectorGateInputs(components, generationIndex) {
-  let compatibility = null;
+  let unsupported = null;
+  let malformedPrefix = null;
   let peeked = null;
   try {
     peeked = peekFitnessVectorVersions(components.fitnessVector);
   } catch (cause) {
     // A truncated or structurally unreadable prefix is malformed, not
     // unsupported — the layered peek never got far enough to name a version.
-    compatibility = Object.freeze({
-      generationIndex, component: 'fitnessVector', unreadablePrefix: true, cause,
+    malformedPrefix = Object.freeze({
+      generationIndex, component: 'fitnessVector', cause,
     });
   }
-  if (compatibility === null && peeked.fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
+  if (malformedPrefix === null && peeked.fitnessVectorVersion !== FITNESS_VECTOR_VERSION) {
     // The layered peek stopped at byte 2: the version field is the only thing
     // readable without assuming the unknown layout that follows.
-    compatibility = Object.freeze({
+    unsupported = Object.freeze({
       generationIndex,
       component: 'fitnessVector',
       field: 'fitnessVectorVersion',
@@ -298,7 +320,7 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
       current: FITNESS_VECTOR_VERSION,
     });
   }
-  if (compatibility === null) {
+  if (unsupported === null && malformedPrefix === null) {
     // The vector version is current, so the remaining four declared offsets
     // are meaningful — compare them in declared order and name the first
     // disagreement exactly.
@@ -311,37 +333,40 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
     for (let f = 0; f < remaining.length; f += 1) {
       const [field, current] = remaining[f];
       if (peeked[field] !== current) {
-        compatibility = Object.freeze({
+        unsupported = Object.freeze({
           generationIndex, component: 'fitnessVector', field, stored: peeked[field], current,
         });
         break;
       }
     }
   }
-  if (compatibility === null) {
-    // The evaluation metadata component owns its OWN nested version: read it
-    // through evolution-history.js's layered peek, with the same
-    // unsupported-vs-malformed classification as the vector's.
-    let peekedMetadata = null;
-    try {
-      peekedMetadata = peekEvaluationMetadataVersion(components.evaluationMetadata);
-    } catch (cause) {
-      compatibility = Object.freeze({
-        generationIndex, component: 'evaluationMetadata', unreadablePrefix: true, cause,
-      });
-    }
-    if (compatibility === null && peekedMetadata.evaluationMetadataVersion !== EVALUATION_METADATA_VERSION) {
-      compatibility = Object.freeze({
-        generationIndex,
-        component: 'evaluationMetadata',
-        field: 'evaluationMetadataVersion',
-        stored: peekedMetadata.evaluationMetadataVersion,
-        current: EVALUATION_METADATA_VERSION,
+  // The evaluation metadata component owns its OWN nested version, peeked
+  // INDEPENDENTLY of whatever the vector produced: read it through
+  // evolution-history.js's layered peek, with the same unsupported-vs-
+  // malformed classification as the vector's.
+  let peekedMetadata = null;
+  try {
+    peekedMetadata = peekEvaluationMetadataVersion(components.evaluationMetadata);
+  } catch (cause) {
+    if (malformedPrefix === null) {
+      malformedPrefix = Object.freeze({
+        generationIndex, component: 'evaluationMetadata', cause,
       });
     }
   }
+  if (peekedMetadata !== null
+    && peekedMetadata.evaluationMetadataVersion !== EVALUATION_METADATA_VERSION
+    && unsupported === null) {
+    unsupported = Object.freeze({
+      generationIndex,
+      component: 'evaluationMetadata',
+      field: 'evaluationMetadataVersion',
+      stored: peekedMetadata.evaluationMetadataVersion,
+      current: EVALUATION_METADATA_VERSION,
+    });
+  }
   let coherence = null;
-  if (compatibility === null) {
+  if (unsupported === null && malformedPrefix === null) {
     // Gate B reads the vector against its OWN generation's persisted metadata
     // (executedSteps and effectiveDt). A decode failure here is malformed
     // current format — recorded with the failing component named, not raised,
@@ -368,7 +393,7 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
       coherence = fitnessVectorCoherenceVerdict(vector, metadata, generationIndex);
     }
   }
-  return { compatibility, coherence };
+  return { unsupported, malformedPrefix, coherence };
 }
 
 /**
@@ -396,11 +421,20 @@ function collectFitnessVectorGateInputs(components, generationIndex) {
  * effectiveDt divided by INTEGRITY_REFERENCE_CAPTURE_DT — then the multiply,
  * strict `>` throughout, so a value exactly at a threshold does not cross and
  * +Infinity does). Bit-identical by construction, never an approximation, and
- * never a global or current-runtime timestep. Gate A has already established
- * the current versions — this verdict therefore runs under integrity policy
- * v1 semantics by construction.
+ * never a global or current-runtime timestep. The rules are dispatched on the
+ * vector's DECLARED integrityPolicyVersion EXPLICITLY (the codec's
+ * conditioning, mirrored): the decoder has already required it current, so
+ * the branch covers exactly policy v1 today — and a future policy bump can
+ * never silently inherit v1 semantics here.
  */
 function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
+  if (vector.integrityPolicyVersion !== 1) {
+    // No coherence rules exist for a policy this verdict does not implement.
+    // (Unreachable today: deserializeFitnessVector requires the current
+    // version. The explicit dispatch is the codec's conditioning, mirrored —
+    // the value is in not writing down an implicit one.)
+    return null;
+  }
   const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
   const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
   const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
@@ -520,24 +554,38 @@ export function checkExpectedIdentity(verified, expected) {
  * structurally unreadable version prefix reports `malformedHistory` instead:
  * without a readable prefix there is no version to call unsupported.
  */
+/**
+ * Stage 9 — nested format compatibility, raised from the stage-5 collection
+ * AFTER external identity and before the runtime gate. Precedence is GLOBAL,
+ * across every generation and both nested components: the first
+ * unsupported-format failure reports `unsupportedVersion` naming the exact
+ * component and field, the generation, and the stored and current values —
+ * never a false replay drift discovered after a re-simulation, and never
+ * masked by a malformed prefix anywhere else in the artifact. Only when no
+ * generation carries an unsupported version does the first malformed nested
+ * prefix report `malformedHistory`: without a readable prefix there is no
+ * version to call unsupported.
+ */
 export function checkFitnessVectorCompatibility(verified) {
-  const failure = verified.fitnessVectorCompatibilityFailure;
-  if (failure === null) return;
-  const componentLabel = COMPONENT_LABELS[failure.component];
-  if (failure.unreadablePrefix === true) {
-    evolutionFail('malformedHistory',
-      `generation ${failure.generationIndex} ${componentLabel} has a truncated or unreadable version prefix`,
-      { generationIndex: failure.generationIndex },
-      failure.cause);
+  const unsupported = verified.nestedFormatUnsupportedFailure;
+  if (unsupported !== null) {
+    const componentLabel = COMPONENT_LABELS[unsupported.component];
+    evolutionFail('unsupportedVersion',
+      `generation ${unsupported.generationIndex} ${componentLabel} ${unsupported.field} is ${unsupported.stored}; this build implements ${unsupported.current}`,
+      {
+        field: unsupported.field,
+        generationIndex: unsupported.generationIndex,
+        stored: unsupported.stored,
+        current: unsupported.current,
+      });
   }
-  evolutionFail('unsupportedVersion',
-    `generation ${failure.generationIndex} ${componentLabel} ${failure.field} is ${failure.stored}; this build implements ${failure.current}`,
-    {
-      field: failure.field,
-      generationIndex: failure.generationIndex,
-      stored: failure.stored,
-      current: failure.current,
-    });
+  const malformedPrefix = verified.nestedFormatMalformedFailure;
+  if (malformedPrefix !== null) {
+    evolutionFail('malformedHistory',
+      `generation ${malformedPrefix.generationIndex} ${COMPONENT_LABELS[malformedPrefix.component]} has a truncated or unreadable version prefix`,
+      { generationIndex: malformedPrefix.generationIndex },
+      malformedPrefix.cause);
+  }
 }
 
 /**

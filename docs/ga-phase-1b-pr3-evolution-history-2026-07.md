@@ -522,14 +522,17 @@ unchanged; both RAISE after stage 8.
   when unsupported, never assuming an unknown layout; only when current are
   the remaining four declared fields (`fitnessPolicyVersion`,
   `integrityPolicyVersion`, `snapshotVersion`, `evaluationSpecVersion`)
-  compared in declared order. The error names the exact field, the
-  generation, and the stored and current values. A truncated or structurally
-  unreadable prefix is `malformedHistory`, not unsupported. The evaluation
-  metadata component owns its OWN nested version the same way, through
-  `peekEvaluationMetadataVersion` (owned by `evolution-history.js`): a stale
-  `evaluationMetadataVersion` is `unsupportedVersion` naming the field, the
-  generation, and the stored and current values — never `malformedHistory` —
-  while a prefix too short to reveal the version is malformed.
+  compared in declared order. The evaluation metadata component owns its OWN
+  nested version the same way, through `peekEvaluationMetadataVersion`
+  (owned by `evolution-history.js`). The two peeks run INDEPENDENTLY per
+  generation, and unsupported-format and malformed-prefix failures are
+  collected SEPARATELY across every generation — so the precedence is
+  global: the first unsupported version anywhere reports
+  `unsupportedVersion` naming the exact component and field, the generation,
+  and the stored and current values, and a malformed prefix anywhere can
+  never mask a stale version somewhere else (only when nothing is
+  unsupported anywhere does a truncated or unreadable prefix report
+  `malformedHistory`).
 - **Gate B — `verifyFitnessVectorMetadataCoherence` (`malformedHistory`).** A
   current-format artifact whose observations contradict its own per-
   generation metadata: an onset step beyond that generation's own

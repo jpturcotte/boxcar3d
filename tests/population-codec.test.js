@@ -18,7 +18,7 @@
 import { describe, test, expect } from 'vitest';
 import {
   POPULATION_SNAPSHOT_VERSION, bytesEqual, deserializePopulationSnapshot,
-  serializePopulationSnapshot,
+  peekPopulationSnapshotMemberCount, serializePopulationSnapshot,
 } from '../src/sim/population.js';
 import {
   POPULATION_INITIALIZER_VERSION, createInitialPopulation,
@@ -125,6 +125,7 @@ describe('population snapshot — round trips', () => {
     view.setUint32(8, 4, true);
     view.setUint32(12, genotypeBytes.length, true);
     out.set(genotypeBytes, 16);
+    expect(peekPopulationSnapshotMemberCount(out)).toBe(1);
     const decoded = deserializePopulationSnapshot(out);
     expect(decoded.individuals).toHaveLength(1);
     expect(decoded.individuals[0].individualId).toBe(4);

@@ -13,7 +13,8 @@ import { URL } from 'node:url';
 import { encodeInteropArtifact } from '../scripts/generate-evolution-v3-interop-fixture.js';
 import { resumeEvolutionRun } from '../src/sim/evolution-run.js';
 import {
-  checkFitnessVectorCompatibility, verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+  checkFitnessVectorCompatibility, verifyFitnessVectorExtractionBindings,
+  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 import { EVOLUTION_FIXTURE_A } from '../src/sim/evolution-fixtures.js';
 import { EVOLUTION_GOLDEN_LOCKS } from '../src/sim/evolution-locks.js';
@@ -62,6 +63,7 @@ describe('independent fitness-vector-v3 producer', () => {
     expect(verified.finalGenerationIndex).toBe(0);
     expect(() => checkFitnessVectorCompatibility(verified)).not.toThrow();
     expect(() => verifyFitnessVectorMetadataCoherence(verified)).not.toThrow();
+    expect(() => verifyFitnessVectorExtractionBindings(verified)).not.toThrow();
 
     const resumed = await resumeEvolutionRun(artifact);
     let result;

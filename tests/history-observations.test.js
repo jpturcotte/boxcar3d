@@ -17,10 +17,19 @@ vi.mock('../src/sim/population-evaluation.js', async (importOriginal) => {
   const original = await importOriginal();
   return {
     ...original,
+    deserializeFitnessVector: vi.fn((...args) => original.deserializeFitnessVector(...args)),
     evaluatePopulation: async (population, spec) => {
       if (globalThis.__observationsProbe) globalThis.__observationsProbe.evaluations += 1;
       return original.evaluatePopulation(population, spec);
     },
+  };
+});
+
+vi.mock('../src/sim/population.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    deserializePopulationSnapshot: vi.fn((...args) => original.deserializePopulationSnapshot(...args)),
   };
 });
 
@@ -54,6 +63,10 @@ const {
 } = await import('../src/sim/evolution-history.js');
 const { MAX_EVOLUTION_HISTORY_BYTES } = await import('../src/sim/evolution-replay.js');
 const { deserializeFitnessVector, serializeFitnessVector } = await import('../src/sim/population-evaluation.js');
+const {
+  deserializePopulationSnapshot, serializePopulationSnapshot,
+} = await import('../src/sim/population.js');
+const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 const { bytesToHex, copyOrdinaryBytes } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
@@ -67,6 +80,8 @@ const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
 beforeEach(() => {
   globalThis.__observationsProbe = { evaluations: 0, worlds: 0 };
   copyOrdinaryBytes.mockClear();
+  deserializeFitnessVector.mockClear();
+  deserializePopulationSnapshot.mockClear();
 });
 
 async function fixtureArtifact() {
@@ -133,9 +148,14 @@ describe('extractHistoryObservations', () => {
     expect(globalThis.__observationsProbe.worlds).toBeGreaterThan(0);
     globalThis.__observationsProbe.evaluations = 0;
     globalThis.__observationsProbe.worlds = 0;
+    deserializeFitnessVector.mockClear();
     const extracted = await extractHistoryObservations(artifact);
     expect(globalThis.__observationsProbe.evaluations).toBe(0);
     expect(globalThis.__observationsProbe.worlds).toBe(0);
+    // Gate B decodes each vector once; the binding guard decodes it once more
+    // and returns those checked rows to the seam. A third extraction decode is
+    // an avoidable full-population pass.
+    expect(deserializeFitnessVector).toHaveBeenCalledTimes(6);
 
     expect(bytesToHex(extracted.historyDigestBytes)).toBe(LOCK.historyDigest);
     expect(Object.isFrozen(extracted)).toBe(true);
@@ -162,6 +182,165 @@ describe('extractHistoryObservations', () => {
     expect(Number.isFinite(row.integrityObservations.peakBodySpeed)).toBe(true);
     expect(row.integrityObservations.firstAlertStep).toBeNull();
     expect(row.integrityObservations.firstCatastrophicStep).toBeNull();
+  });
+
+  test('a self-consistent vector that names the wrong population snapshot is refused as malformed', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: (decoded.populationSnapshotDigestState + 1) >>> 0,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals: decoded.individuals,
+      });
+    });
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /populationSnapshotDigestState/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'populationSnapshotDigestStateMismatch',
+    });
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('a self-consistent vector that names the wrong evaluation spec is refused as malformed', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: (decoded.evaluationSpecDigestState + 1) >>> 0,
+        individuals: decoded.individuals,
+      });
+    });
+
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /evaluationSpecDigestState/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'evaluationSpecDigestStateMismatch',
+    });
+  });
+
+  test('a self-consistent vector with fewer rows than the header population is refused as malformed', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals: decoded.individuals.slice(0, -1),
+      });
+    });
+
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /5 rows.*populationSize is 6/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'fitnessVectorPopulationSizeMismatch',
+      populationSize: 6,
+      individualCount: 5,
+    });
+  });
+
+  test('a sibling population with fewer members than the header is refused as malformed', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const population = deserializePopulationSnapshot(record.components.population);
+      record.components.population = serializePopulationSnapshot({
+        ...population,
+        individuals: population.individuals.slice(0, -1),
+      });
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: fnv1aFold(
+          FNV_OFFSET_BASIS, record.components.population,
+        ),
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals: decoded.individuals,
+      });
+    });
+
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory',
+      /population snapshot carries 5 members.*populationSize is 6/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'populationSnapshotPopulationSizeMismatch',
+      populationSize: 6,
+      populationCount: 5,
+    });
+  });
+
+  test('an oversized sibling population is rejected before any genotype rows are materialized', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const population = deserializePopulationSnapshot(record.components.population);
+      const last = population.individuals.at(-1);
+      record.components.population = serializePopulationSnapshot({
+        ...population,
+        individuals: [
+          ...population.individuals,
+          { individualId: last.individualId + 1, genotype: last.genotype },
+        ],
+      });
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: fnv1aFold(
+          FNV_OFFSET_BASIS, record.components.population,
+        ),
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals: decoded.individuals,
+      });
+    });
+
+    deserializePopulationSnapshot.mockClear();
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory',
+      /population snapshot carries 7 members.*populationSize is 6/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'populationSnapshotPopulationSizeMismatch',
+      populationSize: 6,
+      populationCount: 7,
+    });
+    expect(deserializePopulationSnapshot).not.toHaveBeenCalled();
+  });
+
+  test('self-consistent vector rows must name the persisted population members exactly', async () => {
+    const artifact = await fixtureArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const decoded = deserializeFitnessVector(record.components.fitnessVector);
+      const individuals = decoded.individuals.map((row) => ({
+        ...row,
+        individualId: row.individualId + 1000,
+      }));
+      record.components.fitnessVector = serializeFitnessVector({
+        populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+        evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+        individuals,
+      });
+    });
+
+    const err = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /individual 1000.*population member 0/,
+    );
+    expect(err.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'fitnessVectorIndividualIdMismatch',
+      memberIndex: 0,
+      stored: 1000,
+      expected: 0,
+    });
   });
 
   test('alert-bearing rows yield their onset steps — still with no physics', async () => {

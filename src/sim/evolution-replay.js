@@ -79,10 +79,13 @@ import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   deserializeFitnessVector, fitnessVectorByteLength, peekFitnessVectorVersions,
 } from './population-evaluation.js';
-import { POPULATION_SNAPSHOT_VERSION } from './population.js';
+import {
+  POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, peekPopulationSnapshotMemberCount,
+} from './population.js';
 import {
   INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
 } from './integrity.js';
+import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 
 /** The replay stages, in the order a record's components are compared. */
 export const REPLAY_STAGES = Object.freeze([
@@ -92,6 +95,7 @@ export const REPLAY_STAGES = Object.freeze([
 
 /** Human-readable labels for the two nested components the gates read. */
 const COMPONENT_LABELS = Object.freeze({
+  population: 'population snapshot',
   fitnessVector: 'fitness vector',
   evaluationMetadata: 'evaluation metadata',
 });
@@ -731,6 +735,137 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
       stored: failure.stored,
       executedSteps: failure.executedSteps,
     });
+}
+
+/**
+ * Offline extraction guard — bind each decoded fitness vector to the sibling
+ * population snapshot and the header evaluation spec it claims to summarize.
+ *
+ * This is intentionally separate from the resume ladder. Resume replays the
+ * persisted population through the engine and reports self-consistent changes
+ * as `replayDivergence`; an offline reader has no physics oracle, so it must
+ * reject an internally re-forged vector whose digest states, row count, or
+ * member IDs no longer name those persisted inputs.
+ *
+ * Call this only after `checkFitnessVectorCompatibility` and
+ * `verifyFitnessVectorMetadataCoherence`: those gates own version and
+ * current-format decoding precedence. This guard then reports binding failures
+ * as `malformedHistory`, before any rows are returned as observations. On
+ * success it returns the frozen generation rows decoded during that same
+ * binding pass, so the offline seam does not materialize every vector again.
+ */
+export function verifyFitnessVectorExtractionBindings(verified) {
+  const { header, framing } = verified;
+  const expectedEvaluationSpecDigestState = fnv1aFold(
+    FNV_OFFSET_BASIS, header.evaluationSpecBytes,
+  );
+  const generations = [];
+
+  for (let generationIndex = 0;
+    generationIndex < framing.generations.length;
+    generationIndex += 1) {
+    const payload = decodeGenerationPayload(framing.generations[generationIndex].payloadBytes);
+    const { population: populationBytes, fitnessVector: fitnessVectorBytes } = payload.components;
+    const vector = deserializeFitnessVector(fitnessVectorBytes);
+    const individualCount = vector.individuals.length;
+
+    if (individualCount !== header.populationSize) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} fitness vector carries ${individualCount} rows, `
+        + `but the history header populationSize is ${header.populationSize}`,
+        {
+          generationIndex,
+          rule: 'fitnessVectorPopulationSizeMismatch',
+          populationSize: header.populationSize,
+          individualCount,
+        });
+    }
+
+    const expectedPopulationSnapshotDigestState = fnv1aFold(
+      FNV_OFFSET_BASIS, populationBytes,
+    );
+    if (vector.populationSnapshotDigestState !== expectedPopulationSnapshotDigestState) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} fitness vector populationSnapshotDigestState `
+        + `${vector.populationSnapshotDigestState} does not match the persisted population snapshot `
+        + `state ${expectedPopulationSnapshotDigestState}`,
+        {
+          generationIndex,
+          rule: 'populationSnapshotDigestStateMismatch',
+          stored: vector.populationSnapshotDigestState,
+          expected: expectedPopulationSnapshotDigestState,
+        });
+    }
+    if (vector.evaluationSpecDigestState !== expectedEvaluationSpecDigestState) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} fitness vector evaluationSpecDigestState `
+        + `${vector.evaluationSpecDigestState} does not match the history evaluation spec state `
+        + `${expectedEvaluationSpecDigestState}`,
+        {
+          generationIndex,
+          rule: 'evaluationSpecDigestStateMismatch',
+          stored: vector.evaluationSpecDigestState,
+          expected: expectedEvaluationSpecDigestState,
+        });
+    }
+
+    let populationCount;
+    try {
+      populationCount = peekPopulationSnapshotMemberCount(populationBytes);
+    } catch (cause) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} ${COMPONENT_LABELS.population} has a truncated or unreadable prefix`,
+        { generationIndex },
+        cause);
+    }
+    if (populationCount !== header.populationSize) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} population snapshot carries ${populationCount} members, `
+        + `but the history header populationSize is ${header.populationSize}`,
+        {
+          generationIndex,
+          rule: 'populationSnapshotPopulationSizeMismatch',
+          populationSize: header.populationSize,
+          populationCount,
+        });
+    }
+
+    let population;
+    try {
+      population = deserializePopulationSnapshot(populationBytes);
+    } catch (cause) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} ${COMPONENT_LABELS.population} is malformed`,
+        { generationIndex },
+        cause);
+    }
+
+    for (let memberIndex = 0; memberIndex < header.populationSize; memberIndex += 1) {
+      const stored = vector.individuals[memberIndex].individualId;
+      const expected = population.individuals[memberIndex].individualId;
+      if (stored !== expected) {
+        evolutionFail('malformedHistory',
+          `generation ${generationIndex} fitness vector individual ${stored} at member index `
+          + `${memberIndex} does not match persisted population member ${expected}`,
+          {
+            generationIndex,
+            rule: 'fitnessVectorIndividualIdMismatch',
+            memberIndex,
+            stored,
+            expected,
+          });
+      }
+    }
+
+    const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
+    generations.push(Object.freeze({
+      generationIndex: payload.generationIndex,
+      terminalReason: payload.terminalReason,
+      executedSteps: metadata.executedSteps,
+      individuals: vector.individuals,
+    }));
+  }
+  return Object.freeze(generations);
 }
 
 /**

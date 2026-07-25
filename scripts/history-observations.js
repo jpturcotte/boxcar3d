@@ -11,10 +11,11 @@
 // PRODUCTION verification internally — `verifyHistoryArtifact` (framing,
 // header digest, every component digest, the chain, the whole-history digest)
 // and BOTH pre-physics gates (fitness-vector compatibility, then metadata
-// coherence) — before decoding anything, sharing the production checks and
-// the production error taxonomy rather than growing a second, script-local
-// interpretation of compatibility. An optional externally held expected
-// history digest binds freshness exactly like the resume path.
+// coherence), followed by the extraction-only input-binding guard — before
+// returning anything, sharing the production checks and the production error
+// taxonomy rather than growing a second, script-local interpretation of
+// compatibility. An optional externally held expected history digest binds
+// freshness exactly like the resume path.
 //
 // WHY IT LIVES HERE and not in src/sim: it is an offline, read-only consumer —
 // not a production module the byte-family lint scope and the ownership
@@ -34,14 +35,12 @@
 
 import { copyOrdinaryBytes, typedArrayByteLength } from '../src/sim/bytes.js';
 import { evolutionFail } from '../src/sim/evolution-contract.js';
-import {
-  SHA256_DIGEST_BYTES, decodeGenerationPayload, deserializeEvaluationMetadata,
-} from '../src/sim/evolution-history.js';
+import { SHA256_DIGEST_BYTES } from '../src/sim/evolution-history.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, checkExpectedIdentity, checkFitnessVectorCompatibility,
-  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+  verifyFitnessVectorExtractionBindings, verifyFitnessVectorMetadataCoherence,
+  verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
-import { deserializeFitnessVector } from '../src/sim/population-evaluation.js';
 
 function malformed(path, value) {
   evolutionFail('malformedHistory', `history-observations: invalid ${path} (${String(value)})`, { path });
@@ -140,23 +139,9 @@ export async function extractHistoryObservations(historyBytes, options = undefin
   }
   checkFitnessVectorCompatibility(verified);
   verifyFitnessVectorMetadataCoherence(verified);
-
-  const generations = [];
-  const generationCount = verified.framing.generations.length;
-  for (let i = 0; i < generationCount; i += 1) {
-    // One decoded payload at a time (the documented retention bound).
-    const payload = decodeGenerationPayload(verified.framing.generations[i].payloadBytes);
-    const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
-    const vector = deserializeFitnessVector(payload.components.fitnessVector);
-    generations.push(Object.freeze({
-      generationIndex: payload.generationIndex,
-      terminalReason: payload.terminalReason,
-      executedSteps: metadata.executedSteps,
-      individuals: vector.individuals,
-    }));
-  }
+  const generations = verifyFitnessVectorExtractionBindings(verified);
   return Object.freeze({
     historyDigestBytes: copyOrdinaryBytes(verified.historyDigestBytes, malformed),
-    generations: Object.freeze(generations),
+    generations,
   });
 }

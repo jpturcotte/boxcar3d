@@ -41,14 +41,23 @@ const {
   MAX_EVOLUTION_POPULATION_SIZE,
 } = await import('../src/sim/evolution-contract.js');
 const {
+  EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION,
   deserializeEvaluationSpec, serializeEvaluationSpec,
 } = await import('../src/sim/population-evaluation.js');
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
-  decodeGenerationPayload, decodeHistoryFraming, digestComponent, digestGeneration,
+  decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
+  digestComponent, digestGeneration,
   digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
 } = await import('../src/sim/evolution-history.js');
-const { REPLAY_STAGES, firstByteDifference } = await import('../src/sim/evolution-replay.js');
+const {
+  REPLAY_STAGES, checkFitnessVectorCompatibility, firstByteDifference,
+  verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
+} = await import('../src/sim/evolution-replay.js');
+const {
+  INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
+} = await import('../src/sim/integrity.js');
+const { POPULATION_SNAPSHOT_VERSION } = await import('../src/sim/population.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 
@@ -511,6 +520,44 @@ const mutateVectorMember = (record, j, mutate) => {
   record.components.fitnessVector = vector;
 };
 
+// evaluationMetadata wire layout: u16 version @0, u8 worldMode @2,
+// f64 effectiveDt @3, u32 executedSteps @11 (the offset the divergence test
+// below already uses). Gate B's whole point is that it trusts THIS record's
+// persisted effectiveDt, so the scaling test rewrites exactly that field.
+const mutateMetadataDt = (record, effectiveDt) => {
+  const m = new Uint8Array(record.components.evaluationMetadata);
+  new DataView(m.buffer, m.byteOffset, m.byteLength).setFloat64(3, effectiveDt, true);
+  record.components.evaluationMetadata = m;
+};
+
+// The exact next representable f64 above a positive value — bit arithmetic,
+// not a decimal epsilon that could round back onto the boundary itself.
+const nextUp = (x) => {
+  const f = new Float64Array(1);
+  const u = new BigUint64Array(f.buffer);
+  f[0] = x;
+  u[0] += 1n;
+  return f[0];
+};
+
+// Decode one generation's metadata straight from an artifact — used only to
+// state test PRECONDITIONS about the unmutated run, so a physics or seed change
+// fails these tests legibly instead of silently changing what they prove.
+const decodedMetadata = (bytes, gen = 0) => deserializeEvaluationMetadata(
+  decodeGenerationPayload(decodeHistoryFraming(bytes).generations[gen].payloadBytes)
+    .components.evaluationMetadata,
+);
+
+// Gate B POSITIVE contrasts run the gates DIRECTLY over a verified artifact:
+// a reforged history passes stages 3–7 but can never survive stage 10 (the
+// bytes are, by construction, not what this engine reproduces), so “Gate B
+// accepts this” is only observable at the gate seam itself.
+async function gatesOver(bytes) {
+  const verified = await verifyHistoryArtifact(bytes);
+  checkFitnessVectorCompatibility(verified);
+  return () => verifyFitnessVectorMetadataCoherence(verified);
+}
+
 describe('the pre-physics fitness-vector gates (8a compatibility, 8b coherence)', () => {
   test('Gate A: a stale fitnessVectorVersion is `unsupportedVersion`, named and localized, with zero evaluations', async () => {
     const artifact = await runGenerations(2);
@@ -610,6 +657,282 @@ describe('the pre-physics fitness-vector gates (8a compatibility, 8b coherence)'
     );
     expect(err.context).toMatchObject({
       field: 'firstCatastrophicStep', generationIndex: 0, individualId: 0, peakBodySpeed: 1200,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  // --- Gate A: TABLE-DRIVEN tests for each nested version field ---------------
+  // The layered peek reads fitnessVectorVersion FIRST; if it is current the
+  // remaining four are read and each checked independently. Each row below
+  // forges a vector whose outer version is CURRENT so the peek trusts it, then
+  // bumps exactly ONE of the four inner fields. The check array tells us which
+  // offset to mutate — all u16 little-endian from the header start.
+  const GATE_A_INNER_VERSIONS = [
+    // [name, byteOffset from vector start, forged value, current constant]
+    ['fitnessPolicyVersion', 2, 99, FITNESS_POLICY_VERSION],
+    ['integrityPolicyVersion', 4, 99, INTEGRITY_POLICY_VERSION],
+    ['snapshotVersion', 6, 99, POPULATION_SNAPSHOT_VERSION],
+    ['evaluationSpecVersion', 12, 99, EVALUATION_SPEC_VERSION],
+  ];
+  test.each(GATE_A_INNER_VERSIONS)(
+    'Gate A: a stale %s is unsupportedVersion (table-driven), named, localized at generation 1, zero evaluations',
+    async (name, offset, forgedValue, current) => {
+      const artifact = await runGenerations(2);
+      const broken = await reforge(artifact, {
+        mutateRecord: (record, i) => {
+          if (i !== 1) return; // only generation 1 — error must say so
+          const vector = new Uint8Array(record.components.fitnessVector);
+          new DataView(vector.buffer, vector.byteOffset, vector.byteLength)
+            .setUint16(offset, forgedValue, true);
+          record.components.fitnessVector = vector;
+        },
+      });
+      globalThis.__replayProbe.evaluations = 0;
+      const err = await expectCodeAsync(
+        () => resumeEvolutionRun(broken), 'unsupportedVersion',
+        new RegExp(`${name} is ${forgedValue}; this build implements ${current}`),
+      );
+      expect(err.context).toMatchObject({
+        field: name, generationIndex: 1, stored: forgedValue, current,
+      });
+      expect(globalThis.__replayProbe.evaluations).toBe(0);
+    },
+  );
+
+  // --- Gate B: EFFECTIVE-DT SCALING -------------------------------------------
+  // Gate B derives per-capture thresholds via:
+  //   dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT
+  // A reforged artifact with a doubled effectiveDt doubles the per-capture
+  // bounds: a peak that was below alertSpeedDelta×1 is still below
+  // alertSpeedDelta×2 (passing) but would have EXCEEDED alertSpeedDelta×1
+  // (failing). This proves Gate B uses the generation-local effectiveDt.
+  test('Gate B: effective-dt scaling — a doubled dt widens per-capture bounds, proven by a value between the two thresholds', async () => {
+    const artifact = await runGenerations(1);
+    // PRECONDITION: the run used effectiveDt ≈ 1/60 (the reference interval).
+    const meta = decodedMetadata(artifact);
+    expect(meta.effectiveDt).toBeCloseTo(INTEGRITY_REFERENCE_CAPTURE_DT, 5);
+    // The alert speedDelta threshold at 1× reference dt: 30 (per the policy).
+    // At 2× reference dt: 60.
+    const dtDoubled = INTEGRITY_REFERENCE_CAPTURE_DT * 2;
+    // Choose a peak that sits BETWEEN the two thresholds: 45 m/s.
+    // Under the generation's persisted effectiveDt=2×ref the threshold is 60,
+    // so 45 is below → no alert needed. Under 1× ref the threshold is 30, so
+    // 45 would exceed it → alert would be needed. The test PASSES Gate B
+    // (positive contrast), proving the doubled dt is what Gate B uses.
+    const passing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, dtDoubled);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, 0, true); // peakBodySpeed quiet
+          view.setFloat64(base + 22, 45, true); // peakSpeedDelta = 45
+          view.setFloat64(base + 30, 0, true); // peakStepDisplacement quiet
+          view.setUint8(base + 38, 0); // no alert declared
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0); // no catastrophic
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    // Positive contrast: Gate B must accept this (the scaled threshold is 60,
+    // and 45 < 60).
+    globalThis.__replayProbe.evaluations = 0;
+    const gateBCheck = await gatesOver(passing);
+    expect(() => gateBCheck()).not.toThrow();
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+    // Negative contrast: same vector but REFERENCE dt (threshold = 30, and
+    // 45 > 30 → alert required, not declared → malformedHistory).
+    const failing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, INTEGRITY_REFERENCE_CAPTURE_DT);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, 0, true);
+          view.setFloat64(base + 22, 45, true);
+          view.setFloat64(base + 30, 0, true);
+          view.setUint8(base + 38, 0);
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0);
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(failing), 'malformedHistory',
+      /declares no alert onset but a retained peak exceeds an alert threshold/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstAlertStep', generationIndex: 0, individualId: 0,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  // --- Gate B: STRICT THRESHOLD BOUNDARY (exact == does NOT require onset) ----
+  test('Gate B: strict boundary — a peak EXACTLY at the threshold does NOT require an onset (positive), next-up DOES (negative)', async () => {
+    const artifact = await runGenerations(1);
+    const meta = decodedMetadata(artifact);
+    // Absolute-speed threshold: alertSpeed = 25 m/s.
+    // Strict `>`: exactly 25 does NOT fire; nextUp(25) DOES fire.
+    const boundary = INTEGRITY_THRESHOLDS.alertSpeed;
+    // Positive: peakBodySpeed = exactly 25, no alert declared.
+    const passing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, meta.effectiveDt);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, boundary, true); // exactly at threshold
+          view.setFloat64(base + 22, 0, true);
+          view.setFloat64(base + 30, 0, true);
+          view.setUint8(base + 38, 0); // no alert
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0);
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    const gateBCheck = await gatesOver(passing);
+    expect(() => gateBCheck()).not.toThrow();
+    // Negative: peakBodySpeed = nextUp(25) → alert fires, onset REQUIRED.
+    const above = nextUp(boundary);
+    expect(above).toBeGreaterThan(boundary); // sanity: actually bigger
+    const failing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, meta.effectiveDt);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, above, true); // just above
+          view.setFloat64(base + 22, 0, true);
+          view.setFloat64(base + 30, 0, true);
+          view.setUint8(base + 38, 0); // no alert declared
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0);
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      async () => {
+        const verified = await verifyHistoryArtifact(failing);
+        checkFitnessVectorCompatibility(verified);
+        verifyFitnessVectorMetadataCoherence(verified);
+      }, 'malformedHistory',
+      /declares no alert onset but a retained peak exceeds an alert threshold/,
+    );
+    expect(err.context.field).toBe('firstAlertStep');
+    expect(err.context.individualId).toBe(0);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  // --- Gate B: SCALED per-capture boundary (alertStepDisplacement) -----------
+  test('Gate B: strict boundary on a per-capture scaled threshold (alertStepDisplacement)', async () => {
+    const artifact = await runGenerations(1);
+    const meta = decodedMetadata(artifact);
+    const dtScale = meta.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+    const scaledThreshold = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+    // Exactly at threshold: no alert required.
+    const passing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, meta.effectiveDt);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, 0, true);
+          view.setFloat64(base + 22, 0, true);
+          view.setFloat64(base + 30, scaledThreshold, true); // exactly at threshold
+          view.setUint8(base + 38, 0);
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0);
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    const gateBCheck = await gatesOver(passing);
+    expect(() => gateBCheck()).not.toThrow();
+    // nextUp(scaledThreshold): alert required.
+    const above = nextUp(scaledThreshold);
+    const failing = await reforge(artifact, {
+      mutateRecord: (record) => {
+        mutateMetadataDt(record, meta.effectiveDt);
+        mutateVectorMember(record, 0, (view, base) => {
+          view.setFloat64(base + 14, 0, true);
+          view.setFloat64(base + 22, 0, true);
+          view.setFloat64(base + 30, above, true);
+          view.setUint8(base + 38, 0); // no alert declared
+          view.setUint32(base + 39, 0, true);
+          view.setUint8(base + 43, 0);
+          view.setUint32(base + 44, 0, true);
+        });
+      },
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      async () => {
+        const verified = await verifyHistoryArtifact(failing);
+        checkFitnessVectorCompatibility(verified);
+        verifyFitnessVectorMetadataCoherence(verified);
+      }, 'malformedHistory',
+      /declares no alert onset but a retained peak exceeds an alert threshold/,
+    );
+    expect(err.context.field).toBe('firstAlertStep');
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  // --- Gate B: BOTH DIRECTIONS of catastrophic peak/onset equivalence --------
+  test('Gate B: catastrophic onset declared but no catastrophic peak crosses a threshold is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    // To pass the DECODER'S own policy-1 coherence (which requires
+    // numericalDivergence to have a catastrophic step, and catastrophic requires
+    // alert), we set integrityStatus = numericalDivergence (index 2),
+    // valid = false, fitness = 0, alert onset present AND catastrophic onset
+    // present. But the peaks are below the catastrophic thresholds. Gate B sees
+    // the contradiction: onset declared, no peak above threshold.
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => mutateVectorMember(record, 0, (view, base) => {
+        // id stays, valid = false (0), status = numericalDivergence (2), fitness = 0
+        view.setUint8(base + 4, 0); // valid = false
+        view.setUint8(base + 5, 2); // integrityStatus = numericalDivergence
+        view.setFloat64(base + 6, 0, true); // fitness = 0
+        view.setFloat64(base + 14, 500, true); // peakBodySpeed: above alert, below cat 1000
+        view.setFloat64(base + 22, 0, true);
+        view.setFloat64(base + 30, 0, true);
+        view.setUint8(base + 38, 1); // alert onset present (required by decoder: cat→alert)
+        view.setUint32(base + 39, 3, true);
+        view.setUint8(base + 43, 1); // catastrophic onset CLAIMED
+        view.setUint32(base + 44, 5, true);
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      async () => {
+        const verified = await verifyHistoryArtifact(broken);
+        checkFitnessVectorCompatibility(verified);
+        verifyFitnessVectorMetadataCoherence(verified);
+      }, 'malformedHistory',
+      /declares firstCatastrophicStep 5 but no retained peak exceeds a catastrophic threshold/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstCatastrophicStep', generationIndex: 0, individualId: 0,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('Gate B: alert peak crosses a threshold but no alert onset is declared is malformedHistory', async () => {
+    const artifact = await runGenerations(1);
+    // peakBodySpeed = 30 (above alertSpeed 25): the alert predicate fires,
+    // but onset is denied. Below catastrophicSpeed so no catastrophic issue.
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => mutateVectorMember(record, 0, (view, base) => {
+        view.setFloat64(base + 14, 30, true); // above alertSpeed 25
+        view.setFloat64(base + 22, 0, true);
+        view.setFloat64(base + 30, 0, true);
+        view.setUint8(base + 38, 0); // NO alert onset declared
+        view.setUint32(base + 39, 0, true);
+        view.setUint8(base + 43, 0);
+        view.setUint32(base + 44, 0, true);
+      }),
+    });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /declares no alert onset but a retained peak exceeds an alert threshold/,
+    );
+    expect(err.context).toMatchObject({
+      field: 'firstAlertStep', generationIndex: 0, individualId: 0,
     });
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });

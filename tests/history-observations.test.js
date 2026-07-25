@@ -8,8 +8,13 @@
 //      `unsupportedVersion` naming `fitnessVectorVersion`, before any decode
 //      of its foreign layout.
 //   4. Corruption fails with taxonomy codes (`historyDigestMismatch`,
-//      `malformedHistory`), and fancy storage / over-ceiling artifacts are
-//      refused SYNCHRONOUSLY — the copy-before-await prologue is real.
+//      `malformedHistory`); fancy storage is refused SYNCHRONOUSLY at the
+//      type gate; a REAL over-ceiling Uint8Array is refused SYNCHRONOUSLY as
+//      `resourceLimitExceeded` (the intrinsic length, checked BEFORE the
+//      copy); and the copy-before-await prologue is proven DIRECTLY — the
+//      caller's history buffer and expected-digest bytes are both mutated
+//      after the call returns its promise but before it is awaited, and the
+//      extraction still answers from the captured originals.
 
 import {
   describe, test, expect, vi, beforeEach,
@@ -140,14 +145,67 @@ describe('extractHistoryObservations — the verified read path', () => {
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
-  test('fancy storage and over-ceiling artifacts are refused SYNCHRONOUSLY (the copy-before-await prologue)', () => {
+  test('fancy storage and non-typed-array inputs are refused SYNCHRONOUSLY at the type gate', () => {
     expectCodeSync(
       () => extractHistoryObservations(new Uint8Array(new SharedArrayBuffer(64))),
       'malformedHistory',
     );
-    const oversized = { buffer: new ArrayBuffer(0), byteLength: MAX_EVOLUTION_HISTORY_BYTES + 1 };
-    // Not a real Uint8Array — the intrinsic length read itself must refuse it.
-    expectCodeSync(() => extractHistoryObservations(oversized), 'malformedHistory');
+    // Not a real typed array: the intrinsic-length read itself refuses it —
+    // this is the TYPE gate, not the ceiling (the byteLength property here is
+    // caller-authored fiction, so it is never trusted enough to compare).
+    const fake = { buffer: new ArrayBuffer(0), byteLength: MAX_EVOLUTION_HISTORY_BYTES + 1 };
+    expectCodeSync(() => extractHistoryObservations(fake), 'malformedHistory');
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('a REAL artifact one byte over MAX_EVOLUTION_HISTORY_BYTES is refused synchronously as resourceLimitExceeded, before the copy', () => {
+    // A genuine same-realm Uint8Array whose INTRINSIC length is one over the
+    // ceiling — this reaches the resource-limit branch itself, which the fake
+    // object above never can (it dies at the type gate as malformedHistory).
+    const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    const err = expectCodeSync(
+      () => extractHistoryObservations(oversized),
+      'resourceLimitExceeded', /exceeds MAX_EVOLUTION_HISTORY_BYTES/,
+    );
+    expect(err.context.byteLength).toBe(MAX_EVOLUTION_HISTORY_BYTES + 1);
+    expect(err.context.limit).toBe(MAX_EVOLUTION_HISTORY_BYTES);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('the caller\u2019s history buffer is COPIED before the first await: zeroing it after the call changes nothing', async () => {
+    const fixture = interopFixtureBytes();
+    // The synchronous prologue copies; the promise exists but nothing has
+    // been awaited yet when the caller destroys its own buffer.
+    const promise = extractHistoryObservations(fixture);
+    fixture.fill(0);
+    const generations = await promise;
+    expect(generations.length).toBe(1);
+    expect(generations[0].generationIndex).toBe(0);
+    expect(generations[0].executedSteps).toBe(60);
+    expect(generations[0].individuals.map((m) => m.individualId)).toEqual([0, 1, 2, 3]);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('the expected-digest bytes are COPIED before the first await, in both directions', async () => {
+    // Direction 1: a CORRECT expectation, vandalized after the call — the
+    // captured original is used, so extraction still succeeds.
+    const rightDigest = interopFixtureBytes().slice(-32);
+    const okPromise = extractHistoryObservations(
+      interopFixtureBytes(), { expectedHistoryDigestBytes: rightDigest },
+    );
+    rightDigest.fill(0);
+    const generations = await okPromise;
+    expect(generations.length).toBe(1);
+    // Direction 2: a WRONG expectation, “repaired” after the call — the
+    // captured original is used, so extraction still refuses as stale.
+    const wrongDigest = interopFixtureBytes().slice(-32);
+    wrongDigest[0] ^= 0xff;
+    const fixture = interopFixtureBytes();
+    const badPromise = extractHistoryObservations(
+      fixture, { expectedHistoryDigestBytes: wrongDigest },
+    );
+    wrongDigest[0] ^= 0xff; // now byte-equal to the true digest — too late
+    await expectCodeAsync(() => badPromise, 'staleOrWrongArtifact');
     expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 });

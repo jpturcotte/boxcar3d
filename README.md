@@ -39,14 +39,18 @@ crossing unselectable removes **2.5 %** of unmutated individuals, all peaking
 champion in **27 %** of populations — so the false-positive risk is effectively
 nil. That is the evidence PR-B's alert-as-failure escalation trigger was waiting
 for; landing it (plus PR-B's false-negative half) is the declared prerequisite
-before any tuning decision. **PR #30 has since landed step 1 of that remediation
-sequence:** the five integrity observations (`peakBodySpeed`, `peakSpeedDelta`,
-`peakStepDisplacement`, `firstAlertStep`, `firstCatastrophicStep`) are now
+before any tuning decision. **PR #30 (open, not yet merged) implements step 1 of
+that remediation sequence:** the five integrity observations (`peakBodySpeed`,
+`peakSpeedDelta`, `peakStepDisplacement`, `firstAlertStep`,
+`firstCatastrophicStep`) become
 canonical fitness-vector wire fields (v3), persisted in every evolution history
 and read back only through a verified, zero-physics extraction seam
 (`scripts/history-observations.js`) — so contamination is readable from history
 without a forensic re-run, and replay refuses a stale or semantically
-incoherent vector artifact before any physics runs. Full report, including the
+incoherent vector artifact before any physics runs. PR #30 persists the
+EVIDENCE only: the alert band stays a selectable observation under integrity
+policy v1, and the escalation itself (step 2) remains unimplemented. Full
+report, including the
 headline claims this PR
 corrected in itself across three adversarial review rounds — and one external
 finding it REFUTED by executing the mutation the reviewer predicted would

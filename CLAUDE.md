@@ -2123,11 +2123,26 @@ history, replay, and strong artifact identity. Full contract:
   byte-identical headers/components and mutual Claude/Kimi resume at codec
   genesis; the repository's own golden fixture remains a regression lock, not
   circular proof of its original semantics.
-- **Fitness-vector v3 (PR #30): the five integrity observations are canonical
-  wire fields.** Each member row appends `peakBodySpeed`/`peakSpeedDelta`/
-  `peakStepDisplacement` (f64, finite ≥ 0) and `firstAlertStep`/
+- **Fitness-vector v3 (implemented in PR #30 — open, not yet merged): the five
+  integrity observations are canonical wire fields.** Each member row appends
+  `peakBodySpeed`/`peakSpeedDelta`/
+  `peakStepDisplacement` (f64; domain exactly `typeof value === 'number' &&
+  value >= 0` — +Infinity admitted (a diverging sample is a legal policy-v1
+  output), `-0` bit-preserved; NaN, −Infinity, negatives and non-numbers
+  refused — NOT "finite": a finiteness rule would refuse bytes the detector
+  legally produces) and `firstAlertStep`/
   `firstCatastrophicStep` (u8 presence flag + u32 step; absent ⇒ payload
-  exactly 0 — canonical form, decoder-enforced), +34 bytes per member. ONE
+  exactly 0 — canonical form, decoder-enforced), +34 bytes per member. The
+  22-byte vector header owns five nested versions — fitnessVectorVersion,
+  fitnessPolicyVersion, integrityPolicyVersion, snapshotVersion,
+  evaluationSpecVersion — each checked independently by replay Gate A
+  (stage 8a, `unsupportedVersion`: an old format is STALENESS, the remedy is
+  a different build), with the layered peek stopping at a stale
+  fitnessVectorVersion before trusting any later prefix field; Gate B
+  (stage 8b, `malformedHistory`: a self-contradictory artifact is CORRUPTION)
+  re-derives the policy-v1 thresholds from the generation's own persisted
+  `effectiveDt` (strict `>`, per-capture bounds scaled, speed bounds
+  absolute) and requires peak↔onset equivalence in both directions. ONE
   capture (`captureEvaluationMemberResult`) produces validity, status, fitness
   and the observations from a single reading of the vehicle result. Offline
   consumers read them only through the verified seam
@@ -2136,7 +2151,9 @@ history, replay, and strong artifact identity. Full contract:
   copy — zero physics, proven by the same evaluation-counting probe as the
   replay suite. `summarizeEvolutionHistory` runs Gate A before any component
   decode, so pre-v3 histories refuse as `unsupportedVersion` rather than dying
-  in the codec.
+  in the codec. PR #30 persists EVIDENCE only: the alert band remains a
+  selectable observation under integrity policy v1, and alert-band escalation
+  is deliberately NOT implemented here.
 - **Enforcement is DERIVED, not enumerated.** The byte-family lint scope now
   comes from EVERY config block carrying the shared `BYTE_SAFETY_SYNTAX`
   selectors (it was a single-block lookup by filename, which would have silently

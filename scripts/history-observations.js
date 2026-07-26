@@ -10,12 +10,13 @@
 // never attested must never be read as attested). This seam therefore runs the
 // PRODUCTION verification internally — `verifyHistoryArtifact` (framing,
 // header digest, every component digest, the chain, the whole-history digest)
-// and BOTH pre-physics gates (fitness-vector compatibility, then metadata
-// coherence), followed by the extraction-only input-binding guard — before
-// returning anything, sharing the production checks and the production error
-// taxonomy rather than growing a second, script-local interpretation of
-// compatibility. An optional externally held expected history digest binds
-// freshness exactly like the resume path.
+// and all three pre-physics gates (fitness-vector compatibility, metadata
+// coherence, then shared artifact semantics/bindings) — before returning
+// anything, sharing the resume checks and error taxonomy rather than growing a
+// second, script-local interpretation. The third gate decodes the evaluation
+// spec and initialization manifest, checks the population/spec/vector/metadata
+// relationships, and returns the already-checked rows for reuse. An optional
+// externally held expected history digest binds freshness exactly like resume.
 //
 // WHY IT LIVES HERE and not in src/sim: it is an offline, read-only consumer —
 // not a production module the byte-family lint scope and the ownership
@@ -38,8 +39,7 @@ import { evolutionFail } from '../src/sim/evolution-contract.js';
 import { SHA256_DIGEST_BYTES } from '../src/sim/evolution-history.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, checkExpectedIdentity, checkFitnessVectorCompatibility,
-  verifyFitnessVectorExtractionBindings, verifyFitnessVectorMetadataCoherence,
-  verifyHistoryArtifact,
+  verifyEvolutionArtifactSemantics, verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 
 function malformed(path, value) {
@@ -132,14 +132,14 @@ export async function extractHistoryObservations(historyBytes, options = undefin
   }
 
   // Verification FIRST, always: nothing is decoded from bytes the digests do
-  // not attest, and compatibility/coherence come from the production gates.
+  // not attest, and compatibility/coherence/semantics come from the production gates.
   const verified = await verifyHistoryArtifact(owned);
   if (expectedDigestBytes !== null) {
     checkExpectedIdentity(verified, { historyDigestBytes: expectedDigestBytes, generationIndex: null });
   }
   checkFitnessVectorCompatibility(verified);
   verifyFitnessVectorMetadataCoherence(verified);
-  const generations = verifyFitnessVectorExtractionBindings(verified);
+  const { generations } = verifyEvolutionArtifactSemantics(verified, true);
   return Object.freeze({
     historyDigestBytes: copyOrdinaryBytes(verified.historyDigestBytes, malformed),
     generations,

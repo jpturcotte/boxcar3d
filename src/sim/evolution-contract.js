@@ -160,3 +160,15 @@ export function checkedMultiply(a, b, what) {
   }
   return product;
 }
+
+/** Shared preflight for the per-generation population × step compute budget. */
+export function assertEvaluationWork(populationSize, maxSteps) {
+  const work = checkedMultiply(populationSize, maxSteps, 'evolution evaluation work');
+  if (work > MAX_EVOLUTION_EVALUATION_WORK) {
+    evolutionFail('resourceLimitExceeded',
+      `populationSize × maxSteps (${work}) exceeds MAX_EVOLUTION_EVALUATION_WORK (${MAX_EVOLUTION_EVALUATION_WORK})`,
+      {
+        populationSize, maxSteps, work, limit: MAX_EVOLUTION_EVALUATION_WORK,
+      });
+  }
+}

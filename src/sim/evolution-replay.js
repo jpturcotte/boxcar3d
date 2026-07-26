@@ -28,31 +28,35 @@
 //      version, each peeked independently through its OWN module's layered
 //      peek — a malformed prefix anywhere never masks a stale version)
 //  10. fitness-vector metadata coherence           (malformed current format)
-//  11. deterministic flavor + exact Rapier version (before physics)
-//  12. deterministic replay, stopping at the first byte divergence
+//  11. current-artifact semantics + bindings          (malformed current format)
+//  12. deterministic flavor + exact Rapier version    (before physics)
+//  13. deterministic replay, stopping at the first byte divergence
 //
 // Stages 1-2 belong to the caller's intake seam (evolution-run's resume
 // prologue, which must copy before it awaits); 3-7 are `verifyHistoryArtifact`;
-// 8-11 are the small checks below; 12 is the run's own replay loop. The two
-// fitness-vector gates (9-10) sit BETWEEN external identity and the runtime
+// 8-12 are the small checks below; 13 is the run's own replay loop. The
+// current-format gates (9-11) sit BETWEEN external identity and the runtime
 // gate, so the escalation ladder reads: corruption -> wrong artifact ->
 // unsupported format -> malformed current format -> runtime mismatch ->
-// deterministic divergence. Their INPUTS are collected while walking the
+// deterministic divergence. Gates 9-10 collect their INPUTS while walking the
 // components at stage 5. Vector geometry is first bound to the capped header
 // population; rows are decoded only transiently, while the retained inputs are
-// per-generation scalars and at most one failure descriptor per gate. The
-// RAISE happens after stage 8, never mid-walk, so a corruption or staleness
-// verdict is never masked by a format one.
+// per-generation scalars and at most one failure descriptor per gate. Gate 11
+// then walks one payload at a time after stage 8, retaining validated rows only
+// when offline extraction requests them. Every format verdict therefore RAISES
+// after stage 8, so corruption or staleness is never masked.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
 // every generation up front would hold a second full copy of the artifact.
 // Verification therefore decodes one payload at a time, verifies its four
 // component digests, and DISCARDS it, returning only scalars plus the framing
-// (whose views alias the caller's already-owned buffer). Replay decodes each
-// payload again, on demand, one at a time. That is two decodes of each payload
-// in exchange for a retention bound of: the artifact, ONE decoded payload, and
-// the current/next working populations — which is the documented peak. The
+// (whose views alias the caller's already-owned buffer). Stage 11 and replay
+// each decode one payload again, on demand. Those extra passes exchange decode
+// work for a resume retention bound of: the artifact, ONE decoded payload, and
+// the current/next working populations — which is the documented peak. Offline
+// extraction deliberately retains its result rows from stage 11 and does not
+// decode them a fourth time. The
 // stage-5 gate collection adds two TRANSIENT decodes (the fitness vector and
 // its sibling metadata, only when BOTH components' versions are current)
 // inside the same one-payload window; what is retained is one first-failure
@@ -68,7 +72,8 @@ import {
 } from './evolution-history.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, evolutionFail, isEvolutionUint32,
+  MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork, evolutionFail,
+  isEvolutionUint32,
 } from './evolution-contract.js';
 import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
 import {
@@ -77,11 +82,13 @@ import {
 } from './evolution-operators.js';
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
-  deserializeFitnessVector, fitnessVectorByteLength, peekFitnessVectorVersions,
+  canonicalizeEvaluationSpec, deserializeEvaluationSpec, deserializeFitnessVector,
+  fitnessVectorByteLength, peekFitnessVectorVersions,
 } from './population-evaluation.js';
 import {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, peekPopulationSnapshotMemberCount,
 } from './population.js';
+import { deserializePopulationInitialization } from './population-initializer.js';
 import {
   INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
 } from './integrity.js';
@@ -453,19 +460,6 @@ function collectFitnessVectorGateInputs(components, generationIndex, populationS
  * never silently inherit v1 semantics here.
  */
 function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
-  if (vector.integrityPolicyVersion !== 1) {
-    // No coherence rules exist for a policy this verdict does not implement.
-    // (Unreachable today: deserializeFitnessVector requires the current
-    // version. The explicit dispatch is the codec's conditioning, mirrored —
-    // the value is in not writing down an implicit one.)
-    return null;
-  }
-  const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
-  const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
-  const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
-  const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
-  const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed; // absolute — never scaled
-  const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
   const executedSteps = metadata.executedSteps;
   const rows = vector.individuals;
   const rowCount = rows.length;
@@ -482,6 +476,30 @@ function fitnessVectorCoherenceVerdict(vector, metadata, generationIndex) {
         generationIndex, individualId, rule: 'stepBeyondExecutedSteps', stepField: 'firstCatastrophicStep', stored: observations.firstCatastrophicStep, executedSteps,
       });
     }
+  }
+  switch (vector.integrityPolicyVersion) {
+    case 1:
+      break;
+    default:
+      // The decoder has already required the build's current policy version.
+      // Returning a named failure lets the public gates raise AFTER freshness,
+      // while making a future constant bump fail loudly until its coherence
+      // semantics are implemented here.
+      return Object.freeze({
+        generationIndex,
+        rule: 'integrityPolicyCoherenceNotImplemented',
+        integrityPolicyVersion: vector.integrityPolicyVersion,
+      });
+  }
+  const dtScale = metadata.effectiveDt / INTEGRITY_REFERENCE_CAPTURE_DT;
+  const alertSpeed = INTEGRITY_THRESHOLDS.alertSpeed; // absolute — never scaled
+  const alertSpeedDelta = INTEGRITY_THRESHOLDS.alertSpeedDelta * dtScale;
+  const alertStepDisplacement = INTEGRITY_THRESHOLDS.alertStepDisplacement * dtScale;
+  const catastrophicSpeed = INTEGRITY_THRESHOLDS.catastrophicSpeed; // absolute — never scaled
+  const catastrophicStepDisplacement = INTEGRITY_THRESHOLDS.catastrophicStepDisplacement * dtScale;
+  for (let m = 0; m < rowCount; m += 1) {
+    const observations = rows[m].integrityObservations;
+    const individualId = rows[m].individualId;
     if (observations.firstAlertStep === 0 && !(observations.peakBodySpeed > alertSpeed)) {
       return Object.freeze({
         generationIndex,
@@ -652,6 +670,11 @@ export function checkFitnessVectorCompatibility(verified) {
 export function verifyFitnessVectorMetadataCoherence(verified) {
   const failure = verified.fitnessVectorCoherenceFailure;
   if (failure === null) return;
+  if (failure.rule === 'integrityPolicyCoherenceNotImplemented') {
+    throw new Error(
+      `evolution-replay: missing fitness-vector coherence implementation for current integrity policy ${failure.integrityPolicyVersion}`,
+    );
+  }
   if (failure.undecodable === true) {
     evolutionFail('malformedHistory',
       `generation ${failure.generationIndex} ${COMPONENT_LABELS[failure.component]} is malformed`,
@@ -738,28 +761,61 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
 }
 
 /**
- * Offline extraction guard — bind each decoded fitness vector to the sibling
- * population snapshot and the header evaluation spec it claims to summarize.
- *
- * This is intentionally separate from the resume ladder. Resume replays the
- * persisted population through the engine and reports self-consistent changes
- * as `replayDivergence`; an offline reader has no physics oracle, so it must
- * reject an internally re-forged vector whose digest states, row count, or
- * member IDs no longer name those persisted inputs.
+ * Stage 11 — shared current-artifact semantics and bindings. Decode the header
+ * evaluation spec and initialization manifest; require an executable,
+ * deterministic spec and the header/manifest population agreement; bind every
+ * fitness vector to its sibling population and the header spec with the
+ * persisted FNV states, counts, ordered ids, and metadata executedSteps; then
+ * bind the initialization manifest to generation 0's population LAST, so a
+ * generation-0 content defect reports with its most specific first message
+ * (the per-generation guards) and only a manifest that attests none of them
+ * reports as the provenance contradiction it is.
  *
  * Call this only after `checkFitnessVectorCompatibility` and
  * `verifyFitnessVectorMetadataCoherence`: those gates own version and
- * current-format decoding precedence. This guard then reports binding failures
- * as `malformedHistory`, before any rows are returned as observations. On
- * success it returns the frozen generation rows decoded during that same
- * binding pass, so the offline seam does not materialize every vector again.
+ * current-format decoding precedence. Both resume and offline extraction call
+ * this gate, so a detectable current-format contradiction has one
+ * `malformedHistory` taxonomy before runtime or physics. FNV is only a
+ * non-cryptographic coherence sentinel inside the SHA-256-attested artifact;
+ * it never establishes artifact identity. Offline extraction may request the
+ * decoded generation rows for reuse; resume leaves that off so only one
+ * generation's decoded rows are retained during this pass.
  */
-export function verifyFitnessVectorExtractionBindings(verified) {
+export function verifyEvolutionArtifactSemantics(verified, collectGenerations = false) {
   const { header, framing } = verified;
+  let spec;
+  try {
+    spec = canonicalizeEvaluationSpec(
+      deserializeEvaluationSpec(header.evaluationSpecBytes),
+    ).spec;
+  } catch (cause) {
+    evolutionFail('malformedHistory',
+      'history evaluation spec is malformed or not executable', {}, cause);
+  }
+  if (spec.deterministic !== true) {
+    evolutionFail('malformedHistory',
+      'history evaluation spec is not deterministic — evolution binds one engine identity',
+      { deterministic: String(spec.deterministic) });
+  }
+  let manifest;
+  try {
+    manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+  } catch (cause) {
+    evolutionFail('malformedHistory', 'history initialization manifest is malformed', {}, cause);
+  }
+  if (manifest.config.populationSize !== header.populationSize) {
+    evolutionFail('malformedHistory',
+      `history populationSize ${header.populationSize} disagrees with initialization manifest ${manifest.config.populationSize}`,
+      {
+        headerPopulationSize: header.populationSize,
+        manifestPopulationSize: manifest.config.populationSize,
+      });
+  }
+  assertEvaluationWork(header.populationSize, spec.maxSteps);
   const expectedEvaluationSpecDigestState = fnv1aFold(
     FNV_OFFSET_BASIS, header.evaluationSpecBytes,
   );
-  const generations = [];
+  const generations = collectGenerations ? [] : null;
 
   for (let generationIndex = 0;
     generationIndex < framing.generations.length;
@@ -858,18 +914,57 @@ export function verifyFitnessVectorExtractionBindings(verified) {
     }
 
     const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
-    generations.push(Object.freeze({
-      generationIndex: payload.generationIndex,
-      terminalReason: payload.terminalReason,
-      executedSteps: metadata.executedSteps,
-      individuals: vector.individuals,
-    }));
+    if (metadata.executedSteps !== spec.maxSteps) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} evaluation metadata executedSteps ${metadata.executedSteps} `
+        + `does not match evaluation spec maxSteps ${spec.maxSteps}`,
+        {
+          generationIndex,
+          rule: 'evaluationMetadataMaxStepsMismatch',
+          executedSteps: metadata.executedSteps,
+          maxSteps: spec.maxSteps,
+        });
+    }
+    if (generations !== null) {
+      generations.push(Object.freeze({
+        generationIndex: payload.generationIndex,
+        terminalReason: payload.terminalReason,
+        executedSteps: metadata.executedSteps,
+        individuals: vector.individuals,
+      }));
+    }
   }
-  return Object.freeze(generations);
+  // The initialization provenance binding, evaluated AFTER the per-generation
+  // content bindings above: a defect in generation 0's population reports
+  // with its most specific first message (the count/row/digest-state guards
+  // in the loop), and only when those pass does a manifest that fails to
+  // attest generation 0's population report as the provenance contradiction
+  // it is.
+  const generationZero = decodeGenerationPayload(framing.generations[0].payloadBytes);
+  const generationZeroPopulationDigestState = fnv1aFold(
+    FNV_OFFSET_BASIS, generationZero.components.population,
+  );
+  if (manifest.populationSnapshotDigestState !== generationZeroPopulationDigestState) {
+    evolutionFail('malformedHistory',
+      `initialization manifest populationSnapshotDigestState `
+      + `${manifest.populationSnapshotDigestState} does not match generation 0 population state `
+      + `${generationZeroPopulationDigestState}`,
+      {
+        generationIndex: 0,
+        rule: 'initializationPopulationDigestStateMismatch',
+        stored: manifest.populationSnapshotDigestState,
+        expected: generationZeroPopulationDigestState,
+      });
+  }
+  return Object.freeze({
+    spec,
+    manifest,
+    generations: generations === null ? null : Object.freeze(generations),
+  });
 }
 
 /**
- * Stage 11 — the runtime gate, run BEFORE any physics.
+ * Stage 12 — the runtime gate, run BEFORE any physics.
  *
  * Deterministic replay compares bytes produced by a physics engine. If the
  * engine is not the one the artifact was produced by, the honest report is

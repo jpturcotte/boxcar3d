@@ -54,8 +54,12 @@ const {
 } = await import('../src/sim/evolution-replay.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
+const {
+  deserializePopulationInitialization, serializePopulationInitialization,
+} = await import('../src/sim/population-initializer.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
+const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 
 const POPULATION_SEED = 20260740;
 const TERRAIN_SEED = 20260741;
@@ -144,6 +148,29 @@ const flipByte = (bytes, offset = 0) => {
   copy[offset] ^= 0xff;
   return copy;
 };
+
+function rebindFitnessVectorToPopulation(record) {
+  const vector = deserializeFitnessVector(record.components.fitnessVector);
+  record.components.fitnessVector = serializeFitnessVector({
+    populationSnapshotDigestState: fnv1aFold(
+      FNV_OFFSET_BASIS, record.components.population,
+    ),
+    evaluationSpecDigestState: vector.evaluationSpecDigestState,
+    individuals: vector.individuals,
+  });
+}
+
+// The manifest half of a generation-0 population re-attestation: re-encode
+// the initialization manifest with its populationSnapshotDigestState
+// re-folded over the (mutated) population bytes, so the stage-11 provenance
+// binding passes and only deterministic replay can see the change.
+function rebindInitializationToPopulation(header, populationBytes) {
+  const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+  return serializePopulationInitialization({
+    ...manifest,
+    populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, populationBytes),
+  });
+}
 
 async function expectCodeAsync(promiseFn, code, re) {
   let threw = null;
@@ -570,9 +597,24 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
 
   test("generation 0's population diverges at stage 'initialization' with no last-agreed generation", async () => {
     const artifact = await runGenerations(2);
+    // A population-content flip with EVERY binding re-attested — the vector's
+    // digest state AND the initialization manifest's — so only deterministic
+    // replay can see it. (Without the manifest re-attestation the stage-11
+    // provenance binding correctly reports malformedHistory instead.)
+    const flipped = flipByte(
+      decodeGenerationPayload(decodeHistoryFraming(artifact).generations[0].payloadBytes).components.population,
+      40,
+    );
     const broken = await reforge(artifact, {
+      mutateHeader: (header) => ({
+        ...header,
+        initializationManifestBytes: rebindInitializationToPopulation(header, flipped),
+      }),
       mutateRecord: (record, i) => {
-        if (i === 0) record.components.population = flipByte(record.components.population, 40);
+        if (i === 0) {
+          record.components.population = flipped;
+          rebindFitnessVectorToPopulation(record);
+        }
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
@@ -586,28 +628,31 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
-        if (i === 1) record.components.population = flipByte(record.components.population, 12);
+        if (i === 1) {
+          record.components.population = flipByte(record.components.population, 40);
+          rebindFitnessVectorToPopulation(record);
+        }
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
     expect(err.context.stage).toBe('population');
     expect(err.context.generationIndex).toBe(1);
     expect(err.context.lastAgreedGenerationIndex).toBe(0);
-    expect(err.context.byteOffset).toBe(12);
+    expect(err.context.byteOffset).toBe(40);
     expect(typeof err.context.expectedByte).toBe('number');
     expect(typeof err.context.actualByte).toBe('number');
     expect(err.context.expectedByte).not.toBe(err.context.actualByte);
   });
 
-  test("a changed executed-step count diverges at stage 'evaluationMetadata' — BEFORE fitness", async () => {
+  test("a changed effective timestep diverges at stage 'evaluationMetadata' — BEFORE fitness", async () => {
     // The whole reason the metadata component exists: a timestep or step-count
     // drift EXPLAINS a fitness difference, so it must be reported first.
     const artifact = await runGenerations(1);
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
-        const m = new Uint8Array(record.components.evaluationMetadata);
-        new DataView(m.buffer).setUint32(11, 44, true); // executedSteps 45 -> 44
-        record.components.evaluationMetadata = m;
+        record.components.evaluationMetadata = flipByte(
+          record.components.evaluationMetadata, 3,
+        );
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
@@ -619,16 +664,16 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const artifact = await runGenerations(1);
     const broken = await reforge(artifact, {
       mutateRecord: (record) => {
-        const v = new Uint8Array(record.components.fitnessVector);
-        // A byte inside the population-snapshot digest state (offset 8): the
-        // one vector mutation that is ALWAYS codec-legal (an opaque u32 — no
-        // coherence rule touches it), so the artifact passes the pre-physics
-        // gates and the divergence must be found by REPLAYING. Under v3 a raw
-        // tail write no longer lands on fitness — it lands inside the
-        // observation walk, where it can trip the gates instead and mask the
-        // very stage this test names.
-        v[8] ^= 0xff;
-        record.components.fitnessVector = v;
+        const vector = deserializeFitnessVector(record.components.fitnessVector);
+        const individuals = vector.individuals.map((row, index) => (index === 0 ? {
+          ...row,
+          fitness: row.fitness + 1,
+        } : row));
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: vector.populationSnapshotDigestState,
+          evaluationSpecDigestState: vector.evaluationSpecDigestState,
+          individuals,
+        });
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
@@ -685,7 +730,10 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     const artifact = await runGenerations(3);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
-        if (i >= 1) record.components.population = flipByte(record.components.population, 8);
+        if (i >= 1) {
+          record.components.population = flipByte(record.components.population, 40);
+          rebindFitnessVectorToPopulation(record);
+        }
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');

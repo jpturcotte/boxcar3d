@@ -13,7 +13,7 @@ import { URL } from 'node:url';
 import { encodeInteropArtifact } from '../scripts/generate-evolution-v3-interop-fixture.js';
 import { resumeEvolutionRun } from '../src/sim/evolution-run.js';
 import {
-  checkFitnessVectorCompatibility, verifyFitnessVectorExtractionBindings,
+  checkFitnessVectorCompatibility, verifyEvolutionArtifactSemantics,
   verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from '../src/sim/evolution-replay.js';
 import { EVOLUTION_FIXTURE_A } from '../src/sim/evolution-fixtures.js';
@@ -57,13 +57,13 @@ describe('independent fitness-vector-v3 producer', () => {
     ).getUint16(0, true)).toBe(3);
   });
 
-  test('freshly encoded bytes verify, pass both pre-physics gates, resume, and continue', async () => {
+  test('freshly encoded bytes verify, pass all pre-physics gates, resume, and continue', async () => {
     const { artifact } = encodeInteropArtifact(inputs());
     const verified = await verifyHistoryArtifact(artifact);
     expect(verified.finalGenerationIndex).toBe(0);
     expect(() => checkFitnessVectorCompatibility(verified)).not.toThrow();
     expect(() => verifyFitnessVectorMetadataCoherence(verified)).not.toThrow();
-    expect(() => verifyFitnessVectorExtractionBindings(verified)).not.toThrow();
+    expect(() => verifyEvolutionArtifactSemantics(verified)).not.toThrow();
 
     const resumed = await resumeEvolutionRun(artifact);
     let result;

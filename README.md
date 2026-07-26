@@ -15,13 +15,19 @@ branch the fitness vector is v3
 observations the online detector already computed (peak body speed, peak speed
 delta, peak step displacement, first alert step, first catastrophic step —
 +34 B/member, +680 B/generation at population 20, with the capacity projection
-re-pinned at v3). Two pre-physics resume gates land with it: a stale v2
-artifact reports `unsupportedVersion` naming the exact field, generation, and
-stored/current values — after its self-consistency legs pass, never as false
-replay drift — and a current-format artifact whose steps contradict its own
-metadata reports `malformedHistory`, also before any physics. A verified
-offline seam (`scripts/history-observations.js`) runs the production
-verification and both gates before decoding anything, and a structurally
+  re-pinned at v3). Three pre-physics resume gates land with it: a stale v2
+  artifact reports `unsupportedVersion` naming the exact field, generation, and
+  stored/current values — after its self-consistency legs pass, never as false
+  replay drift — and a current-format artifact whose steps contradict its own
+  metadata reports `malformedHistory`, also before any physics. A shared semantic
+  gate then validates the deterministic, executable evaluation spec,
+  initialization manifest and its generation-0 population binding, evaluation
+  budget, and each vector's population/spec bindings,
+  counts, ordered IDs, and `executedSteps`; its FNV states are non-cryptographic
+  coherence sentinels inside the SHA-256-attested artifact, never artifact
+  identity. A verified
+  offline seam (`scripts/history-observations.js`) runs the production
+  verification and all three gates before returning decoded rows, and a structurally
 independent v3 oracle artifact
 (`tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64`) verifies,
 resumes and continues byte-identically while the v2 Kimi artifact becomes the

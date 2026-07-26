@@ -329,7 +329,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_ERROR_CODES', 'EVOLUTION_POLICY_VERSION',
     'EvolutionError', 'MAX_EVOLUTION_EVALUATION_WORK', 'MAX_EVOLUTION_GENERATIONS',
     'MAX_EVOLUTION_POPULATION_SIZE',
-    'TERMINAL_REASONS', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
+    'TERMINAL_REASONS', 'assertEvaluationWork', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
     'isEvolutionUint32',
   ]),
   'evolution-lineage.js': Object.freeze([
@@ -344,7 +344,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   'evolution-replay.js': Object.freeze([
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
     'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity', 'failReplayDivergence',
-    'firstByteDifference', 'verifyFitnessVectorExtractionBindings',
+    'firstByteDifference', 'verifyEvolutionArtifactSemantics',
     'verifyFitnessVectorMetadataCoherence', 'verifyHistoryArtifact',
   ]),
   'evolution-history.js': Object.freeze([
@@ -639,6 +639,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'EvolutionError', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
     { name: 'evolutionFail', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
     { name: 'isEvolutionUint32', kind: 'validator', callerCollections: [], callerNumbers: ['v'] },
+    { name: 'assertEvaluationWork', kind: 'pure', callerCollections: [], callerNumbers: ['populationSize', 'maxSteps'] },
     { name: 'checkedAdd', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
     { name: 'checkedMultiply', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
   ]),
@@ -674,7 +675,7 @@ const EXPORT_ROLES = Object.freeze({
     // never caller bytes — like checkRuntimeIdentity below.
     { name: 'checkFitnessVectorCompatibility', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
-    { name: 'verifyFitnessVectorExtractionBindings', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyEvolutionArtifactSemantics', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
@@ -1044,7 +1045,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
     checkFitnessVectorCompatibility: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
-    verifyFitnessVectorExtractionBindings: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
+    verifyEvolutionArtifactSemantics: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
     verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
   },
   'src/sim/evolution-history.js': {

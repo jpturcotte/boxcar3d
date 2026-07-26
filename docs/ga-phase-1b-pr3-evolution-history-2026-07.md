@@ -506,20 +506,22 @@ per individual: u32 individualId | u8 validity
   is NOT a codec concern — it is Gate B's (below). The wire-validity /
   semantic-coherence / execution-validity split is preserved.
 
-### The two pre-physics gates
+### The three pre-physics gates
 
-The §5 ladder gains two stages between external identity and the runtime
+The §5 ladder gains three stages between external identity and the runtime
 gate, so the escalation order reads: corruption → wrong artifact →
 **unsupported format** → **malformed current format** → runtime mismatch →
 deterministic divergence. (`REPLAY_STAGES` — the deterministic-replay
 comparison vocabulary, not the verification ladder — is unchanged; the
-ordered-stage docblock in `src/sim/evolution-replay.js` is now 12 stages.) Both
-gates' inputs are collected while walking the components at stage 5. Before a
+ordered-stage docblock in `src/sim/evolution-replay.js` is now 13 stages.) Gates
+A and B collect their inputs while walking the components at stage 5. Before a
 fitness vector is decoded, its fixed byte geometry must not exceed the capped
 header population (≤256), preventing an attacker-sized row allocation. Decoded
 rows are transient; only scalars plus at most one failure descriptor per gate
-are retained, so §5's peak-memory model is unchanged. Both gates RAISE after
-stage 8.
+are retained. Gate C walks one payload at a time after stage 8; resume discards
+each generation's rows, while extraction may request the already-validated rows
+for its result. The §5 peak-memory model is therefore unchanged. All three gates
+RAISE after stage 8.
 
 - **Gate A — `checkFitnessVectorCompatibility` (`unsupportedVersion`).** A
   layered peek (`peekFitnessVectorVersions`, owned by
@@ -560,6 +562,18 @@ stage 8.
   `firstAlertStep: 4_000_000_000` passed every digest, version and runtime
   check and surfaced as `replayDivergence` after a full generation-0
   re-simulation — the misleading class this stage exists to remove.
+- **Gate C — `verifyEvolutionArtifactSemantics` (`malformedHistory`).** The
+  shared resume/extraction gate decodes and validates the deterministic,
+  executable evaluation spec and initialization manifest, binds the manifest's
+  declared population state to generation 0, enforces the evaluation-work
+  budget and header/manifest population agreement, then binds every vector to
+  its sibling population and header spec through their persisted FNV states,
+  counts, ordered IDs, and metadata `executedSteps === spec.maxSteps`. The FNV
+  values are only non-cryptographic coherence sentinels inside the
+  SHA-256-attested artifact; they never establish artifact identity. A
+  self-consistent but malformed spec or manifest, or a vector rebound to
+  different current-format bytes, now has the same pre-physics taxonomy in
+  both consumers.
 
 ### Locks, capacity, and the fixture role split
 
@@ -603,10 +617,11 @@ stage 8.
 
 `scripts/history-observations.js` exports
 `extractHistoryObservations(historyBytes, { expectedHistoryDigestBytes? })`:
-it runs `verifyHistoryArtifact` AND both gates internally before decoding
+it runs `verifyHistoryArtifact` AND all three gates internally before returning
 anything — sharing the production checks and error taxonomy, never a
-script-local second interpretation — then returns, per generation, the
-decoded rows with their observations and the generation's `executedSteps`.
+script-local second interpretation — then reuses Gate C's validated rows and
+returns, per generation, their observations and the generation's
+`executedSteps`.
 Async because SHA-256 is; pure with respect to filesystem, clock, randomness
 and physics; no aggregation, gates, sampling, counterfactuals or policy
 analysis (those are Next PR's). Placed outside `src/sim`: an offline

@@ -1149,7 +1149,11 @@ field class without inventing a new doctrine.
   divergence with NO catastrophic step, and encoding these as eternal would
   force an unnecessary v4 bump or an undo. The decoder already rejects a
   non-current `integrityPolicyVersion`, so there is no reachable defect today
-  — the value is in not writing down a false invariant.
+  — the value is in not writing down a false invariant. The replay-layer
+  semantic gate still dispatches policy-specific coherence explicitly: the
+  policy-independent onset bounds always run, and a future current codec policy
+  without an implemented coherence rule fails loud after external identity
+  rather than silently skipping validation.
 - **The wire-validity / semantic-coherence split is preserved.** Anything
   needing the metadata component (`executedSteps`, `effectiveDt` for
   `dtScale`) is NOT checked at this boundary: it is the replay layer's
@@ -1157,6 +1161,14 @@ field class without inventing a new doctrine.
   persisted metadata before physics. This decoder's contract row is thereby
   extended, not replaced: wire shape + the unselectable⇒fitness-0 tooth +
   the observation domain and the policy-v1-conditioned coherence rules.
+- **Cross-component bindings belong to one shared semantic gate.** Resume and
+  offline extraction both validate the deterministic, executable spec,
+  initialization manifest and its generation-0 population binding,
+  evaluation-work budget, population agreement, and each vector's
+  population/spec FNV states, counts, ordered IDs, and metadata step count
+  before physics or evidence extraction. FNV remains only a non-cryptographic
+  coherence sentinel inside the SHA-256-attested artifact; it never supplies
+  artifact identity.
 - **The preflight now captures NINE fields before any check** (the four
   selection fields plus the five observations, through a structurally guarded
   container) — the same "ALL FIELDS CAPTURED BEFORE ANY CHECK" ruling, and

@@ -1,7 +1,7 @@
 // THE VERIFIED HISTORY-OBSERVATION SEAM (scripts/history-observations.js):
 // a committed v3 history yields its integrity observations with NO physics,
 // and a tampered or semantically incoherent artifact is refused with the
-// PRODUCTION error taxonomy — never read as evidence the digests do not
+// SHARED resume taxonomy — never read as evidence the digests do not
 // attest. Fixture: evolution-a-small-flat (seeds 20260742 / 20260743).
 
 import {
@@ -52,20 +52,27 @@ vi.mock('../src/sim/bytes.js', async (importOriginal) => {
   };
 });
 
-const { createEvolutionRun } = await import('../src/sim/evolution-run.js');
+const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
 const { EvolutionError } = await import('../src/sim/evolution-contract.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
 const {
-  COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeGenerationPayload,
-  decodeHistoryFraming, digestComponent, digestGeneration, encodeGenerationPayload,
+  COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
+  decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
+  digestComponent, digestGeneration, digestHeader, encodeEvolutionHeader,
+  encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
 const { MAX_EVOLUTION_HISTORY_BYTES } = await import('../src/sim/evolution-replay.js');
-const { deserializeFitnessVector, serializeFitnessVector } = await import('../src/sim/population-evaluation.js');
+const {
+  deserializeEvaluationSpec, deserializeFitnessVector, serializeEvaluationSpec, serializeFitnessVector,
+} = await import('../src/sim/population-evaluation.js');
 const {
   deserializePopulationSnapshot, serializePopulationSnapshot,
 } = await import('../src/sim/population.js');
+const {
+  deserializePopulationInitialization, serializePopulationInitialization,
+} = await import('../src/sim/population-initializer.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 const { bytesToHex, copyOrdinaryBytes } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
@@ -91,11 +98,24 @@ async function fixtureArtifact() {
   return run.historyBytes();
 }
 
+async function oneGenerationArtifact() {
+  const run = createEvolutionRun(evolutionRunConfigFor(EVOLUTION_FIXTURE_A));
+  await run.advance();
+  return run.historyBytes();
+}
+
 /** Rebuild a self-consistent artifact after mutating generation 0's record. */
-async function reforge(bytes, mutateRecord) {
+async function reforge(bytes, mutateRecord, mutateHeader = null) {
   const framing = decodeHistoryFraming(bytes);
+  let headerBytes = framing.headerBytes;
+  if (mutateHeader !== null) {
+    headerBytes = encodeEvolutionHeader(mutateHeader({
+      ...decodeEvolutionHeader(framing.headerBytes),
+    }));
+  }
+  const headerDigestBytes = await digestHeader(headerBytes);
   const generations = [];
-  let previous = framing.headerDigestBytes;
+  let previous = headerDigestBytes;
   for (let i = 0; i < framing.generations.length; i += 1) {
     const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
     const record = {
@@ -112,8 +132,8 @@ async function reforge(bytes, mutateRecord) {
     generations.push({ payloadBytes, generationDigestBytes });
   }
   return (await assembleHistory({
-    headerBytes: framing.headerBytes,
-    headerDigestBytes: framing.headerDigestBytes,
+    headerBytes,
+    headerDigestBytes,
     generations,
   })).bytes;
 }
@@ -128,6 +148,189 @@ async function expectCodeAsync(promiseFn, code, re) {
 }
 
 describe('extractHistoryObservations', () => {
+  test('a self-consistent history with a malformed evaluation spec is refused by extraction and resume before physics', async () => {
+    const invalidSpecBytes = new Uint8Array(0);
+    const evaluationSpecDigestState = fnv1aFold(FNV_OFFSET_BASIS, invalidSpecBytes);
+    const artifact = await oneGenerationArtifact();
+    const broken = await reforge(
+      artifact,
+      (record) => {
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState,
+          individuals: decoded.individuals,
+        });
+      },
+      (header) => ({ ...header, evaluationSpecBytes: invalidSpecBytes }),
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /evaluation spec/,
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /evaluation spec/,
+    );
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('a wire-valid but unexecutable evaluation spec is refused by both readers before physics', async () => {
+    const artifact = await oneGenerationArtifact();
+    const originalHeader = decodeEvolutionHeader(decodeHistoryFraming(artifact).headerBytes);
+    const originalSpec = deserializeEvaluationSpec(originalHeader.evaluationSpecBytes);
+    const invalidSpecBytes = serializeEvaluationSpec({
+      ...originalSpec,
+      spawn: { ...originalSpec.spawn, clearance: 0.2 },
+    });
+    const evaluationSpecDigestState = fnv1aFold(FNV_OFFSET_BASIS, invalidSpecBytes);
+    const broken = await reforge(
+      artifact,
+      (record) => {
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState,
+          individuals: decoded.individuals,
+        });
+      },
+      (header) => ({ ...header, evaluationSpecBytes: invalidSpecBytes }),
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /not executable/,
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /not executable/,
+    );
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('generation metadata must report the evaluation spec maxSteps in extraction and resume', async () => {
+    const artifact = await oneGenerationArtifact();
+    const broken = await reforge(artifact, (record) => {
+      const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+      record.components.evaluationMetadata = serializeEvaluationMetadata({
+        ...metadata,
+        executedSteps: metadata.executedSteps - 1,
+      });
+    });
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory',
+      /executedSteps 44.*evaluation spec maxSteps 45/,
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /executedSteps 44.*evaluation spec maxSteps 45/,
+    );
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('a self-consistent history with a malformed initialization manifest is refused by both readers', async () => {
+    const artifact = await oneGenerationArtifact();
+    const broken = await reforge(
+      artifact,
+      () => {},
+      (header) => ({ ...header, initializationManifestBytes: new Uint8Array(0) }),
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /initialization manifest/,
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /initialization manifest/,
+    );
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('the initialization manifest must bind the persisted generation-0 population in both readers', async () => {
+    const artifact = await oneGenerationArtifact();
+    const originalHeader = decodeEvolutionHeader(decodeHistoryFraming(artifact).headerBytes);
+    const manifest = deserializePopulationInitialization(
+      originalHeader.initializationManifestBytes,
+    );
+    const wrongState = (manifest.populationSnapshotDigestState + 1) >>> 0;
+    const wrongManifestBytes = serializePopulationInitialization({
+      ...manifest,
+      populationSnapshotDigestState: wrongState,
+    });
+    const broken = await reforge(
+      artifact,
+      () => {},
+      (header) => ({ ...header, initializationManifestBytes: wrongManifestBytes }),
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    const extractionError = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory',
+      /initialization manifest populationSnapshotDigestState/,
+    );
+    expect(extractionError.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'initializationPopulationDigestStateMismatch',
+      stored: wrongState,
+    });
+    const resumeError = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /initialization manifest populationSnapshotDigestState/,
+    );
+    expect(resumeError.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'initializationPopulationDigestStateMismatch',
+      stored: wrongState,
+    });
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
+  test('a non-deterministic evaluation spec is refused by both readers before physics', async () => {
+    const artifact = await oneGenerationArtifact();
+    const originalHeader = decodeEvolutionHeader(decodeHistoryFraming(artifact).headerBytes);
+    const nonDeterministicSpecBytes = serializeEvaluationSpec({
+      ...deserializeEvaluationSpec(originalHeader.evaluationSpecBytes),
+      deterministic: false,
+    });
+    const evaluationSpecDigestState = fnv1aFold(
+      FNV_OFFSET_BASIS, nonDeterministicSpecBytes,
+    );
+    const broken = await reforge(
+      artifact,
+      (record) => {
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: decoded.populationSnapshotDigestState,
+          evaluationSpecDigestState,
+          individuals: decoded.individuals,
+        });
+      },
+      (header) => ({ ...header, evaluationSpecBytes: nonDeterministicSpecBytes }),
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /not deterministic/,
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /not deterministic/,
+    );
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
   test('invalid history-byte storage uses the production malformedHistory taxonomy', async () => {
     const err = await expectCodeAsync(
       () => extractHistoryObservations({}), 'malformedHistory', /historyBytes/,
@@ -204,6 +407,13 @@ describe('extractHistoryObservations', () => {
       generationIndex: 0,
       rule: 'populationSnapshotDigestStateMismatch',
     });
+    const resumeErr = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /populationSnapshotDigestState/,
+    );
+    expect(resumeErr.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'populationSnapshotDigestStateMismatch',
+    });
     expect(globalThis.__observationsProbe.worlds).toBe(0);
     expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
@@ -219,6 +429,8 @@ describe('extractHistoryObservations', () => {
       });
     });
 
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
     const err = await expectCodeAsync(
       () => extractHistoryObservations(broken), 'malformedHistory', /evaluationSpecDigestState/,
     );
@@ -226,6 +438,14 @@ describe('extractHistoryObservations', () => {
       generationIndex: 0,
       rule: 'evaluationSpecDigestStateMismatch',
     });
+    const resumeErr = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /evaluationSpecDigestState/,
+    );
+    expect(resumeErr.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'evaluationSpecDigestStateMismatch',
+    });
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('a self-consistent vector with fewer rows than the header population is refused as malformed', async () => {
@@ -239,6 +459,8 @@ describe('extractHistoryObservations', () => {
       });
     });
 
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
     const err = await expectCodeAsync(
       () => extractHistoryObservations(broken), 'malformedHistory', /5 rows.*populationSize is 6/,
     );
@@ -248,6 +470,10 @@ describe('extractHistoryObservations', () => {
       populationSize: 6,
       individualCount: 5,
     });
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /5 rows.*populationSize is 6/,
+    );
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('a sibling population with fewer members than the header is refused as malformed', async () => {
@@ -268,6 +494,8 @@ describe('extractHistoryObservations', () => {
       });
     });
 
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
     const err = await expectCodeAsync(
       () => extractHistoryObservations(broken), 'malformedHistory',
       /population snapshot carries 5 members.*populationSize is 6/,
@@ -278,6 +506,11 @@ describe('extractHistoryObservations', () => {
       populationSize: 6,
       populationCount: 5,
     });
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /population snapshot carries 5 members.*populationSize is 6/,
+    );
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('an oversized sibling population is rejected before any genotype rows are materialized', async () => {
@@ -303,6 +536,8 @@ describe('extractHistoryObservations', () => {
     });
 
     deserializePopulationSnapshot.mockClear();
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
     const err = await expectCodeAsync(
       () => extractHistoryObservations(broken), 'malformedHistory',
       /population snapshot carries 7 members.*populationSize is 6/,
@@ -313,7 +548,12 @@ describe('extractHistoryObservations', () => {
       populationSize: 6,
       populationCount: 7,
     });
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory',
+      /population snapshot carries 7 members.*populationSize is 6/,
+    );
     expect(deserializePopulationSnapshot).not.toHaveBeenCalled();
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('self-consistent vector rows must name the persisted population members exactly', async () => {
@@ -331,6 +571,8 @@ describe('extractHistoryObservations', () => {
       });
     });
 
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
     const err = await expectCodeAsync(
       () => extractHistoryObservations(broken), 'malformedHistory', /individual 1000.*population member 0/,
     );
@@ -341,6 +583,10 @@ describe('extractHistoryObservations', () => {
       stored: 1000,
       expected: 0,
     });
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /individual 1000.*population member 0/,
+    );
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
   test('alert-bearing rows yield their onset steps — still with no physics', async () => {

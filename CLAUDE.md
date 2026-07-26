@@ -2489,7 +2489,7 @@ single clean commit `9c5f24c`):**
 
 **GA Phase 1B PR 29 (this branch — OPEN, not yet merged to `main`) —
 integrity observations persisted in evolution history (fitness-vector v3),
-two pre-physics format gates, and a verified offline extraction seam. NO
+three pre-physics format gates, and a verified offline extraction seam. NO
 policy, selection or mutation behaviour change:**
 - **The gap closed.** Integrity policy v1 makes only the CATASTROPHIC band a
   selection failure; the alert band is an observation, so a diverging vehicle
@@ -2521,7 +2521,7 @@ policy, selection or mutation behaviour change:**
   contracts — extending them would have let a malformed observations block
   change what the validity predicate throws on, a production semantic change
   in the one PR whose central promise is that nothing behavioural changes.
-- **R1 — history version stays 1; two pre-physics gates after external
+- **R1 — history version stays 1; three pre-physics gates after external
   identity.** `EVOLUTION_HISTORY_VERSION` and `headerDigest` do not move (the
   header binds no vector version). Verification stage 5 now collects the
   gates' inputs while walking components; before any vector-row decode, its
@@ -2555,8 +2555,20 @@ policy, selection or mutation behaviour change:**
   checks the peak↔alert AND peak↔catastrophic equivalences with the producer's
   exact dtScale arithmetic (strict `>`; a value exactly at a threshold does not
   cross; `+Infinity` does; there is NO catastrophic speed-delta arm — the
-  producer has none).
-  `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 12 stages.
+  producer has none). The onset bounds apply for every policy version. Policy-
+  specific threshold rules dispatch explicitly, and any future current codec
+  policy without a coherence implementation fails loud after external identity
+  instead of silently skipping validation. Gate C
+  (`verifyEvolutionArtifactSemantics`) is shared by resume and offline
+  extraction: it validates the deterministic, executable evaluation spec,
+  initialization manifest and its generation-0 population binding, compute
+  budget, header/manifest population agreement, and every
+  vector's population/spec FNV state, counts, ordered IDs, and metadata
+  `executedSteps`. Those FNV states are non-cryptographic coherence sentinels
+  inside the SHA-256-attested artifact, never artifact identity. Resume retains
+  only one generation's rows during this pass; extraction requests and reuses
+  the validated rows.
+  `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 13 stages.
 - **Locks moved, exactly as named.** Population `fitnessVectorDigest`
   `a6d04f75` → `fd4222eb` (+ `fitnessVectorVersion` 2 → 3; the rows gained
   the five measured observation literals — all 20 members integrity-clean,
@@ -2595,10 +2607,11 @@ policy, selection or mutation behaviour change:**
   the strongest narrow oracle for the member walk itself.
 - **The extraction seam (R6).** `scripts/history-observations.js` —
   `extractHistoryObservations(historyBytes, { expectedHistoryDigestBytes? })`
-  runs `verifyHistoryArtifact` AND both gates internally before decoding
+  runs `verifyHistoryArtifact` AND all three gates internally before returning
   anything (sharing the production checks and error taxonomy — never a
-  script-local second interpretation of compatibility); async because SHA-256
-  is; pure with respect to filesystem, clock, randomness and physics. Placed
+  script-local second interpretation of compatibility or semantic bindings);
+  it reuses Gate C's validated rows. Async because SHA-256 is; pure with respect
+  to filesystem, clock, randomness and physics. Placed
   outside `src/sim` deliberately: an offline read-only consumer, and a new
   `src/sim` module would expand the derived byte-family lint scope and
   ownership classification for no correctness gain. Its test proves a

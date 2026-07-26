@@ -79,7 +79,7 @@ pressure.
    fitness-vector v3 persists all five observations (the three peaks and both
    onset steps) per member, a verified offline seam
    (`scripts/history-observations.js`) reads them from a digest-verified
-   artifact with no physics, and two pre-physics resume gates report stale or
+   artifact with no physics, and three pre-physics resume gates report stale or
    self-contradictory artifacts accurately (`unsupportedVersion` /
    `malformedHistory`). Policy is unchanged — integrity v1, fitness v2 — and
    alert-bearing `ok` vehicles are **still selectable on main**: PR 29
@@ -177,7 +177,7 @@ it.**
 1. ~~Persist integrity observations in the fitness vector (enables A's pool +
    false-negative measurements, and makes contamination readable from history).~~
    **DISCHARGED on the PR #29 branch (pending merge)** — fitness-vector v3, the
-   two pre-physics gates, and the verified extraction seam; representation
+   three pre-physics gates, and the verified extraction seam; representation
    only, no behaviour change.
 2. **→ Next PR:** measure the alert-band selection exposure A would remove —
    the breeding-pool and false-negative measurements above, from the persisted

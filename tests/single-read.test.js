@@ -645,6 +645,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   isEvolutionUint32: 'exempt: one scalar arg',
   checkedAdd: 'exempt: two scalar args',
   checkedMultiply: 'exempt: two scalar args',
+  assertEvaluationWork: 'exempt: two scalar args',
   copyOrdinaryBytes: 'exempt: TypedArray input',
   // evolution-history.js / src/platform/sha256.js
   deserializeEvaluationMetadata: 'exempt: TypedArray input',
@@ -667,7 +668,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   checkExpectedIdentity: 'exempt: module-owned capture in',
   checkFitnessVectorCompatibility: 'exempt: module-owned verified record in',
   checkRuntimeIdentity: 'exempt: two string records in',
-  verifyFitnessVectorExtractionBindings: 'exempt: module-owned verified record in',
+  verifyEvolutionArtifactSemantics: 'exempt: module-owned verified record in',
   verifyFitnessVectorMetadataCoherence: 'exempt: module-owned verified record in',
   captureExpectedIdentity: 'CASES row',
   resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',

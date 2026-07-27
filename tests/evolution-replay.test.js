@@ -54,9 +54,6 @@ const {
 } = await import('../src/sim/evolution-replay.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
-const {
-  deserializePopulationInitialization, serializePopulationInitialization,
-} = await import('../src/sim/population-initializer.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
@@ -157,18 +154,6 @@ function rebindFitnessVectorToPopulation(record) {
     ),
     evaluationSpecDigestState: vector.evaluationSpecDigestState,
     individuals: vector.individuals,
-  });
-}
-
-// The manifest half of a generation-0 population re-attestation: re-encode
-// the initialization manifest with its populationSnapshotDigestState
-// re-folded over the (mutated) population bytes, so the stage-11 provenance
-// binding passes and only deterministic replay can see the change.
-function rebindInitializationToPopulation(header, populationBytes) {
-  const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
-  return serializePopulationInitialization({
-    ...manifest,
-    populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, populationBytes),
   });
 }
 
@@ -595,25 +580,30 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     ]);
   });
 
-  test("generation 0's population diverges at stage 'initialization' with no last-agreed generation", async () => {
+  test("generation 0's lineage diverges at stage 'initialization' with no last-agreed generation", async () => {
+    // Stage 'initialization' compares generation 0's population AND its
+    // lineage. The POPULATION comparison is now structurally unreachable for
+    // a verified artifact: stage 11 recreates generation 0 from the manifest
+    // config and requires exact byte identity with the persisted population
+    // BEFORE the runtime gate, and resume replays from that verified
+    // recreation — so the population-content flip this test used to make
+    // (with the vector's AND the manifest's FNV states both re-attested) is
+    // refused as malformedHistory inside stage 11, before any physics. That
+    // attack and its pre-physics verdict are covered in
+    // tests/history-observations.test.js. The LINEAGE comparison remains
+    // genuinely replay-localized: no pre-physics gate binds generation 0's
+    // lineage component, so a self-consistent artifact with a drifted initial
+    // lineage is found only by re-running the generation — and it reports at
+    // generation 0 with nothing agreed before it.
     const artifact = await runGenerations(2);
-    // A population-content flip with EVERY binding re-attested — the vector's
-    // digest state AND the initialization manifest's — so only deterministic
-    // replay can see it. (Without the manifest re-attestation the stage-11
-    // provenance binding correctly reports malformedHistory instead.)
-    const flipped = flipByte(
-      decodeGenerationPayload(decodeHistoryFraming(artifact).generations[0].payloadBytes).components.population,
-      40,
-    );
     const broken = await reforge(artifact, {
-      mutateHeader: (header) => ({
-        ...header,
-        initializationManifestBytes: rebindInitializationToPopulation(header, flipped),
-      }),
       mutateRecord: (record, i) => {
         if (i === 0) {
-          record.components.population = flipped;
-          rebindFitnessVectorToPopulation(record);
+          const l = new Uint8Array(record.components.lineage);
+          // The first row's parent id, at header(10) + id(4): gen-0 rows
+          // carry the no-parent sentinel, and replay recomputes exactly that.
+          new DataView(l.buffer).setUint32(14, 4, true);
+          record.components.lineage = l;
         }
       },
     });
@@ -621,7 +611,7 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.stage).toBe('initialization');
     expect(err.context.generationIndex).toBe(0);
     expect(err.context.lastAgreedGenerationIndex).toBeNull();
-    expect(err.context.byteOffset).toBe(40);
+    expect(err.context.byteOffset).toBe(14);
   });
 
   test("generation 1's population diverges at stage 'population', with generation 0 agreed", async () => {

@@ -2561,12 +2561,16 @@ policy, selection or mutation behaviour change:**
   instead of silently skipping validation. Gate C
   (`verifyEvolutionArtifactSemantics`) is shared by resume and offline
   extraction: it validates the deterministic, executable evaluation spec,
-  initialization manifest and its generation-0 population binding, compute
+  initialization manifest and its generation-0 population binding — the
+  manifest's FNV population state as a cheap prefilter, then recreation of
+  generation 0 from the manifest config requiring exact byte identity with the
+  persisted population as the verdict — compute
   budget, header/manifest population agreement, and every
   vector's population/spec FNV state, counts, ordered IDs, and metadata
   `executedSteps`. Those FNV states are non-cryptographic coherence sentinels
   inside the SHA-256-attested artifact, never artifact identity. Resume retains
-  only one generation's rows during this pass; extraction requests and reuses
+  only one generation's rows during this pass and replays from the gate's
+  verified generation-0 recreation; extraction requests and reuses
   the validated rows.
   `REPLAY_STAGES` is untouched; the ordered-stage docblock is now 13 stages.
 - **Locks moved, exactly as named.** Population `fitnessVectorDigest`

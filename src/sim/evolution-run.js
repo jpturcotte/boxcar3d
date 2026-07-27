@@ -932,7 +932,7 @@ async function resumeFromOwnedBytes(owned, expected) {
   // resume-path insertion only; the generation transition is untouched.
   checkFitnessVectorCompatibility(verified);
   verifyFitnessVectorMetadataCoherence(verified);
-  const { spec, manifest } = verifyEvolutionArtifactSemantics(verified);
+  const { spec, manifest, generationZero } = verifyEvolutionArtifactSemantics(verified);
   const header = verified.header;
   const mutation = Object.freeze({
     probability: header.mutationProbability, magnitude: header.mutationMagnitude,
@@ -945,21 +945,23 @@ async function resumeFromOwnedBytes(owned, expected) {
   const runtime = await readDeterministicRuntimeIdentity();
   checkRuntimeIdentity(header, runtime);
 
-  // Stage 13a: recreate generation 0 from the decoded manifest and compare its
-  // population and lineage BYTES. This is the only stage that can fail with
-  // stage 'initialization' — everything later is a derived generation.
-  const initialization = translate('malformedHistory',
-    'history initialization manifest cannot recreate generation zero',
-    () => createInitialPopulation(manifest.config));
+  // Stage 13a: replay FROM the generation 0 that stage 11 already recreated
+  // and bound to the persisted population component by EXACT BYTE IDENTITY,
+  // before the runtime gate — resume does not recreate (and re-compare) a
+  // second time. The replay loop's generation-0 population comparison
+  // therefore starts from bytes the gate already proved identical; of the two
+  // comparisons that report stage 'initialization', only the generation-0
+  // LINEAGE one remains reachable for a verified artifact — everything later
+  // is a derived generation.
   assertHistoryCapacity({
-    population: initialization.population,
+    population: generationZero.population,
     populationSize,
     maxGenerations: header.maxGenerations,
     initializationBytes: header.initializationManifestBytes,
     specBytes: header.evaluationSpecBytes,
     spec,
   });
-  let populationBytes = serializePopulationSnapshot(initialization.population);
+  let populationBytes = generationZero.populationBytes;
   let lineageBytes = serializeLineage(initialLineage(populationIds(
     deserializePopulationSnapshot(populationBytes),
   )));

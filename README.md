@@ -21,10 +21,13 @@ delta, peak step displacement, first alert step, first catastrophic step —
   replay drift — and a current-format artifact whose steps contradict its own
   metadata reports `malformedHistory`, also before any physics. A shared semantic
   gate then validates the deterministic, executable evaluation spec,
-  initialization manifest and its generation-0 population binding, evaluation
+  initialization manifest and its generation-0 population binding — established
+  by recreating generation 0 from the manifest config and requiring exact byte
+  identity with the persisted population, not by any hash state — evaluation
   budget, and each vector's population/spec bindings,
-  counts, ordered IDs, and `executedSteps`; its FNV states are non-cryptographic
-  coherence sentinels inside the SHA-256-attested artifact, never artifact
+  counts, ordered IDs, and `executedSteps`; the FNV states are non-cryptographic
+  coherence sentinels inside the SHA-256-attested artifact (the generation-0
+  bind keeps one only as a cheap prefilter), never artifact
   identity. A verified
   offline seam (`scripts/history-observations.js`) runs the production
   verification and all three gates before returning decoded rows, and a structurally

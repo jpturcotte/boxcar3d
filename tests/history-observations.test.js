@@ -296,6 +296,80 @@ describe('extractHistoryObservations', () => {
     expect(globalThis.__observationsProbe.evaluations).toBe(0);
   });
 
+  test('a swapped generation-0 population with BOTH FNV states re-attested is refused by both readers before physics', async () => {
+    // THE ATTACK THE PROVENANCE BIND EXISTS FOR. Swap generation 0's
+    // population, re-attest the fitness vector's populationSnapshotDigestState
+    // to the swapped bytes, re-attest the initialization manifest's state to
+    // match, and re-forge every SHA-256 component/chain/history digest — a
+    // fully self-consistent artifact, no hash collision required. The FNV
+    // prefilter passes by construction; the verdict is recreation: the
+    // manifest's config must reproduce generation 0 byte-for-byte, and it
+    // reproduces the ORIGINAL. Before this bind, extraction returned the
+    // swapped rows as verified evidence while resume went on to report
+    // replayDivergence at stage 'initialization' — the offline seam accepting
+    // what resume rejects. Both readers must now refuse with malformedHistory
+    // before a world or an evaluation exists.
+    const artifact = await oneGenerationArtifact();
+    const framing = decodeHistoryFraming(artifact);
+    const gen0Population = decodeGenerationPayload(
+      framing.generations[0].payloadBytes,
+    ).components.population;
+    const swapped = new Uint8Array(gen0Population);
+    swapped[40] ^= 0xff; // inside member 0's genotype: still decodable, member ids intact
+    const swappedState = fnv1aFold(FNV_OFFSET_BASIS, swapped);
+    const broken = await reforge(
+      artifact,
+      (record) => {
+        record.components.population = swapped;
+        const decoded = deserializeFitnessVector(record.components.fitnessVector);
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: swappedState,
+          evaluationSpecDigestState: decoded.evaluationSpecDigestState,
+          individuals: decoded.individuals,
+        });
+      },
+      (header) => {
+        const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+        return {
+          ...header,
+          initializationManifestBytes: serializePopulationInitialization({
+            ...manifest,
+            populationSnapshotDigestState: swappedState,
+          }),
+        };
+      },
+    );
+
+    globalThis.__observationsProbe.worlds = 0;
+    globalThis.__observationsProbe.evaluations = 0;
+    const extractionError = await expectCodeAsync(
+      () => extractHistoryObservations(broken), 'malformedHistory', /recreates a generation 0 population/,
+    );
+    expect(extractionError.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'initializationPopulationRecreationMismatch',
+      byteOffset: 40,
+      storedByte: swapped[40],
+      recomputedByte: gen0Population[40],
+      storedByteLength: gen0Population.byteLength,
+      recomputedByteLength: gen0Population.byteLength,
+    });
+    const resumeError = await expectCodeAsync(
+      () => resumeEvolutionRun(broken), 'malformedHistory', /recreates a generation 0 population/,
+    );
+    expect(resumeError.context).toMatchObject({
+      generationIndex: 0,
+      rule: 'initializationPopulationRecreationMismatch',
+      byteOffset: 40,
+      storedByte: swapped[40],
+      recomputedByte: gen0Population[40],
+      storedByteLength: gen0Population.byteLength,
+      recomputedByteLength: gen0Population.byteLength,
+    });
+    expect(globalThis.__observationsProbe.worlds).toBe(0);
+    expect(globalThis.__observationsProbe.evaluations).toBe(0);
+  });
+
   test('a non-deterministic evaluation spec is refused by both readers before physics', async () => {
     const artifact = await oneGenerationArtifact();
     const originalHeader = decodeEvolutionHeader(decodeHistoryFraming(artifact).headerBytes);

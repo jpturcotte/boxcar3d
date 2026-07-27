@@ -43,8 +43,10 @@
 // population; rows are decoded only transiently, while the retained inputs are
 // per-generation scalars and at most one failure descriptor per gate. Gate 11
 // then walks one payload at a time after stage 8, retaining validated rows only
-// when offline extraction requests them. Every format verdict therefore RAISES
-// after stage 8, so corruption or staleness is never masked.
+// when offline extraction requests them, and closes by recreating generation 0
+// from the manifest config: exact byte identity with the persisted population is
+// the provenance verdict, the FNV state only its prefilter. Every format verdict
+// therefore RAISES after stage 8, so corruption or staleness is never masked.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
 // `decodeGenerationPayload` copies the four component byte arrays, so decoding
@@ -56,7 +58,11 @@
 // work for a resume retention bound of: the artifact, ONE decoded payload, and
 // the current/next working populations — which is the documented peak. Offline
 // extraction deliberately retains its result rows from stage 11 and does not
-// decode them a fourth time. The
+// decode them a fourth time. Stage 11's generation-0 recreation adds no
+// retention class: it is the same `createInitialPopulation` call resume used
+// to run after the runtime gate, moved before it, and resume replays from the
+// returned recreation — the current working population the bound already
+// counts. The
 // stage-5 gate collection adds two TRANSIENT decodes (the fitness vector and
 // its sibling metadata, only when BOTH components' versions are current)
 // inside the same one-payload window; what is retained is one first-failure
@@ -87,8 +93,11 @@ import {
 } from './population-evaluation.js';
 import {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, peekPopulationSnapshotMemberCount,
+  serializePopulationSnapshot,
 } from './population.js';
-import { deserializePopulationInitialization } from './population-initializer.js';
+import {
+  createInitialPopulation, deserializePopulationInitialization,
+} from './population-initializer.js';
 import {
   INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
 } from './integrity.js';
@@ -112,9 +121,11 @@ const COMPONENT_LABELS = Object.freeze({
 export { MAX_EVOLUTION_HISTORY_BYTES } from './evolution-history.js';
 
 /**
- * The first index at which two byte arrays differ, or -1. Used only for
- * DIAGNOSTICS — a mismatch is already established by the caller's length or
- * digest comparison before this runs.
+ * The first index at which two byte arrays differ, or -1 when they are
+ * byte-identical, lengths included. Two call styles: replay localization uses
+ * it for DIAGNOSTICS after a mismatch is already established by the caller's
+ * length or digest comparison; the stage-11 initialization-provenance bind
+ * uses the -1 result AS the byte-identity verdict.
  */
 export function firstByteDifference(expected, actual) {
   const expectedLength = typedArrayByteLength(expected);
@@ -760,7 +771,15 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
  * bind the initialization manifest to generation 0's population LAST, so a
  * generation-0 content defect reports with its most specific first message
  * (the per-generation guards) and only a manifest that attests none of them
- * reports as the provenance contradiction it is.
+ * reports as the provenance contradiction it is. That bind is two-tier: the
+ * manifest's FNV population state is the cheap prefilter with its own message,
+ * and the VERDICT is recreation — `createInitialPopulation(manifest.config)`
+ * must serialize to bytes exactly identical to the persisted generation-0
+ * population component (the initializer codec's contract is that re-running it
+ * with the decoded config reproduces the population). Anything less would let
+ * a swapped generation 0 pass with both FNV states re-attested — no hash
+ * collision needed — and be read as verified evidence while resume recreated a
+ * different run.
  *
  * Call this only after `checkFitnessVectorCompatibility` and
  * `verifyFitnessVectorMetadataCoherence`: those gates own version and
@@ -770,7 +789,10 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
  * non-cryptographic coherence sentinel inside the SHA-256-attested artifact;
  * it never establishes artifact identity. Offline extraction may request the
  * decoded generation rows for reuse; resume leaves that off so only one
- * generation's decoded rows are retained during this pass.
+ * generation's decoded rows are retained during this pass. The recreated
+ * generation-0 population (object and canonical bytes) is returned either way:
+ * resume replays FROM it instead of recreating a second time after the
+ * runtime gate, and extraction simply ignores it.
  */
 export function verifyEvolutionArtifactSemantics(verified, collectGenerations = false) {
   const { header, framing } = verified;
@@ -930,10 +952,13 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
   // with its most specific first message (the count/row/digest-state guards
   // in the loop), and only when those pass does a manifest that fails to
   // attest generation 0's population report as the provenance contradiction
-  // it is.
-  const generationZero = decodeGenerationPayload(framing.generations[0].payloadBytes);
+  // it is. The FNV state is the cheap PREFILTER of that bind — it keeps its
+  // own message — but a 32-bit state can never be the verdict: the ruling is
+  // that FNV is a same-source mismatch sentinel, never identity between
+  // independently persisted artifacts.
+  const generationZeroPayload = decodeGenerationPayload(framing.generations[0].payloadBytes);
   const generationZeroPopulationDigestState = fnv1aFold(
-    FNV_OFFSET_BASIS, generationZero.components.population,
+    FNV_OFFSET_BASIS, generationZeroPayload.components.population,
   );
   if (manifest.populationSnapshotDigestState !== generationZeroPopulationDigestState) {
     evolutionFail('malformedHistory',
@@ -947,10 +972,59 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
         expected: generationZeroPopulationDigestState,
       });
   }
+  // The verdict half of the bind, and the check the prefilter cannot be: the
+  // manifest's config must REPRODUCE generation 0. Recreate the population
+  // with `createInitialPopulation(manifest.config)` — the initializer codec's
+  // own contract is that re-running it with the decoded config reproduces the
+  // population — serialize it canonically, and require EXACT BYTE IDENTITY
+  // with the persisted generation-0 population component. Without this, an
+  // artifact whose generation 0 was swapped with BOTH FNV states re-attested
+  // (no hash collision needed) passed every gate: extraction returned its rows
+  // as verified evidence while resume went on to recreate a DIFFERENT
+  // generation 0 and report replayDivergence at stage 'initialization' — the
+  // offline seam accepting what resume rejects. A current-format semantic
+  // contradiction is malformedHistory HERE, before runtime or physics, never
+  // a later replay verdict.
+  let recreated;
+  try {
+    recreated = createInitialPopulation(manifest.config);
+  } catch (cause) {
+    evolutionFail('malformedHistory',
+      'history initialization manifest cannot recreate generation zero', {}, cause);
+  }
+  const recreatedPopulationBytes = serializePopulationSnapshot(recreated.population);
+  const persistedPopulationBytes = generationZeroPayload.components.population;
+  const mismatchOffset = firstByteDifference(persistedPopulationBytes, recreatedPopulationBytes);
+  if (mismatchOffset !== -1) {
+    const storedByteLength = typedArrayByteLength(persistedPopulationBytes);
+    const recomputedByteLength = typedArrayByteLength(recreatedPopulationBytes);
+    const context = {
+      generationIndex: 0,
+      rule: 'initializationPopulationRecreationMismatch',
+      byteOffset: mismatchOffset,
+      storedByteLength,
+      recomputedByteLength,
+    };
+    if (mismatchOffset < storedByteLength) context.storedByte = persistedPopulationBytes[mismatchOffset];
+    if (mismatchOffset < recomputedByteLength) context.recomputedByte = recreatedPopulationBytes[mismatchOffset];
+    evolutionFail('malformedHistory',
+      'initialization manifest config recreates a generation 0 population that differs '
+      + `from the persisted population snapshot (first differing byte ${mismatchOffset})`,
+      context);
+  }
+  // Resume replays FROM this recreation — it is exactly the recreation resume
+  // used to run as stage 13a after the runtime gate — so the replay loop's
+  // generation-0 population comparison starts from bytes this gate already
+  // proved identical to the persisted component. Extraction ignores it; its
+  // retention ends with the return value's lifetime.
   return Object.freeze({
     spec,
     manifest,
     generations: generations === null ? null : Object.freeze(generations),
+    generationZero: Object.freeze({
+      population: recreated.population,
+      populationBytes: recreatedPopulationBytes,
+    }),
   });
 }
 

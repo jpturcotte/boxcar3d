@@ -564,13 +564,25 @@ RAISE after stage 8.
   re-simulation — the misleading class this stage exists to remove.
 - **Gate C — `verifyEvolutionArtifactSemantics` (`malformedHistory`).** The
   shared resume/extraction gate decodes and validates the deterministic,
-  executable evaluation spec and initialization manifest, binds the manifest's
-  declared population state to generation 0, enforces the evaluation-work
+  executable evaluation spec and initialization manifest, binds the manifest
+  to generation 0 — the declared FNV population state as a cheap prefilter
+  with its own message, then the verdict: `createInitialPopulation` re-run on
+  the manifest config must serialize to bytes exactly identical to the
+  persisted generation-0 population component, so a generation-0 swap with
+  both FNV states re-attested (no hash collision needed) is refused here
+  rather than accepted by extraction and only later reported by resume as
+  replay drift — enforces the evaluation-work
   budget and header/manifest population agreement, then binds every vector to
   its sibling population and header spec through their persisted FNV states,
   counts, ordered IDs, and metadata `executedSteps === spec.maxSteps`. The FNV
   values are only non-cryptographic coherence sentinels inside the
-  SHA-256-attested artifact; they never establish artifact identity. A
+  SHA-256-attested artifact; they never establish artifact identity, which is
+  why the generation-0 bind is recreation plus byte identity rather than a
+  state comparison. Resume replays from the gate's verified recreation
+  instead of recreating a second time after the runtime gate. The bind covers
+  generation 0 only: extraction runs no physics, so generations 1+ remain
+  bound by the FNV sentinels and the SHA-256 chain and are definitively
+  re-derived only by resume's deterministic replay. A
   self-consistent but malformed spec or manifest, or a vector rebound to
   different current-format bytes, now has the same pre-physics taxonomy in
   both consumers.

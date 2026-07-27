@@ -20,8 +20,8 @@
 // WHAT THIS CHECKS (derived, never a second hand-maintained title list):
 //   It collects the REAL test titles via `vitest list --json` under BOTH
 //   configs (vite.config.js = Node arm, vitest.browser.config.js = Chromium
-//   arm — collection needs no browser binary) and audits every pinned
-//   title in the inventory against that discovery:
+//   arm) and audits every pinned title in the inventory against that
+//   discovery:
 //     node/browser.byFile[file]:
 //       (1) the file collects >=1 test (a renamed/removed file is its own
 //           diagnostic);
@@ -51,8 +51,20 @@
 //   (auditInventoryTitles) is exported for the vitest unit suite, which
 //   never spawns anything; the CLI runs only as the entrypoint (the
 //   bench-physics guard idiom). Wired into ordinary CI as
-//   `npm run check:spike-inventory` (test job, before lint) so the drift
-//   class cannot survive a PR that renames tests without the inventory.
+//   `npm run check:spike-inventory` so the drift class cannot survive a
+//   PR that renames tests without the inventory.
+//
+//   THE BROWSER ARM NEEDS THE BROWSER: browser-mode collection EXECUTES the
+//   test files inside Chromium to enumerate the describe/test tree, so
+//   `vitest list` under vitest.browser.config.js launches the pinned
+//   headless Chromium (the Node arm needs no browser). With the binary
+//   absent, vitest 3.2.7 prints "There were unhandled errors during test
+//   collection" + the playwright install hint to STDERR and exits 0 with
+//   EMPTY stdout — collectTasks treats empty stdout as a collection
+//   failure and surfaces that stderr, never auditing partial data. The CI
+//   gate therefore lives in the browser-determinism job, which already
+//   installs the exact-pinned Chromium (the first version of this gate ran
+//   in the browserless test job and failed closed on exactly this).
 
 /* eslint no-console: 0 */
 
@@ -192,7 +204,21 @@ function collectTasks(configArgs, label) {
   if (res.status !== 0) {
     throw new Error(`vitest list --json (${label}) exited ${res.status}:\n${res.stderr}\n${res.stdout}`);
   }
-  return parseVitestListJson(res.stdout, label);
+  if (res.stdout.trim() === '') {
+    // vitest 3.2.7 browser-mode collection with the Chromium binary missing
+    // exits 0 with EMPTY stdout and the real error on stderr ("There were
+    // unhandled errors during test collection" + the playwright install
+    // hint). Surface THAT, never parse nothing into an empty arm.
+    throw new Error(`vitest list --json (${label}) produced NO output on stdout — browser-mode collection launches the pinned Chromium; install it (\`npx playwright install chromium\`) or run where CI provides it. stderr:\n${res.stderr}`);
+  }
+  try {
+    return parseVitestListJson(res.stdout, label);
+  } catch (err) {
+    // A parse failure must show what vitest ACTUALLY said — the bare JSON
+    // error hides the cause (the first CI run's "Unexpected end of JSON
+    // input" was the missing-browser stderr above).
+    throw new Error(`${err?.message ?? err}\nstderr:\n${res.stderr}\nstdout (first 400 chars):\n${res.stdout.slice(0, 400)}`);
+  }
 }
 
 function main() {
@@ -202,10 +228,12 @@ function main() {
     },
   });
   const inventory = JSON.parse(readFileSync(resolve(REPO_ROOT, values.expected), 'utf8'));
-  // Node arm = vite.config.js (tests/** minus tests/browser/**); Chromium
-  // arm = vitest.browser.config.js (tests/browser/** only). LIST mode
-  // collects titles without executing tests, so no Chromium binary, no
-  // engine, and no physics run is needed — ordinary CI can gate on this.
+  // Node arm = vite.config.js (tests/** minus tests/browser/**) — no
+  // browser needed. Chromium arm = vitest.browser.config.js
+  // (tests/browser/** only): browser-mode collection EXECUTES the test
+  // files inside the pinned headless Chromium to enumerate the tree, so
+  // this arm requires the browser binary (CI: the browser-determinism
+  // job's playwright install).
   const nodeTasks = collectTasks([], 'node');
   const browserTasks = collectTasks(['--config', 'vitest.browser.config.js'], 'browser');
   const issues = auditInventoryTitles(inventory, { nodeTasks, browserTasks });

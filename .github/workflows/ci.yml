@@ -19,11 +19,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Audit the spike expected-red inventory against the REAL collected test
-      # titles (vitest list under both configs — collection needs no browser),
-      # so a test rename without a same-commit inventory update fails ordinary
-      # CI instead of a later heavy dispatch (the PR #29 post-merge defect).
-      - run: npm run check:spike-inventory
       - run: npm run lint
       - run: npm test
       - run: npm run build
@@ -54,6 +49,14 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
       - run: npx playwright install --with-deps chromium
+      # Audit the spike expected-red inventory against the REAL collected
+      # test titles (vitest list under both configs), so a test rename
+      # without a same-commit inventory update fails ordinary CI instead of
+      # a later heavy dispatch (the PR #29 post-merge defect). This job, not
+      # the test job: browser-mode collection EXECUTES the test files inside
+      # Chromium to enumerate the tree, so the browser arm needs the pinned
+      # browser this job just installed (the Node arm needs none).
+      - run: npm run check:spike-inventory
       - run: npm run test:browser
 
   # The narrow Node OS matrix: ONLY the two determinism test files (the

@@ -341,11 +341,12 @@ evaluates exactly those. Elites are copied with **fresh** ids, every child draws
 from its own `(seed, childId)` stream, terminal conditions are decided once
 before any digest exists, and a failed advance leaves the committed artifact
 byte-identical — a retry reproduces the same generation. Resume verifies in
-twelve ordered stages (framing, header, every component digest, the chain, the
-whole artifact, external freshness, nested format compatibility, metadata
-coherence, then the exact engine version — all *before* any physics runs) and
-replays deterministically, reporting the first divergence by generation, stage
-and byte offset rather than "the history digest is wrong".
+thirteen ordered stages (framing, header, every component digest, the chain,
+the whole artifact, external freshness, nested format compatibility, metadata
+coherence, current-artifact semantics and bindings, then the exact engine
+version — all *before* any physics runs) and replays deterministically,
+reporting the first divergence by generation, stage and byte offset rather
+than "the history digest is wrong".
 The `evolution-a-small-flat` locks reproduce on Ubuntu, Windows, macOS and
 pinned Chromium, which agreed on the first run — including the new WebCrypto
 seam. Fifteen deliberate sabotage mutations all redden a test; one of them was

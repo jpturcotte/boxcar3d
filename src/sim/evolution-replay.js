@@ -610,15 +610,6 @@ export function checkExpectedIdentity(verified, expected) {
 }
 
 /**
- * Stage 9 — fitness-vector format compatibility, raised from the stage-5
- * collection AFTER external identity and before the runtime gate. A stale v2
- * artifact reports `unsupportedVersion` naming the exact field, the
- * generation that carries it, and the stored and current values — never a
- * false replay drift discovered after a re-simulation. A truncated or
- * structurally unreadable version prefix reports `malformedHistory` instead:
- * without a readable prefix there is no version to call unsupported.
- */
-/**
  * Stage 9 — nested format compatibility, raised from the stage-5 collection
  * AFTER external identity and before the runtime gate. Precedence is GLOBAL,
  * across every generation and both nested components: the first

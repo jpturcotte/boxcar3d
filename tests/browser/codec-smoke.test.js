@@ -146,20 +146,64 @@ describe('canonical codecs (Chromium)', () => {
   });
 
   test('fitness vector: round-trips through the digest-state input path', () => {
+    const observationDefaults = {
+      peakBodySpeed: 0,
+      peakSpeedDelta: 0,
+      peakStepDisplacement: 0,
+      firstAlertStep: null,
+      firstCatastrophicStep: null,
+    };
     const evaluation = {
       spec: resolvedSpec(),
       populationSnapshotDigestState: 0xdeadbeef,
       individuals: [
-        { individualId: 0, valid: true, integrityStatus: 'ok', fitness: 12.484905242919922 },
-        { individualId: 4, valid: false, integrityStatus: 'ok', fitness: 0 },
-        { individualId: 9, valid: true, integrityStatus: 'numericalDivergence', fitness: 0 },
+        {
+          individualId: 0,
+          valid: true,
+          integrityStatus: 'ok',
+          fitness: 12.484905242919922,
+          integrityObservations: { ...observationDefaults, peakBodySpeed: 9.5, firstAlertStep: null },
+        },
+        {
+          individualId: 4,
+          valid: false,
+          integrityStatus: 'ok',
+          fitness: 0,
+          integrityObservations: {
+            ...observationDefaults,
+            peakBodySpeed: 142.375,
+            peakSpeedDelta: 30.5,
+            peakStepDisplacement: 0.5,
+            firstAlertStep: 0,
+          },
+        },
+        {
+          individualId: 9,
+          valid: true,
+          integrityStatus: 'numericalDivergence',
+          fitness: 0,
+          integrityObservations: {
+            peakBodySpeed: Infinity,
+            peakSpeedDelta: 0,
+            peakStepDisplacement: 0,
+            firstAlertStep: 4,
+            firstCatastrophicStep: 4,
+          },
+        },
       ],
     };
     const bytes = serializeFitnessVector(evaluation);
+    // v3: 22 B header + 48 B per member (the five observations ride along).
+    expect(bytes.length).toBe(22 + 3 * 48);
     const decoded = deserializeFitnessVector(bytes);
     expect(decoded.individuals.map((m) => m.individualId)).toEqual([0, 4, 9]);
     expect(Object.is(decoded.individuals[0].fitness, 12.484905242919922)).toBe(true);
     expect(decoded.individuals[2].integrityStatus).toBe('numericalDivergence');
+    expect(Object.is(decoded.individuals[0].integrityObservations.peakBodySpeed, 9.5)).toBe(true);
+    expect(Object.is(decoded.individuals[2].integrityObservations.peakBodySpeed, Infinity)).toBe(true);
+    expect(decoded.individuals[2].integrityObservations.firstCatastrophicStep).toBe(4);
+    // Presence is carried by the flag, so a present step 0 must not decode as null.
+    expect(decoded.individuals[1].integrityObservations.firstAlertStep).toBe(0);
     expect(bytesEqual(serializeFitnessVector(decoded), bytes)).toBe(true);
   });
 

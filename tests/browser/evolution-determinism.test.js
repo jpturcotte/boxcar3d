@@ -25,27 +25,17 @@ import {
   decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata,
 } from '../../src/sim/evolution-history.js';
+import { verifyHistoryArtifact } from '../../src/sim/evolution-replay.js';
 import { deserializeLineage } from '../../src/sim/evolution-lineage.js';
 import { bytesToHex } from '../../src/sim/bytes.js';
 import { sha256 } from '../../src/platform/sha256.js';
 import KIMI_FIXTURE_BASE64 from '../fixtures/evolution-v1-kimi-k3max.base64?raw';
+import V3_FIXTURE_BASE64 from '../fixtures/evolution-v1-fitness-vector-v3-kimi.base64?raw';
 
 const LOCK = EVOLUTION_GOLDEN_LOCKS[EVOLUTION_FIXTURE_A.name];
-const KIMI_TERMINAL_HISTORY_DIGEST = 'de7d8e495bea3b0297fa412db60ac88638bd84e4bf97992ecd571e91bbdb7210';
-
-const INTEROP_CONFIG = {
-  initialization: { seed: 20260721, populationSize: 4 },
-  evaluationSpec: {
-    terrain: {
-      seed: 20260722, startFlatLength: 40, craterDensity: 0, featureDensity: 0,
-      sandCoverage: 0, mudCoverage: 0, macroAmp: 0, microAmp: 0,
-    },
-    maxSteps: 60,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
-  evolution: { maxGenerations: 3, mutation: { probability: 0.5, magnitude: 0.1 } },
-};
+// The v2 fixture's self-consistency literals (tests/fixtures/evolution-v1-kimi-k3max.md).
+const KIMI_HEADER_DIGEST = '312665978b18bdd920668a1ee3bc49b301a24b76d7497f9ef328732b6939bfce';
+const KIMI_HISTORY_DIGEST = '3717df1acd2debc9f6aec79425da49032687b238ae1d0edb60a620c4d902575d';
 
 function decodeBase64(text) {
   const binary = globalThis.atob(text.trim());
@@ -126,17 +116,43 @@ describe('evolution golden locks (Chromium)', () => {
     expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(bytes));
   });
 
-  test('Chromium continues the independent Kimi artifact byte-identically', { timeout: 240000 }, async () => {
+  test('Chromium refuses the v2 Kimi artifact at the compatibility gate, after full self-consistency', { timeout: 240000 }, async () => {
+    // PR 29 R2: the v2 fixture's successful-replay role is historical. The
+    // browser gate proves the refusal itself is cross-runtime: every digest
+    // leg verifies, then Gate A names the stale vector field — with no
+    // physics anywhere.
     const fixture = decodeBase64(KIMI_FIXTURE_BASE64);
     expect(fixture.length).toBe(4024);
     expect(fixture[14 + 18]).toBe(0);
+    const verified = await verifyHistoryArtifact(fixture);
+    expect(verified.finalGenerationIndex).toBe(0);
+    expect(bytesToHex(verified.framing.headerDigestBytes)).toBe(KIMI_HEADER_DIGEST);
+    expect(bytesToHex(verified.historyDigestBytes)).toBe(KIMI_HISTORY_DIGEST);
+    let threw = null;
+    try {
+      await resumeEvolutionRun(fixture);
+    } catch (e) { threw = e; }
+    expect(threw, 'expected the v2 fixture to be refused').toBeDefined();
+    expect(threw.code).toBe('unsupportedVersion');
+    expect(threw.context).toMatchObject({
+      field: 'fitnessVectorVersion', generationIndex: 0, stored: 2, current: 3,
+    });
+  });
 
-    const control = createEvolutionRun(INTEROP_CONFIG);
+  test('Chromium continues the independently assembled v3 artifact byte-identically', { timeout: 240000 }, async () => {
+    // The successful-replay role, in the browser: the local generation-0
+    // artifact must be byte-identical to the static v3 fixture, and resuming
+    // it must continue to the committed lock's terminal digest.
+    const fixture = decodeBase64(V3_FIXTURE_BASE64);
+    expect(fixture.length).toBe(5682);
+    expect(fixture[14 + 18]).toBe(0);
+
+    const control = createEvolutionRun(evolutionRunConfigFor(EVOLUTION_FIXTURE_A));
     await control.advance();
     const fixtureHeader = decodeEvolutionHeader(decodeHistoryFraming(fixture).headerBytes);
     const controlHeader = decodeEvolutionHeader(decodeHistoryFraming(control.historyBytes()).headerBytes);
     expect(controlHeader.rapierVersion,
-      'engine changed — re-lock the independent evolution artifact deliberately')
+      'engine changed — regenerate the independent v3 artifact deliberately')
       .toBe(fixtureHeader.rapierVersion);
     expect(bytesToHex(control.historyBytes())).toBe(bytesToHex(fixture));
     const resumed = await resumeEvolutionRun(fixture);
@@ -146,6 +162,6 @@ describe('evolution golden locks (Chromium)', () => {
       expect(bytesToHex(b.historyDigestBytes)).toBe(bytesToHex(a.historyDigestBytes));
       expect(bytesToHex(resumed.historyBytes())).toBe(bytesToHex(control.historyBytes()));
     }
-    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(KIMI_TERMINAL_HISTORY_DIGEST);
+    expect(bytesToHex(control.historyBytes().slice(-32))).toBe(LOCK.historyDigest);
   });
 });

@@ -253,6 +253,25 @@ function decodeFail(path, value) {
   throw new Error(`population: invalid encoded population at ${path} (${String(value)})`);
 }
 
+function readSnapshotPrefix(r) {
+  const snapshotVersion = r.u16('snapshotVersion');
+  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) decodeFail('snapshotVersion', snapshotVersion);
+  const genotypeVersion = r.u16('genotypeVersion');
+  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
+  return r.u32('individualCount');
+}
+
+/**
+ * Read only the versioned population prefix and declared member count.
+ *
+ * Consumers that have a smaller external population bound can refuse an
+ * oversized snapshot before the full decoder materializes any genotype rows.
+ * The population codec owns these offsets; callers never duplicate them.
+ */
+export function peekPopulationSnapshotMemberCount(bytes) {
+  return readSnapshotPrefix(createByteReader(bytes, decodeFail));
+}
+
 /**
  * The exact inverse of serializePopulationSnapshot. Fail-loud, never
  * repairing: individual ids must be strictly ascending IN THE STREAM (the
@@ -282,11 +301,7 @@ function decodeFail(path, value) {
  */
 export function deserializePopulationSnapshot(bytes) {
   const r = createByteReader(bytes, decodeFail);
-  const snapshotVersion = r.u16('snapshotVersion');
-  if (snapshotVersion !== POPULATION_SNAPSHOT_VERSION) decodeFail('snapshotVersion', snapshotVersion);
-  const genotypeVersion = r.u16('genotypeVersion');
-  if (genotypeVersion !== GENOTYPE_VERSION) decodeFail('genotypeVersion', genotypeVersion);
-  const count = r.u32('individualCount');
+  const count = readSnapshotPrefix(r);
   if (count < 1) decodeFail('individualCount', count);
   const individuals = [];
   let prevId = -1;

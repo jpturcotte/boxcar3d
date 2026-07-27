@@ -67,17 +67,16 @@ import {
   deserializePopulationInitialization, serializePopulationInitialization,
 } from './population-initializer.js';
 import {
-  POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, deserializeEvaluationSpec,
-  deserializeFitnessVector, evaluatePopulation, fitnessVectorByteLength,
+  POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, deserializeFitnessVector,
+  evaluatePopulation, fitnessVectorByteLength,
   selectablePoolFromEvaluation,
 } from './population-evaluation.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import { readDeterministicRuntimeIdentity } from './physics/adapter.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
-  MAX_EVOLUTION_EVALUATION_WORK, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, checkedAdd, checkedMultiply, evolutionFail,
-  isEvolutionUint32,
+  MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork,
+  checkedAdd, checkedMultiply, evolutionFail, isEvolutionUint32,
 } from './evolution-contract.js';
 import {
   EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage, lineageByteLength,
@@ -85,7 +84,8 @@ import {
 } from './evolution-lineage.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
-  checkRuntimeIdentity, failReplayDivergence, verifyHistoryArtifact,
+  checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
+  verifyEvolutionArtifactSemantics, verifyFitnessVectorMetadataCoherence, verifyHistoryArtifact,
 } from './evolution-replay.js';
 import { decodeGenerationPayload } from './evolution-history.js';
 
@@ -232,17 +232,6 @@ function captureEvolution(source) {
       { maxGenerations, limit: MAX_EVOLUTION_GENERATIONS });
   }
   return { maxGenerations, mutation: captureMutation(mutationSource) };
-}
-
-function assertEvaluationWork(populationSize, maxSteps) {
-  const work = checkedMultiply(populationSize, maxSteps, 'evolution evaluation work');
-  if (work > MAX_EVOLUTION_EVALUATION_WORK) {
-    evolutionFail('resourceLimitExceeded',
-      `populationSize × maxSteps (${work}) exceeds MAX_EVOLUTION_EVALUATION_WORK (${MAX_EVOLUTION_EVALUATION_WORK})`,
-      {
-        populationSize, maxSteps, work, limit: MAX_EVOLUTION_EVALUATION_WORK,
-      });
-  }
 }
 
 /**
@@ -935,48 +924,44 @@ async function resumeFromOwnedBytes(owned, expected) {
   const verified = await verifyHistoryArtifact(owned);
   // Stage 8: external expected identity — staleness, distinct from corruption.
   checkExpectedIdentity(verified, expected);
+  // Stages 9-11: fitness-vector compatibility (unsupported format), metadata
+  // coherence, and shared current-artifact semantics/bindings (both malformed
+  // current format), all AFTER external identity and BEFORE the runtime gate.
+  // The escalation ladder is corruption -> wrong artifact -> unsupported ->
+  // malformed -> runtime mismatch -> deterministic divergence. This is a named
+  // resume-path insertion only; the generation transition is untouched.
+  checkFitnessVectorCompatibility(verified);
+  verifyFitnessVectorMetadataCoherence(verified);
+  const { spec, manifest, generationZero } = verifyEvolutionArtifactSemantics(verified);
   const header = verified.header;
-  const spec = translate('malformedHistory', 'history evaluation spec is malformed',
-    () => deserializeEvaluationSpec(header.evaluationSpecBytes));
-  if (spec.deterministic !== true) {
-    evolutionFail('malformedHistory',
-      'history evaluation spec is not deterministic — evolution binds one engine identity',
-      { deterministic: String(spec.deterministic) });
-  }
-  const manifest = translate('malformedHistory', 'history initialization manifest is malformed',
-    () => deserializePopulationInitialization(header.initializationManifestBytes));
   const mutation = Object.freeze({
     probability: header.mutationProbability, magnitude: header.mutationMagnitude,
   });
   const seed = manifest.seed;
   const populationSize = header.populationSize;
-  if (manifest.config.populationSize !== populationSize) {
-    evolutionFail('malformedHistory',
-      `history populationSize ${populationSize} disagrees with initialization manifest ${manifest.config.populationSize}`,
-      { headerPopulationSize: populationSize, manifestPopulationSize: manifest.config.populationSize });
-  }
-  assertEvaluationWork(populationSize, spec.maxSteps);
 
-  // Stage 9: the runtime gate, after all product-level resource/coherence
+  // Stage 12: the runtime gate, after all product-level resource/coherence
   // checks but before a single world is created.
   const runtime = await readDeterministicRuntimeIdentity();
   checkRuntimeIdentity(header, runtime);
 
-  // Stage 10a: recreate generation 0 from the decoded manifest and compare its
-  // population and lineage BYTES. This is the only stage that can fail with
-  // stage 'initialization' — everything later is a derived generation.
-  const initialization = translate('malformedHistory',
-    'history initialization manifest cannot recreate generation zero',
-    () => createInitialPopulation(manifest.config));
+  // Stage 13a: replay FROM the generation 0 that stage 11 already recreated
+  // and bound to the persisted population component by EXACT BYTE IDENTITY,
+  // before the runtime gate — resume does not recreate (and re-compare) a
+  // second time. The replay loop's generation-0 population comparison
+  // therefore starts from bytes the gate already proved identical; of the two
+  // comparisons that report stage 'initialization', only the generation-0
+  // LINEAGE one remains reachable for a verified artifact — everything later
+  // is a derived generation.
   assertHistoryCapacity({
-    population: initialization.population,
+    population: generationZero.population,
     populationSize,
     maxGenerations: header.maxGenerations,
     initializationBytes: header.initializationManifestBytes,
     specBytes: header.evaluationSpecBytes,
     spec,
   });
-  let populationBytes = serializePopulationSnapshot(initialization.population);
+  let populationBytes = generationZero.populationBytes;
   let lineageBytes = serializeLineage(initialLineage(populationIds(
     deserializePopulationSnapshot(populationBytes),
   )));

@@ -67,13 +67,23 @@ pressure.
 **Remaining work before it can land responsibly** (PR 4 left these open):
 1. **The false-*negative* side** — divergence that still passes after escalation.
    PR-B's acceptance test requires it; PR 4 measured only false positives.
+   **→ Next PR**, now measurable from persisted histories without re-simulation.
 2. **Contamination in the breeding *pool*, not just at the champion** —
    tournament selection samples the whole pool, so the champion is not the
-   mechanism.
-3. Both of the above are far easier if the integrity **observations** (peak body
+   mechanism. **→ Next PR**, same enabler.
+3. ~~Both of the above are far easier if the integrity **observations** (peak body
    speed, first alert step) are **persisted in the fitness vector** first (a
    versioned encoding change) — today the vector stores only status, which is
-   why PR 4's diagnosis needed a forensic re-run.
+   why PR 4's diagnosis needed a forensic re-run.~~ **DISCHARGED on the PR #29
+   branch (pending merge):**
+   fitness-vector v3 persists all five observations (the three peaks and both
+   onset steps) per member, a verified offline seam
+   (`scripts/history-observations.js`) reads them from a digest-verified
+   artifact with no physics, and three pre-physics resume gates report stale or
+   self-contradictory artifacts accurately (`unsupportedVersion` /
+   `malformedHistory`). Policy is unchanged — integrity v1, fitness v2 — and
+   alert-bearing `ok` vehicles are **still selectable on main**: PR 29
+   persists the evidence; it does not act on it.
 4. The policy bump is a deliberate re-lock (Node 3-OS + pinned Chromium).
 
 **Effort:** small–moderate, all in-repo, no dependency change.
@@ -164,10 +174,15 @@ it.**
   lands, so a future reader does not mistake a masked defect for a solved one.
 
 **Concrete sequence:**
-1. Persist integrity observations in the fitness vector (enables A's pool +
-   false-negative measurements, and makes contamination readable from history).
-2. Land A (alert-band escalation) with the false-negative acceptance test —
-   the version bump + re-lock.
+1. ~~Persist integrity observations in the fitness vector (enables A's pool +
+   false-negative measurements, and makes contamination readable from history).~~
+   **DISCHARGED on the PR #29 branch (pending merge)** — fitness-vector v3, the
+   three pre-physics gates, and the verified extraction seam; representation
+   only, no behaviour change.
+2. **→ Next PR:** measure the alert-band selection exposure A would remove —
+   the breeding-pool and false-negative measurements above, from the persisted
+   observations — then decide: land A (alert-band escalation) with the
+   false-negative acceptance test — the version bump + re-lock.
 3. Re-run PR 4's protocol on the now-clean signal → take the mutation-default
    decision (extend the grid past 0.20; add `p0.100-m0.200`).
 4. **In parallel, one experiment for B:** source-build core 0.34 with PR #235

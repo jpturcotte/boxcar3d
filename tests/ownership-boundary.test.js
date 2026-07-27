@@ -71,7 +71,7 @@ import {
   assembleHistory, decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
   deserializeEvaluationMetadata, digestComponent, digestGeneration, digestHeader,
   digestHistoryBody, digestsEqual, encodeEvolutionHeader, encodeGenerationPayload,
-  projectEvolutionHistoryCapacity, serializeEvaluationMetadata,
+  peekEvaluationMetadataVersion, projectEvolutionHistoryCapacity, serializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
 import { sha256 } from '../src/platform/sha256.js';
 import {
@@ -93,7 +93,8 @@ const {
 } = AssemblyNS;
 const {
   POPULATION_SNAPSHOT_VERSION, attestPopulation, bytesEqual,
-  deserializePopulationSnapshot, serializePopulationSnapshot, validatePopulation,
+  deserializePopulationSnapshot, peekPopulationSnapshotMemberCount,
+  serializePopulationSnapshot, validatePopulation,
 } = PopulationNS;
 const {
   createInitialPopulation, deserializePopulationInitialization,
@@ -101,7 +102,7 @@ const {
 } = InitializerNS;
 const {
   SPAWN_CLEARANCE, canonicalizeEvaluationSpec, championFromEvaluation, deserializeEvaluationSpec,
-  deserializeFitnessVector, selectableChampionFromEvaluation,
+  deserializeFitnessVector, peekFitnessVectorVersions, selectableChampionFromEvaluation,
   serializeEvaluationSpec, serializeFitnessVector, spawnPoseOnFlatStart,
 } = EvaluationNS;
 
@@ -220,14 +221,33 @@ const resolvedFlat = () => ({
   terrain: { ...TERRAIN_DEFAULTS, ...FLAT_TERRAIN },
 });
 
-// Entry tuple: [individualId, fitness, valid, integrityStatus='ok'] — the
-// tests/evaluation-codec.test.js shape.
+// Entry tuple shape follows tests/evaluation-codec.test.js: rows carry the
+// four selection fields plus the v3 integrityObservations (status-coherent
+// under policy v1: 'numericalDivergence' must carry a catastrophic step).
 const synthEvaluation = () => ({
   spec: resolvedFlat(),
   populationSnapshotDigestState: 0xdeadbeef,
   individuals: [
-    { individualId: 0, fitness: 12.5, valid: true, integrityStatus: 'ok' },
-    { individualId: 3, fitness: 0, valid: false, integrityStatus: 'numericalDivergence' },
+    {
+      individualId: 0,
+      fitness: 12.5,
+      valid: true,
+      integrityStatus: 'ok',
+      integrityObservations: {
+        peakBodySpeed: 0, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: null, firstCatastrophicStep: null,
+      },
+    },
+    {
+      individualId: 3,
+      fitness: 0,
+      valid: false,
+      integrityStatus: 'numericalDivergence',
+      integrityObservations: {
+        peakBodySpeed: 1500, peakSpeedDelta: 0, peakStepDisplacement: 0,
+        firstAlertStep: 12, firstCatastrophicStep: 12,
+      },
+    },
   ],
 });
 
@@ -280,7 +300,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   'population.js': Object.freeze([
     'POPULATION_SNAPSHOT_VERSION', 'attestPopulation', 'bytesEqual',
-    'deserializePopulationSnapshot', 'isCanonicalUint32',
+    'deserializePopulationSnapshot', 'isCanonicalUint32', 'peekPopulationSnapshotMemberCount',
     'serializePopulationSnapshot', 'validatePopulation',
   ]),
   'population-initializer.js': Object.freeze([
@@ -294,7 +314,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'canonicalizeEvaluationSpec', 'championFromEvaluation', 'deserializeEvaluationSpec',
     'deserializeFitnessVector',
     'evaluatePopulation', 'fitnessFromVehicleResult', 'fitnessVectorByteLength', 'isVehicleResultSelectable',
-    'isVehicleResultValid', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
+    'isVehicleResultValid', 'peekFitnessVectorVersions', 'selectableChampionFromEvaluation', 'selectablePoolFromEvaluation',
     'serializeEvaluationSpec', 'serializeFitnessVector', 'spawnPoseOnFlatStart',
   ]),
   'evolution-operators.js': Object.freeze([
@@ -309,7 +329,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_ERROR_CODES', 'EVOLUTION_POLICY_VERSION',
     'EvolutionError', 'MAX_EVOLUTION_EVALUATION_WORK', 'MAX_EVOLUTION_GENERATIONS',
     'MAX_EVOLUTION_POPULATION_SIZE',
-    'TERMINAL_REASONS', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
+    'TERMINAL_REASONS', 'assertEvaluationWork', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
     'isEvolutionUint32',
   ]),
   'evolution-lineage.js': Object.freeze([
@@ -323,8 +343,9 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   'evolution-replay.js': Object.freeze([
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
-    'checkExpectedIdentity', 'checkRuntimeIdentity', 'failReplayDivergence',
-    'firstByteDifference', 'verifyHistoryArtifact',
+    'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity', 'failReplayDivergence',
+    'firstByteDifference', 'verifyEvolutionArtifactSemantics',
+    'verifyFitnessVectorMetadataCoherence', 'verifyHistoryArtifact',
   ]),
   'evolution-history.js': Object.freeze([
     'COMPONENT_KINDS', 'EVALUATION_METADATA_VERSION', 'EVOLUTION_DIGEST_DOMAINS',
@@ -334,8 +355,8 @@ const EXPECTED_EXPORTS = Object.freeze({
     'assembleHistory', 'decodeEvolutionHeader', 'decodeGenerationPayload',
     'decodeHistoryFraming', 'deserializeEvaluationMetadata', 'digestComponent',
     'digestGeneration', 'digestHeader', 'digestHistoryBody', 'digestsEqual',
-    'encodeEvolutionHeader', 'encodeGenerationPayload', 'projectEvolutionHistoryCapacity',
-    'serializeEvaluationMetadata',
+    'encodeEvolutionHeader', 'encodeGenerationPayload', 'peekEvaluationMetadataVersion',
+    'projectEvolutionHistoryCapacity', 'serializeEvaluationMetadata',
   ]),
   // The platform adapter is INSIDE this family by ruling, not beside it: it is
   // a byte seam whose output is persisted artifact identity.
@@ -513,6 +534,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'serializePopulationSnapshot', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'attestPopulation', kind: 'encoder', callerCollections: ['population.individuals'], callerNumbers: ['individualId'] },
     { name: 'deserializePopulationSnapshot', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    { name: 'peekPopulationSnapshotMemberCount', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
   ]),
   'population-initializer.js': Object.freeze([
     { name: 'POPULATION_INITIALIZER_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -573,9 +595,12 @@ const EXPORT_ROLES = Object.freeze({
       name: 'serializeFitnessVector',
       kind: 'encoder',
       callerCollections: ['evaluation.individuals'],
-      callerNumbers: ['individualId', 'fitness', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
+      callerNumbers: ['individualId', 'fitness', 'integrityObservations.*', 'populationSnapshotDigestState', 'evaluationSpecDigestState'],
     },
     { name: 'deserializeFitnessVector', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // The replay gate's layered version prefix-peek: reads bytes, returns a
+    // frozen record of version scalars, never a full decode.
+    { name: 'peekFitnessVectorVersions', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     // Resolves the caller's spec once and returns the bytes PLUS the record
     // decoded from them; the returned spec shares nothing with the input.
     {
@@ -614,6 +639,7 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'EvolutionError', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
     { name: 'evolutionFail', kind: 'pure', callerCollections: ['context'], callerNumbers: [] },
     { name: 'isEvolutionUint32', kind: 'validator', callerCollections: [], callerNumbers: ['v'] },
+    { name: 'assertEvaluationWork', kind: 'pure', callerCollections: [], callerNumbers: ['populationSize', 'maxSteps'] },
     { name: 'checkedAdd', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
     { name: 'checkedMultiply', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
   ]),
@@ -645,7 +671,12 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'failReplayDivergence', kind: 'pure', callerCollections: ['expected', 'actual'], callerNumbers: [] },
     { name: 'verifyHistoryArtifact', kind: 'validator', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'checkExpectedIdentity', kind: 'validator', callerCollections: [], callerNumbers: ['expected.generationIndex'] },
+    // Consumes the module-owned verified record (the stage-5 collection),
+    // never caller bytes — like checkRuntimeIdentity below.
+    { name: 'checkFitnessVectorCompatibility', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'checkRuntimeIdentity', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyEvolutionArtifactSemantics', kind: 'validator', callerCollections: [], callerNumbers: [] },
+    { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
   'evolution-history.js': Object.freeze([
@@ -664,6 +695,9 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'projectEvolutionHistoryCapacity', kind: 'pure', callerCollections: ['componentByteLengths'], callerNumbers: ['initializationManifestByteLength', 'evaluationSpecByteLength', 'generationCount'] },
     { name: 'serializeEvaluationMetadata', kind: 'encoder', callerCollections: [], callerNumbers: ['metadata.effectiveDt', 'metadata.executedSteps'] },
     { name: 'deserializeEvaluationMetadata', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // The replay gate's nested-version peek: reads bytes, returns a frozen
+    // record holding the one declared version scalar, never a full decode.
+    { name: 'peekEvaluationMetadataVersion', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'encodeEvolutionHeader', kind: 'encoder', callerCollections: ['header.initializationManifestBytes', 'header.evaluationSpecBytes'], callerNumbers: ['header.populationSize', 'header.maxGenerations'] },
     { name: 'decodeEvolutionHeader', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'encodeGenerationPayload', kind: 'encoder', callerCollections: ['record.components', 'componentDigests'], callerNumbers: ['record.generationIndex'] },
@@ -952,6 +986,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     // Arg `a` probed here; the b-side battery lives in tests/population.test.js.
     bytesEqual: { intake: 'gated', invoke: (u) => bytesEqual(u, Uint8Array.of(1)) },
     deserializePopulationSnapshot: { intake: 'gated', invoke: (u) => deserializePopulationSnapshot(u) },
+    peekPopulationSnapshotMemberCount: { intake: 'gated', invoke: (u) => peekPopulationSnapshotMemberCount(u) },
     attestPopulation: { intake: 'no-byte-intake', why: 'population object in; returns module-owned bytes + decoded genotypes' },
     isCanonicalUint32: { intake: 'no-byte-intake', why: 'number in, boolean out' },
     serializePopulationSnapshot: { intake: 'no-byte-intake', why: 'population object in; returns fresh module-owned bytes' },
@@ -966,6 +1001,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   'src/sim/population-evaluation.js': {
     deserializeEvaluationSpec: { intake: 'gated', invoke: (u) => deserializeEvaluationSpec(u) },
     deserializeFitnessVector: { intake: 'gated', invoke: (u) => deserializeFitnessVector(u) },
+    peekFitnessVectorVersions: { intake: 'gated', invoke: (u) => peekFitnessVectorVersions(u) },
     championFromEvaluation: { intake: 'no-byte-intake', why: 'evaluation rows in' },
     evaluatePopulation: { intake: 'no-byte-intake', why: 'population + spec objects in' },
     fitnessFromVehicleResult: { intake: 'no-byte-intake', why: 'vehicle result record in' },
@@ -1007,13 +1043,17 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
       invoke: (u) => captureExpectedIdentity({ expectedHistoryDigestBytes: u }, (b) => copyOrdinaryBytes(b)),
     },
     checkExpectedIdentity: { intake: 'no-byte-intake', why: 'consumes the module-owned capture captureExpectedIdentity produced' },
+    checkFitnessVectorCompatibility: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
+    verifyEvolutionArtifactSemantics: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
+    verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
   },
   'src/sim/evolution-history.js': {
     // Every one of these accepts caller bytes, and every one refuses fancy
     // storage SYNCHRONOUSLY — which is why `assembleHistory` is not an `async
     // function` (a rejected promise would make this battery untestable).
     deserializeEvaluationMetadata: { intake: 'gated', invoke: (u) => deserializeEvaluationMetadata(u) },
+    peekEvaluationMetadataVersion: { intake: 'gated', invoke: (u) => peekEvaluationMetadataVersion(u) },
     decodeEvolutionHeader: { intake: 'gated', invoke: (u) => decodeEvolutionHeader(u) },
     decodeGenerationPayload: { intake: 'gated', invoke: (u) => decodeGenerationPayload(u) },
     decodeHistoryFraming: { intake: 'gated', invoke: (u) => decodeHistoryFraming(u) },
@@ -1645,6 +1685,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   serializePopulationSnapshot: 'freshBytes',
   attestPopulation: 'ownedCopy',
   deserializePopulationSnapshot: 'ownedCopy',
+  peekPopulationSnapshotMemberCount: 'scalar',
   // population-initializer.js
   sampleInitialGenotype: 'ownedCopy',
   createInitialPopulation: 'ownedCopy',
@@ -1657,6 +1698,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   evaluatePopulation: 'notExercised',
   serializeFitnessVector: 'freshBytes',
   deserializeFitnessVector: 'ownedCopy',
+  peekFitnessVectorVersions: 'ownedCopy',
   championFromEvaluation: 'callerElements',
   selectableChampionFromEvaluation: 'callerElements',
   selectablePoolFromEvaluation: 'ownedCopy',
@@ -1685,6 +1727,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   // (serializeEvaluationMetadata reads only scalars — no callerCollections row,
   // so it declares no verdict, by the table's own rule.)
   deserializeEvaluationMetadata: 'ownedCopy',
+  peekEvaluationMetadataVersion: 'ownedCopy',
   encodeEvolutionHeader: 'freshBytes',
   decodeEvolutionHeader: 'ownedCopy',
   encodeGenerationPayload: 'freshBytes',
@@ -1800,6 +1843,7 @@ function ownedCopyCases() {
     { name: 'spawnPoseOnFlatStart', result: spawnPoseOnFlatStart(ir, spawn), roots: [ir, spawn] },
     { name: 'deserializeEvaluationSpec', result: deserializeEvaluationSpec(spBytes), roots: [spBytes] },
     { name: 'deserializeFitnessVector', result: deserializeFitnessVector(vBytes), roots: [vBytes] },
+    { name: 'peekFitnessVectorVersions', result: peekFitnessVectorVersions(vBytes), roots: [vBytes] },
     ...(() => {
       const evaluation = {
         fitnessPolicyVersion: 2,
@@ -1849,6 +1893,7 @@ function ownedCopyCases() {
       };
       return [
         { name: 'deserializeEvaluationMetadata', result: deserializeEvaluationMetadata(metadataBytes), roots: [metadataBytes] },
+        { name: 'peekEvaluationMetadataVersion', result: peekEvaluationMetadataVersion(metadataBytes), roots: [metadataBytes] },
         { name: 'decodeEvolutionHeader', result: decodeEvolutionHeader(headerBytes), roots: [headerBytes] },
         { name: 'decodeGenerationPayload', result: decodeGenerationPayload(payloadBytes), roots: [payloadBytes] },
         {

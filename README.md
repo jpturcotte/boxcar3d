@@ -6,7 +6,42 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
+**Status:** `main` is unchanged at GA Phase 1B PR 4. This branch carries
+**PR #29 (open, not yet merged)**, which adds **integrity-observation
+persistence to evolution history** — so the alert-band exposure PR 4 had to
+re-simulate becomes readable from a saved run with no physics at all. On this
+branch the fitness vector is v3
+(`FITNESS_VECTOR_VERSION = 3`): every member row canonically carries the five
+observations the online detector already computed (peak body speed, peak speed
+delta, peak step displacement, first alert step, first catastrophic step —
++34 B/member, +680 B/generation at population 20, with the capacity projection
+  re-pinned at v3). Three pre-physics resume gates land with it: a stale v2
+  artifact reports `unsupportedVersion` naming the exact field, generation, and
+  stored/current values — after its self-consistency legs pass, never as false
+  replay drift — and a current-format artifact whose steps contradict its own
+  metadata reports `malformedHistory`, also before any physics. A shared semantic
+  gate then validates the deterministic, executable evaluation spec,
+  initialization manifest and its generation-0 population binding — established
+  by recreating generation 0 from the manifest config and requiring exact byte
+  identity with the persisted population, not by any hash state — evaluation
+  budget, and each vector's population/spec bindings,
+  counts, ordered IDs, and `executedSteps`; the FNV states are non-cryptographic
+  coherence sentinels inside the SHA-256-attested artifact (the generation-0
+  bind keeps one only as a cheap prefilter), never artifact
+  identity. A verified
+  offline seam (`scripts/history-observations.js`) runs the production
+  verification and all three gates before returning decoded rows, and a structurally
+independent v3 oracle artifact
+(`tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64`) verifies,
+resumes and continues byte-identically while the v2 Kimi artifact becomes the
+early-refusal witness for stale formats. **PR #29 changes no behaviour:**
+policy stays integrity v1 / fitness v2, the mutation defaults stay
+(0.05, 0.05), and an alert-bearing `ok` vehicle is STILL selectable on main —
+v3 persists the evidence; it does not act on it. The solver defect itself
+remains: Option A (alert-band escalation) masks rather than fixes it, and the
+multibody root-cause track stays deferred. Next PR owns the breeding-pool and
+false-negative measurements the persisted observations now enable. Previously:
+GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
 screening on seeds 20260744–20260755 then held-out confirmation on the disjoint
@@ -308,14 +343,16 @@ private to an opaque run that decodes the population from bytes it owns and
 evaluates exactly those. Elites are copied with **fresh** ids, every child draws
 from its own `(seed, childId)` stream, terminal conditions are decided once
 before any digest exists, and a failed advance leaves the committed artifact
-byte-identical — a retry reproduces the same generation. Resume verifies in ten
-ordered stages (framing, header, every component digest, the chain, the whole
-artifact, external freshness, then the exact engine version — all *before* any
-physics runs) and replays deterministically, reporting the first divergence by
-generation, stage and byte offset rather than "the history digest is wrong".
+byte-identical — a retry reproduces the same generation. Resume verifies in
+thirteen ordered stages (framing, header, every component digest, the chain,
+the whole artifact, external freshness, nested format compatibility, metadata
+coherence, current-artifact semantics and bindings, then the exact engine
+version — all *before* any physics runs) and replays deterministically,
+reporting the first divergence by generation, stage and byte offset rather
+than "the history digest is wrong".
 The `evolution-a-small-flat` locks reproduce on Ubuntu, Windows, macOS and
 pinned Chromium, which agreed on the first run — including the new WebCrypto
-seam. Twelve deliberate sabotage mutations all redden a test; one of them was
+seam. Fifteen deliberate sabotage mutations all redden a test; one of them was
 *silent* on the first attempt and exposed a real gap in the ordering tests,
 which is exactly why the checklist is run rather than assumed. Every committed
 lock — terrain, noise, assembly, evaluation A–D, and all four population

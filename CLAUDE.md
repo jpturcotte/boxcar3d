@@ -2477,7 +2477,8 @@ single clean commit `9c5f24c`):**
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
   step) in the fitness vector so contamination is measurable from history rather
   than by re-evaluation (a versioned encoding change — the vector currently
-  stores status only, which is why §9's diagnosis needed a forensic re-run);
+  stores status only, which is why §9's diagnosis needed a forensic re-run)
+  — DISCHARGED by PR #29 (fitness-vector v3);
   (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
   (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
   Structural mutation, worker sharding and segmented history stay out of scope
@@ -2487,7 +2488,7 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**GA Phase 1B PR 29 (this branch — OPEN, not yet merged to `main`) —
+**GA Phase 1B PR 29 (MERGED to `main` as PR #29) —
 integrity observations persisted in evolution history (fitness-vector v3),
 three pre-physics format gates, and a verified offline extraction seam. NO
 policy, selection or mutation behaviour change:**

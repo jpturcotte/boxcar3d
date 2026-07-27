@@ -6,11 +6,10 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** `main` is unchanged at GA Phase 1B PR 4. This branch carries
-**PR #29 (open, not yet merged)**, which adds **integrity-observation
-persistence to evolution history** — so the alert-band exposure PR 4 had to
-re-simulate becomes readable from a saved run with no physics at all. On this
-branch the fitness vector is v3
+**Status:** `main` includes **PR #29** (merged) — **integrity-observation
+persistence in evolution history**, so the alert-band exposure PR 4 had to
+re-simulate becomes readable from a saved run with no physics at all. The
+fitness vector is now v3
 (`FITNESS_VECTOR_VERSION = 3`): every member row canonically carries the five
 observations the online detector already computed (peak body speed, peak speed
 delta, peak step displacement, first alert step, first catastrophic step —

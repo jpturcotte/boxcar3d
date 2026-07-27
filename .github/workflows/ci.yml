@@ -19,6 +19,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Audit the spike expected-red inventory against the REAL collected test
+      # titles (vitest list under both configs — collection needs no browser),
+      # so a test rename without a same-commit inventory update fails ordinary
+      # CI instead of a later heavy dispatch (the PR #29 post-merge defect).
+      - run: npm run check:spike-inventory
       - run: npm run lint
       - run: npm test
       - run: npm run build

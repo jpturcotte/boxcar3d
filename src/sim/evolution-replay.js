@@ -958,6 +958,8 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
         generationIndex: payload.generationIndex,
         terminalReason: payload.terminalReason,
         executedSteps: metadata.executedSteps,
+        effectiveDt: metadata.effectiveDt,
+        worldMode: metadata.worldMode,
         individuals: vector.individuals,
       }));
     }

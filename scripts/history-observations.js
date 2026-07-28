@@ -11,12 +11,14 @@
 // PRODUCTION verification internally — `verifyHistoryArtifact` (framing,
 // header digest, every component digest, the chain, the whole-history digest)
 // and all three pre-physics gates (fitness-vector compatibility, metadata
-// coherence, then shared artifact semantics/bindings) — before returning
-// anything, sharing the resume checks and error taxonomy rather than growing a
-// second, script-local interpretation. The third gate decodes the evaluation
-// spec and initialization manifest, checks the population/spec/vector/metadata
-// relationships, and returns the already-checked rows for reuse. An optional
-// externally held expected history digest binds freshness exactly like resume.
+// coherence, then shared artifact semantics/bindings, closing with exact
+// generation-zero provenance and the history-capacity policy gate) — before
+// returning anything, sharing the resume checks and error taxonomy rather
+// than growing a second, script-local interpretation. The third gate decodes
+// the evaluation spec and initialization manifest, checks the
+// population/spec/vector/metadata relationships, and returns the
+// already-checked rows for reuse. An optional externally held expected
+// history digest binds freshness exactly like resume.
 //
 // WHY IT LIVES HERE and not in src/sim: it is an offline, read-only consumer —
 // not a production module the byte-family lint scope and the ownership
@@ -30,9 +32,19 @@
 // SHA-256 is, and pure with respect to filesystem, clock, randomness and
 // physics: verification is byte work only, and decoding runs no evaluation.
 // It returns, per generation, the decoded row plus its observations and the
-// generation's `executedSteps` — NO aggregation, gates, sampling,
-// counterfactuals or policy analysis (those are the measurement layer's own
-// PR, not this seam's).
+// generation's persisted `executedSteps`, `effectiveDt` and `worldMode` — NO
+// aggregation, gates, sampling, counterfactuals or policy analysis (those are
+// the measurement layer's own PR, not this seam's).
+//
+// WHAT THIS SEAM ESTABLISHES — and what it does not. A returned artifact has
+// artifact identity (the digest ladder, plus the optional expected digest),
+// local coherence (the vector/metadata relationships), generation-zero
+// provenance (exact recreation) and capacity-policy compliance. `effectiveDt`
+// and `worldMode` are the PERSISTED SHA-attested metadata values; the
+// vector/metadata relationships are checked as local coherence only, so these
+// persisted values are not by themselves proof of equality with current
+// runtime readback. Runtime identity is never read here, and deterministic
+// resume replay remains necessary for physics authenticity.
 
 import { copyOrdinaryBytes, typedArrayByteLength } from '../src/sim/bytes.js';
 import { evolutionFail } from '../src/sim/evolution-contract.js';
@@ -56,8 +68,13 @@ function malformed(path, value) {
  *   reports `staleOrWrongArtifact`, never a format or corruption verdict.
  * @returns {Promise<{ historyDigestBytes: Uint8Array, generations: Array }>}
  *   frozen per-generation `{ generationIndex, terminalReason, executedSteps,
- *   individuals }`, where each individual is the decoded vector row
- *   `{ individualId, valid, integrityStatus, fitness, integrityObservations }`.
+ *   effectiveDt, worldMode, individuals }`, where each individual is the
+ *   decoded vector row `{ individualId, valid, integrityStatus, fitness,
+ *   integrityObservations }`. `effectiveDt` and `worldMode` are the persisted
+ *   SHA-attested metadata values (their vector relationship checked as local
+ *   coherence); they are not by themselves proof of equality with current
+ *   runtime readback — runtime identity is never read here, and resume replay
+ *   remains necessary for physics authenticity.
  */
 export async function extractHistoryObservations(historyBytes, options = undefined) {
   // The intake seam mirrors resume's: ceiling on the INTRINSIC length before

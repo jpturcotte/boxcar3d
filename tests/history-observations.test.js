@@ -896,3 +896,82 @@ describe('extractHistoryObservations', () => {
     expect(copyOrdinaryBytes).not.toHaveBeenCalled();
   });
 });
+
+// ============================================================================
+// PERSISTED PER-GENERATION METADATA (PR 2): the verified seam exposes each
+// generation's persisted effectiveDt and worldMode. These are the persisted
+// SHA-attested metadata values, checked for local coherence only — PR 2 does
+// NOT consume them in any transition derivation, and they are not by
+// themselves proof of equality with current runtime readback.
+// ============================================================================
+
+describe('persisted per-generation metadata exposure', () => {
+  test('each extracted generation exposes its own persisted effectiveDt and worldMode', async () => {
+    const artifact = await fixtureArtifact();
+    globalThis.__observationsProbe.evaluations = 0;
+    globalThis.__observationsProbe.worlds = 0;
+    const framing = decodeHistoryFraming(artifact);
+    const extracted = await extractHistoryObservations(artifact);
+    expect(extracted.generations).toHaveLength(framing.generations.length);
+    for (let i = 0; i < framing.generations.length; i += 1) {
+      // The oracle is DIRECT decoding of the persisted record — never a
+      // second implementation of the extraction logic.
+      const metadata = deserializeEvaluationMetadata(
+        decodeGenerationPayload(framing.generations[i].payloadBytes).components.evaluationMetadata,
+      );
+      const row = extracted.generations[i];
+      expect(row.effectiveDt).toBe(metadata.effectiveDt);
+      expect(row.worldMode).toBe(metadata.worldMode);
+      expect(row.executedSteps).toBe(metadata.executedSteps);
+    }
+    expect(globalThis.__observationsProbe).toEqual({ evaluations: 0, worlds: 0 });
+  });
+
+  test('extracted generations and their rows stay frozen', async () => {
+    const extracted = await extractHistoryObservations(await fixtureArtifact());
+    expect(Object.isFrozen(extracted)).toBe(true);
+    expect(Object.isFrozen(extracted.generations)).toBe(true);
+    for (const row of extracted.generations) {
+      expect(Object.isFrozen(row)).toBe(true);
+      expect(Object.isFrozen(row.individuals)).toBe(true);
+      for (const individual of row.individuals) {
+        expect(Object.isFrozen(individual.integrityObservations)).toBe(true);
+      }
+    }
+  });
+
+  test('a reforged per-generation effectiveDt is reported per generation, never leaked across records', async () => {
+    const artifact = await fixtureArtifact();
+    globalThis.__observationsProbe.evaluations = 0;
+    globalThis.__observationsProbe.worlds = 0;
+    // Two DISTINCT legal values, larger than the persisted Math.fround(1/60):
+    // a larger dt scales the displacement thresholds UP, so the fixture's
+    // clean rows stay vector/metadata coherent (the withForeignDt mechanism);
+    // executedSteps and worldMode are left unchanged.
+    const foreignDts = new Map([[1, Math.fround(1 / 30)], [2, Math.fround(1 / 15)]]);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, generationIndex) => {
+        if (!foreignDts.has(generationIndex)) return;
+        const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+        record.components.evaluationMetadata = serializeEvaluationMetadata({
+          ...metadata, effectiveDt: foreignDts.get(generationIndex),
+        });
+      },
+    });
+    const framing = decodeHistoryFraming(broken);
+    const extracted = await extractHistoryObservations(broken);
+    expect(extracted.generations).toHaveLength(3);
+    for (let i = 0; i < 3; i += 1) {
+      // Oracle: direct decode of THIS record's persisted metadata — each
+      // generation must report its own stored value.
+      const metadata = deserializeEvaluationMetadata(
+        decodeGenerationPayload(framing.generations[i].payloadBytes).components.evaluationMetadata,
+      );
+      expect(extracted.generations[i].effectiveDt).toBe(metadata.effectiveDt);
+      expect(extracted.generations[i].effectiveDt).toBe(foreignDts.get(i) ?? Math.fround(1 / 60));
+      expect(extracted.generations[i].worldMode).toBe(metadata.worldMode);
+      expect(extracted.generations[i].executedSteps).toBe(metadata.executedSteps);
+    }
+    expect(globalThis.__observationsProbe).toEqual({ evaluations: 0, worlds: 0 });
+  });
+});

@@ -46,7 +46,6 @@
 // accounting, and nothing else.
 
 import { Rng } from './prng.js';
-import { serializeGenotype } from './assembly.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_DEFAULTS, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE, mutateContinuousGenotype, selectElites,
@@ -56,8 +55,7 @@ import { copyOrdinaryBytes, typedArrayByteLength } from './bytes.js';
 import {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION,
   assembleHistory, digestComponent, digestGeneration, digestHeader,
-  encodeEvolutionHeader, encodeGenerationPayload, projectEvolutionHistoryCapacity,
-  serializeEvaluationMetadata,
+  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } from './evolution-history.js';
 import {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, serializePopulationSnapshot,
@@ -68,18 +66,18 @@ import {
 } from './population-initializer.js';
 import {
   POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, deserializeFitnessVector,
-  evaluatePopulation, fitnessVectorByteLength,
-  selectablePoolFromEvaluation,
+  evaluatePopulation, selectablePoolFromEvaluation,
 } from './population-evaluation.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
 import { readDeterministicRuntimeIdentity } from './physics/adapter.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
   MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork,
-  checkedAdd, checkedMultiply, evolutionFail, isEvolutionUint32,
+  checkedAdd, evolutionFail, isEvolutionUint32,
 } from './evolution-contract.js';
+import { assertHistoryCapacity } from './evolution-capacity.js';
 import {
-  EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage, lineageByteLength,
+  EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage,
   serializeLineage, zeroLineageAccounting,
 } from './evolution-lineage.js';
 import {
@@ -774,61 +772,6 @@ class EvolutionRun {
     return this.#terminalResult();
   }
 
-}
-
-/**
- * Refuse a run whose legal generation count cannot fit its retained v1
- * history. Continuous mutation cannot change genotype geometry, but selection
- * can concentrate the largest starting genotype into every row, so the
- * projection uses that worst-case population rather than generation 0's sum.
- */
-function assertHistoryCapacity({
-  population,
-  populationSize,
-  maxGenerations,
-  initializationBytes,
-  specBytes,
-  spec,
-}) {
-  let maximumGenotypeBytes = 0;
-  for (let i = 0; i < population.individuals.length; i += 1) {
-    maximumGenotypeBytes = Math.max(
-      maximumGenotypeBytes,
-      serializeGenotype(population.individuals[i].genotype).length,
-    );
-  }
-  const maximumPopulationBytes = checkedAdd(
-    2 + 2 + 4,
-    checkedMultiply(populationSize, 4 + 4 + maximumGenotypeBytes, 'projected population snapshot'),
-    'projected population snapshot',
-  );
-  const metadataBytes = serializeEvaluationMetadata({
-    worldMode: POPULATION_WORLD_MODE,
-    effectiveDt: 1,
-    executedSteps: spec.maxSteps,
-  }).length;
-  const projection = projectEvolutionHistoryCapacity({
-    initializationManifestByteLength: initializationBytes.length,
-    evaluationSpecByteLength: specBytes.length,
-    generationCount: maxGenerations,
-    componentByteLengths: {
-      population: maximumPopulationBytes,
-      evaluationMetadata: metadataBytes,
-      fitnessVector: fitnessVectorByteLength(populationSize),
-      lineage: lineageByteLength(populationSize),
-    },
-  });
-  if (projection.projectedBytes > MAX_EVOLUTION_HISTORY_BYTES) {
-    evolutionFail('resourceLimitExceeded',
-      `projected evolution history ${projection.projectedBytes} exceeds MAX_EVOLUTION_HISTORY_BYTES (${MAX_EVOLUTION_HISTORY_BYTES})`,
-      {
-        projectedBytes: projection.projectedBytes,
-        limit: MAX_EVOLUTION_HISTORY_BYTES,
-        maximumFeasibleGenerations: projection.maximumFeasibleGenerations,
-        requestedGenerations: maxGenerations,
-        generationFrameBytes: projection.generationFrameBytes,
-      });
-  }
 }
 
 /**

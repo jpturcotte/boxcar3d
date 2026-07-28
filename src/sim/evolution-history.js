@@ -155,7 +155,7 @@ function limitFail(path, value, limit) {
 }
 
 /**
- * Project the largest v1 artifact a run configuration can produce without
+ * Project the largest v3 artifact a run configuration can produce without
  * allocating it. Runtime identity strings use their full legal u8 lengths;
  * callers provide conservative component lengths for any generation.
  */

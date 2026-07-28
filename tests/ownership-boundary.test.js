@@ -1061,7 +1061,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   'src/sim/evolution-capacity.js': {
     assertHistoryCapacity: {
       intake: 'no-byte-intake',
-      why: 'reads only the intrinsic .length of module-owned byte arrays as projection inputs; copies nothing, retains nothing, never awaits — there is no caller-byte storage to gate',
+      why: 'reads the caller-supplied byte-array lengths through the sanctioned typedArrayByteLength intrinsic (fresh codec encodings have their lengths read at birth); copies nothing, retains nothing, never awaits — there is no caller-byte storage to gate',
     },
   },
   'src/sim/evolution-history.js': {

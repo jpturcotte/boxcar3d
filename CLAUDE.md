@@ -2671,10 +2671,11 @@ ONE shared history-capacity gate for every reader, and the persisted
 layout, version or behaviour change:**
 - **One gate, one home.** `src/sim/evolution-capacity.js` holds the single
   `assertHistoryCapacity` implementation (moved out of `evolution-run.js`;
-  the worst-case selection-concentration projection, the v3 byte geometry,
-  the checked arithmetic, the `resourceLimitExceeded` code and the five
-  diagnostic fields are exactly preserved; the stale "v1 history" comments
-  were corrected to v3). Fresh creation applies it after generation-zero
+  the worst-case selection-concentration projection, the byte geometry, the
+  checked arithmetic, the `resourceLimitExceeded` code and the five
+  diagnostic fields are exactly preserved; the stale version wording now
+  names both versions precisely — history-format v1 carrying the
+  fitness-vector v3 component). Fresh creation applies it after generation-zero
   normalization and before any runtime initialization, as before. Persisted
   verification now applies it inside Gate C
   (`verifyEvolutionArtifactSemantics`), AFTER the exact generation-zero
@@ -2706,6 +2707,10 @@ layout, version or behaviour change:**
   equality with current runtime readback; runtime identity is never read by
   the seam, and deterministic resume replay remains necessary for physics
   authenticity. PR 2 does not consume them in any transition derivation.
+  Cross-generation CONSTANCY of the persisted metadata is NOT a PR-2 gate —
+  each record's coherence is validated independently, so per-generation
+  `effectiveDt` drift still verifies; flagged as a PR 3
+  local-record-semantics candidate (external review, PR #32).
 - **The trusted summarizer boundary, documented.** `summarizeEvolutionHistory`
   keeps its name; its docblock now carries the explicit trust boundary
   (in-process `run.historyBytes()` only — never files, restored workspaces,

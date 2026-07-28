@@ -39,7 +39,9 @@
 // WHAT THIS SEAM ESTABLISHES — and what it does not. A returned artifact has
 // self-consistency (the full digest ladder), local coherence (the
 // vector/metadata relationships), generation-zero provenance (exact
-// recreation) and capacity-policy compliance. External expected artifact
+// recreation) and capacity-policy compliance for the declared generation
+// count (the actual record count is bound only at replay — a later ladder
+// rung). External expected artifact
 // identity — freshness — holds only when the caller supplies the optional
 // expected digest; without it the ladder proves the artifact attests itself,
 // not that it is the expected one. `effectiveDt`
@@ -47,7 +49,12 @@
 // vector/metadata relationships are checked as local coherence only, so these
 // persisted values are not by themselves proof of equality with current
 // runtime readback. Runtime identity is never read here, and deterministic
-// resume replay remains necessary for physics authenticity.
+// resume replay remains necessary for physics authenticity. Nor is
+// cross-generation CONSTANCY of the persisted metadata checked: each
+// record's vector/metadata relationship is validated independently, so
+// per-generation `effectiveDt` drift still verifies — consumers must not
+// assume one value across generations (a PR 3 local-record-semantics
+// candidate).
 
 import { copyOrdinaryBytes, typedArrayByteLength } from '../src/sim/bytes.js';
 import { evolutionFail } from '../src/sim/evolution-contract.js';

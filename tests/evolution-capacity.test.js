@@ -76,13 +76,14 @@ const {
 const { serializePopulationSnapshot } = await import('../src/sim/population.js');
 const { serializeGenotype } = await import('../src/sim/assembly.js');
 const {
-  FITNESS_VECTOR_VERSION, POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, serializeFitnessVector,
+  FITNESS_VECTOR_VERSION, POPULATION_WORLD_MODE, canonicalizeEvaluationSpec,
+  deserializeFitnessVector, serializeFitnessVector,
 } = await import('../src/sim/population-evaluation.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { readDeterministicRuntimeIdentity } = await import('../src/sim/physics/adapter.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
-const { reforge } = await import('./helpers/evolution-artifacts.js');
+const { reforge, withLeadingU16 } = await import('./helpers/evolution-artifacts.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
 } = await import('./helpers/evolution-capacity-config.js');
@@ -92,6 +93,19 @@ const POPULATION_SIZE = 256;
 
 const expectNoProbes = () => expect(globalThis.__capacityProbe)
   .toEqual({ identityReads: 0, worlds: 0, evaluations: 0 });
+
+// The full refusal-context shape every capacity rejection must carry — one
+// assertion site so all readers' contexts stay comparable field by field.
+// `mfg` is assigned in beforeAll.
+const expectCapacityContext = (err) => {
+  expect(err.context).toMatchObject({
+    maximumFeasibleGenerations: mfg,
+    requestedGenerations: mfg + 1,
+    limit: MAX_EVOLUTION_HISTORY_BYTES,
+  });
+  expect(err.context.projectedBytes).toBeGreaterThan(err.context.limit);
+  expect(typeof err.context.generationFrameBytes).toBe('number');
+};
 
 const configAt = (populationSize, maxGenerations) => ({
   initialization: { seed: CAPACITY_POPULATION_SEED, populationSize },
@@ -115,12 +129,6 @@ const cleanRow = (individualId) => ({
     firstCatastrophicStep: null,
   },
 });
-
-const withLeadingU16 = (bytes, value) => {
-  const copy = new Uint8Array(bytes);
-  new DataView(copy.buffer).setUint16(0, value, true);
-  return copy;
-};
 
 /**
  * A one-generation current-format artifact on the exact shared configuration,
@@ -212,6 +220,7 @@ let forgedArtifact; // declares mfg + 1 — over the ceiling, digests re-atteste
 let staleVectorArtifact; // forged + readable stale fitness-vector version
 let staleMetadataArtifact; // forged + readable stale evaluation-metadata version
 let runtimeMismatchArtifact; // forged + a rapierVersion this environment is not
+let provenanceBrokenArtifact; // forged + a generation-0 population the manifest cannot recreate
 
 beforeAll(async () => {
   globalThis.__capacityProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
@@ -246,6 +255,20 @@ beforeAll(async () => {
   runtimeMismatchArtifact = await reforge(forgedArtifact, {
     mutateHeader: (header) => ({ ...header, rapierVersion: '99.99.99' }),
   });
+  provenanceBrokenArtifact = await reforge(forgedArtifact, {
+    mutateRecord: (record) => {
+      const population = new Uint8Array(record.components.population);
+      population[26] ^= 0xff; // inside the first genotype row's bytes
+      record.components.population = population;
+      // Re-align the vector's population binding so the artifact survives
+      // coherence and fails at the RECREATION bind, not an earlier gate.
+      const vector = deserializeFitnessVector(record.components.fitnessVector);
+      record.components.fitnessVector = serializeFitnessVector({
+        ...vector,
+        populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, population),
+      });
+    },
+  });
 
   // Probe discipline: construction must have read the runtime identity (the
   // header binds it), and every probe is then zeroed BEFORE any reader runs.
@@ -268,13 +291,7 @@ describe('the authoritative capacity configuration', () => {
       () => createEvolutionRun(configAt(POPULATION_SIZE, mfg + 1)),
       'resourceLimitExceeded', /history.*MAX_EVOLUTION_HISTORY_BYTES/i,
     );
-    expect(above.context).toMatchObject({
-      maximumFeasibleGenerations: mfg,
-      requestedGenerations: mfg + 1,
-      limit: MAX_EVOLUTION_HISTORY_BYTES,
-    });
-    expect(above.context.projectedBytes).toBeGreaterThan(above.context.limit);
-    expect(typeof above.context.generationFrameBytes).toBe('number');
+    expectCapacityContext(above);
     // Creation is physics-free by construction.
     expectNoProbes();
   });
@@ -290,14 +307,18 @@ describe('the projected population-snapshot geometry', () => {
   // offsets and exports no framing constants. This pin makes a codec framing
   // change go RED here instead of silently under-projecting the history.
   test('matches the population codec byte for byte', () => {
-    const { population } = createInitialPopulation({
-      seed: CAPACITY_POPULATION_SEED, populationSize: 8,
-    });
-    let codecFramedLength = 2 + 2 + 4;
-    for (const individual of population.individuals) {
-      codecFramedLength += 4 + 4 + serializeGenotype(individual.genotype).length;
+    // Two sizes, so the header and the per-row framing are OVERdetermined —
+    // one size would constrain only their sum.
+    for (const populationSize of [8, 24]) {
+      const { population } = createInitialPopulation({
+        seed: CAPACITY_POPULATION_SEED, populationSize,
+      });
+      let codecFramedLength = 2 + 2 + 4;
+      for (const individual of population.individuals) {
+        codecFramedLength += 4 + 4 + serializeGenotype(individual.genotype).length;
+      }
+      expect(serializePopulationSnapshot(population).length).toBe(codecFramedLength);
     }
-    expect(serializePopulationSnapshot(population).length).toBe(codecFramedLength);
   });
 });
 
@@ -311,13 +332,7 @@ describe('capacity parity across both persisted readers', () => {
       () => extractHistoryObservations(forgedArtifact),
       'resourceLimitExceeded', /history.*MAX_EVOLUTION_HISTORY_BYTES/i,
     );
-    expect(err.context).toMatchObject({
-      maximumFeasibleGenerations: mfg,
-      requestedGenerations: mfg + 1,
-      limit: MAX_EVOLUTION_HISTORY_BYTES,
-    });
-    expect(err.context.projectedBytes).toBeGreaterThan(err.context.limit);
-    expect(typeof err.context.generationFrameBytes).toBe('number');
+    expectCapacityContext(err);
     expectNoProbes();
   });
 
@@ -326,13 +341,7 @@ describe('capacity parity across both persisted readers', () => {
       () => resumeEvolutionRun(forgedArtifact),
       'resourceLimitExceeded', /history.*MAX_EVOLUTION_HISTORY_BYTES/i,
     );
-    expect(err.context).toMatchObject({
-      maximumFeasibleGenerations: mfg,
-      requestedGenerations: mfg + 1,
-      limit: MAX_EVOLUTION_HISTORY_BYTES,
-    });
-    expect(err.context.projectedBytes).toBeGreaterThan(err.context.limit);
-    expect(typeof err.context.generationFrameBytes).toBe('number');
+    expectCapacityContext(err);
     expectNoProbes();
   });
 
@@ -413,6 +422,22 @@ describe('capacity precedence in the verification ladder', () => {
     expectNoProbes();
   });
 
+  // The other half of the placement contract: capacity closes stage 11 AFTER
+  // the generation-zero recreation bind, so a provenance break must surface
+  // even when the declared generation count is impossible too. A reorder that
+  // ran capacity on the PERSISTED population would misreport this as
+  // resourceLimitExceeded. (The bind's FNV prefilter is what fires — the
+  // byte-compare behind it never gets to run.)
+  test('a generation-zero provenance break is reported before capacity by both readers', async () => {
+    for (const reader of [extractHistoryObservations, resumeEvolutionRun]) {
+      const err = await expectCodeAsync(
+        () => reader(provenanceBrokenArtifact), 'malformedHistory',
+      );
+      expect(err.context.rule).toBe('initializationPopulationDigestStateMismatch');
+    }
+    expectNoProbes();
+  });
+
   // The PR-2 placement verdict: an impossible-capacity artifact that ALSO
   // names a runtime this environment is not must report capacity — the
   // earlier gate — and must never reach the runtime-identity read.
@@ -480,6 +505,12 @@ describe('feasible artifacts through the capacity-complete gate', () => {
     const resumedB = await resumeEvolutionRun(artifact);
     await resumedB.advance();
     expect(bytesToHex(resumedA.historyBytes())).toBe(bytesToHex(resumedB.historyBytes()));
+    // Probe LIVENESS: this is the one test that must trip all three counters,
+    // so the zero-assertions everywhere else can never pass vacuously — a
+    // stale mock wiring fails HERE first.
+    expect(globalThis.__capacityProbe.identityReads).toBeGreaterThan(0);
+    expect(globalThis.__capacityProbe.worlds).toBeGreaterThan(0);
+    expect(globalThis.__capacityProbe.evaluations).toBeGreaterThan(0);
     // Feasible artifacts DO exercise physics on resume — reset so no later
     // assertion can confuse construction/reader probes with these.
     globalThis.__capacityProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
@@ -534,5 +565,14 @@ describe('the capacity policy gate has exactly one internal home', () => {
       expect(fromReExport.test(source), `${file} must not re-export evolution-capacity.js`).toBe(false);
       expect(namedReExport.test(source), `${file} must not re-export assertHistoryCapacity`).toBe(false);
     }
+  });
+
+  test('the gate module never imports its readers', () => {
+    // The module docblock states the no-cycle rule; this is its enforcement.
+    // Target-anchored, so EVERY edge shape is caught: named/default/namespace
+    // import-from, re-export-from, side-effect import and dynamic import().
+    const source = readFileSync(GATE_MODULE, 'utf8');
+    const readerEdge = /(?:from\s*|import\s*\(\s*|import\s*)['"]\.\/evolution-(?:run|replay)\.js['"]/;
+    expect(readerEdge.test(source), 'evolution-capacity.js must stay reader-free').toBe(false);
   });
 });

@@ -13,7 +13,7 @@ const {
   deserializeEvaluationMetadata, serializeEvaluationMetadata,
 } = await import('../../src/sim/evolution-history.js');
 const { extractHistoryObservations } = await import('../../scripts/history-observations.js');
-const { reforge } = await import('./evolution-artifacts.js');
+const { reforge, withLeadingU16 } = await import('./evolution-artifacts.js');
 const { expectCodeAsync } = await import('./expect-code.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
@@ -28,12 +28,6 @@ async function smallRunArtifact() {
   await run.advance();
   return run.historyBytes();
 }
-
-const withLeadingU16 = (bytes, value) => {
-  const copy = new Uint8Array(bytes);
-  new DataView(copy.buffer).setUint16(0, value, true);
-  return copy;
-};
 
 describe('the shared reforge helper', () => {
   test('a coherence-legal mutation passes every gate and extracts', async () => {

@@ -50,6 +50,9 @@ const {
 } = await import('../src/sim/evolution-history.js');
 const { reforge } = await import('./helpers/evolution-artifacts.js');
 const {
+  CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
+} = await import('./helpers/evolution-capacity-config.js');
+const {
   REPLAY_STAGES, captureExpectedIdentity, firstByteDifference, verifyHistoryArtifact,
 } = await import('../src/sim/evolution-replay.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
@@ -57,9 +60,6 @@ const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js')
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
-
-const POPULATION_SEED = 20260740;
-const TERRAIN_SEED = 20260741;
 
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
@@ -76,15 +76,8 @@ const v3FixtureBytes = () => new Uint8Array(Buffer.from(
 ));
 
 const config = (overrides = {}) => ({
-  initialization: { seed: POPULATION_SEED, populationSize: 6 },
-  evaluationSpec: {
-    terrain: {
-      seed: TERRAIN_SEED, startFlatLength: 30, startBlendLength: 6, craterDensity: 0, featureDensity: 0,
-    },
-    maxSteps: 45,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
+  initialization: { seed: CAPACITY_POPULATION_SEED, populationSize: 6 },
+  evaluationSpec: createCapacityEvaluationSpec(),
   evolution: { maxGenerations: 3, ...(overrides.evolution ?? {}) },
 });
 

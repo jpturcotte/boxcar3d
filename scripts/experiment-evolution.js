@@ -671,8 +671,9 @@ export function summarizeFitnessRows(rows) {
 }
 
 /**
- * Normalize ONE persisted evolution history into the summary the experiment
- * reasons over. Pure: it decodes bytes through the public codecs and runs no
+ * Normalize ONE persisted-format evolution history — the current in-process
+ * run's own bytes, per the trust boundary below — into the summary the
+ * experiment reasons over. Pure: it decodes bytes through the public codecs and runs no
  * physics, so every committed metric test is fast and engine-free.
  *
  * TRUST BOUNDARY — in-process bytes ONLY. This function accepts only history

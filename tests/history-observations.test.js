@@ -55,7 +55,6 @@ vi.mock('../src/sim/bytes.js', async (importOriginal) => {
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
-const { EvolutionError } = await import('../src/sim/evolution-contract.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
 const {
   SHA256_DIGEST_BYTES, decodeEvolutionHeader, decodeGenerationPayload,
@@ -110,7 +109,7 @@ async function oneGenerationArtifact() {
 const reforgeGenerationZero = (bytes, mutateRecord, mutateHeader = null) =>
   reforge(bytes, {
     mutateHeader: mutateHeader ?? undefined,
-    mutateRecord: (record, i) => { if (i === 0) mutateRecord(record); },
+    mutateRecord: (record, recordIndex) => { if (recordIndex === 0) mutateRecord(record); },
   });
 
 describe('extractHistoryObservations', () => {
@@ -879,12 +878,7 @@ describe('extractHistoryObservations', () => {
   test('an over-ceiling artifact is refused BEFORE the copy', async () => {
     const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
     copyOrdinaryBytes.mockClear();
-    let threw = null;
-    try {
-      await extractHistoryObservations(oversized);
-    } catch (e) { threw = e; }
-    expect(threw).toBeInstanceOf(EvolutionError);
-    expect(threw.code).toBe('resourceLimitExceeded');
+    await expectCodeAsync(() => extractHistoryObservations(oversized), 'resourceLimitExceeded');
     expect(copyOrdinaryBytes).not.toHaveBeenCalled();
   });
 });
@@ -943,11 +937,11 @@ describe('persisted per-generation metadata exposure', () => {
     // executedSteps and worldMode are left unchanged.
     const foreignDts = new Map([[1, Math.fround(1 / 30)], [2, Math.fround(1 / 15)]]);
     const broken = await reforge(artifact, {
-      mutateRecord: (record, generationIndex) => {
-        if (!foreignDts.has(generationIndex)) return;
+      mutateRecord: (record, recordIndex) => {
+        if (!foreignDts.has(recordIndex)) return;
         const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
         record.components.evaluationMetadata = serializeEvaluationMetadata({
-          ...metadata, effectiveDt: foreignDts.get(generationIndex),
+          ...metadata, effectiveDt: foreignDts.get(recordIndex),
         });
       },
     });

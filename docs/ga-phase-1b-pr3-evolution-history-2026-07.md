@@ -44,6 +44,7 @@ owned transition. The FNV state is still checked — as the sentinel it is.
 | `src/sim/evolution-lineage.js` | Canonical lineage v1 codec + cross-generation agreement. |
 | `src/sim/evolution-history.js` | The fixed history codec, the domain-separated digests, the evaluation-metadata component, and the byte ceilings. |
 | `src/sim/evolution-replay.js` | Ordered verification (stages 3–7), the runtime and freshness gates, and first-divergence reporting. Private implementation, not a public seam. |
+| `src/sim/evolution-capacity.js` | The internal history-capacity policy gate — one home, imported by `evolution-run.js` and `evolution-replay.js` only (post-merge hardening PR 2). |
 | `src/sim/evolution-run.js` | The opaque run: config capture, generation 0, the private transition, draft/commit atomicity, resume orchestration. |
 | `src/platform/sha256.js` | The WebCrypto adapter — the one collision-resistant digest seam. |
 | `src/sim/evolution-fixtures.js` / `evolution-locks.js` | The committed fixture and its measured literals. |

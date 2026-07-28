@@ -36,8 +36,11 @@ import {
  *   re-encoded before anything downstream is computed.
  * - `mutateHeaderBytes(headerBytes)` rewrites the raw (copied) header byte
  *   buffer in place — applied after any decoded-header mutation.
- * - `mutateRecord(record, generationIndex)` rewrites a decoded record in
- *   place (`record.components[kind]` per component kind).
+ * - `mutateRecord(record, recordIndex)` rewrites a decoded record in place
+ *   (`record.components[kind]` per component kind). `recordIndex` is the
+ *   ordinal position in the record sequence — deliberately NOT asserted to
+ *   equal `record.generationIndex`, so tests forging generation numbering
+ *   can target by either.
  */
 export async function reforge(bytes, { mutateHeader, mutateHeaderBytes, mutateRecord } = {}) {
   const framing = decodeHistoryFraming(bytes);
@@ -69,4 +72,15 @@ export async function reforge(bytes, { mutateHeader, mutateHeaderBytes, mutateRe
     generations.push({ payloadBytes, generationDigestBytes });
   }
   return (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
+}
+
+/**
+ * Copy `bytes` with its leading u16 replaced — the nested-version tweaker the
+ * adversarial suites share. A stale component version must stay READABLE so
+ * the artifact reaches the compatibility gate rather than the decoder.
+ */
+export function withLeadingU16(bytes, value) {
+  const copy = new Uint8Array(bytes);
+  new DataView(copy.buffer).setUint16(0, value, true);
+  return copy;
 }

@@ -585,7 +585,10 @@ RAISE after stage 8.
   re-derived only by resume's deterministic replay. A
   self-consistent but malformed spec or manifest, or a vector rebound to
   different current-format bytes, now has the same pre-physics taxonomy in
-  both consumers.
+  both consumers. (PR 2: the gate now closes with the history-capacity policy
+  gate — the same worst-case projection fresh creation applies — so an
+  over-declared history is refused `resourceLimitExceeded` after
+  generation-zero provenance and before runtime identity, by every reader.)
 
 ### Locks, capacity, and the fixture role split
 
@@ -632,16 +635,19 @@ RAISE after stage 8.
 it runs `verifyHistoryArtifact` AND all three gates internally before returning
 anything — sharing the production checks and error taxonomy, never a
 script-local second interpretation — then reuses Gate C's validated rows and
-returns, per generation, their observations and the generation's
-`executedSteps`.
+returns, per generation, their observations and the generation's persisted
+`executedSteps`, `effectiveDt` and `worldMode` (PR 2 — the persisted
+SHA-attested metadata values, checked as local coherence; not by themselves
+proof of equality with current runtime readback).
 Async because SHA-256 is; pure with respect to filesystem, clock, randomness
 and physics; no aggregation, gates, sampling, counterfactuals or policy
 analysis (those are Next PR's). Placed outside `src/sim`: an offline
 read-only consumer, and a new `src/sim` module would expand the derived
 byte-family lint scope and ownership classification for no correctness gain.
-(`summarizeEvolutionHistory` decodes without verifying — sound for the
-in-process bytes it is handed from `run.historyBytes()`, and unsound for a
-persisted artifact, which is what this seam reads.) Next PR's measurement
+(`summarizeEvolutionHistory` decodes without verifying — its own docblock
+carries that trust boundary (PR 2): sound for the in-process bytes it is
+handed from `run.historyBytes()`, and unsound for a persisted artifact, which
+is what this seam reads.) Next PR's measurement
 layer (breeding-pool exposure, false negatives, counterfactuals) consumes
 this seam; the experiment schema, campaign, retained workspace histories,
 forensic adjudicator, empirical gates and escalation verdict all live there,

@@ -675,6 +675,19 @@ export function summarizeFitnessRows(rows) {
  * reasons over. Pure: it decodes bytes through the public codecs and runs no
  * physics, so every committed metric test is fast and engine-free.
  *
+ * TRUST BOUNDARY — in-process bytes ONLY. This function accepts only history
+ * bytes returned immediately by the current in-process `EvolutionRun`
+ * (`run.historyBytes()`). It DECODES and summarizes; it does not verify
+ * externally retained bytes, and therefore establishes none of: expected
+ * artifact identity, generation-zero provenance, capacity-policy compliance
+ * for arbitrary persisted input, runtime identity, or physics authenticity.
+ * It must not be used for files, restored workspaces, downloaded artifacts,
+ * database values, retained history blobs, or any caller-supplied persisted
+ * bytes from another process — externally retained histories go through the
+ * verified extraction seam (`scripts/history-observations.js`) or
+ * `resumeEvolutionRun`. There is deliberately no second, verified-summary
+ * API.
+ *
  * The artifact itself is NOT retained by the caller — this summary is. That is
  * what keeps a 200-run experiment's evidence a few hundred kilobytes of JSON
  * instead of hundreds of megabytes of history.

@@ -24,9 +24,9 @@
 // not a production module the byte-family lint scope and the ownership
 // classification would have to grow to cover for no correctness gain.
 // (`scripts/experiment-evolution.js`'s `summarizeEvolutionHistory` decodes
-// without verifying; that is sound for the in-process bytes it is handed from
-// `run.historyBytes()`, and unsound for a persisted artifact — which is what
-// this seam reads.)
+// without verifying; its own docblock carries that trust boundary — sound for
+// the in-process bytes it is handed from `run.historyBytes()`, unsound for a
+// persisted artifact, which is what this seam reads.)
 //
 // `extractHistoryObservations(historyBytes, options?)` is ASYNC because
 // SHA-256 is, and pure with respect to filesystem, clock, randomness and

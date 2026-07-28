@@ -29,7 +29,8 @@ delta, peak step displacement, first alert step, first catastrophic step —
   bind keeps one only as a cheap prefilter), never artifact
   identity. A verified
   offline seam (`scripts/history-observations.js`) runs the production
-  verification and all three gates before returning decoded rows, and a structurally
+  verification and all three gates before returning decoded rows — including
+  each generation's persisted `effectiveDt`/`worldMode` — and a structurally
 independent v3 oracle artifact
 (`tests/fixtures/evolution-v1-fitness-vector-v3-kimi.base64`) verifies,
 resumes and continues byte-identically while the v2 Kimi artifact becomes the
@@ -38,13 +39,18 @@ policy stays integrity v1 / fitness v2, the mutation defaults stay
 (0.05, 0.05), and an alert-bearing `ok` vehicle is STILL selectable on main —
 v3 persists the evidence; it does not act on it. The solver defect itself
 remains: Option A (alert-band escalation) masks rather than fixes it, and the
-multibody root-cause track stays deferred. The next PRs are the
-integration-hardening sequence — PR 2 (the shared adversarial reforge helper,
-reader capacity parity, persisted `effectiveDt`/`worldMode` in the verified
-extraction, the trusted in-process summarizer boundary), PR 3 (local lineage
-validation, terminal-reason validation, record-count semantics and their
-precedence tests), PR 4 (exact deterministic transition provenance and
-opaque-boundary enforcement) — and the breeding-pool and false-negative
+multibody root-cause track stays deferred. The integration-hardening sequence
+is underway: **PR 2 has landed** — one shared history-capacity gate
+(`src/sim/evolution-capacity.js`) now refuses an over-declared artifact after
+generation-zero provenance and before runtime identity for fresh creation,
+verified extraction and resume alike; the verified extraction also returns
+each generation's persisted `effectiveDt`/`worldMode` (persisted SHA-attested
+values, not runtime proof); the shared adversarial reforge helper lives in
+`tests/helpers/`; and the trusted in-process summarizer boundary is documented
+at `summarizeEvolutionHistory` itself. The remaining PRs are PR 3 (local
+lineage validation, terminal-reason validation, record-count semantics and
+their precedence tests) and PR 4 (exact deterministic transition provenance
+and opaque-boundary enforcement) — and the breeding-pool and false-negative
 measurements the persisted observations enable stay **blocked until PR 4
 lands**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's

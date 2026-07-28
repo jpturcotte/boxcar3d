@@ -1,13 +1,16 @@
 // The shared evolution contract: stable error codes, the module-owned error
-// type, the terminal-reason enum, and the engine/policy versions and resource
-// ceilings the whole PR 3 family agrees on.
+// type, the terminal-reason enum and its ONE scalar decision function, and
+// the engine/policy versions and resource ceilings the whole PR 3 family
+// agrees on.
 //
 // WHY THIS MODULE EXISTS (a deliberate addition to the plan's file list). The
 // plan names evolution-run.js, evolution-lineage.js, evolution-history.js and
 // evolution-replay.js. Three things are shared by all four — the error
 // taxonomy, the terminal enum (which the generation payload ENCODES, so the
 // history codec needs it, and which the transition DECIDES, so the run needs
-// it), and the caps — and every placement inside one of those four creates an
+// it — `terminalReasonFor` below is that decision's one home, and the replay
+// verifier checks a persisted reason against the SAME function), and the
+// caps — and every placement inside one of those four creates an
 // import cycle or forces a file to land a commit early. A tiny leaf module
 // with no imports of its own is the honest shape: the contract every layer
 // binds, owned by none of them.
@@ -97,6 +100,28 @@ export function evolutionFail(code, message, context = {}, cause = undefined) {
 export const TERMINAL_REASONS = Object.freeze([
   'none', 'noSelectableParents', 'generationLimitReached', 'individualIdExhausted',
 ]);
+
+/**
+ * THE one implementation of the terminal-reason precedence declared on
+ * TERMINAL_REASONS above, over scalars only. The producer (evolution-run's
+ * transition) and the verifier (evolution-replay's local-history semantics)
+ * both call exactly this, so the policy cannot drift into two interpretations.
+ * It deliberately takes a `selectableCount` rather than the pool object: the
+ * decision is a function of facts any side can persist, not of a producer-side
+ * structure the verifier would have to reconstruct.
+ *
+ * Callers pass captured values; nothing here validates its inputs — a negative
+ * or fractional count is a defect the surrounding gates report first.
+ */
+export function terminalReasonFor({
+  selectableCount, generationIndex, maxGenerations, nextIndividualId, populationSize,
+}) {
+  if (selectableCount === 0) return 'noSelectableParents';
+  if (generationIndex + 1 >= maxGenerations) return 'generationLimitReached';
+  const last = nextIndividualId + populationSize - 1;
+  if (!Number.isSafeInteger(last) || last > 0xffffffff) return 'individualIdExhausted';
+  return 'none';
+}
 
 /** The deterministic generation/replacement engine's semantic version. */
 export const EVOLUTION_ENGINE_VERSION = 1;

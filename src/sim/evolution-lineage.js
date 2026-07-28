@@ -294,6 +294,22 @@ export function deserializeLineage(bytes) {
 }
 
 /**
+ * Read ONLY the declared lineageVersion, for the replay layer's pre-physics
+ * compatibility gate. This component OWNS its nested version: the peek reads
+ * exactly one u16 and never touches the remaining layout — which is also what
+ * makes a component too short to reveal its version MALFORMED (the reader's
+ * truncation failure) rather than unsupported, and a current version followed
+ * by invalid content the full decoder's job to reject. A prefix PEEK, never a
+ * decode: no generation index, no rows, no end-of-input identity (a full
+ * component legitimately continues past the field read here).
+ */
+export function peekLineageVersion(bytes) {
+  const r = createByteReader(bytes, decodeFail);
+  const lineageVersion = r.u16('lineageVersion');
+  return Object.freeze({ lineageVersion });
+}
+
+/**
  * Cross-generation agreement, which the codec cannot check on its own:
  *
  *  - lineage ids must EXACTLY equal `individualIds` (the paired population's

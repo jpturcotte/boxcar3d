@@ -24,12 +24,14 @@
 //   7. the whole-history digest
 //   8. external expected identity                  (staleness, not corruption)
 //   9. nested format compatibility                 (unsupported format, raised
-//      FIRST GLOBALLY: the fitness-vector versions and the evaluation-metadata
-//      version, each peeked independently through its OWN module's layered
-//      peek — a malformed prefix anywhere never masks a stale version)
+//      FIRST GLOBALLY: the fitness-vector versions, the evaluation-metadata
+//      version and the lineage version, each peeked independently through its
+//      OWN module's layered peek — a malformed prefix anywhere never masks a
+//      stale version)
 //  10. fitness-vector metadata coherence           (malformed current format)
 //  11. current-artifact semantics + bindings          (malformed current format)
-//      …closing with exact generation-zero provenance and the
+//      …closing with exact generation-zero provenance, the local
+//      lineage/ID/terminal/count semantics pass, and the
 //      history-capacity policy gate                   (resourceLimitExceeded)
 //  12. deterministic flavor + exact Rapier version    (before physics)
 //  13. deterministic replay, stopping at the first byte divergence
@@ -58,20 +60,23 @@
 // every generation up front would hold a second full copy of the artifact.
 // Verification therefore decodes one payload at a time, verifies its four
 // component digests, and DISCARDS it, returning only scalars plus the framing
-// (whose views alias the caller's already-owned buffer). Stage 11 and replay
-// each decode one payload again, on demand. Those extra passes exchange decode
-// work for a resume retention bound of: the artifact, ONE decoded payload, and
-// the current/next working populations — which is the documented peak. Offline
-// extraction deliberately retains its result rows from stage 11 and does not
-// decode them a fourth time. Stage 11's generation-0 recreation adds no
-// retention class: it is the same `createInitialPopulation` call resume used
-// to run after the runtime gate, moved before it, and resume replays from the
-// returned recreation — the current working population the bound already
-// counts. The
+// (whose views alias the caller's already-owned buffer). Stage 11's passes and
+// replay each decode one payload at a time, on demand. Those extra passes
+// exchange decode work for a resume retention bound of: the artifact, ONE
+// decoded payload, and the current/next working populations — which is the
+// documented peak. The local-semantics pass keeps the same trade-off: one
+// transient decoded payload at a time, retaining only the previous
+// generation's id array and per-generation scalars. Offline extraction
+// deliberately retains its result rows from stage 11 and does not decode them
+// a fourth time. Stage 11's generation-0 recreation adds no retention class:
+// it is the same `createInitialPopulation` call resume used to run after the
+// runtime gate, moved before it, and resume replays from the returned
+// recreation — the current working population the bound already counts. The
 // stage-5 gate collection adds two TRANSIENT decodes (the fitness vector and
-// its sibling metadata, only when BOTH components' versions are current)
-// inside the same one-payload window; what is retained is one first-failure
-// descriptor of each kind per gate, so the bound above is unchanged.
+// its sibling metadata, only when BOTH components' versions are current) plus
+// one lineage version peek (a bare u16, no decode) inside the same one-payload
+// window; what is retained is one first-failure descriptor of each kind per
+// gate, so the bound above is unchanged.
 
 import { typedArrayByteLength } from './bytes.js';
 import {
@@ -82,12 +87,15 @@ import {
   digestComponent, digestGeneration, digestHeader, digestHistoryBody, digestsEqual,
 } from './evolution-history.js';
 import {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
-  MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork, evolutionFail,
-  isEvolutionUint32,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
+  MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork,
+  checkedAdd, checkedMultiply, evolutionFail, isEvolutionUint32, terminalReasonFor,
 } from './evolution-contract.js';
 import { assertHistoryCapacity } from './evolution-capacity.js';
-import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
+import {
+  EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage, lineageByteLength,
+  peekLineageVersion,
+} from './evolution-lineage.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_VERSION,
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
@@ -95,7 +103,7 @@ import {
 import {
   EVALUATION_SPEC_VERSION, FITNESS_POLICY_VERSION, FITNESS_VECTOR_VERSION,
   canonicalizeEvaluationSpec, deserializeEvaluationSpec, deserializeFitnessVector,
-  fitnessVectorByteLength, peekFitnessVectorVersions,
+  fitnessVectorByteLength, peekFitnessVectorVersions, selectablePoolFromEvaluation,
 } from './population-evaluation.js';
 import {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, peekPopulationSnapshotMemberCount,
@@ -115,11 +123,12 @@ export const REPLAY_STAGES = Object.freeze([
   'terminalReason', 'lineage',
 ]);
 
-/** Human-readable labels for the two nested components the gates read. */
+/** Human-readable labels for the nested components the gates read. */
 const COMPONENT_LABELS = Object.freeze({
   population: 'population snapshot',
   fitnessVector: 'fitness vector',
   evaluationMetadata: 'evaluation metadata',
+  lineage: 'lineage',
 });
 
 /** The 64 MiB intake ceiling, checked before the first copy. Re-exported so the
@@ -307,24 +316,27 @@ async function verifyFramedArtifact(framing) {
  * honouring the memory model.
  *
  * INDEPENDENCE, and why it is the point: a malformed unreadable prefix in one
- * component must NEVER stop the sibling's version from being read, and a
+ * component must NEVER stop the siblings' versions from being read, and a
  * malformed prefix in one GENERATION must never mask a stale version in
  * another. Unsupported-format failures (a readable but stale version) and
  * malformed-format failures (a prefix too short to reveal one) are therefore
- * collected separately for both components of every generation, and the gate
- * raises unsupported format FIRST, globally — the ladder's "unsupported
+ * collected separately for all three components of every generation, and the
+ * gate raises unsupported format FIRST, globally — the ladder's "unsupported
  * format → malformed current format" precedence holds across generations and
  * components, not merely within one descriptor slot.
  *
- * OWNERSHIP, stated because two formats meet here: the fitness vector's
- * versions are read through population-evaluation.js's own layered peek, and
- * the evaluation metadata's version through evolution-history.js's — each
- * nested component retains ownership of its version interpretation, and no
- * format offset is duplicated into this module. The vector's peek is
- * evaluated first (it is this gate's primary subject); a stale nested version
- * of EITHER kind reports `unsupportedVersion`, while a prefix too short to
- * reveal its version reports `malformedHistory` — the same classification for
- * both components.
+ * OWNERSHIP, stated because three formats meet here: the fitness vector's
+ * versions are read through population-evaluation.js's own layered peek, the
+ * evaluation metadata's version through evolution-history.js's, and the
+ * lineage's version through evolution-lineage.js's — each nested component
+ * retains ownership of its version interpretation, and no format offset is
+ * duplicated into this module. The vector's peek is evaluated first (it is
+ * this gate's primary subject); a stale nested version of ANY kind reports
+ * `unsupportedVersion`, while a prefix too short to reveal its version
+ * reports `malformedHistory` — the same classification for all three
+ * components. (The generation record's own version is interpreted by the
+ * stage-5 decode, and the header's duplicated versions at stage 4 — this
+ * collection owns only the nested ones.)
  */
 function collectFitnessVectorGateInputs(components, generationIndex, populationSize) {
   let unsupported = null;
@@ -393,6 +405,31 @@ function collectFitnessVectorGateInputs(components, generationIndex, populationS
       field: 'evaluationMetadataVersion',
       stored: peekedMetadata.evaluationMetadataVersion,
       current: EVALUATION_METADATA_VERSION,
+    });
+  }
+  // The lineage component owns its OWN nested version too, peeked
+  // INDEPENDENTLY of whatever the vector and metadata produced: read it
+  // through evolution-lineage.js's layered peek, with the same
+  // unsupported-vs-malformed classification as its siblings'.
+  let peekedLineage = null;
+  try {
+    peekedLineage = peekLineageVersion(components.lineage);
+  } catch (cause) {
+    if (malformedPrefix === null) {
+      malformedPrefix = Object.freeze({
+        generationIndex, component: 'lineage', cause,
+      });
+    }
+  }
+  if (peekedLineage !== null
+    && peekedLineage.lineageVersion !== EVOLUTION_LINEAGE_VERSION
+    && unsupported === null) {
+    unsupported = Object.freeze({
+      generationIndex,
+      component: 'lineage',
+      field: 'lineageVersion',
+      stored: peekedLineage.lineageVersion,
+      current: EVOLUTION_LINEAGE_VERSION,
     });
   }
   let coherence = null;
@@ -629,7 +666,10 @@ export function checkExpectedIdentity(verified, expected) {
 /**
  * Stage 9 — nested format compatibility, raised from the stage-5 collection
  * AFTER external identity and before the runtime gate. Precedence is GLOBAL,
- * across every generation and both nested components: the first
+ * across every generation and all three nested components (fitness vector,
+ * evaluation metadata, lineage — the generation record's own version is
+ * interpreted at stage 5 and the header's duplicated versions at stage 4):
+ * the first
  * unsupported-format failure reports `unsupportedVersion` naming the exact
  * component and field, the generation, and the stored and current values —
  * never a false replay drift discovered after a re-simulation, and never
@@ -769,6 +809,183 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
 }
 
 /**
+ * THE LOCAL HISTORY-SEMANTICS PASS — the lineage, ID-allocation, terminal and
+ * record-count invariants this gate owns, each decidable from persisted facts
+ * without runtime identity, physics, or reproducing generation N+1. (It is
+ * NOT "everything provable from persisted facts": elite-genotype equality,
+ * parent ranking/selectability, replacement-shape agreement and accounting-
+ * vs-delta verification are all persisted-fact checks too — and they are
+ * PR 4's transition-provenance scope, deliberately not this pass's.) Runs at
+ * the end of stage 11,
+ * AFTER the generation-zero provenance verdict and BEFORE the
+ * history-capacity gate: the ladder reads provenance → local semantics →
+ * capacity, so a current-format contradiction is `malformedHistory` even when
+ * the artifact also over-declares, and an over-declared artifact whose
+ * semantics are clean still closes at `resourceLimitExceeded` before the
+ * runtime gate.
+ *
+ * The pass walks one transiently decoded payload at a time, retaining only
+ * the previous generation's id array — the memory model's documented
+ * decode-work-for-retention trade-off. The population and fitness-vector
+ * decodes are not re-guarded: Gate C's content-binding loop already proved
+ * both decodable for every generation, with their row geometry bounded
+ * against the capped header population. The lineage is the one component
+ * decoded here for the FIRST time, so it is guarded twice before any row is
+ * materialized: its byte geometry must not exceed the bounded geometry for
+ * the header population (`lineagePopulationSizeOverflow` — a 16 MiB
+ * component otherwise allocates ~316k rows against a population capped at
+ * 256 before any count check could run), and its decode is the one wrapped
+ * component: a stale nested version rethrows `unsupportedVersion` unchanged
+ * (stage 9 made it unreachable here, so reaching it means an ordering
+ * regression that must surface loud, never a mask into a semantic defect),
+ * while a malformed body reports `malformedHistory` naming the generation,
+ * the original error preserved as cause.
+ *
+ * THE VERDICT ORDER IS THE CONTRACT. Across generations, the first defect in
+ * generation order wins. Within one generation the lineage's row geometry is
+ * bounded before its decode, then:
+ *
+ *   1. lineage/population coherence (`crossCheckLineage`): the lineage's own
+ *      generation index, lineage ids == population ids, generation 0
+ *      all-initialized, no initialized rows later, every derived parent in
+ *      the immediately preceding generation;
+ *   2. the exact v1 ID-allocation policy: member m of generation i carries id
+ *      i × populationSize + m — a fresh, contiguous, never-recycled block per
+ *      generation, which is what keeps the (seed, childId) RNG streams
+ *      independent. This is local semantics, not transition provenance: it
+ *      needs no physics and no genotype reproduction, only the persisted
+ *      policy invariant. Without it a forged history could recycle
+ *      generation 0's ids in generation 1 with population, vector and lineage
+ *      all in agreement and every parent valid — passing `crossCheckLineage`
+ *      while violating the policy the RNG streams depend on. It also grounds
+ *      the terminal derivation below: nextIndividualId is (i + 1) ×
+ *      populationSize only once the artifact is proven to actually follow
+ *      that sequence;
+ *   3. the terminal policy: the stored reason must equal `terminalReasonFor`
+ *      — the SAME function the producer used, so the policy has one home and
+ *      cannot drift into two interpretations — evaluated on the selectable
+ *      pool the persisted fitness vector reconstructs.
+ *
+ * Terminal equality subsumes every physics-free conclusion:
+ * `noSelectableParents` ⟺ the reconstructed pool is empty (precedence
+ * included: an empty pool at the declared last generation still expects
+ * `noSelectableParents`); `generationLimitReached` ⟺ a nonempty pool at the
+ * declared last generation — so it implies the count reached maxGenerations,
+ * and reaching maxGenerations without it is equally impossible; `none` stays
+ * legal on the last record of a partial, resumable history;
+ * `individualIdExhausted` can never be the EXPECTED reason under the v1 caps
+ * (nextIndividualId + populationSize − 1 = (i + 2) × populationSize − 1 ≤
+ * 1025 × 256 − 1 ≪ 2³²), so a persisted one always mismatches. If the caps
+ * or the allocation semantics ever move, this arithmetic must be revisited.
+ *
+ * The count rule runs before the loop, so a lying count never drives the
+ * ID/terminal derivation. Contiguity of generation indices and
+ * terminal-record-last stay at stage 5 (`generationChainMismatch`); this
+ * pass deliberately does not re-check them.
+ */
+function verifyLocalHistorySemantics(header, framing) {
+  const recordCount = framing.generations.length;
+  if (recordCount > header.maxGenerations) {
+    evolutionFail('malformedHistory',
+      `history carries ${recordCount} generation records, but the header declares `
+      + `maxGenerations ${header.maxGenerations}`,
+      {
+        rule: 'recordCountExceedsMaxGenerations',
+        recordCount,
+        maxGenerations: header.maxGenerations,
+      });
+  }
+  let previousIds = null;
+  for (let generationIndex = 0; generationIndex < recordCount; generationIndex += 1) {
+    const payload = decodeGenerationPayload(framing.generations[generationIndex].payloadBytes);
+    const population = deserializePopulationSnapshot(payload.components.population);
+    const vector = deserializeFitnessVector(payload.components.fitnessVector);
+    // Bound the lineage's row geometry BEFORE the decoder walks it — the
+    // fitness-vector allocation guard's exact twin. A lineage component may
+    // be up to 16 MiB: at 53 bytes per row that declares ~316k rows against
+    // a population capped at 256, and deserializeLineage allocates a frozen
+    // row plus an eleven-field accounting object PER ROW before
+    // crossCheckLineage could ever compare the count. The `>` form mirrors
+    // the vector guard: shorter components with a lying count still fail the
+    // decoder's exact-length identity before its row loop. (Gate C's main
+    // loop already bounded the population and vector decodes the same way.)
+    const actualLineageByteLength = typedArrayByteLength(payload.components.lineage);
+    const expectedLineageByteLength = lineageByteLength(header.populationSize);
+    if (actualLineageByteLength > expectedLineageByteLength) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} lineage byteLength ${actualLineageByteLength} `
+        + `exceeds header populationSize ${header.populationSize} allocation bound `
+        + `(${expectedLineageByteLength} bytes)`,
+        {
+          generationIndex,
+          rule: 'lineagePopulationSizeOverflow',
+          populationSize: header.populationSize,
+          actualByteLength: actualLineageByteLength,
+          expectedByteLength: expectedLineageByteLength,
+        });
+    }
+    let lineage;
+    try {
+      lineage = deserializeLineage(payload.components.lineage);
+    } catch (cause) {
+      if (cause instanceof EvolutionError && cause.code === 'unsupportedVersion') {
+        throw cause;
+      }
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} ${COMPONENT_LABELS.lineage} is malformed`,
+        { generationIndex },
+        cause);
+    }
+    const ids = [];
+    for (let memberIndex = 0; memberIndex < population.individuals.length; memberIndex += 1) {
+      ids.push(population.individuals[memberIndex].individualId);
+    }
+    // 1. Lineage/population coherence (previousIds === null at generation 0,
+    //    which is exactly how crossCheckLineage reads "no predecessor").
+    crossCheckLineage(lineage, generationIndex, ids, previousIds);
+    // 2. The exact v1 fresh-id allocation block.
+    for (let memberIndex = 0; memberIndex < ids.length; memberIndex += 1) {
+      const storedId = ids[memberIndex];
+      const expectedId = checkedAdd(
+        checkedMultiply(generationIndex, header.populationSize, 'evolution individual id allocation'),
+        memberIndex,
+        'evolution individual id allocation',
+      );
+      if (storedId !== expectedId) {
+        evolutionFail('malformedHistory',
+          `generation ${generationIndex} member ${memberIndex} carries individual id ${storedId}, `
+          + `but the v1 allocation policy expects ${expectedId} `
+          + '(generationIndex × populationSize + memberIndex)',
+          {
+            generationIndex, rule: 'individualIdAllocationMismatch', memberIndex, stored: storedId, expected: expectedId,
+          });
+      }
+    }
+    // 3. The terminal policy, from the SAME function the producer used.
+    const pool = selectablePoolFromEvaluation(vector);
+    const expectedTerminal = terminalReasonFor({
+      selectableCount: pool.individuals.length,
+      generationIndex,
+      maxGenerations: header.maxGenerations,
+      nextIndividualId: checkedMultiply(
+        generationIndex + 1, header.populationSize, 'evolution individual id allocation',
+      ),
+      populationSize: header.populationSize,
+    });
+    const storedTerminal = payload.terminalReason;
+    if (storedTerminal !== expectedTerminal) {
+      evolutionFail('malformedHistory',
+        `generation ${generationIndex} terminal reason is '${storedTerminal}', but the persisted `
+        + `facts expect '${expectedTerminal}'`,
+        {
+          generationIndex, rule: 'terminalReasonMismatch', stored: storedTerminal, expected: expectedTerminal,
+        });
+    }
+    previousIds = ids;
+  }
+}
+
+/**
  * Stage 11 — shared current-artifact semantics and bindings. Decode the header
  * evaluation spec and initialization manifest; require an executable,
  * deterministic spec and the header/manifest population agreement; bind every
@@ -800,14 +1017,41 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
  * resume replays FROM it instead of recreating a second time after the
  * runtime gate, and extraction simply ignores it.
  *
+ * After that provenance verdict and BEFORE the capacity gate, the local
+ * history-semantics pass (`verifyLocalHistorySemantics` below) checks the
+ * local invariants it owns — lineage, ID-allocation, terminal and
+ * record-count, each decidable from persisted facts without reproducing
+ * generation N+1 — one transient decode at a time:
+ * the record count against the declared maximum, each generation's lineage
+ * against its population and predecessor (`crossCheckLineage`), the exact
+ * fresh-id allocation blocks the v1 policy persists (generationIndex ×
+ * populationSize + memberIndex — never recycled, so the (seed, childId) RNG
+ * streams stay independent), and the stored terminal reason against the same
+ * `terminalReasonFor` the producer used, evaluated on the selectable pool the
+ * persisted fitness vector reconstructs. The verdict order is the contract:
+ * across generations the first defect in generation order wins; within one
+ * generation, lineage/population coherence, then the ID-allocation policy,
+ * then the terminal policy.
+ *
+ * DEFERRED, deliberately: cross-generation `effectiveDt` constancy is NOT
+ * this pass's rule. History-format v1 judges each record against its own
+ * persisted metadata — pinned by "the verdict follows the PERSISTED
+ * effectiveDt" and "each generation is judged against its OWN metadata" in
+ * tests/evolution-replay.test.js, which route a drifted dt to
+ * `replayDivergence` at stage `evaluationMetadata`. Ratifying constancy later
+ * means amending those two tests and choosing a constancy refusal over that
+ * precise localization; world-mode constancy is already structural
+ * (WORLD_MODES has exactly one entry, so any other value is malformed at
+ * decode).
+ *
  * The stage closes with the history-capacity policy gate — the same
  * worst-case projection fresh creation applies — evaluated on the recreated
  * generation-zero population, the decoded header and the canonical spec. A
  * persisted artifact declaring more generations than the retained-history
  * limit is therefore refused `resourceLimitExceeded` here, after
- * generation-zero provenance and before runtime identity, world creation,
- * evaluation or replay; capacity is a pure byte projection and needs no
- * physics attestation.
+ * generation-zero provenance and the local-semantics pass and before runtime
+ * identity, world creation, evaluation or replay; capacity is a pure byte
+ * projection and needs no physics attestation.
  */
 export function verifyEvolutionArtifactSemantics(verified, collectGenerations = false) {
   const { header, framing } = verified;
@@ -1029,6 +1273,12 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
       + `from the persisted population snapshot (first differing byte ${mismatchOffset})`,
       context);
   }
+  // The local history-semantics pass: the lineage, ID-allocation, terminal
+  // and record-count invariants, decidable from persisted facts without
+  // reproducing generation N+1 — after the generation-zero provenance
+  // verdict and before the capacity gate (the placement contract is the
+  // function docblock's).
+  verifyLocalHistorySemantics(header, framing);
   // The history-capacity policy gate closes the stage, evaluated on the
   // trusted values this stage produced (the placement contract is the
   // function docblock's).

@@ -542,6 +542,13 @@ const CASES = [
   ['evolution-lineage.crossCheckLineage',
     () => [deserializeLineage(serializeLineage(sampleLineage())), [0, 1], null],
     (l, ids, previous) => crossCheckLineage(l, 0, ids, previous)],
+  // The terminal policy's one scalar home reads a five-leaf options record —
+  // exactly the flat caller-data shape this instrument exists for.
+  ['evolution-contract.terminalReasonFor',
+    () => [{
+      selectableCount: 3, generationIndex: 1, maxGenerations: 4, nextIndividualId: 12, populationSize: 6,
+    }],
+    (o) => EvolutionContractNS.terminalReasonFor(o)],
   ['evolution-run.createEvolutionRun', () => [evolutionConfig()], (c) => createEvolutionRun(c)],
   ['evolution-replay.captureExpectedIdentity',
     () => [{ expectedHistoryDigestBytes: new Uint8Array(32), expectedGenerationIndex: 2 }],
@@ -651,6 +658,7 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   // PR 3's evolution family
   canonicalizeEvaluationSpec: 'CASES row',
   deserializeLineage: 'exempt: TypedArray input',
+  peekLineageVersion: 'exempt: TypedArray input',
   lineageByteLength: 'exempt: one number arg',
   fitnessVectorByteLength: 'exempt: one number arg',
   zeroLineageAccounting: 'exempt: no args',

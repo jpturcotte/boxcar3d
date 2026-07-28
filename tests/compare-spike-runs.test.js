@@ -1381,6 +1381,16 @@ describe('auditInventoryTitles — derived inventory<->collection alignment', ()
       .toEqual([expect.stringContaining("mustPassAssertionSubstrings substrings 'two fresh worlds agree' and 'fresh worlds' both match collected test")]);
   });
 
+  test('two allowed-red signatures matching the SAME collected test are rejected (the classifier assigns only the first)', () => {
+    // Both signatures pass their individual multiplicity checks (1 match,
+    // count 1) — only the overlap check sees that a real candidate report
+    // can red just one of them (the PR #31 review gap).
+    const inv = alignedInventory();
+    inv.node.byFile[REPLAY].allowedFailureSignatures.push({ titleSubstring: 'independently assembled v3 artifact', messageRegex: 'y', count: 1 });
+    const issues = audit(inv, alignedNodeTasks(), alignedBrowserTasks());
+    expect(issues).toEqual([expect.stringContaining(`matches 2 allowed failure signatures ('${V3_TITLE}', 'independently assembled v3 artifact')`)]);
+  });
+
   test('the arms are audited against their OWN collection only (arm isolation)', () => {
     const issues = audit(alignedInventory(), [], alignedBrowserTasks());
     // The aligned browser arm stays silent even with an empty node collection…

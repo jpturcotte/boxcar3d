@@ -57,6 +57,21 @@ function spanFromLastMatchToEof(text, re) {
   return start === -1 ? null : lines.slice(start).join('\n');
 }
 
+// From the LAST line matching `markerRe` to the next line matching
+// `headerRe` (exclusive) or EOF — an active block that lives INSIDE a
+// historical section but still hands off current guidance.
+function spanFromLastMatchToNextHeader(text, markerRe, headerRe) {
+  const lines = text.split('\n');
+  let start = -1;
+  lines.forEach((l, i) => { if (markerRe.test(l)) start = i; });
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (headerRe.test(lines[i])) { end = i; break; }
+  }
+  return lines.slice(start, end).join('\n');
+}
+
 // From the FIRST line matching `re` to EOF.
 function spanFromFirstMatchToEof(text, re) {
   const lines = text.split('\n');
@@ -70,6 +85,15 @@ const ACTIVE_REGIONS = [
     file: 'README.md',
     marker: '**Status:**',
     extract: (text) => spanFromMarkerToNextH2(text, '**Status:**'),
+  },
+  {
+    // The PR-4 section's handoff block still carries ACTIVE guidance (its
+    // pending items route the NEXT agent) even though a newer GA-phase
+    // section follows it — the PR #31 review caught this block outside the
+    // lint while it still said "the vector currently stores status only".
+    file: 'CLAUDE.md',
+    marker: 'the last **Recommended next steps block',
+    extract: (text) => spanFromLastMatchToNextHeader(text, /\*\*Recommended next steps/, /^\*\*GA Phase/),
   },
   {
     file: 'CLAUDE.md',
@@ -103,6 +127,21 @@ describe('active-status documentation carries no branch-local phrasing', () => {
       ).toEqual([]);
     });
   }
+
+  test('the CLAUDE.md active regions include the Recommended next steps handoff block (the PR #31 review gap)', () => {
+    // The block sits INSIDE the landed PR-4 section, immediately before the
+    // last **GA Phase header — an extraction covering only the final section
+    // silently misses this active handoff. This test fails if the region is
+    // removed from ACTIVE_REGIONS or its extraction is narrowed away.
+    const recsRegion = ACTIVE_REGIONS.find((r) => r.file === 'CLAUDE.md' && r.marker.includes('Recommended next steps'));
+    expect(recsRegion, 'the CLAUDE.md Recommended-next-steps active region must exist in ACTIVE_REGIONS').toBeDefined();
+    const span = recsRegion.extract(readRepoFile('CLAUDE.md'));
+    expect(span).not.toBeNull();
+    expect(span).toContain('Recommended next steps');
+    // …and the block ends where the current GA-phase section begins, so the
+    // two CLAUDE.md regions together cover the whole active handoff tail.
+    expect(span).not.toMatch(/^\*\*GA Phase/m);
+  });
 
   test('the lint itself is not vacuous: historical-region phrasing passes, the same phrasing in the active span fails', () => {
     const historical = '## History\n\nBack then this branch carried PR #29 (open, not yet merged) — recorded history.\n';

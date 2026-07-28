@@ -67,10 +67,11 @@ pressure.
 **Remaining work before it can land responsibly** (PR 4 left these open):
 1. **The false-*negative* side** — divergence that still passes after escalation.
    PR-B's acceptance test requires it; PR 4 measured only false positives.
-   **→ Next PR**, now measurable from persisted histories without re-simulation.
+   **→ After the PR 2–4 hardening sequence (§5)** — measurable from persisted
+   histories without re-simulation.
 2. **Contamination in the breeding *pool*, not just at the champion** —
    tournament selection samples the whole pool, so the champion is not the
-   mechanism. **→ Next PR**, same enabler.
+   mechanism. **→ After the PR 2–4 hardening sequence**, same enabler.
 3. ~~Both of the above are far easier if the integrity **observations** (peak body
    speed, first alert step) are **persisted in the fitness vector** first (a
    versioned encoding change) — today the vector stores only status, which is
@@ -179,13 +180,21 @@ it.**
    **DISCHARGED on `main` (PR #29)** — fitness-vector v3, the
    three pre-physics gates, and the verified extraction seam; representation
    only, no behaviour change.
-2. **→ Next PR:** measure the alert-band selection exposure A would remove —
+2. **Integration hardening before any measurement (the adopted PR 2–4
+   sequence):** PR 2 — the shared adversarial reforge helper, reader capacity
+   parity, persisted `effectiveDt`/`worldMode` in the verified extraction, and
+   the trusted in-process summarizer boundary; PR 3 — local lineage
+   validation, terminal-reason validation, record-count semantics, and their
+   precedence tests; PR 4 — exact deterministic transition provenance and
+   opaque-boundary enforcement. **Empirical measurements stay blocked until
+   PR 4's exact transition provenance lands.**
+3. **After PR 4:** measure the alert-band selection exposure A would remove —
    the breeding-pool and false-negative measurements above, from the persisted
    observations — then decide: land A (alert-band escalation) with the
    false-negative acceptance test — the version bump + re-lock.
-3. Re-run PR 4's protocol on the now-clean signal → take the mutation-default
+4. Re-run PR 4's protocol on the now-clean signal → take the mutation-default
    decision (extend the grid past 0.20; add `p0.100-m0.200`).
-4. **In parallel, one experiment for B:** source-build core 0.34 with PR #235
+5. **In parallel, one experiment for B:** source-build core 0.34 with PR #235
    revived, drive the multibody 2×2 / a minimal S0 build, measure peak body
    speed. If it stays quiescent under drive, B graduates from "named follow-up"
    to a real representation-migration proposal with its own decision record.

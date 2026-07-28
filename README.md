@@ -38,8 +38,15 @@ policy stays integrity v1 / fitness v2, the mutation defaults stay
 (0.05, 0.05), and an alert-bearing `ok` vehicle is STILL selectable on main —
 v3 persists the evidence; it does not act on it. The solver defect itself
 remains: Option A (alert-band escalation) masks rather than fixes it, and the
-multibody root-cause track stays deferred. Next PR owns the breeding-pool and
-false-negative measurements the persisted observations now enable. Previously:
+multibody root-cause track stays deferred. The next PRs are the
+integration-hardening sequence — PR 2 (the shared adversarial reforge helper,
+reader capacity parity, persisted `effectiveDt`/`worldMode` in the verified
+extraction, the trusted in-process summarizer boundary), PR 3 (local lineage
+validation, terminal-reason validation, record-count semantics and their
+precedence tests), PR 4 (exact deterministic transition provenance and
+opaque-boundary enforcement) — and the breeding-pool and false-negative
+measurements the persisted observations enable stay **blocked until PR 4
+lands**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm

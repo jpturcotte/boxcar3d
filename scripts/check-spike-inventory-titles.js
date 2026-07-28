@@ -38,7 +38,13 @@
 //         and a must-pass title (the adjudicator cannot both allow and
 //         forbid its failure);
 //     (7) within each must-pass list, no two distinct substrings match
-//         the same collected test (counts must stay attributable).
+//         the same collected test (counts must stay attributable);
+//     (8) within a byFile entry, no collected test matches TWO allowed
+//         failure signatures — classify() assigns a failure to the FIRST
+//         matching signature only, so an overlap lets both multiplicity
+//         checks pass while a real candidate report can red just one of
+//         them; the other would surface only at candidate adjudication,
+//         the delayed discovery this gate exists to prevent.
 //   Any issue exits 1 and names the arm, file, substring, expected vs
 //   observed multiplicity, and the remediation: update the inventory in
 //   the SAME commit as the test rename/restructure.
@@ -139,6 +145,17 @@ function auditArm(arm, armInv, tasks) {
         issues.push(`[${arm}] ${file}: allowed failure signature '${sig.titleSubstring}' matches ${matches.length} collected test(s) but declares count ${sig.count} — a test split/merge changed the multiplicity; ${REMEDIATION}`);
       }
       for (const m of matches) failureMatches.push({ sig: sig.titleSubstring, file, name: m.name });
+    }
+    // (8): allowed-red substrings in one file must be mutually exclusive.
+    // classify() consumes a failure with the FIRST matching signature, so a
+    // test matching TWO signatures satisfies both multiplicity checks while
+    // only one can ever red — the second fails only at candidate
+    // adjudication, the delayed discovery this gate exists to prevent.
+    for (const t of fileTasks) {
+      const hits = (entry.allowedFailureSignatures ?? []).filter((s) => t.name.includes(s.titleSubstring));
+      if (hits.length > 1) {
+        issues.push(`[${arm}] ${file}: collected test '${t.name}' matches ${hits.length} allowed failure signatures (${hits.map((h) => `'${h.titleSubstring}'`).join(', ')}) — the adjudicator assigns a failure to the FIRST matching signature only, so the other can never red at the declared count; use non-overlapping substrings`);
+      }
     }
   }
 

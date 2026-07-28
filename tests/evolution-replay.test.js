@@ -10,8 +10,8 @@
 // downstream digest, re-chains, and re-assembles, so verification passes
 // cleanly and the divergence must be found by re-running the generation.
 //
-// Seeds declared: population 20260740, terrain 20260741 (as in
-// tests/evolution-run.test.js).
+// Seeds declared: population 20260740, terrain 20260741 (shared declaration
+// site: tests/helpers/evolution-capacity-config.js).
 
 import {
   describe, test, expect, vi, beforeEach,
@@ -46,9 +46,12 @@ const {
 const {
   COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
   decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
-  digestComponent, digestGeneration,
-  digestHeader, encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
+  digestGeneration, encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
+const { reforge } = await import('./helpers/evolution-artifacts.js');
+const {
+  CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
+} = await import('./helpers/evolution-capacity-config.js');
 const {
   REPLAY_STAGES, captureExpectedIdentity, firstByteDifference, verifyHistoryArtifact,
 } = await import('../src/sim/evolution-replay.js');
@@ -57,9 +60,6 @@ const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js')
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
-
-const POPULATION_SEED = 20260740;
-const TERRAIN_SEED = 20260741;
 
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
@@ -76,15 +76,8 @@ const v3FixtureBytes = () => new Uint8Array(Buffer.from(
 ));
 
 const config = (overrides = {}) => ({
-  initialization: { seed: POPULATION_SEED, populationSize: 6 },
-  evaluationSpec: {
-    terrain: {
-      seed: TERRAIN_SEED, startFlatLength: 30, startBlendLength: 6, craterDensity: 0, featureDensity: 0,
-    },
-    maxSteps: 45,
-    deterministic: true,
-    spawn: { x: -44, z: 0 },
-  },
+  initialization: { seed: CAPACITY_POPULATION_SEED, populationSize: 6 },
+  evaluationSpec: createCapacityEvaluationSpec(),
   evolution: { maxGenerations: 3, ...(overrides.evolution ?? {}) },
 });
 
@@ -101,43 +94,6 @@ async function runGenerations(count, cfg = config({ evolution: { maxGenerations:
   const run = createEvolutionRun(cfg);
   for (let i = 0; i < count; i += 1) await run.advance();
   return run.historyBytes();
-}
-
-/**
- * Rebuild a complete, self-consistent artifact after mutating the header
- * and/or one generation's decoded components. Every downstream digest is
- * recomputed, so the result passes verification and can only fail at replay.
- */
-async function reforge(bytes, { mutateHeader, mutateHeaderBytes, mutateRecord } = {}) {
-  const framing = decodeHistoryFraming(bytes);
-  let headerBytes = framing.headerBytes;
-  if (mutateHeader) {
-    const decoded = decodeEvolutionHeader(framing.headerBytes);
-    headerBytes = encodeEvolutionHeader(mutateHeader({ ...decoded }));
-  }
-  if (mutateHeaderBytes) {
-    headerBytes = new Uint8Array(headerBytes);
-    mutateHeaderBytes(headerBytes);
-  }
-  const headerDigestBytes = await digestHeader(headerBytes);
-  const generations = [];
-  let previous = headerDigestBytes;
-  for (let i = 0; i < framing.generations.length; i += 1) {
-    const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
-    const record = {
-      generationIndex: payload.generationIndex,
-      terminalReason: payload.terminalReason,
-      components: { ...payload.components },
-    };
-    if (mutateRecord) mutateRecord(record, i);
-    const digests = {};
-    for (const kind of COMPONENT_KINDS) digests[kind] = await digestComponent(kind, record.components[kind]);
-    const payloadBytes = encodeGenerationPayload(record, digests);
-    const generationDigestBytes = await digestGeneration(previous, payloadBytes);
-    previous = generationDigestBytes;
-    generations.push({ payloadBytes, generationDigestBytes });
-  }
-  return (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
 }
 
 const flipByte = (bytes, offset = 0) => {

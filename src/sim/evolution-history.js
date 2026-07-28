@@ -155,8 +155,9 @@ function limitFail(path, value, limit) {
 }
 
 /**
- * Project the largest v1 artifact a run configuration can produce without
- * allocating it. Runtime identity strings use their full legal u8 lengths;
+ * Project the largest evolution-history v1 artifact — carrying the current
+ * component versions, fitness-vector v3 — that a run configuration can
+ * produce without allocating it. Runtime identity strings use their full legal u8 lengths;
  * callers provide conservative component lengths for any generation.
  */
 export function projectEvolutionHistoryCapacity({

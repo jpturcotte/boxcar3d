@@ -29,6 +29,8 @@
 //      peek — a malformed prefix anywhere never masks a stale version)
 //  10. fitness-vector metadata coherence           (malformed current format)
 //  11. current-artifact semantics + bindings          (malformed current format)
+//      …closing with exact generation-zero provenance and the
+//      history-capacity policy gate                   (resourceLimitExceeded)
 //  12. deterministic flavor + exact Rapier version    (before physics)
 //  13. deterministic replay, stopping at the first byte divergence
 //
@@ -45,7 +47,10 @@
 // then walks one payload at a time after stage 8, retaining validated rows only
 // when offline extraction requests them, and closes by recreating generation 0
 // from the manifest config: exact byte identity with the persisted population is
-// the provenance verdict, the FNV state only its prefilter. Every format verdict
+// the provenance verdict, the FNV state only its prefilter. The capacity policy
+// gate runs last inside stage 11, on the recreated population the provenance
+// bind just produced, so an over-declared history is refused before the runtime
+// gate by every reader. Every format verdict
 // therefore RAISES after stage 8, so corruption or staleness is never masked.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
@@ -81,6 +86,7 @@ import {
   MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork, evolutionFail,
   isEvolutionUint32,
 } from './evolution-contract.js';
+import { assertHistoryCapacity } from './evolution-capacity.js';
 import { EVOLUTION_LINEAGE_VERSION } from './evolution-lineage.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_VERSION,
@@ -793,6 +799,15 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
  * generation-0 population (object and canonical bytes) is returned either way:
  * resume replays FROM it instead of recreating a second time after the
  * runtime gate, and extraction simply ignores it.
+ *
+ * The stage closes with the history-capacity policy gate — the same
+ * worst-case projection fresh creation applies — evaluated on the recreated
+ * generation-zero population, the decoded header and the canonical spec. A
+ * persisted artifact declaring more generations than the retained-history
+ * limit is therefore refused `resourceLimitExceeded` here, after
+ * generation-zero provenance and before runtime identity, world creation,
+ * evaluation or replay; capacity is a pure byte projection and needs no
+ * physics attestation.
  */
 export function verifyEvolutionArtifactSemantics(verified, collectGenerations = false) {
   const { header, framing } = verified;
@@ -943,6 +958,8 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
         generationIndex: payload.generationIndex,
         terminalReason: payload.terminalReason,
         executedSteps: metadata.executedSteps,
+        effectiveDt: metadata.effectiveDt,
+        worldMode: metadata.worldMode,
         individuals: vector.individuals,
       }));
     }
@@ -1012,6 +1029,17 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
       + `from the persisted population snapshot (first differing byte ${mismatchOffset})`,
       context);
   }
+  // The history-capacity policy gate closes the stage, evaluated on the
+  // trusted values this stage produced (the placement contract is the
+  // function docblock's).
+  assertHistoryCapacity({
+    population: recreated.population,
+    populationSize: header.populationSize,
+    maxGenerations: header.maxGenerations,
+    initializationBytes: header.initializationManifestBytes,
+    specBytes: header.evaluationSpecBytes,
+    spec,
+  });
   // Resume replays FROM this recreation — it is exactly the recreation resume
   // used to run as stage 13a after the runtime gate — so the replay loop's
   // generation-0 population comparison starts from bytes this gate already

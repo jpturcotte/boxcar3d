@@ -191,6 +191,8 @@ export default [
       // storage gate have to hold.
       'src/sim/evolution-lineage.js', 'src/sim/evolution-run.js',
       'src/sim/evolution-history.js', 'src/sim/evolution-replay.js',
+      // Reads intrinsic lengths of module-owned bytes as projection inputs.
+      'src/sim/evolution-capacity.js',
     ],
     rules: {
       'no-restricted-syntax': [

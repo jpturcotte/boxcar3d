@@ -55,14 +55,13 @@ vi.mock('../src/sim/bytes.js', async (importOriginal) => {
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/evolution-fixtures.js');
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
-const { EvolutionError } = await import('../src/sim/evolution-contract.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
 const {
-  COMPONENT_KINDS, SHA256_DIGEST_BYTES, assembleHistory, decodeEvolutionHeader,
-  decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
-  digestComponent, digestGeneration, digestHeader, encodeEvolutionHeader,
-  encodeGenerationPayload, serializeEvaluationMetadata,
+  SHA256_DIGEST_BYTES, decodeEvolutionHeader, decodeGenerationPayload,
+  decodeHistoryFraming, deserializeEvaluationMetadata, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
+const { reforge } = await import('./helpers/evolution-artifacts.js');
+const { expectCodeAsync } = await import('./helpers/expect-code.js');
 const { MAX_EVOLUTION_HISTORY_BYTES } = await import('../src/sim/evolution-replay.js');
 const {
   deserializeEvaluationSpec, deserializeFitnessVector, serializeEvaluationSpec, serializeFitnessVector,
@@ -104,55 +103,21 @@ async function oneGenerationArtifact() {
   return run.historyBytes();
 }
 
-/** Rebuild a self-consistent artifact after mutating generation 0's record. */
-async function reforge(bytes, mutateRecord, mutateHeader = null) {
-  const framing = decodeHistoryFraming(bytes);
-  let headerBytes = framing.headerBytes;
-  if (mutateHeader !== null) {
-    headerBytes = encodeEvolutionHeader(mutateHeader({
-      ...decodeEvolutionHeader(framing.headerBytes),
-    }));
-  }
-  const headerDigestBytes = await digestHeader(headerBytes);
-  const generations = [];
-  let previous = headerDigestBytes;
-  for (let i = 0; i < framing.generations.length; i += 1) {
-    const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
-    const record = {
-      generationIndex: payload.generationIndex,
-      terminalReason: payload.terminalReason,
-      components: { ...payload.components },
-    };
-    if (i === 0) mutateRecord(record);
-    const digests = {};
-    for (const kind of COMPONENT_KINDS) digests[kind] = await digestComponent(kind, record.components[kind]);
-    const payloadBytes = encodeGenerationPayload(record, digests);
-    const generationDigestBytes = await digestGeneration(previous, payloadBytes);
-    previous = generationDigestBytes;
-    generations.push({ payloadBytes, generationDigestBytes });
-  }
-  return (await assembleHistory({
-    headerBytes,
-    headerDigestBytes,
-    generations,
-  })).bytes;
-}
-
-async function expectCodeAsync(promiseFn, code, re) {
-  let threw = null;
-  try { await promiseFn(); } catch (e) { threw = e; }
-  expect(threw, `expected a rejection with code ${code}`).toBeInstanceOf(EvolutionError);
-  expect(threw.code).toBe(code);
-  if (re) expect(threw.message).toMatch(re);
-  return threw;
-}
+// Every attack in this suite targets generation 0's record (and optionally
+// the header); the shared reforge helper mutates every record it is given,
+// so the record mutation is gated on index 0 here.
+const reforgeGenerationZero = (bytes, mutateRecord, mutateHeader = null) =>
+  reforge(bytes, {
+    mutateHeader: mutateHeader ?? undefined,
+    mutateRecord: (record, recordIndex) => { if (recordIndex === 0) mutateRecord(record); },
+  });
 
 describe('extractHistoryObservations', () => {
   test('a self-consistent history with a malformed evaluation spec is refused by extraction and resume before physics', async () => {
     const invalidSpecBytes = new Uint8Array(0);
     const evaluationSpecDigestState = fnv1aFold(FNV_OFFSET_BASIS, invalidSpecBytes);
     const artifact = await oneGenerationArtifact();
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       (record) => {
         const decoded = deserializeFitnessVector(record.components.fitnessVector);
@@ -186,7 +151,7 @@ describe('extractHistoryObservations', () => {
       spawn: { ...originalSpec.spawn, clearance: 0.2 },
     });
     const evaluationSpecDigestState = fnv1aFold(FNV_OFFSET_BASIS, invalidSpecBytes);
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       (record) => {
         const decoded = deserializeFitnessVector(record.components.fitnessVector);
@@ -213,7 +178,7 @@ describe('extractHistoryObservations', () => {
 
   test('generation metadata must report the evaluation spec maxSteps in extraction and resume', async () => {
     const artifact = await oneGenerationArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
       record.components.evaluationMetadata = serializeEvaluationMetadata({
         ...metadata,
@@ -237,7 +202,7 @@ describe('extractHistoryObservations', () => {
 
   test('a self-consistent history with a malformed initialization manifest is refused by both readers', async () => {
     const artifact = await oneGenerationArtifact();
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       () => {},
       (header) => ({ ...header, initializationManifestBytes: new Uint8Array(0) }),
@@ -266,7 +231,7 @@ describe('extractHistoryObservations', () => {
       ...manifest,
       populationSnapshotDigestState: wrongState,
     });
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       () => {},
       (header) => ({ ...header, initializationManifestBytes: wrongManifestBytes }),
@@ -317,7 +282,7 @@ describe('extractHistoryObservations', () => {
     const swapped = new Uint8Array(gen0Population);
     swapped[40] ^= 0xff; // inside member 0's genotype: still decodable, member ids intact
     const swappedState = fnv1aFold(FNV_OFFSET_BASIS, swapped);
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       (record) => {
         record.components.population = swapped;
@@ -380,7 +345,7 @@ describe('extractHistoryObservations', () => {
     const evaluationSpecDigestState = fnv1aFold(
       FNV_OFFSET_BASIS, nonDeterministicSpecBytes,
     );
-    const broken = await reforge(
+    const broken = await reforgeGenerationZero(
       artifact,
       (record) => {
         const decoded = deserializeFitnessVector(record.components.fitnessVector);
@@ -463,7 +428,7 @@ describe('extractHistoryObservations', () => {
 
   test('a self-consistent vector that names the wrong population snapshot is refused as malformed', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       record.components.fitnessVector = serializeFitnessVector({
         populationSnapshotDigestState: (decoded.populationSnapshotDigestState + 1) >>> 0,
@@ -494,7 +459,7 @@ describe('extractHistoryObservations', () => {
 
   test('a self-consistent vector that names the wrong evaluation spec is refused as malformed', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       record.components.fitnessVector = serializeFitnessVector({
         populationSnapshotDigestState: decoded.populationSnapshotDigestState,
@@ -524,7 +489,7 @@ describe('extractHistoryObservations', () => {
 
   test('a self-consistent vector with fewer rows than the header population is refused as malformed', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       record.components.fitnessVector = serializeFitnessVector({
         populationSnapshotDigestState: decoded.populationSnapshotDigestState,
@@ -552,7 +517,7 @@ describe('extractHistoryObservations', () => {
 
   test('a sibling population with fewer members than the header is refused as malformed', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const population = deserializePopulationSnapshot(record.components.population);
       record.components.population = serializePopulationSnapshot({
         ...population,
@@ -589,7 +554,7 @@ describe('extractHistoryObservations', () => {
 
   test('an oversized sibling population is rejected before any genotype rows are materialized', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const population = deserializePopulationSnapshot(record.components.population);
       const last = population.individuals.at(-1);
       record.components.population = serializePopulationSnapshot({
@@ -632,7 +597,7 @@ describe('extractHistoryObservations', () => {
 
   test('self-consistent vector rows must name the persisted population members exactly', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       const individuals = decoded.individuals.map((row) => ({
         ...row,
@@ -667,7 +632,7 @@ describe('extractHistoryObservations', () => {
     const artifact = await fixtureArtifact();
     // A legal Gate-B-coherent alert row: peak over the alert threshold and a
     // matching firstAlertStep inside the executed captures.
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       const individuals = decoded.individuals.map((row, i) => (i === 0 ? {
         ...row,
@@ -707,7 +672,7 @@ describe('extractHistoryObservations', () => {
 
   test('a current-format artifact whose steps contradict its metadata is REFUSED (malformedHistory)', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const v = new Uint8Array(record.components.fitnessVector);
       const view = new DataView(v.buffer);
       view.setUint8(22 + 38, 1);
@@ -743,7 +708,7 @@ describe('extractHistoryObservations', () => {
     }), 'captureZeroCatastrophicCause'],
   ])('a forged capture-zero %s onset without the required body-speed crossing is REFUSED before physics', async (_band, rewrite, rule) => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       const individuals = decoded.individuals.map((row, i) => (i === 0 ? rewrite(row) : row));
       record.components.fitnessVector = serializeFitnessVector({
@@ -762,7 +727,7 @@ describe('extractHistoryObservations', () => {
 
   test('a vector larger than the capped header population is REFUSED before row materialization or physics', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const decoded = deserializeFitnessVector(record.components.fitnessVector);
       const last = decoded.individuals.at(-1);
       record.components.fitnessVector = serializeFitnessVector({
@@ -792,7 +757,7 @@ describe('extractHistoryObservations', () => {
 
   test('a stale evaluationMetadataVersion is REFUSED as unsupportedVersion — the same taxonomy as resume', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       const m = new Uint8Array(record.components.evaluationMetadata);
       new DataView(m.buffer).setUint16(0, 0, true); // evaluationMetadataVersion 1 -> 0
       record.components.evaluationMetadata = m;
@@ -805,7 +770,7 @@ describe('extractHistoryObservations', () => {
 
   test('a truncated metadata component is REFUSED as malformedHistory — the same taxonomy as resume', async () => {
     const artifact = await fixtureArtifact();
-    const broken = await reforge(artifact, (record) => {
+    const broken = await reforgeGenerationZero(artifact, (record) => {
       record.components.evaluationMetadata = record.components.evaluationMetadata.slice(0, 1);
     });
     await expectCodeAsync(() => extractHistoryObservations(broken), 'malformedHistory', /malformed/);
@@ -913,12 +878,87 @@ describe('extractHistoryObservations', () => {
   test('an over-ceiling artifact is refused BEFORE the copy', async () => {
     const oversized = new Uint8Array(MAX_EVOLUTION_HISTORY_BYTES + 1);
     copyOrdinaryBytes.mockClear();
-    let threw = null;
-    try {
-      await extractHistoryObservations(oversized);
-    } catch (e) { threw = e; }
-    expect(threw).toBeInstanceOf(EvolutionError);
-    expect(threw.code).toBe('resourceLimitExceeded');
+    await expectCodeAsync(() => extractHistoryObservations(oversized), 'resourceLimitExceeded');
     expect(copyOrdinaryBytes).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// PERSISTED PER-GENERATION METADATA (PR 2): the verified seam exposes each
+// generation's persisted effectiveDt and worldMode. These are the persisted
+// SHA-attested metadata values, checked for local coherence only — PR 2 does
+// NOT consume them in any transition derivation, and they are not by
+// themselves proof of equality with current runtime readback.
+// ============================================================================
+
+describe('persisted per-generation metadata exposure', () => {
+  test('each extracted generation exposes its own persisted effectiveDt and worldMode', async () => {
+    const artifact = await fixtureArtifact();
+    globalThis.__observationsProbe.evaluations = 0;
+    globalThis.__observationsProbe.worlds = 0;
+    const framing = decodeHistoryFraming(artifact);
+    const extracted = await extractHistoryObservations(artifact);
+    expect(extracted.generations).toHaveLength(framing.generations.length);
+    for (let i = 0; i < framing.generations.length; i += 1) {
+      // The oracle is DIRECT decoding of the persisted record — never a
+      // second implementation of the extraction logic.
+      const metadata = deserializeEvaluationMetadata(
+        decodeGenerationPayload(framing.generations[i].payloadBytes).components.evaluationMetadata,
+      );
+      const row = extracted.generations[i];
+      expect(row.effectiveDt).toBe(metadata.effectiveDt);
+      expect(row.worldMode).toBe(metadata.worldMode);
+      expect(row.executedSteps).toBe(metadata.executedSteps);
+    }
+    expect(globalThis.__observationsProbe).toEqual({ evaluations: 0, worlds: 0 });
+  });
+
+  test('extracted generations and their rows stay frozen', async () => {
+    const extracted = await extractHistoryObservations(await fixtureArtifact());
+    expect(Object.isFrozen(extracted)).toBe(true);
+    expect(Object.isFrozen(extracted.generations)).toBe(true);
+    for (const row of extracted.generations) {
+      expect(Object.isFrozen(row)).toBe(true);
+      expect(Object.isFrozen(row.individuals)).toBe(true);
+      for (const individual of row.individuals) {
+        expect(Object.isFrozen(individual)).toBe(true);
+        expect(Object.isFrozen(individual.integrityObservations)).toBe(true);
+      }
+    }
+  });
+
+  test('a reforged per-generation effectiveDt is reported per generation, never leaked across records', async () => {
+    const artifact = await fixtureArtifact();
+    globalThis.__observationsProbe.evaluations = 0;
+    globalThis.__observationsProbe.worlds = 0;
+    // Two DISTINCT legal values, larger than the persisted Math.fround(1/60):
+    // a larger dt scales the displacement thresholds UP, so the fixture's
+    // clean rows stay vector/metadata coherent (the withForeignDt mechanism);
+    // executedSteps and worldMode are left unchanged.
+    const foreignDts = new Map([[1, Math.fround(1 / 30)], [2, Math.fround(1 / 15)]]);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, recordIndex) => {
+        if (!foreignDts.has(recordIndex)) return;
+        const metadata = deserializeEvaluationMetadata(record.components.evaluationMetadata);
+        record.components.evaluationMetadata = serializeEvaluationMetadata({
+          ...metadata, effectiveDt: foreignDts.get(recordIndex),
+        });
+      },
+    });
+    const framing = decodeHistoryFraming(broken);
+    const extracted = await extractHistoryObservations(broken);
+    expect(extracted.generations).toHaveLength(3);
+    for (let i = 0; i < 3; i += 1) {
+      // Oracle: direct decode of THIS record's persisted metadata — each
+      // generation must report its own stored value.
+      const metadata = deserializeEvaluationMetadata(
+        decodeGenerationPayload(framing.generations[i].payloadBytes).components.evaluationMetadata,
+      );
+      expect(extracted.generations[i].effectiveDt).toBe(metadata.effectiveDt);
+      expect(extracted.generations[i].effectiveDt).toBe(foreignDts.get(i) ?? Math.fround(1 / 60));
+      expect(extracted.generations[i].worldMode).toBe(metadata.worldMode);
+      expect(extracted.generations[i].executedSteps).toBe(metadata.executedSteps);
+    }
+    expect(globalThis.__observationsProbe).toEqual({ evaluations: 0, worlds: 0 });
   });
 });

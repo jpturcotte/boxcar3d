@@ -48,6 +48,7 @@ import * as EvolutionLineageNS from '../src/sim/evolution-lineage.js';
 import * as EvolutionRunNS from '../src/sim/evolution-run.js';
 import * as EvolutionHistoryNS from '../src/sim/evolution-history.js';
 import * as EvolutionReplayNS from '../src/sim/evolution-replay.js';
+import * as EvolutionCapacityNS from '../src/sim/evolution-capacity.js';
 import * as Sha256NS from '../src/platform/sha256.js';
 import * as IntegrityNS from '../src/sim/integrity.js';
 import * as TraceNS from '../src/sim/trace.js';
@@ -358,6 +359,7 @@ const EXPECTED_EXPORTS = Object.freeze({
     'encodeEvolutionHeader', 'encodeGenerationPayload', 'peekEvaluationMetadataVersion',
     'projectEvolutionHistoryCapacity', 'serializeEvaluationMetadata',
   ]),
+  'evolution-capacity.js': Object.freeze(['assertHistoryCapacity']),
   // The platform adapter is INSIDE this family by ruling, not beside it: it is
   // a byte seam whose output is persisted artifact identity.
   'sha256.js': Object.freeze(['SHA256_DIGEST_BYTES', 'sha256']),
@@ -431,6 +433,7 @@ const NAMESPACES = Object.freeze({
   'evolution-run.js': EvolutionRunNS,
   'evolution-history.js': EvolutionHistoryNS,
   'evolution-replay.js': EvolutionReplayNS,
+  'evolution-capacity.js': EvolutionCapacityNS,
   'sha256.js': Sha256NS,
   'integrity.js': IntegrityNS,
   'trace.js': TraceNS,
@@ -678,6 +681,12 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'verifyEvolutionArtifactSemantics', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'verifyFitnessVectorMetadataCoherence', kind: 'validator', callerCollections: [], callerNumbers: [] },
     { name: 'captureExpectedIdentity', kind: 'validator', callerCollections: ['options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
+  ]),
+  'evolution-capacity.js': Object.freeze([
+    // The internal capacity policy gate shared by creation and persisted
+    // verification: reads the caller-supplied population's individuals and
+    // the intrinsic lengths of the initialization/spec byte arrays.
+    { name: 'assertHistoryCapacity', kind: 'validator', callerCollections: ['population.individuals', 'initializationBytes', 'specBytes'], callerNumbers: ['populationSize', 'maxGenerations', 'spec.maxSteps'] },
   ]),
   'evolution-history.js': Object.freeze([
     { name: 'EVOLUTION_HISTORY_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -935,6 +944,7 @@ const BYTE_FAMILY_NAMESPACES = Object.freeze({
   'src/sim/evolution-run.js': EvolutionRunNS,
   'src/sim/evolution-history.js': EvolutionHistoryNS,
   'src/sim/evolution-replay.js': EvolutionReplayNS,
+  'src/sim/evolution-capacity.js': EvolutionCapacityNS,
   'src/platform/sha256.js': Sha256NS,
 });
 
@@ -1047,6 +1057,12 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
     checkRuntimeIdentity: { intake: 'no-byte-intake', why: 'two string records in' },
     verifyEvolutionArtifactSemantics: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
     verifyFitnessVectorMetadataCoherence: { intake: 'no-byte-intake', why: 'consumes the module-owned verified record verifyHistoryArtifact produced' },
+  },
+  'src/sim/evolution-capacity.js': {
+    assertHistoryCapacity: {
+      intake: 'no-byte-intake',
+      why: 'reads the caller-supplied byte-array lengths through the sanctioned typedArrayByteLength intrinsic (fresh codec encodings have their lengths read at birth); copies nothing, retains nothing, never awaits — there is no caller-byte storage to gate',
+    },
   },
   'src/sim/evolution-history.js': {
     // Every one of these accepts caller bytes, and every one refuses fancy
@@ -1751,6 +1767,9 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   verifyHistoryArtifact: 'notExercised',
   captureExpectedIdentity: 'ownedCopy',
   resumeEvolutionRun: 'notExercised',
+  // evolution-capacity.js — returns nothing; both call sites pass
+  // module-owned decoded populations and module-owned byte arrays.
+  assertHistoryCapacity: 'scalar',
   // integrity.js
   foldIntegrity: 'callerElements', // returns the caller's own state object, by contract (chaining)
   // trace.js

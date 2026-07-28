@@ -19,8 +19,9 @@
 // per selected leaf), and the exact draw COUNT at once — a single extra or
 // missing draw shifts every later value and the genome stops matching.
 //
-// Seeds declared: population 20260740, terrain 20260741 (both allocated by
-// this PR; see the seed register in CLAUDE.md).
+// Seeds declared in tests/helpers/evolution-capacity-config.js: population
+// 20260740, terrain 20260741 (allocated by the engine PR, reused for the
+// capacity boundary; see the seed register in CLAUDE.md).
 
 import {
   describe, test, expect, vi, beforeEach,
@@ -104,8 +105,12 @@ const {
   digestHistoryBody, digestsEqual,
 } = await import('../src/sim/evolution-history.js');
 
-const POPULATION_SEED = 20260740;
-const TERRAIN_SEED = 20260741;
+const {
+  CAPACITY_POPULATION_SEED: POPULATION_SEED,
+  CAPACITY_TERRAIN_SEED: TERRAIN_SEED,
+  createCapacityEvaluationSpec,
+} = await import('./helpers/evolution-capacity-config.js');
+
 const POPULATION_SIZE = 6;
 // Independently measured public history-capacity boundaries for the declared
 // config below. These literals must not be derived from the projection helper
@@ -115,24 +120,9 @@ const HISTORY_CAPACITY_BOUNDARIES = Object.freeze([
   Object.freeze({ populationSize: 256, maximumFeasibleGenerations: 228 }),
 ]);
 
-// A small, fast, exactly-flat evaluation: craters and features off, a short
-// step budget. Physics realism is not the subject here — engine mechanics are.
-const SPEC = Object.freeze({
-  terrain: Object.freeze({
-    seed: TERRAIN_SEED,
-    startFlatLength: 30,
-    startBlendLength: 6,
-    craterDensity: 0,
-    featureDensity: 0,
-  }),
-  maxSteps: 45,
-  deterministic: true,
-  spawn: Object.freeze({ x: -44, z: 0 }),
-});
-
 const config = (overrides = {}) => ({
   initialization: { seed: POPULATION_SEED, populationSize: POPULATION_SIZE, ...(overrides.initialization ?? {}) },
-  evaluationSpec: { ...SPEC, terrain: { ...SPEC.terrain }, spawn: { ...SPEC.spawn }, ...(overrides.evaluationSpec ?? {}) },
+  evaluationSpec: { ...createCapacityEvaluationSpec(), ...(overrides.evaluationSpec ?? {}) },
   evolution: { maxGenerations: 3, ...(overrides.evolution ?? {}) },
 });
 
@@ -340,7 +330,7 @@ describe('run creation validates the complete configuration', () => {
     c.evolution.maxGenerations = 99;
     const probe = startProbe();
     await run.advance();
-    expect(probe.specs[0].maxSteps).toBe(SPEC.maxSteps);
+    expect(probe.specs[0].maxSteps).toBe(createCapacityEvaluationSpec().maxSteps);
     expect(probe.specs[0].terrain.seed).toBe(TERRAIN_SEED);
     // The population is generation 0 of the ORIGINAL seed: ids 0..N-1 and the
     // same genomes a fresh run at the original config produces.
@@ -770,7 +760,7 @@ describe('the committed history artifact', () => {
     expect(manifest.config.populationSize).toBe(POPULATION_SIZE);
     const spec = deserializeEvaluationSpec(header.evaluationSpecBytes);
     expect(spec.deterministic).toBe(true);
-    expect(spec.maxSteps).toBe(SPEC.maxSteps);
+    expect(spec.maxSteps).toBe(createCapacityEvaluationSpec().maxSteps);
     expect(spec.terrain.seed).toBe(TERRAIN_SEED);
   });
 
@@ -810,7 +800,7 @@ describe('the committed history artifact', () => {
     const payload = decodeGenerationPayload(framing.generations[0].payloadBytes);
     const metadata = deserializeEvaluationMetadata(payload.components.evaluationMetadata);
     expect(metadata.worldMode).toBe('isolatedWorlds');
-    expect(metadata.executedSteps).toBe(SPEC.maxSteps);
+    expect(metadata.executedSteps).toBe(createCapacityEvaluationSpec().maxSteps);
     // The engine's f32 timestep readback — the exact value the existing
     // evaluation locks bind, carried here because the fitness vector does not.
     expect(metadata.effectiveDt).toBe(Math.fround(1 / 60));

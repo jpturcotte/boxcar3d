@@ -125,6 +125,9 @@ evidence notes. Reference only; never import from `legacy/`.
   and the byte ceilings), `evolution-replay.js` (private ordered verification,
   the runtime/freshness and fitness-vector format gates, first-divergence
   reporting),
+  `evolution-capacity.js` (the internal history-capacity policy gate shared by
+  fresh creation and persisted verification — one implementation, every
+  reader, before runtime identity),
   `evolution-run.js` (THE deep module: the opaque run and the one private
   generation transition that `advance()` and replay share),
   `evolution-fixtures.js` + `evolution-locks.js` (the committed evolution
@@ -2474,11 +2477,11 @@ single clean commit `9c5f24c`):**
   record §5):** the LIVE order is now the integration-hardening sequence
   FIRST — PR 2 (the shared adversarial reforge helper, reader capacity
   parity, persisted `effectiveDt`/`worldMode` in the verified extraction,
-  the trusted in-process summarizer boundary), PR 3 (local lineage
-  validation, terminal-reason validation, record-count semantics and their
-  precedence tests), PR 4 (exact deterministic transition provenance and
-  opaque-boundary enforcement) — with empirical measurements blocked until
-  PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
+  the trusted in-process summarizer boundary) is LANDED; remaining: PR 3
+  (local lineage validation, terminal-reason validation, record-count
+  semantics and their precedence tests), PR 4 (exact deterministic transition
+  provenance and opaque-boundary enforcement) — with empirical measurements
+  blocked until PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
@@ -2647,8 +2650,8 @@ policy, selection or mutation behaviour change:**
   evidence; it does not act on it. The solver defect remains; Option A masks
   rather than fixes it; the multibody root-cause track stays deferred and
   appears nowhere in the diff. This discharges PR 4's recorded next-step (2)
-  and the decision record's §5 sequence step 1. **The next PRs are the
-  integration-hardening sequence, not measurements:** PR 2 owns the shared
+  and the decision record's §5 sequence step 1. **The remaining hardening PRs
+  are PR 3 and PR 4, not measurements:** PR 2 has landed — the shared
   adversarial reforge helper, reader capacity parity, persisted
   `effectiveDt`/`worldMode` in the verified extraction, and the trusted
   in-process summarizer boundary; PR 3 owns local lineage validation,
@@ -2661,6 +2664,68 @@ policy, selection or mutation behaviour change:**
   live in that later measurement PR, not here.
 - **Seeds allocated:** none (the v3 oracle re-encodes the committed
   fixture-A run).
+
+**Post-merge hardening PR 2 (reader capacity parity and persisted metadata) —
+ONE shared history-capacity gate for every reader, and the persisted
+`effectiveDt`/`worldMode` exposed through the verified extraction. NO
+evolution-policy, persisted-layout/version, or successful-run behaviour
+change:**
+- **One gate, one home.** `src/sim/evolution-capacity.js` holds the single
+  `assertHistoryCapacity` implementation (moved out of `evolution-run.js`;
+  the worst-case selection-concentration projection, the byte geometry, the
+  checked arithmetic, the `resourceLimitExceeded` code and the five
+  diagnostic fields are exactly preserved; the stale version wording now
+  names both versions precisely — history-format v1 carrying the
+  fitness-vector v3 component). Fresh creation applies it after generation-zero
+  normalization and before any runtime initialization, as before. Persisted
+  verification now applies it inside Gate C
+  (`verifyEvolutionArtifactSemantics`), AFTER the exact generation-zero
+  recreation bind and BEFORE runtime identity — so verified extraction and
+  resume refuse an over-declared artifact identically (same code, same five
+  context fields), with zero runtime-identity reads, zero worlds, zero
+  evaluations. The post-identity resume-only call is gone. Pre-fix, extraction
+  accepted a forged artifact declaring `maximumFeasibleGenerations + 1`
+  generations and resume refused only after reading runtime identity (the
+  red-first evidence is in the PR-2 commit history).
+- **Placement, proven by combined faults.** Expected artifact identity
+  (stage 8) and the nested compatibility gates (stage 9) still precede
+  capacity; capacity precedes the runtime gate (stage 12). The forged
+  artifact is synthesized from the real codecs with NO physics (initializer
+  population, encoded components, header bound to a construction-time
+  identity read), then reforged by the shared helper.
+- **Shared adversarial tooling.** `tests/helpers/evolution-artifacts.js`
+  (the reforge helper: header / raw-header-bytes / per-record mutation with
+  full component-digest, chain and history re-attestation — test-only
+  consistency-forgery tooling, never authenticity tooling) and
+  `tests/helpers/evolution-capacity-config.js` (the authoritative capacity
+  seeds and evaluation spec — the shared INPUT only; the `228`/`912` oracles
+  stay pinned as independent literals in `tests/evolution-run.test.js`).
+- **Persisted metadata in the extraction.** Each verified-extraction row is
+  now `{ generationIndex, terminalReason, executedSteps, effectiveDt,
+  worldMode, individuals }`, reusing the metadata Gate C already decoded (no
+  second decode anywhere). The values are the persisted SHA-attested
+  metadata, checked as local coherence only — not by themselves proof of
+  equality with current runtime readback; runtime identity is never read by
+  the seam, and deterministic resume replay remains necessary for physics
+  authenticity. PR 2 does not consume them in any transition derivation.
+  Cross-generation CONSTANCY of the persisted metadata is NOT a PR-2 gate —
+  each record's coherence is validated independently, so per-generation
+  `effectiveDt` drift still verifies; flagged as a PR 3
+  local-record-semantics candidate (external review, PR #32).
+- **The trusted summarizer boundary, documented.** `summarizeEvolutionHistory`
+  keeps its name; its docblock now carries the explicit trust boundary
+  (in-process `run.historyBytes()` only — never files, restored workspaces,
+  downloads, databases, retained blobs or foreign-process bytes; those go
+  through the verified seam or resume). No verified-summary API was added.
+- **What did NOT change.** Production fitness/integrity/selection/tournament/
+  elitism/mutation/terminal policy; every persisted layout and version; the
+  capacity formula, limit and diagnostic fields; fixtures, goldens, locks,
+  thresholds, dependencies, the campaign protocol, `REPLAY_STAGES`. PR 3
+  (local lineage, terminal-reason and record-count semantics) and PR 4 (exact
+  deterministic transition provenance and opaque-boundary enforcement)
+  remain, and **measurements stay blocked until PR 4 lands**.
+- **Seeds allocated:** none (the capacity boundary reuses 20260740/20260741
+  from the engine register above).
 
 ### Phase 1B PR 2 operator boundary
 

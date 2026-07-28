@@ -102,6 +102,7 @@ import { createEvolutionRun } from '../src/sim/evolution-run.js';
 import * as EvolutionHistoryNS from '../src/sim/evolution-history.js';
 import * as Sha256NS from '../src/platform/sha256.js';
 import * as EvolutionReplayNS from '../src/sim/evolution-replay.js';
+import * as EvolutionCapacityNS from '../src/sim/evolution-capacity.js';
 import {
   encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } from '../src/sim/evolution-history.js';
@@ -545,6 +546,18 @@ const CASES = [
   ['evolution-replay.captureExpectedIdentity',
     () => [{ expectedHistoryDigestBytes: new Uint8Array(32), expectedGenerationIndex: 2 }],
     (o) => EvolutionReplayNS.captureExpectedIdentity(o, (b) => new Uint8Array(b))],
+  // A FEASIBLE input: the capacity gate validates caller data (the population
+  // walk is exactly the shape this instrument exists for) and must not throw.
+  ['evolution-capacity.assertHistoryCapacity',
+    () => [{
+      population: createInitialPopulation({ seed: 20260740, populationSize: 2 }).population,
+      populationSize: 2,
+      maxGenerations: 2,
+      initializationBytes: new Uint8Array(8),
+      specBytes: new Uint8Array(8),
+      spec: { maxSteps: 10 },
+    }],
+    (c) => EvolutionCapacityNS.assertHistoryCapacity(c)],
   ['evolution-history.serializeEvaluationMetadata',
     () => [{ worldMode: 'isolatedWorlds', effectiveDt: 1 / 60, executedSteps: 45 }],
     (m) => serializeEvaluationMetadata(m)],
@@ -580,7 +593,8 @@ describe('single-read invariant over the public surface', () => {
 const NS = { assembly: AssemblyNS, population: PopulationNS, initializer: InitializerNS,
   evaluation: EvaluationNS, evolution: EvolutionNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS,
   evolutionContract: EvolutionContractNS, evolutionLineage: EvolutionLineageNS, evolutionRun: EvolutionRunNS,
-  evolutionHistory: EvolutionHistoryNS, sha256: Sha256NS, evolutionReplay: EvolutionReplayNS };
+  evolutionHistory: EvolutionHistoryNS, sha256: Sha256NS, evolutionReplay: EvolutionReplayNS,
+  evolutionCapacity: EvolutionCapacityNS };
 
 // Function exports that consume caller DATA but are covered outside the CASES
 // table (a dedicated describe block above) or need no single-read coverage.

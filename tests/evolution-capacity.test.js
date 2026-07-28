@@ -60,8 +60,9 @@ const {
 const {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION,
   MAX_EVOLUTION_HISTORY_BYTES, SHA256_DIGEST_BYTES,
-  assembleHistory, digestComponent, digestGeneration, digestHeader,
-  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
+  assembleHistory, decodeGenerationPayload, decodeHistoryFraming, digestComponent,
+  digestGeneration, digestHeader, encodeEvolutionHeader, encodeGenerationPayload,
+  serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
 const {
   EVOLUTION_LINEAGE_VERSION, serializeLineage, zeroLineageAccounting,
@@ -220,7 +221,8 @@ let forgedArtifact; // declares mfg + 1 — over the ceiling, digests re-atteste
 let staleVectorArtifact; // forged + readable stale fitness-vector version
 let staleMetadataArtifact; // forged + readable stale evaluation-metadata version
 let runtimeMismatchArtifact; // forged + a rapierVersion this environment is not
-let provenanceBrokenArtifact; // forged + a generation-0 population the manifest cannot recreate
+let provenancePrefilterArtifact; // forged + manifest state left at the ORIGINAL population
+let provenanceByteVerdictArtifact; // forged + every FNV state re-attested to the MUTATED population
 
 beforeAll(async () => {
   globalThis.__capacityProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
@@ -255,19 +257,40 @@ beforeAll(async () => {
   runtimeMismatchArtifact = await reforge(forgedArtifact, {
     mutateHeader: (header) => ({ ...header, rapierVersion: '99.99.99' }),
   });
-  provenanceBrokenArtifact = await reforge(forgedArtifact, {
-    mutateRecord: (record) => {
-      const population = new Uint8Array(record.components.population);
-      population[26] ^= 0xff; // inside the first genotype row's bytes
-      record.components.population = population;
-      // Re-align the vector's population binding so the artifact survives
-      // coherence and fails at the RECREATION bind, not an earlier gate.
-      const vector = deserializeFitnessVector(record.components.fitnessVector);
-      record.components.fitnessVector = serializeFitnessVector({
-        ...vector,
-        populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, population),
-      });
+  // Two provenance breaks, one per half of the recreation bind. The mutation
+  // is computed ONCE so the header and record mutations agree on it.
+  const sourceFraming = decodeHistoryFraming(sourceArtifact);
+  const sourcePopulation = decodeGenerationPayload(
+    sourceFraming.generations[0].payloadBytes,
+  ).components.population;
+  const mutatedPopulation = new Uint8Array(sourcePopulation);
+  mutatedPopulation[26] ^= 0xff; // inside the first genotype row's bytes
+  const mutatedPopulationState = fnv1aFold(FNV_OFFSET_BASIS, mutatedPopulation);
+  const rebindVector = (record) => {
+    record.components.population = mutatedPopulation;
+    // Re-align the vector's population binding so the artifact survives
+    // coherence and reaches the recreation bind itself.
+    const vector = deserializeFitnessVector(record.components.fitnessVector);
+    record.components.fitnessVector = serializeFitnessVector({
+      ...vector,
+      populationSnapshotDigestState: mutatedPopulationState,
+    });
+  };
+  // The manifest's stored population state is left pointing at the ORIGINAL
+  // population, so the bind's FNV PREFILTER is what fires.
+  provenancePrefilterArtifact = await reforge(forgedArtifact, {
+    mutateRecord: rebindVector,
+  });
+  // The manifest's stored population state (its final u32) is re-attested to
+  // the MUTATED population, so the prefilter passes and the exact recreation
+  // BYTE-COMPARE is what fires.
+  provenanceByteVerdictArtifact = await reforge(forgedArtifact, {
+    mutateHeader: (header) => {
+      const manifestBytes = new Uint8Array(header.initializationManifestBytes);
+      new DataView(manifestBytes.buffer).setUint32(manifestBytes.length - 4, mutatedPopulationState, true);
+      return { ...header, initializationManifestBytes: manifestBytes };
     },
+    mutateRecord: rebindVector,
   });
 
   // Probe discipline: construction must have read the runtime identity (the
@@ -345,7 +368,10 @@ describe('capacity parity across both persisted readers', () => {
     expectNoProbes();
   });
 
-  test('both readers report the identical capacity context', async () => {
+  test('all three capacity paths report the identical five-field context', async () => {
+    const creation = expectCode(
+      () => createEvolutionRun(configAt(POPULATION_SIZE, mfg + 1)), 'resourceLimitExceeded',
+    );
     const extraction = await expectCodeAsync(
       () => extractHistoryObservations(forgedArtifact), 'resourceLimitExceeded',
     );
@@ -356,7 +382,8 @@ describe('capacity parity across both persisted readers', () => {
       'projectedBytes', 'limit', 'maximumFeasibleGenerations',
       'requestedGenerations', 'generationFrameBytes',
     ]) {
-      expect(extraction.context[field], field).toBe(resume.context[field]);
+      expect(extraction.context[field], field).toBe(creation.context[field]);
+      expect(resume.context[field], field).toBe(creation.context[field]);
     }
     expectNoProbes();
   });
@@ -422,18 +449,30 @@ describe('capacity precedence in the verification ladder', () => {
     expectNoProbes();
   });
 
-  // The other half of the placement contract: capacity closes stage 11 AFTER
-  // the generation-zero recreation bind, so a provenance break must surface
-  // even when the declared generation count is impossible too. A reorder that
-  // ran capacity on the PERSISTED population would misreport this as
-  // resourceLimitExceeded. (The bind's FNV prefilter is what fires — the
-  // byte-compare behind it never gets to run.)
-  test('a generation-zero provenance break is reported before capacity by both readers', async () => {
+  // One half of the placement contract: capacity closes stage 11 AFTER the
+  // generation-zero recreation bind, so a provenance break must surface even
+  // when the declared generation count is impossible too. Here the bind's FNV
+  // PREFILTER fires (the manifest state points at the original population).
+  test('a generation-zero prefilter mismatch is reported before capacity by both readers', async () => {
     for (const reader of [extractHistoryObservations, resumeEvolutionRun]) {
       const err = await expectCodeAsync(
-        () => reader(provenanceBrokenArtifact), 'malformedHistory',
+        () => reader(provenancePrefilterArtifact), 'malformedHistory',
       );
       expect(err.context.rule).toBe('initializationPopulationDigestStateMismatch');
+    }
+    expectNoProbes();
+  });
+
+  // The exact half: with every FNV state re-attested to the MUTATED
+  // population the prefilter passes, so the recreation BYTE-COMPARE itself
+  // must fire — still before capacity. This is the ordering a capacity call
+  // moved between the prefilter and the byte-compare would silently break.
+  test('a generation-zero recreation byte-mismatch is reported before capacity by both readers', async () => {
+    for (const reader of [extractHistoryObservations, resumeEvolutionRun]) {
+      const err = await expectCodeAsync(
+        () => reader(provenanceByteVerdictArtifact), 'malformedHistory',
+      );
+      expect(err.context.rule).toBe('initializationPopulationRecreationMismatch');
     }
     expectNoProbes();
   });

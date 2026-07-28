@@ -2667,8 +2667,9 @@ policy, selection or mutation behaviour change:**
 
 **Post-merge hardening PR 2 (reader capacity parity and persisted metadata) —
 ONE shared history-capacity gate for every reader, and the persisted
-`effectiveDt`/`worldMode` exposed through the verified extraction. NO policy,
-layout, version or behaviour change:**
+`effectiveDt`/`worldMode` exposed through the verified extraction. NO
+evolution-policy, persisted-layout/version, or successful-run behaviour
+change:**
 - **One gate, one home.** `src/sim/evolution-capacity.js` holds the single
   `assertHistoryCapacity` implementation (moved out of `evolution-run.js`;
   the worst-case selection-concentration projection, the byte geometry, the

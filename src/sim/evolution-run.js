@@ -884,7 +884,8 @@ async function resumeFromOwnedBytes(owned, expected) {
   const populationSize = header.populationSize;
 
   // Stage 12: the runtime gate, after all product-level resource/coherence
-  // checks but before a single world is created.
+  // checks — capacity included, applied inside stage 11 — but before a single
+  // world is created.
   const runtime = await readDeterministicRuntimeIdentity();
   checkRuntimeIdentity(header, runtime);
 
@@ -896,14 +897,6 @@ async function resumeFromOwnedBytes(owned, expected) {
   // comparisons that report stage 'initialization', only the generation-0
   // LINEAGE one remains reachable for a verified artifact — everything later
   // is a derived generation.
-  assertHistoryCapacity({
-    population: generationZero.population,
-    populationSize,
-    maxGenerations: header.maxGenerations,
-    initializationBytes: header.initializationManifestBytes,
-    specBytes: header.evaluationSpecBytes,
-    spec,
-  });
   let populationBytes = generationZero.populationBytes;
   let lineageBytes = serializeLineage(initialLineage(populationIds(
     deserializePopulationSnapshot(populationBytes),

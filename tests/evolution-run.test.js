@@ -20,8 +20,8 @@
 // missing draw shifts every later value and the genome stops matching.
 //
 // Seeds declared in tests/helpers/evolution-capacity-config.js: population
-// 20260740, terrain 20260741 (both allocated by this PR; see the seed
-// register in CLAUDE.md).
+// 20260740, terrain 20260741 (allocated by the engine PR, reused for the
+// capacity boundary; see the seed register in CLAUDE.md).
 
 import {
   describe, test, expect, vi, beforeEach,

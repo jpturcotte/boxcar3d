@@ -50,6 +50,12 @@ export function assertHistoryCapacity({
       serializeGenotype(individuals[i].genotype).length,
     );
   }
+  // Population-snapshot framing — u16+u16+u32 header, then u32 id + u32
+  // length + genotype per member — is owned by the population codec
+  // (population.js `encodeMembers`, "callers never duplicate these offsets"),
+  // which exports no framing constants to import. The projection must mirror
+  // it, so tests/evolution-capacity.test.js pins this geometry against a real
+  // codec encoding byte for byte.
   const maximumPopulationBytes = checkedAdd(
     2 + 2 + 4,
     checkedMultiply(populationSize, 4 + 4 + maximumGenotypeBytes, 'projected population snapshot'),

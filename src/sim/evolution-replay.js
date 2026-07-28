@@ -1029,15 +1029,9 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
       + `from the persisted population snapshot (first differing byte ${mismatchOffset})`,
       context);
   }
-  // The history-capacity policy gate closes the stage: the SAME worst-case
-  // projection fresh creation applies before any runtime initialization,
-  // evaluated here on the trusted values this stage produced — the recreated
-  // generation-zero population, the decoded header, the canonical spec. A
-  // persisted artifact declaring more generations than the retained-history
-  // limit is refused `resourceLimitExceeded` after generation-zero provenance
-  // and before runtime identity, world creation, evaluation or replay, by
-  // every reader; capacity is a pure byte projection and needs no physics
-  // attestation.
+  // The history-capacity policy gate closes the stage, evaluated on the
+  // trusted values this stage produced (the placement contract is the
+  // function docblock's).
   assertHistoryCapacity({
     population: recreated.population,
     populationSize: header.populationSize,

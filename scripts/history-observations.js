@@ -37,9 +37,12 @@
 // the measurement layer's own PR, not this seam's).
 //
 // WHAT THIS SEAM ESTABLISHES — and what it does not. A returned artifact has
-// artifact identity (the digest ladder, plus the optional expected digest),
-// local coherence (the vector/metadata relationships), generation-zero
-// provenance (exact recreation) and capacity-policy compliance. `effectiveDt`
+// self-consistency (the full digest ladder), local coherence (the
+// vector/metadata relationships), generation-zero provenance (exact
+// recreation) and capacity-policy compliance. External expected artifact
+// identity — freshness — holds only when the caller supplies the optional
+// expected digest; without it the ladder proves the artifact attests itself,
+// not that it is the expected one. `effectiveDt`
 // and `worldMode` are the PERSISTED SHA-attested metadata values; the
 // vector/metadata relationships are checked as local coherence only, so these
 // persisted values are not by themselves proof of equality with current

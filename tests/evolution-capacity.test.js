@@ -55,7 +55,7 @@ vi.mock('../src/sim/physics/adapter.js', async (importOriginal) => {
 
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError, MAX_EVOLUTION_GENERATIONS,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS,
 } = await import('../src/sim/evolution-contract.js');
 const {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION,
@@ -74,6 +74,7 @@ const {
   createInitialPopulation, serializePopulationInitialization,
 } = await import('../src/sim/population-initializer.js');
 const { serializePopulationSnapshot } = await import('../src/sim/population.js');
+const { serializeGenotype } = await import('../src/sim/assembly.js');
 const {
   FITNESS_VECTOR_VERSION, POPULATION_WORLD_MODE, canonicalizeEvaluationSpec, serializeFitnessVector,
 } = await import('../src/sim/population-evaluation.js');
@@ -85,26 +86,9 @@ const { reforge } = await import('./helpers/evolution-artifacts.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
 } = await import('./helpers/evolution-capacity-config.js');
+const { expectCode, expectCodeAsync } = await import('./helpers/expect-code.js');
 
 const POPULATION_SIZE = 256;
-
-function expectCode(fn, code, re) {
-  let threw = null;
-  try { fn(); } catch (e) { threw = e; }
-  expect(threw, `expected a throw with code ${code}`).toBeInstanceOf(EvolutionError);
-  expect(threw.code).toBe(code);
-  if (re) expect(threw.message).toMatch(re);
-  return threw;
-}
-
-async function expectCodeAsync(promiseFn, code, re) {
-  let threw = null;
-  try { await promiseFn(); } catch (e) { threw = e; }
-  expect(threw, `expected a rejection with code ${code}`).toBeInstanceOf(EvolutionError);
-  expect(threw.code).toBe(code);
-  if (re) expect(threw.message).toMatch(re);
-  return threw;
-}
 
 const expectNoProbes = () => expect(globalThis.__capacityProbe)
   .toEqual({ identityReads: 0, worlds: 0, evaluations: 0 });
@@ -293,6 +277,27 @@ describe('the authoritative capacity configuration', () => {
     expect(typeof above.context.generationFrameBytes).toBe('number');
     // Creation is physics-free by construction.
     expectNoProbes();
+  });
+});
+
+// ============================================================================
+// Geometry pin: the projected population-snapshot framing IS the codec's
+// ============================================================================
+
+describe('the projected population-snapshot geometry', () => {
+  // The capacity module mirrors the population codec's member framing
+  // (2+2+4 header, 4+4+genotype per member) because population.js owns those
+  // offsets and exports no framing constants. This pin makes a codec framing
+  // change go RED here instead of silently under-projecting the history.
+  test('matches the population codec byte for byte', () => {
+    const { population } = createInitialPopulation({
+      seed: CAPACITY_POPULATION_SEED, populationSize: 8,
+    });
+    let codecFramedLength = 2 + 2 + 4;
+    for (const individual of population.individuals) {
+      codecFramedLength += 4 + 4 + serializeGenotype(individual.genotype).length;
+    }
+    expect(serializePopulationSnapshot(population).length).toBe(codecFramedLength);
   });
 });
 
@@ -486,14 +491,20 @@ describe('feasible artifacts through the capacity-complete gate', () => {
 // ============================================================================
 
 const CAPACITY_IMPORT = "import { assertHistoryCapacity } from './evolution-capacity.js';";
+const GATE_MODULE = 'src/sim/evolution-capacity.js';
+const GATE_READERS = ['src/sim/evolution-run.js', 'src/sim/evolution-replay.js'];
 
-const SRC_FILES = [
-  'src/main.js',
-  ...['src/sim', 'src/ui', 'src/workers', 'src/platform', 'src/render']
-    .flatMap((dir) => readdirSync(dir)
-      .filter((name) => name.endsWith('.js'))
-      .map((name) => `${dir}/${name}`)),
-];
+// Recursive (nested families like src/sim/physics/ are included) and spanning
+// scripts/ too, so no offline consumer can reach the internal gate. Outside
+// the gate module and its two readers, ANY reference to the module fails —
+// there is no import-shape regex to evade.
+const walkJs = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  const path = `${dir}/${entry.name}`;
+  return entry.isDirectory() ? walkJs(path) : [path];
+});
+const SOURCE_FILES = ['src', 'scripts']
+  .flatMap(walkJs)
+  .filter((path) => path.endsWith('.js'));
 
 describe('the capacity policy gate has exactly one internal home', () => {
   test('evolution-run.js imports the shared gate', () => {
@@ -504,11 +515,24 @@ describe('the capacity policy gate has exactly one internal home', () => {
     expect(readFileSync('src/sim/evolution-replay.js', 'utf8')).toContain(CAPACITY_IMPORT);
   });
 
-  test('no src/ module re-exports the internal gate', () => {
-    for (const file of SRC_FILES) {
+  test('no other src/ or scripts/ module even references the internal gate', () => {
+    for (const file of SOURCE_FILES) {
+      if (file === GATE_MODULE || GATE_READERS.includes(file)) continue;
       const source = readFileSync(file, 'utf8');
-      const reExports = [...source.matchAll(/^\s*export[^;]*?from\s+'[^']*evolution-capacity\.js';/gm)];
-      expect(reExports, `${file} must not re-export evolution-capacity.js`).toEqual([]);
+      expect(source.includes('evolution-capacity'), `${file} must not reference evolution-capacity.js`)
+        .toBe(false);
+    }
+  });
+
+  test('the two readers never re-export the gate, in any export shape', () => {
+    // Multiline-tolerant: `export { ... } from`, `export * from`, and the
+    // direct `export { assertHistoryCapacity }` shape.
+    const fromReExport = /export\s+(?:\*|\{[\s\S]*?\})\s*from\s*['"][^'"]*evolution-capacity\.js['"]/;
+    const namedReExport = /export\s*\{[^}]*\bassertHistoryCapacity\b[^}]*\}/;
+    for (const file of GATE_READERS) {
+      const source = readFileSync(file, 'utf8');
+      expect(fromReExport.test(source), `${file} must not re-export evolution-capacity.js`).toBe(false);
+      expect(namedReExport.test(source), `${file} must not re-export assertHistoryCapacity`).toBe(false);
     }
   });
 });

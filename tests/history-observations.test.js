@@ -62,6 +62,7 @@ const {
   decodeHistoryFraming, deserializeEvaluationMetadata, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
 const { reforge } = await import('./helpers/evolution-artifacts.js');
+const { expectCodeAsync } = await import('./helpers/expect-code.js');
 const { MAX_EVOLUTION_HISTORY_BYTES } = await import('../src/sim/evolution-replay.js');
 const {
   deserializeEvaluationSpec, deserializeFitnessVector, serializeEvaluationSpec, serializeFitnessVector,
@@ -111,15 +112,6 @@ const reforgeGenerationZero = (bytes, mutateRecord, mutateHeader = null) =>
     mutateHeader: mutateHeader ?? undefined,
     mutateRecord: (record, i) => { if (i === 0) mutateRecord(record); },
   });
-
-async function expectCodeAsync(promiseFn, code, re) {
-  let threw = null;
-  try { await promiseFn(); } catch (e) { threw = e; }
-  expect(threw, `expected a rejection with code ${code}`).toBeInstanceOf(EvolutionError);
-  expect(threw.code).toBe(code);
-  if (re) expect(threw.message).toMatch(re);
-  return threw;
-}
 
 describe('extractHistoryObservations', () => {
   test('a self-consistent history with a malformed evaluation spec is refused by extraction and resume before physics', async () => {
@@ -935,6 +927,7 @@ describe('persisted per-generation metadata exposure', () => {
       expect(Object.isFrozen(row)).toBe(true);
       expect(Object.isFrozen(row.individuals)).toBe(true);
       for (const individual of row.individuals) {
+        expect(Object.isFrozen(individual)).toBe(true);
         expect(Object.isFrozen(individual.integrityObservations)).toBe(true);
       }
     }

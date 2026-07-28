@@ -2718,6 +2718,8 @@ layout, version or behaviour change:**
   (local lineage, terminal-reason and record-count semantics) and PR 4 (exact
   deterministic transition provenance and opaque-boundary enforcement)
   remain, and **measurements stay blocked until PR 4 lands**.
+- **Seeds allocated:** none (the capacity boundary reuses 20260740/20260741
+  from the engine register above).
 
 ### Phase 1B PR 2 operator boundary
 

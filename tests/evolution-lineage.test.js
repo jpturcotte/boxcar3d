@@ -21,7 +21,7 @@ import { describe, test, expect } from 'vitest';
 
 import {
   EVOLUTION_LINEAGE_VERSION, LINEAGE_ACCOUNTING_KEYS, LINEAGE_NO_PARENT, LINEAGE_ORIGINS,
-  crossCheckLineage, deserializeLineage, lineageByteLength, serializeLineage,
+  crossCheckLineage, deserializeLineage, lineageByteLength, peekLineageVersion, serializeLineage,
   validateLineage, zeroLineageAccounting,
 } from '../src/sim/evolution-lineage.js';
 import { EvolutionError } from '../src/sim/evolution-contract.js';
@@ -366,5 +366,26 @@ describe('crossCheckLineage — the agreement the codec cannot see', () => {
     const decoded = deserializeLineage(serializeLineage(mixedLineage()));
     expectCode(() => crossCheckLineage(decoded, 2, [4, 5, 6, 7], [0, 1, 2, 3]),
       'malformedHistory', /does not match the record's/);
+  });
+});
+
+describe('peekLineageVersion — the nested-version peek', () => {
+  test('the current version is returned, frozen', () => {
+    const peeked = peekLineageVersion(serializeLineage(initializedLineage([0, 1])));
+    expect(peeked).toEqual({ lineageVersion: EVOLUTION_LINEAGE_VERSION });
+    expect(Object.isFrozen(peeked)).toBe(true);
+  });
+
+  test('a stale version is still RETURNED — classification is the gate’s job, not the peek’s', () => {
+    const bytes = new Uint8Array(serializeLineage(initializedLineage([0, 1])));
+    new DataView(bytes.buffer).setUint16(0, EVOLUTION_LINEAGE_VERSION + 1, true);
+    expect(peekLineageVersion(bytes)).toEqual({ lineageVersion: EVOLUTION_LINEAGE_VERSION + 1 });
+    // …while the full decoder refuses the same bytes as unsupported.
+    expectCode(() => deserializeLineage(bytes), 'unsupportedVersion', /lineageVersion/);
+  });
+
+  test('a prefix too short to reveal the version is MALFORMED, never unsupported', () => {
+    expectCode(() => peekLineageVersion(new Uint8Array(1)), 'malformedHistory', /lineageVersion/);
+    expectCode(() => peekLineageVersion(new Uint8Array(0)), 'malformedHistory', /lineageVersion/);
   });
 });

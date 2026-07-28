@@ -590,6 +590,15 @@ RAISE after stage 8.
   gate — the same worst-case projection fresh creation applies — so an
   over-declared history is refused `resourceLimitExceeded` after
   generation-zero provenance and before runtime identity, by every reader.)
+  (Post-merge hardening PR 3, 2026-07-28: between provenance and capacity the
+  gate now also runs the local-semantics pass — the lineage component's
+  nested version joins stage 9's independent peeks, `crossCheckLineage`
+  verifies each generation against its population and predecessor, the exact
+  fresh-id blocks (`generationIndex × populationSize + memberIndex`) are
+  enforced, the persisted terminal reason must equal the one the persisted
+  facts imply through the contract's single `terminalReasonFor`, and the
+  record count must not exceed `header.maxGenerations` — all pre-physics,
+  shared by both readers.)
 
 ### Locks, capacity, and the fixture role split
 

@@ -47,9 +47,16 @@ verified extraction and resume alike; the verified extraction also returns
 each generation's persisted `effectiveDt`/`worldMode` (persisted SHA-attested
 values, not runtime proof); the shared adversarial reforge helper lives in
 `tests/helpers/`; and the trusted in-process summarizer boundary is documented
-at `summarizeEvolutionHistory` itself. The remaining PRs are PR 3 (local
-lineage validation, terminal-reason validation, record-count semantics and
-their precedence tests) and PR 4 (exact deterministic transition provenance
+at `summarizeEvolutionHistory` itself. **PR 3 has landed** — a
+local-semantics pass now closes the shared pre-physics gate between
+generation-zero provenance and capacity: each generation's lineage is
+cross-checked against its population and predecessor, the exact fresh-id
+allocation blocks (`generationIndex × populationSize + memberIndex`) are
+verified, the persisted terminal reason must equal the one the persisted
+facts imply through the contract's single `terminalReasonFor`, and the record
+count must not exceed the declared `maxGenerations` — all before runtime
+identity, with zero physics, by both readers. The remaining PR is PR 4 (exact
+deterministic transition provenance
 and opaque-boundary enforcement) — and the breeding-pool and false-negative
 measurements the persisted observations enable stay **blocked until PR 4
 lands**. Previously:

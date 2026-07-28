@@ -117,9 +117,13 @@ const configAt = (populationSize, maxGenerations) => ({
 // Clean, coherence-legal v3 rows: null onsets and zero peaks imply no alert
 // or catastrophic step under any positive dt, so the vector stays coherent
 // with its sibling metadata (the okRow precedent in evolution-replay.test.js).
+// `valid: true` because the local-semantics pass reconstructs the selectable
+// pool from the persisted vector: an invalid row is unselectable, and an
+// empty pool with a persisted terminalReason 'none' is refused
+// `terminalReasonMismatch` BEFORE the capacity gate this file targets.
 const cleanRow = (individualId) => ({
   individualId,
-  valid: false,
+  valid: true,
   integrityStatus: 'ok',
   fitness: 0,
   integrityObservations: {

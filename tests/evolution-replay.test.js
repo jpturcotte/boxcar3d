@@ -536,38 +536,39 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     ]);
   });
 
-  test("generation 0's lineage diverges at stage 'initialization' with no last-agreed generation", async () => {
+  test("generation 0's lineage drift is now refused PRE-PHYSICS — the stage-'initialization' lineage comparison is structurally unreachable", async () => {
     // Stage 'initialization' compares generation 0's population AND its
-    // lineage. The POPULATION comparison is now structurally unreachable for
-    // a verified artifact: stage 11 recreates generation 0 from the manifest
-    // config and requires exact byte identity with the persisted population
-    // BEFORE the runtime gate, and resume replays from that verified
-    // recreation — so the population-content flip this test used to make
-    // (with the vector's AND the manifest's FNV states both re-attested) is
-    // refused as malformedHistory inside stage 11, before any physics. That
-    // attack and its pre-physics verdict are covered in
-    // tests/history-observations.test.js. The LINEAGE comparison remains
-    // genuinely replay-localized: no pre-physics gate binds generation 0's
-    // lineage component, so a self-consistent artifact with a drifted initial
-    // lineage is found only by re-running the generation — and it reports at
-    // generation 0 with nothing agreed before it.
+    // lineage. BOTH halves are now structurally unreachable for a verified
+    // artifact. The POPULATION comparison fell to PR 2: stage 11 recreates
+    // generation 0 from the manifest config and requires exact byte identity
+    // with the persisted population BEFORE the runtime gate, and resume
+    // replays from that verified recreation — so the population-content flip
+    // this test used to make (with the vector's AND the manifest's FNV states
+    // both re-attested) is refused as malformedHistory inside stage 11, before
+    // any physics. That attack and its pre-physics verdict are covered in
+    // tests/history-observations.test.js. The LINEAGE comparison fell to the
+    // local-semantics pass: generation 0 must be all-`initialized`, and an
+    // initialized row must carry the no-parent sentinel — both checked from
+    // persisted facts alone, before any physics, so the drifted initial
+    // lineage below is refused at the pass's lineage decode rather than found
+    // by re-running the generation. What replay's lineage stage still owns is
+    // gate-invisible content (a mutation row's accounting — pinned by the
+    // multiple-faults test below).
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
         if (i === 0) {
           const l = new Uint8Array(record.components.lineage);
           // The first row's parent id, at header(10) + id(4): gen-0 rows
-          // carry the no-parent sentinel, and replay recomputes exactly that.
+          // must carry the no-parent sentinel, so this is codec-malformed.
           new DataView(l.buffer).setUint32(14, 4, true);
           record.components.lineage = l;
         }
       },
     });
-    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
-    expect(err.context.stage).toBe('initialization');
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory',
+      /generation 0 lineage is malformed/);
     expect(err.context.generationIndex).toBe(0);
-    expect(err.context.lastAgreedGenerationIndex).toBeNull();
-    expect(err.context.byteOffset).toBe(14);
   });
 
   test("generation 1's population diverges at stage 'population', with generation 0 agreed", async () => {
@@ -626,18 +627,27 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.stage).toBe('fitnessVector');
   });
 
-  test("a changed terminal reason diverges at stage 'terminalReason', with both values reported", async () => {
+  test('a contradictory persisted terminal reason is now refused PRE-PHYSICS — the replay terminalReason stage is structurally unreachable', async () => {
+    // The terminal decision is a pure function of persisted facts: the
+    // selectable pool reconstructed from the persisted fitness vector, the
+    // generation index, the header's maxGenerations/populationSize, and the
+    // verified id allocation. The local-semantics pass evaluates that same
+    // function (terminalReasonFor, one home in the contract) before any
+    // physics, so a persisted reason that contradicts the persisted facts is
+    // malformedHistory in stage 11 — and the replay stage below it can only
+    // fire when the replayed fitness vector itself diverged first (byte
+    // equality there implies an identical pool and an identical decision).
     const artifact = await runToTerminal();
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
         if (i === 2) record.terminalReason = 'noSelectableParents';
       },
     });
-    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
-    expect(err.context.stage).toBe('terminalReason');
-    expect(err.context.expected).toBe('noSelectableParents');
-    expect(err.context.actual).toBe('generationLimitReached');
-    expect(err.context.lastAgreedGenerationIndex).toBe(1);
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.context.rule).toBe('terminalReasonMismatch');
+    expect(err.context.generationIndex).toBe(2);
+    expect(err.context.stored).toBe('noSelectableParents');
+    expect(err.context.expected).toBe('generationLimitReached');
   });
 
   test("a changed lineage diverges at stage 'lineage'", async () => {
@@ -663,7 +673,15 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
       mutateRecord: (record, i) => {
         if (i !== 1) return;
         record.components.evaluationMetadata = flipByte(record.components.evaluationMetadata, 3);
-        record.components.lineage = flipByte(record.components.lineage, 14);
+        // A GATE-INVISIBLE lineage fault, so this test stays at the replay
+        // stage ordering it pins: generation 1's last row is a
+        // continuousMutation row, whose eleven accounting counters are
+        // codec-legal at any u32 (verifying them against genotype deltas is
+        // PR 4). Byte 284 is that row's first counter — header(10) + 5 rows
+        // × 53 + id(4) + parent(4) + origin(1). Replay regenerates the real
+        // accounting, so the drift is found at stage 'lineage' — after the
+        // metadata fault, which REPLAY_STAGES orders first.
+        record.components.lineage = flipByte(record.components.lineage, 284);
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');

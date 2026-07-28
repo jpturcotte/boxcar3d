@@ -66,7 +66,7 @@ import {
   analyzeTrace, bodyReachMetadataForIR, offlineIntegrityView,
 } from '../src/sim/trace-forensics.js';
 import {
-  deserializeLineage, serializeLineage, zeroLineageAccounting,
+  deserializeLineage, peekLineageVersion, serializeLineage, zeroLineageAccounting,
 } from '../src/sim/evolution-lineage.js';
 import {
   assembleHistory, decodeEvolutionHeader, decodeGenerationPayload, decodeHistoryFraming,
@@ -331,12 +331,12 @@ const EXPECTED_EXPORTS = Object.freeze({
     'EvolutionError', 'MAX_EVOLUTION_EVALUATION_WORK', 'MAX_EVOLUTION_GENERATIONS',
     'MAX_EVOLUTION_POPULATION_SIZE',
     'TERMINAL_REASONS', 'assertEvaluationWork', 'checkedAdd', 'checkedMultiply', 'evolutionFail',
-    'isEvolutionUint32',
+    'isEvolutionUint32', 'terminalReasonFor',
   ]),
   'evolution-lineage.js': Object.freeze([
     'EVOLUTION_LINEAGE_VERSION', 'LINEAGE_ACCOUNTING_KEYS', 'LINEAGE_NO_PARENT',
     'LINEAGE_ORIGINS', 'crossCheckLineage', 'deserializeLineage', 'lineageByteLength',
-    'serializeLineage', 'validateLineage', 'zeroLineageAccounting',
+    'peekLineageVersion', 'serializeLineage', 'validateLineage', 'zeroLineageAccounting',
   ]),
   'evolution-run.js': Object.freeze([
     'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_POLICY_VERSION', 'TERMINAL_REASONS',
@@ -645,6 +645,14 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'assertEvaluationWork', kind: 'pure', callerCollections: [], callerNumbers: ['populationSize', 'maxSteps'] },
     { name: 'checkedAdd', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
     { name: 'checkedMultiply', kind: 'pure', callerCollections: [], callerNumbers: ['a', 'b'] },
+    // The ONE home of the terminal-reason precedence, over scalars only — the
+    // contract leaf deliberately never learns the selection-pool object shape.
+    {
+      name: 'terminalReasonFor',
+      kind: 'pure',
+      callerCollections: [],
+      callerNumbers: ['selectableCount', 'generationIndex', 'maxGenerations', 'nextIndividualId', 'populationSize'],
+    },
   ]),
   'evolution-lineage.js': Object.freeze([
     { name: 'EVOLUTION_LINEAGE_VERSION', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -656,6 +664,9 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'validateLineage', kind: 'validator', callerCollections: ['lineage.individuals'], callerNumbers: [] },
     { name: 'serializeLineage', kind: 'encoder', callerCollections: ['lineage.individuals'], callerNumbers: [] },
     { name: 'deserializeLineage', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
+    // The replay gate's nested-version peek: reads bytes, returns a frozen
+    // record holding the one declared version scalar, never a full decode.
+    { name: 'peekLineageVersion', kind: 'decoder', callerCollections: ['bytes'], callerNumbers: [] },
     { name: 'crossCheckLineage', kind: 'validator', callerCollections: ['individualIds', 'previousIndividualIds'], callerNumbers: [] },
   ]),
   'evolution-run.js': Object.freeze([
@@ -838,7 +849,7 @@ const BYTE_FAMILY_EXEMPT = Object.freeze({
   'src/sim/population-fixtures.js': 'declared fixture literals',
   'src/sim/population-locks.js': 'golden literals only, zero imports',
   'src/sim/evolution-operators.js': 'plain population/pool/genotype inputs; serializes only module-owned canonical data',
-  'src/sim/evolution-contract.js': 'error taxonomy, terminal enum, caps and checked arithmetic; no byte buffers, no caller collections beyond a scalar-copied error context',
+  'src/sim/evolution-contract.js': 'error taxonomy, terminal enum and its one scalar decision function, caps and checked arithmetic; no byte buffers, no caller collections beyond a scalar-copied error context',
   'src/sim/evolution-fixtures.js': 'declared fixture literals',
   'src/sim/evolution-locks.js': 'golden literals only, zero imports',
   'src/sim/lock-markers.js': 'message-format constants',
@@ -1027,6 +1038,7 @@ const BYTE_STORAGE_INTAKE = Object.freeze({
   },
   'src/sim/evolution-lineage.js': {
     deserializeLineage: { intake: 'gated', invoke: (u) => deserializeLineage(u) },
+    peekLineageVersion: { intake: 'gated', invoke: (u) => peekLineageVersion(u) },
     serializeLineage: { intake: 'no-byte-intake', why: 'lineage object in; returns fresh module-owned bytes' },
     validateLineage: { intake: 'no-byte-intake', why: 'lineage object in' },
     crossCheckLineage: { intake: 'no-byte-intake', why: 'decoded lineage + two id arrays in' },
@@ -1733,6 +1745,7 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   validateLineage: 'scalar',
   serializeLineage: 'freshBytes',
   deserializeLineage: 'ownedCopy',
+  peekLineageVersion: 'ownedCopy',
   crossCheckLineage: 'scalar',
   // evolution-run.js — the run is opaque; `createEvolutionRun` returns an
   // object with no property reachable from the caller's config, and the
@@ -1932,6 +1945,7 @@ function ownedCopyCases() {
       return [
         { name: 'canonicalizeEvaluationSpec', result: canonicalizeEvaluationSpec(cSpec), roots: [cSpec] },
         { name: 'deserializeLineage', result: deserializeLineage(lineageBytes), roots: [lineageBytes] },
+        { name: 'peekLineageVersion', result: peekLineageVersion(lineageBytes), roots: [lineageBytes] },
         // The error must not retain the caller's context object: every
         // non-scalar is coerced to a string on the way in, so a diagnostic can
         // never become a back door to live run state.

@@ -2477,11 +2477,11 @@ single clean commit `9c5f24c`):**
   record §5):** the LIVE order is now the integration-hardening sequence
   FIRST — PR 2 (the shared adversarial reforge helper, reader capacity
   parity, persisted `effectiveDt`/`worldMode` in the verified extraction,
-  the trusted in-process summarizer boundary) is LANDED; remaining: PR 3
-  (local lineage validation, terminal-reason validation, record-count
-  semantics and their precedence tests), PR 4 (exact deterministic transition
-  provenance and opaque-boundary enforcement) — with empirical measurements
-  blocked until PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
+  the trusted in-process summarizer boundary) and PR 3 (local lineage
+  validation, terminal-reason validation, record-count semantics and their
+  precedence tests) are LANDED; remaining: PR 4 (exact deterministic
+  transition provenance and opaque-boundary enforcement) — with empirical
+  measurements blocked until PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
@@ -2726,6 +2726,100 @@ change:**
   remain, and **measurements stay blocked until PR 4 lands**.
 - **Seeds allocated:** none (the capacity boundary reuses 20260740/20260741
   from the engine register above).
+
+**Post-merge hardening PR 3 (local lineage, terminal, and record semantics) —
+the verification ladder's stage 11 now closes with a local-semantics pass
+between generation-zero provenance and the capacity gate: the lineage,
+ID-allocation, terminal and record-count invariants the pass owns, each
+decidable from persisted facts without reproducing generation N+1 (elite-
+genotype equality, parent ranking, replacement shape and accounting-vs-delta
+checks are persisted-fact checks too — and remain PR 4's scope), refused
+with zero identity reads, zero worlds,
+zero evaluations by BOTH readers. NO evolution-policy, persisted-layout/
+version, or successful-run behaviour change:**
+- **Lineage compatibility and coherence, applied to the artifact.**
+  `peekLineageVersion` joins stage 9's independent nested-version peeks (the
+  third component, through its own module's layered peek): a stale lineage
+  version reports `unsupportedVersion` before any current-format semantic
+  defect, and a malformed lineage prefix never masks a stale vector or
+  metadata version (nor they it). `crossCheckLineage` — the pre-existing
+  reusable primitive — now verifies the persisted artifact, not just the
+  producer's fresh records: record index, lineage ids exactly equal to
+  population ids, generation 0 all-initialized, no initialized rows later,
+  every derived parent in the immediately preceding generation. The lineage's
+  row geometry is bounded against the capped header population BEFORE any row
+  is decoded (`lineagePopulationSizeOverflow`, the fitness-vector allocation
+  guard's twin — a 16 MiB component could otherwise declare ~316k rows and
+  materialize them all before any count check).
+- **The exact v1 ID-allocation rule.** Member m of generation g must carry id
+  `g × populationSize + m` — a fresh, contiguous, never-recycled block per
+  generation (checked arithmetic; `individualIdAllocationMismatch` naming
+  generation, member, stored and expected). Without it a forged history could
+  recycle generation 0's ids in generation 1 with population, vector and
+  lineage all in agreement and every parent valid — passing
+  `crossCheckLineage` while violating the policy the (seed, childId) RNG
+  streams depend on. This is local semantics, not PR-4 transition provenance:
+  no physics and no genotype reproduction, only the persisted policy
+  invariant; it also grounds the terminal derivation's `nextIndividualId`.
+- **Terminal policy, one scalar home.** The producer's terminal decision moved
+  into `evolution-contract.js` as `terminalReasonFor` over scalars
+  (`selectableCount`, never the pool object — the contract leaf stays
+  scalar-only); producer and verifier call the SAME function, so the policy
+  cannot drift into two interpretations (a source-static guard pins the one
+  home). The stored reason must equal the reason the persisted facts imply:
+  an empty reconstructed pool means `noSelectableParents` (even at the
+  declared last generation — precedence included), a nonempty pool at that
+  generation means `generationLimitReached` (so the reason implies the count
+  reached `maxGenerations`, and reaching `maxGenerations` without it is
+  equally impossible), `none` stays legal on a partial resumable history's
+  last record, and `individualIdExhausted` can never be the expected reason
+  under the v1 caps (`(i + 2) × 256 − 1 ≤ 1025 × 256 − 1 ≪ 2³²`) — a
+  persisted one always mismatches. If the caps or allocation semantics ever
+  move, that arithmetic must be revisited.
+- **Record count.** The actual record count must not exceed
+  `header.maxGenerations` (`recordCountExceedsMaxGenerations`), checked before
+  the per-generation rules so a lying count never drives the ID/terminal
+  derivation. Contiguity of generation indices and terminal-record-last stay
+  at stage 5 (`generationChainMismatch`), deliberately not re-checked; fewer
+  records than `maxGenerations` remains legal when the final stored record is
+  nonterminal.
+- **Placement and precedence, proven by combined faults.** The pass runs
+  inside Gate C after the generation-zero recreation bind and before
+  `assertHistoryCapacity`, shared by resume and verified extraction: wrong
+  expected digest → stale nested version → malformed lineage/ID/terminal/
+  count semantics → capacity → runtime identity. Within one generation:
+  lineage/population coherence, then the ID rule, then the terminal rule;
+  across generations the first defect in generation order wins. Red-first:
+  every refusal case verified on the pre-PR main and is now refused
+  pre-physics. Two replay-suite pins reclassified because their fault classes
+  became provable from persisted facts — a contradictory persisted terminal
+  reason and generation-0 lineage drift now report `malformedHistory` in
+  stage 11 instead of `replayDivergence` at `terminalReason`/`initialization`
+  (those replay stages are structurally unreachable for a verified artifact,
+  the same ruling PR 2 gave the initialization-population comparison);
+  replay's lineage stage keeps the gate-invisible content classes — a
+  mutation row's accounting, a parent swap inside the preceding generation, a
+  zero-accounting eliteCopy↔continuousMutation origin flip — as its
+  remaining subjects.
+- **The `effectiveDt`-constancy decision: DEFERRED, explicitly.** PR #32
+  flagged cross-generation `effectiveDt` constancy as a PR-3 candidate, not a
+  settled requirement. Producer-side the invariant holds absolutely
+  (`FIXED_DT` is a build constant, and a readback drift fails loud), but the
+  ratified verifier contract judges each record against its OWN persisted
+  metadata — pinned by two `tests/evolution-replay.test.js` cases that route
+  a drifted dt to `replayDivergence` at `evaluationMetadata` — so
+  history-format v1 does not bind one invariant timestep across the run.
+  Ratifying constancy later means deliberately amending those two tests and
+  choosing a constancy refusal over today's precise localization;
+  world-mode constancy is already structural (single-entry `WORLD_MODES`, so
+  any other persisted value is malformed at decode).
+- **What did NOT change.** Production fitness/integrity/selection/tournament/
+  elitism/mutation/terminal policy and its outcomes; every persisted layout
+  and version; `REPLAY_STAGES`; the resume replay loop; fresh-creation
+  capacity placement; fixtures, goldens, locks, thresholds, dependencies.
+  PR 4 (exact deterministic transition provenance and opaque-boundary
+  enforcement) remains, and **measurements stay blocked until PR 4 lands**.
+- **Seeds allocated:** none.
 
 ### Phase 1B PR 2 operator boundary
 

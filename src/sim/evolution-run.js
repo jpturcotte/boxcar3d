@@ -73,7 +73,7 @@ import { readDeterministicRuntimeIdentity } from './physics/adapter.js';
 import {
   EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError,
   MAX_EVOLUTION_GENERATIONS, MAX_EVOLUTION_POPULATION_SIZE, assertEvaluationWork,
-  checkedAdd, evolutionFail, isEvolutionUint32,
+  checkedAdd, evolutionFail, isEvolutionUint32, terminalReasonFor,
 } from './evolution-contract.js';
 import { assertHistoryCapacity } from './evolution-capacity.js';
 import {
@@ -446,9 +446,15 @@ async function runGeneration({
       { generationIndex });
   }
   const pool = selectablePoolFromEvaluation(decodedVector);
-  // TERMINAL FIRST, exactly once, before anything is encoded or digested.
-  const terminalReason = terminalFor({
-    pool, generationIndex, maxGenerations, nextIndividualId, populationSize,
+  // TERMINAL FIRST, exactly once, before anything is encoded or digested. The
+  // policy itself lives in evolution-contract (terminalReasonFor) so the
+  // replay verifier checks a record against the SAME rule that produced it.
+  const terminalReason = terminalReasonFor({
+    selectableCount: pool.individuals.length,
+    generationIndex,
+    maxGenerations,
+    nextIndividualId,
+    populationSize,
   });
   const next = terminalReason === 'none' ? deriveNextGeneration({
     population, pool, seed, mutation, baseIndividualId: nextIndividualId, generationIndex,
@@ -459,17 +465,6 @@ async function runGeneration({
     terminalReason,
     next,
   };
-}
-
-/** The declared precedence, applied exactly once per transition. */
-function terminalFor({
-  pool, generationIndex, maxGenerations, nextIndividualId, populationSize,
-}) {
-  if (pool.individuals.length === 0) return 'noSelectableParents';
-  if (generationIndex + 1 >= maxGenerations) return 'generationLimitReached';
-  const last = nextIndividualId + populationSize - 1;
-  if (!Number.isSafeInteger(last) || last > 0xffffffff) return 'individualIdExhausted';
-  return 'none';
 }
 
 /**
@@ -893,10 +888,14 @@ async function resumeFromOwnedBytes(owned, expected) {
   // and bound to the persisted population component by EXACT BYTE IDENTITY,
   // before the runtime gate — resume does not recreate (and re-compare) a
   // second time. The replay loop's generation-0 population comparison
-  // therefore starts from bytes the gate already proved identical; of the two
-  // comparisons that report stage 'initialization', only the generation-0
-  // LINEAGE one remains reachable for a verified artifact — everything later
-  // is a derived generation.
+  // therefore starts from bytes the gate already proved identical. Both
+  // stage-'initialization' comparisons are now structurally unreachable for a
+  // verified artifact: the population half by that recreation bind, and the
+  // lineage half because the local-semantics pass pins generation-0 lineage
+  // from persisted facts (the codec's sentinel/zero-accounting rules, then
+  // crossCheckLineage: all-initialized, ids == population ids). Both
+  // comparisons stay as defense-in-depth; everything later is a derived
+  // generation.
   let populationBytes = generationZero.populationBytes;
   let lineageBytes = serializeLineage(initialLineage(populationIds(
     deserializePopulationSnapshot(populationBytes),

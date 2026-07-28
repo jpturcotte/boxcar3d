@@ -131,11 +131,11 @@
       "tests/evolution-replay.test.js": {
         "expectedFailures": 1,
         "class": "c",
-        "asserts": "independent v1 artifact producer/runtime identity pin",
+        "asserts": "independent v3 artifact producer/runtime identity pin",
         "allowedFailureSignatures": [
           {
-            "titleSubstring": "an independently produced Kimi artifact resumes and continues byte-identically",
-            "messageRegex": "engine changed — re-lock the independent evolution artifact deliberately",
+            "titleSubstring": "the independently assembled v3 artifact verifies, resumes and continues byte-identically",
+            "messageRegex": "engine changed — regenerate the independent v3 artifact deliberately",
             "count": 1,
             "why": "the fixture and candidate runtime versions are compared before byte equality or replay, so a planned engine spike fails at a stable identity tooth"
           }
@@ -239,7 +239,7 @@
       "tests/browser/evolution-determinism.test.js": {
         "expectedFailures": 2,
         "class": "c",
-        "asserts": "browser evolution runtime pin plus independent v1 artifact producer/runtime pin",
+        "asserts": "browser evolution runtime pin plus independent v3 artifact producer/runtime pin",
         "allowedFailureSignatures": [
           {
             "titleSubstring": "the committed artifact reproduces exactly in the browser",
@@ -248,8 +248,8 @@
             "why": "the browser golden gate checks runtime identity before component and history digests"
           },
           {
-            "titleSubstring": "Chromium continues the independent Kimi artifact byte-identically",
-            "messageRegex": "engine changed — re-lock the independent evolution artifact deliberately",
+            "titleSubstring": "Chromium continues the independently assembled v3 artifact byte-identically",
+            "messageRegex": "engine changed — regenerate the independent v3 artifact deliberately",
             "count": 1,
             "why": "the independent artifact test compares runtime identity before local bytes or replay"
           }

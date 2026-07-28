@@ -6,11 +6,10 @@ procedurally generated 3D terrain with elevations, craters, obstacles, and
 surface types, bounded by physical walls. Morphology is the point: evolving
 frames, multiple suspension types, and free wheel arrangements.
 
-**Status:** `main` is unchanged at GA Phase 1B PR 4. This branch carries
-**PR #29 (open, not yet merged)**, which adds **integrity-observation
-persistence to evolution history** — so the alert-band exposure PR 4 had to
-re-simulate becomes readable from a saved run with no physics at all. On this
-branch the fitness vector is v3
+**Status:** `main` includes **PR #29** (merged) — **integrity-observation
+persistence in evolution history**, so the alert-band exposure PR 4 had to
+re-simulate becomes readable from a saved run with no physics at all. The
+fitness vector is now v3
 (`FITNESS_VECTOR_VERSION = 3`): every member row canonically carries the five
 observations the online detector already computed (peak body speed, peak speed
 delta, peak step displacement, first alert step, first catastrophic step —
@@ -39,8 +38,15 @@ policy stays integrity v1 / fitness v2, the mutation defaults stay
 (0.05, 0.05), and an alert-bearing `ok` vehicle is STILL selectable on main —
 v3 persists the evidence; it does not act on it. The solver defect itself
 remains: Option A (alert-band escalation) masks rather than fixes it, and the
-multibody root-cause track stays deferred. Next PR owns the breeding-pool and
-false-negative measurements the persisted observations now enable. Previously:
+multibody root-cause track stays deferred. The next PRs are the
+integration-hardening sequence — PR 2 (the shared adversarial reforge helper,
+reader capacity parity, persisted `effectiveDt`/`worldMode` in the verified
+extraction, the trusted in-process summarizer boundary), PR 3 (local lineage
+validation, terminal-reason validation, record-count semantics and their
+precedence tests), PR 4 (exact deterministic transition provenance and
+opaque-boundary enforcement) — and the breeding-pool and false-negative
+measurements the persisted observations enable stay **blocked until PR 4
+lands**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm

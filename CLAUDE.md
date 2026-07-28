@@ -2471,13 +2471,21 @@ single clean commit `9c5f24c`):**
   undriven only). Recommendation: A now (unblocks tuning), B as a parallel
   evidence-gated track, ratification is JP's.
 - **Recommended next steps (recorded, NOT implemented; sequenced in the decision
-  record §5):** (1) escalate the alert
+  record §5):** the LIVE order is now the integration-hardening sequence
+  FIRST — PR 2 (the shared adversarial reforge helper, reader capacity
+  parity, persisted `effectiveDt`/`worldMode` in the verified extraction,
+  the trusted in-process summarizer boundary), PR 3 (local lineage
+  validation, terminal-reason validation, record-count semantics and their
+  precedence tests), PR 4 (exact deterministic transition provenance and
+  opaque-boundary enforcement) — with empirical measurements blocked until
+  PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
   step) in the fitness vector so contamination is measurable from history rather
-  than by re-evaluation (a versioned encoding change — the vector currently
-  stores status only, which is why §9's diagnosis needed a forensic re-run);
+  than by re-evaluation (a versioned encoding change — the pre-PR-29 vector
+  stored status only, which is why §9's diagnosis needed a forensic re-run)
+  — DISCHARGED by PR #29 (fitness-vector v3);
   (3) re-run this exact protocol afterwards (~70 min, committed and resumable);
   (4) extend the grid past 0.20 and add `p0.100-m0.200` to the confirmation arms.
   Structural mutation, worker sharding and segmented history stay out of scope
@@ -2487,7 +2495,7 @@ single clean commit `9c5f24c`):**
   20260772–20260787 confirmation terrain · 20260788 arm scheduling ·
   20260789–20260796 smoke protocol (non-citable).
 
-**GA Phase 1B PR 29 (this branch — OPEN, not yet merged to `main`) —
+**GA Phase 1B PR 29 (MERGED to `main` as PR #29) —
 integrity observations persisted in evolution history (fitness-vector v3),
 three pre-physics format gates, and a verified offline extraction seam. NO
 policy, selection or mutation behaviour change:**
@@ -2639,11 +2647,18 @@ policy, selection or mutation behaviour change:**
   evidence; it does not act on it. The solver defect remains; Option A masks
   rather than fixes it; the multibody root-cause track stays deferred and
   appears nowhere in the diff. This discharges PR 4's recorded next-step (2)
-  and the decision record's §5 sequence step 1; **Next PR owns the
-  breeding-pool and false-negative measurements** — the experiment schema,
+  and the decision record's §5 sequence step 1. **The next PRs are the
+  integration-hardening sequence, not measurements:** PR 2 owns the shared
+  adversarial reforge helper, reader capacity parity, persisted
+  `effectiveDt`/`worldMode` in the verified extraction, and the trusted
+  in-process summarizer boundary; PR 3 owns local lineage validation,
+  terminal-reason validation, record-count semantics, and their precedence
+  tests; PR 4 owns exact deterministic transition provenance and
+  opaque-boundary enforcement. **The breeding-pool and false-negative
+  measurements stay blocked until PR 4 lands** — the experiment schema,
   the campaign, retained workspace histories, the forensic adjudicator,
   counterfactual analysis, empirical gates and the escalation verdict all
-  live there, not here.
+  live in that later measurement PR, not here.
 - **Seeds allocated:** none (the v3 oracle re-encodes the committed
   fixture-A run).
 

@@ -26,6 +26,7 @@ import {
   borrowErrorScan, prevalenceCoverageIssues, readJsonSafe,
   witnessLogPanicSignature, classifyWitnessMatrix,
 } from '../scripts/compare-spike-runs.js';
+import { auditInventoryTitles, parseVitestListJson } from '../scripts/check-spike-inventory-titles.js';
 import { formatFitnessVectorLockMismatch } from '../src/sim/lock-markers.js';
 import { POPULATION_GOLDEN_LOCKS } from '../src/sim/population-locks.js';
 
@@ -146,8 +147,8 @@ function nodeCandidateReport({ fvMeasured = 'ee605286', fvLock = FV_LOCK, champS
       {
         name: '/w/tests/evolution-replay.test.js',
         assertionResults: [
-          failed('resume and continuation > an independently produced Kimi artifact resumes and continues byte-identically',
-            "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+          failed('resume and continuation > the independently assembled v3 artifact verifies, resumes and continues byte-identically',
+            "engine changed — regenerate the independent v3 artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
         ],
       },
     ],
@@ -182,8 +183,8 @@ function browserCandidateReport({
         assertionResults: [
           failed('evolution golden locks (Chromium) > the committed artifact reproduces exactly in the browser',
             "engine changed — re-lock deliberately via the Node gate: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
-          failed('evolution golden locks (Chromium) > Chromium continues the independent Kimi artifact byte-identically',
-            "engine changed — re-lock the independent evolution artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
+          failed('evolution golden locks (Chromium) > Chromium continues the independently assembled v3 artifact byte-identically',
+            "engine changed — regenerate the independent v3 artifact deliberately: expected '0.19.3-c13133ad.0' to be '0.19.3' // Object.is equality"),
         ],
       },
     ],
@@ -1248,5 +1249,188 @@ describe('witnessLogPanicSignature + classifyWitnessMatrix', () => {
     expect(classifyWitnessMatrix('stable', 124, null, w([])).classification).toBe('timeout');
     expect(classifyWitnessMatrix('stable', null, null, w([])).classification).toBe('missing');
     expect(classifyWitnessMatrix('stable', 7, null, w([])).classification).toBe('unexplained');
+  });
+});
+
+// --- spike-inventory title audit (scripts/check-spike-inventory-titles.js) -----
+//
+// The DERIVED anti-drift gate for the expected-red inventory, added after the
+// PR #29 post-merge defect: PR #29 renamed the independent-artifact interop
+// tests (Kimi v2 -> assembled v3) and changed their custom failure message,
+// but the inventory AND the synthetic fixtures above kept the old titles —
+// the classify suite stayed green because a synthetic report agrees with the
+// inventory by construction. The checker audits every pinned title against
+// the REAL `vitest list --json` collection under both configs and runs in
+// ordinary CI (npm run check:spike-inventory). These tests pin the PURE
+// audit core with injected task lists — no vitest is ever spawned here.
+
+describe('auditInventoryTitles — derived inventory<->collection alignment', () => {
+  const task = (fileKey, name) => ({ name, fileKey });
+  const REPLAY = 'tests/evolution-replay.test.js';
+  const V3_TITLE = 'the independently assembled v3 artifact verifies, resumes and continues byte-identically';
+
+  const alignedInventory = () => ({
+    node: {
+      byFile: {
+        [REPLAY]: {
+          expectedFailures: 1,
+          allowedFailureSignatures: [
+            { titleSubstring: V3_TITLE, messageRegex: 'engine changed', count: 1 },
+          ],
+        },
+      },
+      mustPassAssertionSubstrings: ['two fresh worlds agree'],
+      mustPassPresent: [{ titleSubstring: 'two fresh worlds agree', passedCount: 2 }],
+    },
+    browser: {
+      byFile: {
+        'tests/browser/population-determinism.test.js': {
+          expectedFailures: 1,
+          allowedFailureSignatures: [
+            { titleSubstring: 'fitness-vector digest', messageRegex: 'MARKER', count: 1 },
+          ],
+        },
+      },
+      // The REAL browser inventory's nested-substring design: the assertion
+      // substring is a LONGER pin of the same test the presence check counts.
+      mustPassAssertionSubstrings: ['pure initializer locks: snapshot + initialization'],
+      mustPassPresent: [{ titleSubstring: 'pure initializer locks', passedCount: 1 }],
+    },
+  });
+  const alignedNodeTasks = () => [
+    task(REPLAY, `resume and continuation > ${V3_TITLE}`),
+    task(REPLAY, 'resume and continuation > a mid-run history resumes to the same status and the same bytes'),
+    task('tests/evaluation-determinism.test.js', 'gate (a) > eval-a-s0-flat: two fresh worlds agree on digest, every checkpoint, counts, and metrics'),
+    task('tests/evaluation-determinism.test.js', 'gate (a) > eval-b-mixed-composite: two fresh worlds agree on digest, every checkpoint, counts, and metrics'),
+  ];
+  const alignedBrowserTasks = () => [
+    task('tests/browser/population-determinism.test.js', 'population golden locks (Chromium) > evaluation: fitness-vector digest, every fitness literal by individualId, champion'),
+    task('tests/browser/population-determinism.test.js', 'population golden locks (Chromium) > pure initializer locks: snapshot + initialization digests'),
+  ];
+  const audit = (inv, nodeTasks, browserTasks) => auditInventoryTitles(inv, { nodeTasks, browserTasks });
+
+  test('a fully aligned inventory produces NO issues (incl. the nested browser must-pass design)', () => {
+    expect(audit(alignedInventory(), alignedNodeTasks(), alignedBrowserTasks())).toEqual([]);
+  });
+
+  test('a renamed test that matches nothing in its pinned file is flagged, with the remediation', () => {
+    const nodeTasks = alignedNodeTasks();
+    nodeTasks[0] = task(REPLAY, 'resume and continuation > a renamed title sharing nothing');
+    const issues = audit(alignedInventory(), nodeTasks, alignedBrowserTasks());
+    expect(issues).toEqual([expect.stringContaining('matches NO collected test')]);
+    expect(issues[0]).toContain('[node]');
+    expect(issues[0]).toContain(REPLAY);
+    expect(issues[0]).toContain(V3_TITLE);
+    expect(issues[0]).toContain('.github/spike-expected-candidate-reds.json');
+  });
+
+  test('a title surviving ONLY in the wrong file is still flagged (byFile scoping)', () => {
+    const nodeTasks = alignedNodeTasks();
+    nodeTasks[0] = task('tests/evolution-determinism.test.js', nodeTasks[0].name);
+    expect(audit(alignedInventory(), nodeTasks, alignedBrowserTasks()))
+      .toEqual([expect.stringContaining('matches NO collected test')]);
+  });
+
+  test('a split test inflates the in-file multiplicity past the declared count (the PR #28 shape)', () => {
+    const nodeTasks = [...alignedNodeTasks(), task(REPLAY, `resume and continuation > ${V3_TITLE} — part two`)];
+    expect(audit(alignedInventory(), nodeTasks, alignedBrowserTasks()))
+      .toEqual([expect.stringContaining('matches 2 collected test(s) but declares count 1')]);
+  });
+
+  test('a merged test deflates the in-file multiplicity below the declared count', () => {
+    const inv = alignedInventory();
+    inv.node.byFile[REPLAY].allowedFailureSignatures[0].count = 2;
+    expect(audit(inv, alignedNodeTasks(), alignedBrowserTasks()))
+      .toEqual([expect.stringContaining('matches 1 collected test(s) but declares count 2')]);
+  });
+
+  test('a byFile entry whose file collects ZERO tests is its own diagnostic (no double-report)', () => {
+    const inv = alignedInventory();
+    inv.node.byFile['tests/renamed-away.test.js'] = {
+      expectedFailures: 1,
+      allowedFailureSignatures: [{ titleSubstring: 'anything', messageRegex: 'x', count: 1 }],
+    };
+    expect(audit(inv, alignedNodeTasks(), alignedBrowserTasks()))
+      .toEqual([expect.stringContaining("'tests/renamed-away.test.js' collects ZERO tests")]);
+  });
+
+  test('a mustPassPresent title drifting off its declared passedCount is flagged', () => {
+    const nodeTasks = alignedNodeTasks().filter((t) => !t.name.includes('eval-b'));
+    expect(audit(alignedInventory(), nodeTasks, alignedBrowserTasks()))
+      .toEqual([expect.stringContaining("mustPassPresent 'two fresh worlds agree' matches 1 collected test(s) but declares passedCount 2")]);
+  });
+
+  test('a mustPassAssertionSubstrings entry matching nothing is flagged (a rename would silently drop the green pin)', () => {
+    const inv = alignedInventory();
+    inv.node.mustPassAssertionSubstrings = ['a green-teeth title that no longer exists'];
+    expect(audit(inv, alignedNodeTasks(), alignedBrowserTasks()))
+      .toEqual([expect.stringContaining("mustPassAssertionSubstrings entry 'a green-teeth title that no longer exists' matches NO collected test")]);
+  });
+
+  test('a test matching BOTH a failure signature and a must-pass title is contradictory and flagged', () => {
+    const inv = alignedInventory();
+    inv.node.mustPassAssertionSubstrings = ['the independently assembled v3 artifact'];
+    expect(audit(inv, alignedNodeTasks(), alignedBrowserTasks()))
+      .toEqual([expect.stringContaining('matches BOTH allowed failure signature')]);
+  });
+
+  test('two must-pass substrings in the SAME list matching one test make counts unattributable', () => {
+    const inv = alignedInventory();
+    inv.node.mustPassAssertionSubstrings = ['two fresh worlds agree', 'fresh worlds'];
+    expect(audit(inv, alignedNodeTasks(), alignedBrowserTasks()))
+      .toEqual([expect.stringContaining("mustPassAssertionSubstrings substrings 'two fresh worlds agree' and 'fresh worlds' both match collected test")]);
+  });
+
+  test('two allowed-red signatures matching the SAME collected test are rejected (the classifier assigns only the first)', () => {
+    // Both signatures pass their individual multiplicity checks (1 match,
+    // count 1) — only the overlap check sees that a real candidate report
+    // can red just one of them (the PR #31 review gap).
+    const inv = alignedInventory();
+    inv.node.byFile[REPLAY].allowedFailureSignatures.push({ titleSubstring: 'independently assembled v3 artifact', messageRegex: 'y', count: 1 });
+    const issues = audit(inv, alignedNodeTasks(), alignedBrowserTasks());
+    expect(issues).toEqual([expect.stringContaining(`matches 2 allowed failure signatures ('${V3_TITLE}', 'independently assembled v3 artifact')`)]);
+  });
+
+  test('the arms are audited against their OWN collection only (arm isolation)', () => {
+    const issues = audit(alignedInventory(), [], alignedBrowserTasks());
+    // The aligned browser arm stays silent even with an empty node collection…
+    expect(issues.some((i) => i.startsWith('[browser]'))).toBe(false);
+    // …while the node arm flags its OWN emptied byFile file.
+    expect(issues.some((i) => i.includes(`'${REPLAY}' collects ZERO tests`))).toBe(true);
+  });
+});
+
+describe('parseVitestListJson — strict parser for the pinned 3.2.7 list shape', () => {
+  // Entries in the VERBATIM shape recorded from the checkout-pinned vitest
+  // 3.2.7 (`vitest list --json` / `--config vitest.browser.config.js`,
+  // 2026-07-27): node entries carry {name, file}; the browser config adds
+  // projectName. The ` > `-joined full name is the raw material for the
+  // inventory's title substrings.
+  const RECORDED = JSON.stringify([
+    { name: 'resume and continuation > the independently assembled v3 artifact verifies, resumes and continues byte-identically', file: 'C:/Users/ci/boxcar3d/tests/evolution-replay.test.js' },
+    { name: 'evolution golden locks (Chromium) > Chromium continues the independently assembled v3 artifact byte-identically', file: 'C:/Users/ci/boxcar3d/tests/browser/evolution-determinism.test.js', projectName: 'chromium' },
+  ]);
+
+  test('recorded real entries parse, projectName is ignored, file normalizes to the repo-relative key', () => {
+    expect(parseVitestListJson(RECORDED, 'node')).toEqual([
+      { name: 'resume and continuation > the independently assembled v3 artifact verifies, resumes and continues byte-identically', fileKey: 'tests/evolution-replay.test.js' },
+      { name: 'evolution golden locks (Chromium) > Chromium continues the independently assembled v3 artifact byte-identically', fileKey: 'tests/browser/evolution-determinism.test.js' },
+    ]);
+  });
+
+  test('Windows backslash and POSIX absolute paths normalize to the same key', () => {
+    const json = JSON.stringify([
+      { name: 'a', file: 'C:\\Users\\ci\\boxcar3d\\tests\\foo.test.js' },
+      { name: 'b', file: '/home/ci/boxcar3d/tests/foo.test.js' },
+    ]);
+    expect(parseVitestListJson(json, 'node').map((t) => t.fileKey))
+      .toEqual(['tests/foo.test.js', 'tests/foo.test.js']);
+  });
+
+  test('malformed JSON, a non-array top level, or a missing name/file fails LOUDLY (never audits partial data)', () => {
+    expect(() => parseVitestListJson('{ truncated', 'node')).toThrow(/malformed JSON/);
+    expect(() => parseVitestListJson('{"name":"x"}', 'node')).toThrow(/non-array/);
+    expect(() => parseVitestListJson('[{"name":42,"file":"tests/x.test.js"}]', 'node')).toThrow(/lacks a string name\/file/);
+    expect(() => parseVitestListJson('[{"name":"x"}]', 'node')).toThrow(/lacks a string name\/file/);
   });
 });

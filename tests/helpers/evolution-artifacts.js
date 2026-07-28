@@ -1,0 +1,72 @@
+// TEST-ONLY CONSISTENCY-FORGERY TOOLING.
+//
+// `reforge` rebuilds a complete, internally self-consistent history artifact
+// after mutating the decoded header, the raw header bytes, and/or decoded
+// generation records: every component digest, generation digest, chain link
+// and the whole-history digest is recomputed, so the result passes framing,
+// component-digest, chain and whole-history verification and can only fail at
+// the deliberately targeted later gate (local coherence, semantics, capacity,
+// runtime identity or replay).
+//
+// This is NEVER authenticity tooling. A reforged artifact is self-consistent,
+// not genuine: it establishes neither freshness, nor provenance, nor runtime
+// identity, nor physics authenticity. Do not use it to make persisted bytes
+// appear trustworthy outside a test.
+
+import {
+  COMPONENT_KINDS,
+  assembleHistory,
+  decodeEvolutionHeader,
+  decodeGenerationPayload,
+  decodeHistoryFraming,
+  digestComponent,
+  digestGeneration,
+  digestHeader,
+  encodeEvolutionHeader,
+  encodeGenerationPayload,
+} from '../../src/sim/evolution-history.js';
+
+/**
+ * Rebuild a complete, self-consistent artifact after mutating the header
+ * and/or generations' decoded components. Every downstream digest is
+ * recomputed, so the result passes verification and can only fail at a
+ * later gate.
+ *
+ * - `mutateHeader(decodedHeader)` returns the replacement decoded header,
+ *   re-encoded before anything downstream is computed.
+ * - `mutateHeaderBytes(headerBytes)` rewrites the raw (copied) header byte
+ *   buffer in place — applied after any decoded-header mutation.
+ * - `mutateRecord(record, generationIndex)` rewrites a decoded record in
+ *   place (`record.components[kind]` per component kind).
+ */
+export async function reforge(bytes, { mutateHeader, mutateHeaderBytes, mutateRecord } = {}) {
+  const framing = decodeHistoryFraming(bytes);
+  let headerBytes = framing.headerBytes;
+  if (mutateHeader) {
+    const decoded = decodeEvolutionHeader(framing.headerBytes);
+    headerBytes = encodeEvolutionHeader(mutateHeader({ ...decoded }));
+  }
+  if (mutateHeaderBytes) {
+    headerBytes = new Uint8Array(headerBytes);
+    mutateHeaderBytes(headerBytes);
+  }
+  const headerDigestBytes = await digestHeader(headerBytes);
+  const generations = [];
+  let previous = headerDigestBytes;
+  for (let i = 0; i < framing.generations.length; i += 1) {
+    const payload = decodeGenerationPayload(framing.generations[i].payloadBytes);
+    const record = {
+      generationIndex: payload.generationIndex,
+      terminalReason: payload.terminalReason,
+      components: { ...payload.components },
+    };
+    if (mutateRecord) mutateRecord(record, i);
+    const digests = {};
+    for (const kind of COMPONENT_KINDS) digests[kind] = await digestComponent(kind, record.components[kind]);
+    const payloadBytes = encodeGenerationPayload(record, digests);
+    const generationDigestBytes = await digestGeneration(previous, payloadBytes);
+    previous = generationDigestBytes;
+    generations.push({ payloadBytes, generationDigestBytes });
+  }
+  return (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
+}

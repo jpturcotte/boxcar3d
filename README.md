@@ -68,11 +68,17 @@ and every supported import form, with
 computed dynamic import() and import.meta.glob refused outright) checked by a genuinely
 independent narrow oracle. PR 4A changes no successful-run behaviour, does NOT make persisted
 histories transition-authentic, and does NOT replace deterministic physics
-replay. **PR 4B remains** — exact persisted N→N+1 transition verification
+replay. The remaining work is **re-sequenced (2026-07-29)**: **PR 4B is
+proposed** — completion of the three PR-4A-deferred oracle boundary shapes
+(all-elite output, single selectable parent, three-way elite-boundary tie)
+and kernel-honest multigeneration test artifacts, with no
+production change and no persisted-transition verdict; **PR 4C** — exact
+persisted N→N+1 transition authentication before runtime identity
 (reproducing every persisted adjacent transition and byte-comparing against
-generation N+1) and opaque-boundary completion — and the breeding-pool,
-false-negative and mutation-default measurements the persisted observations
-enable stay **blocked until PR 4B lands**. Previously:
+generation N+1); **PR 4D** — scale validation of the landed verifier and the
+measurement decision. The breeding-pool, false-negative and mutation-default
+measurements the persisted observations enable stay **blocked pending
+PR 4C, PR 4D and independent review**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
@@ -483,4 +489,7 @@ introduced, erased, and redirected effects. PR 3 remains responsible for the
 generation engine, child ids, lineage, persisted history/codecs, replay/
 determinism gates, and the evolution probe. PR 4 owns the empirical report and
 validation or tuning of those defaults. Crossover, structural mutation, and
-discrete mutation are explicitly deferred.
+discrete mutation are explicitly deferred. (Written pre-split; PR 4 was
+divided 2026-07-28 and its follow-on re-sequenced 2026-07-29 — see the
+status block above: the measurement decision now lives in PR 4D, blocked
+pending PR 4C, PR 4D and independent review.)

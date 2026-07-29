@@ -2,7 +2,7 @@
 // and an INDEPENDENT correctness oracle.
 //
 // The kernel (src/sim/evolution-transition.js) is an INTERNAL seam: the one
-// authorized production importer today is evolution-run.js, and PR 4B will
+// authorized production importer today is evolution-run.js, and PR 4C will
 // deliberately extend the allowlist with evolution-replay.js when the
 // verified-artifact path starts reproducing persisted transitions. That
 // allowlist is DECLARED below and pinned over every supported reference
@@ -15,7 +15,7 @@
 //
 // Moving deriveNextGeneration into a kernel and watching the existing suite
 // stay green proves only behavior CONTINUITY. It does not protect against
-// extracting a subtly wrong transition that the producer and the future PR 4B
+// extracting a subtly wrong transition that the producer and the future PR 4C
 // verifier will then share — the tautology the PR 4 split exists to avoid.
 // The oracle below therefore derives its expected transition INDEPENDENTLY:
 //
@@ -56,7 +56,15 @@
 // invocation point, final-vs-raw genotype selection (Case B is repair-
 // sensitive: retaining rawGenotype instead of genotype changes the bytes),
 // accounting propagation, population member order, lineage row order, and
-// byte-exact serialization of the composed result.
+// byte-exact serialization of the composed result. PR 4B added the three
+// boundary shapes PR 4A deferred: Case C (ALL-elite output — population
+// size == ELITE_COUNT, so no child is derived and every lineage row is a
+// zero-accounting eliteCopy), Case D (a ONE-ROW selectable pool — exactly
+// one elite, every tournament winner forced to the sole row, and the
+// three-draw obligation still consumed before the mutation stream, made
+// observable by probability-1 mutation), and Case E (a THREE-WAY TIE at
+// the elite boundary — the two lowest ids take the elite slots while the
+// tied loser stays selectable and wins a non-elite tournament).
 //
 // DOES NOT PROVE: the Rng algorithm, codec internals, repair's internal
 // rules, or the selection/mutation operators against their own specs — all
@@ -94,7 +102,7 @@ const KERNEL = 'src/sim/evolution-transition.js';
 // (1) THE PRODUCTION IMPORTER / RE-EXPORT GUARD
 // ============================================================================
 //
-// THE DECLARED production importer allowlist. Exactly one entry today; PR 4B
+// THE DECLARED production importer allowlist. Exactly one entry today; PR 4C
 // adds 'src/sim/evolution-replay.js' here BY DECISION, with its own review —
 // this set is pinned, not eternal. Tests import the kernel directly BY DESIGN
 // (the declared test allowlist); the scan below walks all current repository
@@ -103,6 +111,7 @@ const AUTHORIZED_PRODUCTION_IMPORTERS = Object.freeze({
   'src/sim/evolution-run.js': true,
 });
 const AUTHORIZED_TEST_IMPORTERS = Object.freeze({
+  'tests/evolution-local-semantics.test.js': true,
   'tests/evolution-transition.test.js': true,
   'tests/ownership-boundary.test.js': true,
   'tests/single-read.test.js': true,
@@ -349,6 +358,9 @@ describe('the production importer / re-export guard', () => {
     expect(SCANNED_FILES).toContain('tests/helpers/evolution-artifacts.js');
     expect(SCANNED_FILES).toContain('legacy/PhysicsController.js');
     expect(SCANNED_FILES).toContain('vite.config.js');
+    // The scripts/ walk has its own canary too (external-review finding: the
+    // count floor alone stays green without it).
+    expect(SCANNED_FILES).toContain('scripts/history-observations.js');
     const importers = {};
     const computed = {};
     const globEdges = {};
@@ -597,15 +609,20 @@ function genotype(axles = 0, hue = 0.5) {
 
 const canonical = (axles, hue) => compileAssembly(genotype(axles, hue)).genotype;
 
-function oraclePool(population, rows) {
+// rows are the SELECTABLE rows; evaluatedIds is the (possibly larger) id set
+// the fitness vector covered. Production's vector can mark an evaluated row
+// unselectable, so the two differ exactly when some evaluated member cannot
+// be chosen (Case D); the default keeps every row evaluated-and-selectable.
+function oraclePool(population, rows, evaluatedIds = rows.map((r) => r.individualId)) {
   return Object.freeze({
     selectionPoolVersion: SELECTION_POOL_VERSION,
     fitnessPolicyVersion: FITNESS_POLICY_VERSION,
     // The same-source FNV sentinel, folded over the population's own canonical
     // bytes — exactly the value production computes from the decoded vector.
     populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population)),
-    evaluatedIndividualIds: Object.freeze(rows.map((r) => r.individualId)),
-    individuals: Object.freeze(rows.map((r) => Object.freeze(r))),
+    // Owned COPIES — never freeze a caller's fixture in place.
+    evaluatedIndividualIds: Object.freeze([...evaluatedIds]),
+    individuals: Object.freeze(rows.map((r) => Object.freeze({ ...r }))),
   });
 }
 
@@ -614,6 +631,32 @@ const fieldRows = (g) => {
   forEachGenotypeField(g, (e) => rows.push(e));
   return rows;
 };
+
+describe('oracle helper ownership', () => {
+  // External-review hardening: oraclePool once froze the caller's OWN id
+  // array and row objects in place (fixed to own-then-freeze). Pin the
+  // contract so a regression reaching into caller fixtures turns red instead
+  // of silently mutating shared test data.
+  test('oraclePool freezes owned copies and never freezes the caller\'s fixtures', () => {
+    const population = {
+      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
+      individuals: [
+        { individualId: 10, genotype: canonical(0, 0.25) },
+        { individualId: 11, genotype: canonical(0, 0.75) },
+      ],
+    };
+    const ids = [10, 11];
+    const rows = [{ individualId: 10, fitness: 0.9 }, { individualId: 11, fitness: 0.8 }];
+    const pool = oraclePool(population, rows, ids);
+    expect(Object.isFrozen(ids)).toBe(false);
+    expect(Object.isFrozen(rows)).toBe(false);
+    expect(Object.isFrozen(rows[0])).toBe(false);
+    expect(pool.evaluatedIndividualIds).not.toBe(ids);
+    expect(pool.individuals[0]).not.toBe(rows[0]);
+    expect(Object.isFrozen(pool.evaluatedIndividualIds)).toBe(true);
+    expect(Object.isFrozen(pool.individuals[0])).toBe(true);
+  });
+});
 
 // --- The independent derivation. Hand-written arithmetic over the shared ---
 // --- primitives named in the header; NEVER the production operators.      ---
@@ -761,15 +804,19 @@ const ZERO_ACCOUNTING = Object.freeze({
 });
 
 function oracleTransition({
-  ids, fitnesses, genotypesById, seed, mutation, baseIndividualId, generationIndex,
+  ids, fitnesses, genotypesById, seed, mutation, baseIndividualId, generationIndex, selectableRows = null, evaluatedIds = ids,
 }) {
   const population = {
     snapshotVersion: POPULATION_SNAPSHOT_VERSION,
     individuals: ids.map((id) => ({ individualId: id, genotype: genotypesById.get(id) })),
   };
-  const rows = ids.map((id, i) => ({ individualId: id, fitness: fitnesses[i] }));
-  const pool = oraclePool(population, rows);
-  const eliteIds = oracleEliteIds(rows);
+  const allRows = ids.map((id, i) => ({ individualId: id, fitness: fitnesses[i] }));
+  // The selectable row set defaults to "every evaluated row"; Case D narrows
+  // it to a single row. Elites, tournaments and the pool itself ALL consume
+  // exactly this set — never the wider evaluated one.
+  const poolRows = selectableRows === null ? allRows : selectableRows;
+  const pool = oraclePool(population, poolRows, evaluatedIds);
+  const eliteIds = oracleEliteIds(poolRows);
   const individuals = [];
   const lineageRows = [];
   const children = new Map();
@@ -783,7 +830,7 @@ function oracleTransition({
       });
       continue;
     }
-    const child = oracleChild(seed, childId, rows, genotypesById, mutation);
+    const child = oracleChild(seed, childId, poolRows, genotypesById, mutation);
     children.set(childId, child);
     individuals.push({ individualId: childId, genotype: child.finalGenotype });
     lineageRows.push({
@@ -1085,6 +1132,331 @@ describe('the independent transition oracle', () => {
       .toEqual([[40, 31, 'eliteCopy'], [41, 33, 'eliteCopy']]);
     expect(lineage.individuals[2].accounting).toEqual(derived.children.get(42).accounting);
     expect(lineage.individuals[3].accounting).toEqual(derived.children.get(43).accounting);
+  });
+
+  test('Case C — all-elite output: population size equals the elite count', () => {
+    // The first boundary shape PR 4A deferred: EVERY successor slot is an
+    // elite copy, so the non-elite child path never runs. Two members with
+    // ELITE_COUNT = 2. Equal fitnesses rest the ranked elite order entirely
+    // on the lower-id tie-break: canonical order is [10, 11]. (On any legal
+    // fixture the pool rows iterate in ascending id order — the population's
+    // members are serialized id-ascending and the evaluation binds rows in
+    // that order — so an input-order ranking is observationally equivalent
+    // to the lower-id tie-break here. The case pins the OUTCOME; Case E
+    // carries the tie discussion in full.) Distinct hues make the
+    // slot-to-source mapping visible in the bytes.
+    const ids = [10, 11];
+    const hues = [0.1, 0.9];
+    const fitnesses = [1, 1];
+    const genotypesById = new Map(ids.map((id, i) => [id, canonical(0, hues[i])]));
+    const seed = 20260728;
+    const mutation = { probability: 0, magnitude: 0 };
+    const baseIndividualId = 20;
+    const generationIndex = 0;
+
+    const derived = oracleTransition({
+      ids, fitnesses, genotypesById, seed, mutation, baseIndividualId, generationIndex,
+    });
+
+    // COMMITTED FACT 1: both members are elites, in tie-broken order, and no
+    // child is derived at all — the children map is empty.
+    expect(derived.eliteIds).toEqual([10, 11]);
+    expect(derived.children.size).toBe(0);
+
+    const inputsSnapshot = snapshotInputs(derived.population, derived.pool, mutation);
+    const actual = deriveNextGeneration({
+      population: derived.population,
+      pool: derived.pool,
+      seed,
+      mutation,
+      baseIndividualId,
+      generationIndex,
+    });
+    expectInputsUnchanged(derived.population, derived.pool, mutation, inputsSnapshot);
+    expectTransitionMatches(actual, derived, [20, 21]);
+
+    // Every successor slot is byte-identical to its elite
+    // SOURCE member, in elite order — slot 0 carries id 10's genotype, slot
+    // 1 id 11's. The exact population bytes are already pinned above; this
+    // decodes WHICH slot a defect moved: mutating an elite slot, reversing
+    // the elite order, or filling a slot from a tournament each breaks a
+    // different half of this fact.
+    const decodedPopulation = deserializePopulationSnapshot(actual.populationBytes);
+    expect(serializeGenotype(decodedPopulation.individuals[0].genotype))
+      .toEqual(serializeGenotype(genotypesById.get(10)));
+    expect(serializeGenotype(decodedPopulation.individuals[1].genotype))
+      .toEqual(serializeGenotype(genotypesById.get(11)));
+
+    // Every lineage row is an eliteCopy carrying the
+    // all-zero accounting — there is NO continuousMutation row. The child
+    // ids are fresh; the old ids survive only as parents. Whether an
+    // all-elite generation draws from any RNG stream is not observable in
+    // the output and is deliberately NOT claimed; what is pinned is that no
+    // elite slot carries mutation facts — a kernel routing an elite slot
+    // through the mutation path fails on the origin and the accounting even
+    // when the genotype bytes happen to survive (zero-probability mutation
+    // leaves them byte-identical).
+    const lineage = deserializeLineage(actual.lineageBytes);
+    expect(lineage.generationIndex).toBe(1);
+    expect(lineage.individuals.map((r) => [r.individualId, r.parentIndividualId, r.origin]))
+      .toEqual([[20, 10, 'eliteCopy'], [21, 11, 'eliteCopy']]);
+    expect(lineage.individuals.map((r) => r.origin)).toEqual(['eliteCopy', 'eliteCopy']);
+    for (const row of lineage.individuals) {
+      expect(row.accounting).toEqual(ZERO_ACCOUNTING);
+    }
+  });
+
+  test('Case D — one selectable parent: the tournament still consumes its three draws', () => {
+    // The second deferred boundary: four output slots but a ONE-ROW
+    // selectable pool. Every non-elite child's tournament can only select id
+    // 11 — yet the operator must still consume exactly THREE uint32 draws
+    // from the child's own stream before the mutation stream begins. With
+    // mutation probability 0 a draw-skipping defect would be byte-invisible
+    // here, so the fixture uses probability 1 / magnitude 0.3: every
+    // eligible leaf mutates and every committed float below sits AFTER the
+    // tournament draws in the stream. Seed 1 was chosen at authoring time by
+    // sweep — the first seed >= 1 whose three per-child draw triples are
+    // pairwise distinct AND at least one child is repair-touched (two are) —
+    // then committed as literals. A test-local literal, not a campaign-seed
+    // allocation.
+    const ids = [10, 11, 12, 13];
+    const hues = [0.1, 0.2, 0.3, 0.4];
+    // VESTIGIAL once selectableRows is given: production's pool carries
+    // fitness only for selectable rows (evaluatedIndividualIds is ids-only),
+    // so evaluated-but-unselectable fitness CANNOT reach the kernel — that
+    // invisibility is exactly the boundary this case pins. The deliberately
+    // provocative values (every unselectable member outranks id 11) document
+    // it: even fitness that would dominate cannot influence the result.
+    const fitnesses = [9, 1, 9, 9];
+    const selectableRows = [{ individualId: 11, fitness: 1 }];
+    const genotypesById = new Map(ids.map((id, i) => [id, canonical(0, hues[i])]));
+    const seed = 1;
+    const mutation = { probability: 1, magnitude: 0.3 };
+    const baseIndividualId = 20;
+    const generationIndex = 0;
+
+    const derived = oracleTransition({
+      ids, fitnesses, genotypesById, seed, mutation, baseIndividualId, generationIndex, selectableRows,
+    });
+
+    // COMMITTED FACT 1: exactly ONE elite. selectElites returns AT MOST
+    // ELITE_COUNT rows; a one-row selectable pool caps it at one, so the
+    // remaining three slots are non-elite children of the only choosable
+    // parent — not three elites, and not an empty-slot failure.
+    expect(derived.eliteIds).toEqual([11]);
+    expect([...derived.children.keys()]).toEqual([21, 22, 23]);
+
+    // COMMITTED FACT 2: the tournament evidence. Each child's stream is
+    // forked by its FRESH id and consumes EXACTLY THREE uint32 draws even
+    // though draw % 1 can only ever select row 0 — every winner is id 11. A
+    // kernel that bypassed the tournament for a one-row pool would start the
+    // mutation stream three draws earlier and miss every committed float
+    // below; one that consumed a single draw would land between the two.
+    const expectedDraws = new Map([
+      [21, [1811848556, 721594821, 575898623]],
+      [22, [3829732629, 983983396, 2627111204]],
+      [23, [3496370375, 2162362694, 4053625609]],
+    ]);
+    for (const [childId, child] of derived.children) {
+      expect(child.draws).toEqual(expectedDraws.get(childId));
+      expect(child.winnerId).toBe(11);
+    }
+
+    // COMMITTED FACT 3: the first two selected leaves of each child, with
+    // their exact decision/unit draws and written values — the mutation
+    // stream's position after the tournament draws, pinned leaf by leaf.
+    // Probability 1 selects all 30 eligible leaves of the axles=0 walk; the
+    // remaining 28 per child are pinned by the exact bytes and the eleven
+    // counters below. Child 22's hue leaf is drawn BELOW zero and clamps to
+    // 0 — the clamp is observable in the counters.
+    expect(derived.children.get(21).selectedLeaves.slice(0, 2)).toEqual([
+      { path: 'hue', decision: 0.053065837593749166, unit: 0.8501595889683813, value: 0.41009575338102877 },
+      { path: 'power', decision: 0.8125591282732785, unit: 0.9675639839842916, value: 0.7805383903905749 },
+    ]);
+    expect(derived.children.get(22).selectedLeaves.slice(0, 2)).toEqual([
+      { path: 'hue', decision: 0.2760519147850573, unit: 0.1261019166558981, value: 0 },
+      { path: 'power', decision: 0.21713636559434235, unit: 0.12143991934135556, value: 0.27286395160481336 },
+    ]);
+    expect(derived.children.get(23).selectedLeaves.slice(0, 2)).toEqual([
+      { path: 'hue', decision: 0.8448843627702445, unit: 0.4556845666375011, value: 0.17341073998250067 },
+      { path: 'power', decision: 0.41689843288622797, unit: 0.6643213327042758, value: 0.5985927996225655 },
+    ]);
+
+    // COMMITTED FACT 4: children 22 and 23 are REPAIR-SENSITIVE on the
+    // frameDensity leaf — drawn UP past the density bound, redirected DOWN by
+    // repair. The parent value 0.4448991038445599 is the canonical genotype's
+    // own post-repair figure (compileAssembly moved it off the 0.5 fixture
+    // literal), reproduced here bit-exactly.
+    expect(derived.children.get(21).repairTouched).toEqual([]);
+    expect(derived.children.get(22).repairTouched).toEqual([
+      {
+        path: 'frameDensity', parent: 0.4448991038445599, raw: 0.6613263912573673, final: 0.3538921669896816, classification: 'redirected',
+      },
+    ]);
+    expect(derived.children.get(23).repairTouched).toEqual([
+      {
+        path: 'frameDensity', parent: 0.4448991038445599, raw: 0.7142223611083097, final: 0.25192387825823104, classification: 'redirected',
+      },
+    ]);
+
+    // COMMITTED FACT 5: all eleven accounting counters, all three children.
+    expect(derived.children.get(21).accounting).toEqual({
+      eligibleContinuousLeafCount: 30,
+      selectedLeafCount: 30,
+      rawChangedLeafCount: 30,
+      clampedLeafCount: 0,
+      repairChangedLeafCount: 0,
+      repairIntroducedLeafCount: 0,
+      repairErasedLeafCount: 0,
+      repairRedirectedLeafCount: 0,
+      finalChangedLeafCount: 30,
+      rawByteDeltaCount: 185,
+      finalByteDeltaCount: 185,
+    });
+    expect(derived.children.get(22).accounting).toEqual({
+      eligibleContinuousLeafCount: 30,
+      selectedLeafCount: 30,
+      rawChangedLeafCount: 30,
+      clampedLeafCount: 1,
+      repairChangedLeafCount: 1,
+      repairIntroducedLeafCount: 0,
+      repairErasedLeafCount: 0,
+      repairRedirectedLeafCount: 1,
+      finalChangedLeafCount: 30,
+      rawByteDeltaCount: 200,
+      finalByteDeltaCount: 200,
+    });
+    expect(derived.children.get(23).accounting).toEqual({
+      eligibleContinuousLeafCount: 30,
+      selectedLeafCount: 30,
+      rawChangedLeafCount: 30,
+      clampedLeafCount: 0,
+      repairChangedLeafCount: 1,
+      repairIntroducedLeafCount: 0,
+      repairErasedLeafCount: 0,
+      repairRedirectedLeafCount: 1,
+      finalChangedLeafCount: 30,
+      rawByteDeltaCount: 195,
+      finalByteDeltaCount: 195,
+    });
+
+    const inputsSnapshot = snapshotInputs(derived.population, derived.pool, mutation);
+    const actual = deriveNextGeneration({
+      population: derived.population,
+      pool: derived.pool,
+      seed,
+      mutation,
+      baseIndividualId,
+      generationIndex,
+    });
+    expectInputsUnchanged(derived.population, derived.pool, mutation, inputsSnapshot);
+    expectTransitionMatches(actual, derived, [20, 21, 22, 23]);
+
+    // The elite row retains the old parent id with zero accounting; every
+    // non-elite row names the one selectable parent.
+    const lineage = deserializeLineage(actual.lineageBytes);
+    expect(lineage.generationIndex).toBe(1);
+    expect(lineage.individuals.slice(0, 1).map((r) => [r.individualId, r.parentIndividualId, r.origin]))
+      .toEqual([[20, 11, 'eliteCopy']]);
+    expect(lineage.individuals[0].accounting).toEqual(ZERO_ACCOUNTING);
+    expect(lineage.individuals.slice(1).map((r) => [r.individualId, r.parentIndividualId, r.origin]))
+      .toEqual([[21, 11, 'continuousMutation'], [22, 11, 'continuousMutation'], [23, 11, 'continuousMutation']]);
+  });
+
+  test('Case E — three-way tie at the elite boundary: the tied loser stays selectable', () => {
+    // The third deferred boundary: THREE members share the top fitness (7)
+    // with only ELITE_COUNT = 2 elite slots. The tie resolves to the two
+    // LOWEST ids — elites [10, 11] — and the third tied member, id 12, takes
+    // no elite slot yet REMAINS in the selectable pool: child 24's tournament
+    // selects it as a parent, proving exclusion from elitism is not exclusion
+    // from selection. Seed 1 (a test-local literal, not a campaign-seed
+    // allocation) is the first seed >= 1 for which id 12 wins at least one
+    // non-elite tournament — the acceptance rule, swept at authoring time and
+    // then committed as literals.
+    //
+    // ON THE TIE-BREAK'S OBSERVABILITY: a legal fixture cannot distinguish
+    // "ties break to the lower id" from "ties keep input order", because the
+    // rows the operators rank ALWAYS iterate in ascending id order — decoded
+    // populations enforce strictly ascending ids (population.js:310-313) and
+    // capturePool enforces the same on evaluated and selectable ids
+    // (evolution-operators.js:43-49, 56-71). The two rules are
+    // observationally equivalent on every input the kernel can legally
+    // receive, so this case pins the canonical OUTCOME — elites [10, 11], id
+    // 12 still selectable and tournament-winning — and deliberately runs NO
+    // input-order probe: none can bite.
+    const ids = [10, 11, 12, 13, 14];
+    const hues = [0.1, 0.2, 0.3, 0.4, 0.5];
+    const fitnesses = [7, 7, 7, 1, 3];
+    const genotypesById = new Map(ids.map((id, i) => [id, canonical(0, hues[i])]));
+    const seed = 1;
+    const mutation = { probability: 0, magnitude: 0 };
+    const baseIndividualId = 20;
+    const generationIndex = 0;
+
+    const derived = oracleTransition({
+      ids, fitnesses, genotypesById, seed, mutation, baseIndividualId, generationIndex,
+    });
+
+    // COMMITTED FACT 1: exactly two elites — the two lowest ids of the three
+    // tied at 7. Id 12 takes no elite slot, and no defect-sized elite set
+    // (three elites, or the wrong two) satisfies this literal.
+    expect(derived.eliteIds).toEqual([10, 11]);
+
+    // COMMITTED FACT 2: id 12 REMAINS in the selectable pool — all five rows
+    // are still there, in ascending id order.
+    expect(derived.pool.individuals.map((r) => r.individualId)).toEqual([10, 11, 12, 13, 14]);
+
+    // COMMITTED FACT 3: the tournament evidence. Child 24's winner is id 12 —
+    // the tied loser, selected as a NON-ELITE parent. A kernel that dropped
+    // id 12 from tournament eligibility would resolve draw % 5 to a smaller
+    // row set and a different winner; a kernel that made id 12 an elite would
+    // place it in slot 2 instead of deriving a child there. (Children 22 and
+    // 23's triples are identical to Case D's: both cases share seed 1, and
+    // the streams fork by (seed, fresh child id) alone — never by pool
+    // content.)
+    const expectedDraws = new Map([
+      [22, [3829732629, 983983396, 2627111204]],
+      [23, [3496370375, 2162362694, 4053625609]],
+      [24, [3888463072, 1798458314, 2850673377]],
+    ]);
+    const expectedWinners = new Map([[22, 11], [23, 10], [24, 12]]);
+    for (const [childId, child] of derived.children) {
+      expect(child.draws).toEqual(expectedDraws.get(childId));
+      expect(child.winnerId).toBe(expectedWinners.get(childId));
+    }
+
+    // COMMITTED FACT 4: with probability 0 every decision draws and skips, so
+    // each child's accounting is exactly the 30-leaf eligibility count and
+    // its final genotype is byte-identical to its parent's — child 24's
+    // parent is the tied loser, id 12.
+    for (const [, child] of derived.children) {
+      expect(child.accounting).toEqual({ ...ZERO_ACCOUNTING, eligibleContinuousLeafCount: 30 });
+      expect(child.selectedLeaves).toEqual([]);
+      expect(child.repairTouched).toEqual([]);
+      expect(child.finalBytes).toEqual(serializeGenotype(child.parentGenotype));
+    }
+    expect(derived.children.get(24).parentGenotype).toBe(genotypesById.get(12));
+
+    const inputsSnapshot = snapshotInputs(derived.population, derived.pool, mutation);
+    const actual = deriveNextGeneration({
+      population: derived.population,
+      pool: derived.pool,
+      seed,
+      mutation,
+      baseIndividualId,
+      generationIndex,
+    });
+    expectInputsUnchanged(derived.population, derived.pool, mutation, inputsSnapshot);
+    expectTransitionMatches(actual, derived, [20, 21, 22, 23, 24]);
+
+    // The elite rows carry the two lowest tied ids; the non-elite rows name
+    // winners 11, 10 and the tied loser 12.
+    const lineage = deserializeLineage(actual.lineageBytes);
+    expect(lineage.generationIndex).toBe(1);
+    expect(lineage.individuals.slice(0, 2).map((r) => [r.individualId, r.parentIndividualId, r.origin]))
+      .toEqual([[20, 10, 'eliteCopy'], [21, 11, 'eliteCopy']]);
+    expect(lineage.individuals.slice(2).map((r) => [r.individualId, r.parentIndividualId, r.origin]))
+      .toEqual([[22, 11, 'continuousMutation'], [23, 10, 'continuousMutation'], [24, 12, 'continuousMutation']]);
   });
 });
 

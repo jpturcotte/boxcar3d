@@ -19,13 +19,13 @@
 // RNG, the selection and mutation operators, the population and lineage
 // codecs, the error taxonomy — and nothing above: no run, no replay, no
 // offline scripts, no UI, no runtime identity, no physics orchestration. That
-// is what lets the future PR 4B verified-artifact path reproduce persisted
+// is what lets the future PR 4C verified-artifact path reproduce persisted
 // transitions against the SAME kernel the producer uses, without a cycle. The
 // closure is pinned in tests/evolution-transition.test.js.
 //
 // THIS IS NOT A PUBLIC SEAM. An ES-module export from this file is an
 // internal repository boundary, never part of BoxCar3D's public run API. The
-// one authorized production importer today is evolution-run.js; PR 4B will
+// one authorized production importer today is evolution-run.js; PR 4C will
 // deliberately add evolution-replay.js when the verified-artifact path starts
 // reproducing persisted adjacent transitions. That allowlist is DECLARED and
 // pinned in tests/evolution-transition.test.js by an AST-based scan over

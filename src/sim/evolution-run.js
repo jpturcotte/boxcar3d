@@ -28,7 +28,7 @@
 // The transition itself lives in evolution-transition.js (PR 4A): an INTERNAL
 // kernel below both this module and replay verification, referenced from
 // production only by an explicit, test-pinned importer allowlist (today this
-// module alone; PR 4B adds evolution-replay.js by decision). Its allowlisted
+// module alone; PR 4C adds evolution-replay.js by decision). Its allowlisted
 // callers still pass only module-owned values — a design contract pinned by
 // the AST-based importer guard in tests/evolution-transition.test.js, not a
 // runtime check the kernel performs — and moving it did not make it public.

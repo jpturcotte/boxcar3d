@@ -345,7 +345,7 @@ const EXPECTED_EXPORTS = Object.freeze({
   ]),
   // PR 4A's transition kernel: the ONE internal function seam out of the run
   // module, placed below both run orchestration and replay verification so the
-  // PR 4B verifier can share it without a cycle. Exactly one export; the
+  // PR 4C verifier can share it without a cycle. Exactly one export; the
   // production importer allowlist is pinned in tests/evolution-transition.test.js.
   'evolution-transition.js': Object.freeze(['deriveNextGeneration']),
   'evolution-replay.js': Object.freeze([

@@ -2057,7 +2057,9 @@ history, replay, and strong artifact identity. Full contract:
   getters, then a fresh exactly-sized array. NOT `new Uint8Array(bytes)`, which
   reads the caller's shadowable `length` (measured: a 4-byte array claiming
   `length: 2` copies a PREFIX).
-- **Ordered replay (10 stages, each with its own code):** storage + the 64 MiB
+- **Ordered replay (10 stages, each with its own code; stale as of PR 3 —
+  the live ladder is the 13-stage docblock in src/sim/evolution-replay.js,
+  dated pointer added 2026-07-29):** storage + the 64 MiB
   ceiling BEFORE the copy → copy BEFORE any await → framing → header digest +
   version agreement → every component digest in generation order → the chain →
   the whole-history digest → external expected identity → the runtime gate →
@@ -2483,9 +2485,14 @@ single clean commit `9c5f24c`):**
   adversarial review (2026-07-28) — PR 4A (the deterministic transition-kernel
   extraction, independent oracle and internal boundary pinning; no
   successful-run behaviour change, histories not yet transition-authentic) is
-  LANDED; remaining: PR 4B (exact persisted N→N+1 transition verification and
-  opaque-boundary completion) — with empirical
-  measurements blocked until PR 4B lands. The recorded items then apply, in order: (1) escalate the alert
+  LANDED; the remaining work is now sequenced (re-sequenced 2026-07-29)
+  PR 4B (completion of the three PR-4A-deferred oracle boundary shapes and
+  kernel-honest test artifacts — no production change), PR 4C (exact
+  persisted N→N+1 transition authentication before runtime identity) and
+  PR 4D (scale validation and
+  the measurement decision); the breeding-pool, false-negative and
+  mutation-default measurements stay blocked pending PR 4C, PR 4D and
+  independent review. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
@@ -2663,9 +2670,13 @@ policy, selection or mutation behaviour change:**
   tests; the former monolithic PR 4 was split after adversarial review
   (2026-07-28) into PR 4A (transition-kernel extraction, independent oracle
   and internal boundary pinning — LANDED, no successful-run behaviour change)
-  and PR 4B, which owns exact persisted N→N+1 transition verification and
-  opaque-boundary completion. **The breeding-pool and false-negative
-  measurements stay blocked until PR 4B lands** — the experiment schema,
+  and a follow-on sequence re-sequenced 2026-07-29: PR 4B
+  (completion of the three PR-4A-deferred oracle boundary shapes and
+  kernel-honest test artifacts — no production change), PR 4C (exact
+  persisted N→N+1 transition authentication before runtime identity) and
+  PR 4D (scale validation and the measurement decision). **The breeding-pool and false-negative
+  measurements stay blocked pending PR 4C, PR 4D and independent review** —
+  the experiment schema,
   the campaign, retained workspace histories, the forensic adjudicator,
   counterfactual analysis, empirical gates and the escalation verdict all
   live in that later measurement PR, not here.
@@ -2826,8 +2837,12 @@ version, or successful-run behaviour change:**
   capacity placement; fixtures, goldens, locks, thresholds, dependencies.
   PR 4 (exact deterministic transition provenance and opaque-boundary
   enforcement) remains, and **measurements stay blocked until PR 4 lands**.
-  (Written pre-split; PR 4 was divided 2026-07-28 — see the PR 4A entry that
-  follows: 4A landed, 4B remains, measurements stay blocked until 4B.)
+  (Written pre-split; PR 4 was divided 2026-07-28 and its follow-on
+  re-sequenced 2026-07-29 — see the PR 4A and PR 4B entries that follow:
+  4A landed; then 4B (the three PR-4A-deferred oracle boundary shapes and
+  honest test artifacts), 4C (persisted-transition authentication) and 4D
+  (scale validation and the measurement decision); measurements stay blocked pending PR 4C, PR 4D and
+  independent review.)
 - **Seeds allocated:** none.
 
 **Post-merge hardening PR 4A (2026-07-28) — the deterministic N→N+1
@@ -2844,7 +2859,8 @@ contract change:**
   at its centre: producer and verifier calling the same newly extracted
   implementation and appearing to "prove" each other with no independent
   evidence the transition itself is correct. PR 4A owns the kernel, the
-  oracle and the boundary; PR 4B owns the persisted-artifact verdict.
+  oracle and the boundary; PR 4C owns the persisted-artifact verdict
+  (re-sequenced 2026-07-29 — see the PR 4B entry).
 - **The kernel.** `src/sim/evolution-transition.js` exports exactly
   `deriveNextGeneration({ population, pool, seed, mutation, baseIndividualId,
   generationIndex }) -> { populationBytes, lineageBytes }` — the verbatim
@@ -2857,7 +2873,7 @@ contract change:**
   decode, and the lineage decode + cross-check. It sits BELOW both run
   orchestration and replay verification — five imports (`prng`,
   `evolution-operators`, `population`, `evolution-lineage`,
-  `evolution-contract`), closure-proven cycle-free — so PR 4B's
+  `evolution-contract`), closure-proven cycle-free — so PR 4C's
   verified-artifact path can share it without a circular dependency. An
   ES-module export here is an internal seam, NOT public run API: the pinned
   production importer set is exactly `{ evolution-run.js }`, enforced by an
@@ -2866,7 +2882,7 @@ contract change:**
   module scripts, and every supported import
   form — '.'-relative and Vite-root-absolute specifiers alike — with
   computed dynamic import() and import.meta.glob refused outright, declared
-  as an allowlist PR 4B will
+  as an allowlist PR 4C will
   deliberately extend with `evolution-replay.js`
   (tests/evolution-transition.test.js); there is
   no `_internalState`, `_transition`, debug or testing accessor.
@@ -2912,15 +2928,24 @@ contract change:**
   before pinning — the round-4 review correctly ruled that a behavior change
   smuggled into a behavior-preserving extraction, and the base wording was
   restored verbatim; see the round-4 entry.)
-  Deferred to PR 4B, recorded
+  Deferred past PR 4A, recorded
   here: additional oracle boundary shapes (all-elite output, single-row pool,
   a three-way elite-boundary tie; an exact decision==probability draw is
-  unreachable for non-dyadic probabilities with the real Rng), bounding of
+  unreachable for non-dyadic probabilities with the real Rng) — DISCHARGED
+  in the proposed PR 4B (2026-07-29; see the entry below) — bounding of
   PERSISTED kernel inputs (the kernel stays verbatim and the caller's
-  terminal gate owns the bound today; 4B must bound what it feeds from
-  artifacts), and the review appendix (CRLF pinning, scripts-walk
-  vacuousness floor, case-insensitive filesystems, O(size²) parent scan at
-  replay scale).
+  terminal gate owns the bound today; PR 4C must bound what it feeds from
+  artifacts), and the review appendix (CRLF pinning and case-insensitive
+  filesystems — separable guard-hardening follow-ups; the scripts-walk
+  vacuousness floor — covered by an explicit `scripts/history-observations.js`
+  canary alongside the count floor; the O(size²) parent scan at
+  replay scale — PR 4D's scale-validation call, with measurements), and —
+  recorded from PR 4B's external reviews — a populationSize = 1 oracle
+  boundary (one elite, zero children, no tournament draws): a legal
+  transition shape no oracle case pins yet, deferred to a standalone
+  oracle-hardening follow-up — deliberately NOT PR 4C scope (PR 4C owns only
+  the atomic production-verifier change), which is why PR 4B's oracle claim
+  is scoped to the three PR-4A-deferred shapes rather than the whole oracle.
 - **Round-4 external review hardening (landed in the same PR).** A further
   external pass showed the AST guard still modeled syntax rather than the
   module graph the toolchain actually resolves, and every finding was
@@ -2975,23 +3000,100 @@ contract change:**
   transition refusal was added — extraction and resume still accept a forged
   but locally coherent N→N+1 history — and no verifier hook, optional
   callback, debug escape hatch or public state accessor "for PR 4B" exists;
-  PR 4B will import the finished kernel directly.
-- **What PR 4B owns.** Exact persisted transition provenance — after capacity
+  the replay verifier (PR 4C after the 2026-07-29 re-sequencing) will import
+  the finished kernel directly.
+- **What PR 4B owns (proposed 2026-07-29; see the entry that follows).**
+  Completion of the three PR-4A-deferred oracle boundary shapes (all-elite
+  output, single selectable parent, three-way elite-boundary tie) and
+  kernel-honest multigeneration test artifacts — no production change. **What PR 4C owns.** Exact persisted
+  transition provenance — after capacity
   and before runtime identity, reproduce every persisted adjacent N→N+1 pair
-  (generation N population + persisted fitness vector + header seed and
-  mutation policy + the exact fresh-ID block → the PR 4A kernel →
+  (generation N population + persisted fitness vector + the manifest seed —
+  the run seed persisted inside `header.initializationManifestBytes` — and
+  the persisted mutation policy, `header.mutationProbability`/
+  `header.mutationMagnitude`, + the exact fresh-ID block → the PR 4A kernel →
   byte-compare derived population and lineage against generation N+1) — plus
   the malformed-history taxonomy for transition contradictions, combined-
   fault precedence, zero-physics and zero-runtime-identity refusal tests,
   partial-history handling (a final nonterminal record has no persisted
-  successor and must not be described as having a verified transition),
-  replay-stage reclassification, and the final measurement-unblocking
-  decision. **Persisted histories are not yet transition-authentic,
+  successor and must not be described as having a verified transition), and
+  replay-stage reclassification. **What PR 4D owns.** Scale validation of the
+  landed verifier and the final measurement-unblocking decision.
+  **Persisted histories are not yet transition-authentic,
   deterministic physics replay is not replaced, and the breeding-pool,
-  false-negative and mutation-default measurements stay blocked until PR 4B
-  lands.**
+  false-negative and mutation-default measurements stay blocked pending
+  PR 4C, PR 4D and independent review.**
 - **Seeds allocated:** none (the oracle's hand-built fixtures use test-local
   literal seeds 20260728 and 35, not campaign allocations).
+
+**Post-merge hardening PR 4B (proposed, 2026-07-29) — completion of the
+three PR-4A-deferred oracle boundary shapes and kernel-honest
+multigeneration test artifacts. NO production-behavior, persisted-format or
+successful-run change:** the three
+oracle boundary shapes PR 4A deferred are now independently derived and
+byte-pinned in tests/evolution-transition.test.js — Case C (all-elite
+output: population size == ELITE_COUNT with equal fitness, so every
+successor slot is a zero-accounting eliteCopy and no child is derived),
+Case D (a one-row selectable pool: exactly one elite, every tournament
+winner forced to the sole row, and the three-draw obligation still consumed
+before the mutation stream — made observable by probability-1 mutation with
+committed per-child draw triples, first-two-leaf literals, repair evidence and
+all eleven accounting counters), and Case E (a three-way tie at the elite
+boundary: the two lowest ids take the elite slots while the tied loser stays
+selectable and wins a non-elite tournament; input-order versus lower-id
+tie-breaking is documented as observationally equivalent on legal fixtures,
+so no input-order probe exists). Each case asserts exact canonical
+population and lineage bytes against the independently serialized derivation
+and asserts the kernel leaves its inputs unchanged; deliberate-defect probes
+(C1–C5, D1–D5, E1–E5) were run red against the cases and reverted — none
+committed. `buildSynthesizedArtifact`
+(tests/evolution-local-semantics.test.js) is now KERNEL-HONEST: generation 0
+still comes from the real initializer, and every successor's population and
+lineage components are deriveNextGeneration's exact output over the previous
+record's persisted facts — the decoded population, the pool reconstructed
+from that record's synthetic vector, the manifest seed, the header mutation
+policy and the checked fresh-ID base — with terminal reasons computed by the
+production `terminalReasonFor` (never overridden; a successor requested
+after a terminal condition is a caller configuration error, refused loudly,
+so an empty pool is only legal on the final record). This is the 3.2
+integration role — agreement with the production transition by construction
+— NOT independent kernel evidence; the independent oracle owns that
+boundary. The kernel's test-importer allowlist gains
+tests/evolution-local-semantics.test.js (a static import, AST-pinned); the
+production importer set is unchanged (evolution-run.js only). Anti-default
+and anti-seed teeth rest on committed inequality WITNESSES derived in-test
+from the same record-0 inputs, not on policy values as theorems. This tree
+contains the proposed PR 4B oracle and test-artifact hardening. It does not
+add persisted-transition authentication: no new persisted artifact is
+refused, evolution-replay.js still does not import the kernel, runtime
+identity and deterministic physics replay are unchanged, REPLAY_STAGES is
+unchanged, and measurements remain blocked pending PR 4C, PR 4D and
+independent review. Three external review rounds were dispositioned into the
+branch before merge. Round one: an upfront invalidPoolAt domain refusal
+(out-of-range, fractional or < -1 values can no longer silently build a
+fully selectable artifact), terminal facts derived from the reconstructed
+persisted pool rather than a parallel interpretation of the vector, an
+explicit scripts/history-observations.js canary in the importer guard's
+anti-vacuity pins, oraclePool owning copies before freezing (pinned by an
+ownership test), stale PR-4B→4C forward references corrected, and a Case D
+fixture comment narrowed. Round two: the caller-owned mutation policy is
+captured ONCE into a frozen owned copy before the first await — the
+initializer's capture-once idiom — so a caller mutating its own object
+while the promise is pending cannot make the derived successor contradict
+the persisted header policy (demonstrated RED against the unfixed builder:
+header persists 0/0 while the caller flips its object to 1/0.3
+mid-flight), transitions run under the manifest-bound initialization.seed,
+and the oracle claim was narrowed from 'complete the independent oracle'
+to the three PR-4A-deferred shapes — the populationSize = 1 boundary above
+was reassigned from a 'PR 4C candidate' to a standalone oracle-hardening
+follow-up at the same time. Round three (documentation-only): the scoped
+wording replaced the lingering 'independent-oracle boundary completion'
+phrase in README.md's active status and the solver-divergence addendum, and
+the PR description's red-on-base count was clarified as the original six
+planned kernel-honesty tests.
+- **Seeds allocated:** none (the new oracle cases use test-local literal
+  seeds 1 and 20260728 and the anti-seed test uses 20260799 — authoring
+  literals documented in-test, NOT campaign allocations).
 
 ### Phase 1B PR 2 operator boundary
 

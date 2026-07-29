@@ -46,6 +46,7 @@ import * as EvolutionNS from '../src/sim/evolution-operators.js';
 import * as EvolutionContractNS from '../src/sim/evolution-contract.js';
 import * as EvolutionLineageNS from '../src/sim/evolution-lineage.js';
 import * as EvolutionRunNS from '../src/sim/evolution-run.js';
+import * as EvolutionTransitionNS from '../src/sim/evolution-transition.js';
 import * as EvolutionHistoryNS from '../src/sim/evolution-history.js';
 import * as EvolutionReplayNS from '../src/sim/evolution-replay.js';
 import * as EvolutionCapacityNS from '../src/sim/evolution-capacity.js';
@@ -342,6 +343,11 @@ const EXPECTED_EXPORTS = Object.freeze({
     'EVOLUTION_ENGINE_VERSION', 'EVOLUTION_POLICY_VERSION', 'TERMINAL_REASONS',
     'createEvolutionRun', 'resumeEvolutionRun',
   ]),
+  // PR 4A's transition kernel: the ONE internal function seam out of the run
+  // module, placed below both run orchestration and replay verification so the
+  // PR 4B verifier can share it without a cycle. Exactly one export; the
+  // production importer allowlist is pinned in tests/evolution-transition.test.js.
+  'evolution-transition.js': Object.freeze(['deriveNextGeneration']),
   'evolution-replay.js': Object.freeze([
     'MAX_EVOLUTION_HISTORY_BYTES', 'REPLAY_STAGES', 'captureExpectedIdentity',
     'checkExpectedIdentity', 'checkFitnessVectorCompatibility', 'checkRuntimeIdentity', 'failReplayDivergence',
@@ -431,6 +437,7 @@ const NAMESPACES = Object.freeze({
   'evolution-contract.js': EvolutionContractNS,
   'evolution-lineage.js': EvolutionLineageNS,
   'evolution-run.js': EvolutionRunNS,
+  'evolution-transition.js': EvolutionTransitionNS,
   'evolution-history.js': EvolutionHistoryNS,
   'evolution-replay.js': EvolutionReplayNS,
   'evolution-capacity.js': EvolutionCapacityNS,
@@ -678,6 +685,17 @@ const EXPORT_ROLES = Object.freeze({
     { name: 'createEvolutionRun', kind: 'orchestrator', callerCollections: ['initialization.initialSuspensionTypes'], callerNumbers: [] },
     { name: 'resumeEvolutionRun', kind: 'orchestrator', callerCollections: ['historyBytes', 'options.expectedHistoryDigestBytes'], callerNumbers: ['options.expectedGenerationIndex'] },
   ]),
+  'evolution-transition.js': Object.freeze([
+    // The kernel consumes only module-owned decoded values (who may hand them
+    // in is the production importer allowlist's ruling, not this table's) and
+    // returns one fresh record of two freshly encoded canonical byte arrays.
+    {
+      name: 'deriveNextGeneration',
+      kind: 'pure',
+      callerCollections: ['population.individuals', 'pool.evaluatedIndividualIds', 'pool.individuals'],
+      callerNumbers: ['seed', 'mutation.probability', 'mutation.magnitude', 'baseIndividualId', 'generationIndex', 'pool.populationSnapshotDigestState', 'fitness', 'individualId'],
+    },
+  ]),
   'evolution-replay.js': Object.freeze([
     { name: 'REPLAY_STAGES', kind: 'policy', callerCollections: [], callerNumbers: [] },
     { name: 'MAX_EVOLUTION_HISTORY_BYTES', kind: 'policy', callerCollections: [], callerNumbers: [] },
@@ -849,6 +867,7 @@ const BYTE_FAMILY_EXEMPT = Object.freeze({
   'src/sim/population-fixtures.js': 'declared fixture literals',
   'src/sim/population-locks.js': 'golden literals only, zero imports',
   'src/sim/evolution-operators.js': 'plain population/pool/genotype inputs; serializes only module-owned canonical data',
+  'src/sim/evolution-transition.js': 'plain population/pool inputs; serializes only module-owned canonical data (the evolution-operators.js ruling)',
   'src/sim/evolution-contract.js': 'error taxonomy, terminal enum and its one scalar decision function, caps and checked arithmetic; no byte buffers, no caller collections beyond a scalar-copied error context',
   'src/sim/evolution-fixtures.js': 'declared fixture literals',
   'src/sim/evolution-locks.js': 'golden literals only, zero imports',
@@ -1752,6 +1771,10 @@ const OWNERSHIP_VERDICTS = Object.freeze({
   // engine's behaviour under a mutated config is owned by
   // tests/evolution-run.test.js (it needs physics).
   createEvolutionRun: 'notExercised',
+  // evolution-transition.js — one fresh record of two freshly encoded
+  // canonical byte arrays; nothing caller-owned is reachable in it. Pure (no
+  // physics), so the ownedCopy battery below calls it with plain data.
+  deriveNextGeneration: 'ownedCopy',
   // evolution-history.js
   // (serializeEvaluationMetadata reads only scalars — no callerCollections row,
   // so it declares no verdict, by the table's own rule.)
@@ -1891,10 +1914,39 @@ function ownedCopyCases() {
         evaluatedIndividualIds: [3, 9],
         individuals: [{ individualId: 3, fitness: 2 }, { individualId: 9, fitness: 1 }],
       };
+      // Three members so the transition exercises BOTH paths: two elite copies
+      // and one tournament-selected, mutated child. Plain data, no physics.
+      const transitionPopulation = pop([
+        { individualId: 3, genotype: canonicalGenotype(0.25) },
+        { individualId: 9, genotype: canonicalGenotype(0.75) },
+        { individualId: 12, genotype: canonicalGenotype(0.5) },
+      ]);
+      const transitionPool = {
+        selectionPoolVersion: 1,
+        fitnessPolicyVersion: 2,
+        populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(transitionPopulation)),
+        evaluatedIndividualIds: [3, 9, 12],
+        individuals: [
+          { individualId: 3, fitness: 2 }, { individualId: 9, fitness: 1 }, { individualId: 12, fitness: 3 },
+        ],
+      };
+      const transitionMutation = { probability: 0, magnitude: 0 };
       return [
         { name: 'selectablePoolFromEvaluation', result: EvaluationNS.selectablePoolFromEvaluation(evaluation), roots: [evaluation] },
         { name: 'selectElites', result: EvolutionNS.selectElites(elitePopulation, elitePool), roots: [elitePopulation, elitePool] },
         { name: 'mutateContinuousGenotype', result: EvolutionNS.mutateContinuousGenotype(g, { nextFloat: () => 0.5 }, { probability: 0, magnitude: 0 }), roots: [g] },
+        {
+          name: 'deriveNextGeneration',
+          result: EvolutionTransitionNS.deriveNextGeneration({
+            population: transitionPopulation,
+            pool: transitionPool,
+            seed: 7,
+            mutation: transitionMutation,
+            baseIndividualId: 20,
+            generationIndex: 0,
+          }),
+          roots: [transitionPopulation, transitionPool, transitionMutation],
+        },
       ];
     })(),
     // PR 3's history codecs.

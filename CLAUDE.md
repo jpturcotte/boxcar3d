@@ -2479,9 +2479,13 @@ single clean commit `9c5f24c`):**
   parity, persisted `effectiveDt`/`worldMode` in the verified extraction,
   the trusted in-process summarizer boundary) and PR 3 (local lineage
   validation, terminal-reason validation, record-count semantics and their
-  precedence tests) are LANDED; remaining: PR 4 (exact deterministic
-  transition provenance and opaque-boundary enforcement) — with empirical
-  measurements blocked until PR 4 lands. The recorded items then apply, in order: (1) escalate the alert
+  precedence tests) are LANDED; the former monolithic PR 4 was split after
+  adversarial review (2026-07-28) — PR 4A (the deterministic transition-kernel
+  extraction, independent oracle and internal boundary pinning; no
+  successful-run behaviour change, histories not yet transition-authentic) is
+  LANDED; remaining: PR 4B (exact persisted N→N+1 transition verification and
+  opaque-boundary completion) — with empirical
+  measurements blocked until PR 4B lands. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
   (2) persist the integrity OBSERVATIONS (peak body speed, first alert
@@ -2656,9 +2660,12 @@ policy, selection or mutation behaviour change:**
   `effectiveDt`/`worldMode` in the verified extraction, and the trusted
   in-process summarizer boundary; PR 3 owns local lineage validation,
   terminal-reason validation, record-count semantics, and their precedence
-  tests; PR 4 owns exact deterministic transition provenance and
-  opaque-boundary enforcement. **The breeding-pool and false-negative
-  measurements stay blocked until PR 4 lands** — the experiment schema,
+  tests; the former monolithic PR 4 was split after adversarial review
+  (2026-07-28) into PR 4A (transition-kernel extraction, independent oracle
+  and internal boundary pinning — LANDED, no successful-run behaviour change)
+  and PR 4B, which owns exact persisted N→N+1 transition verification and
+  opaque-boundary completion. **The breeding-pool and false-negative
+  measurements stay blocked until PR 4B lands** — the experiment schema,
   the campaign, retained workspace histories, the forensic adjudicator,
   counterfactual analysis, empirical gates and the escalation verdict all
   live in that later measurement PR, not here.
@@ -2819,7 +2826,172 @@ version, or successful-run behaviour change:**
   capacity placement; fixtures, goldens, locks, thresholds, dependencies.
   PR 4 (exact deterministic transition provenance and opaque-boundary
   enforcement) remains, and **measurements stay blocked until PR 4 lands**.
+  (Written pre-split; PR 4 was divided 2026-07-28 — see the PR 4A entry that
+  follows: 4A landed, 4B remains, measurements stay blocked until 4B.)
 - **Seeds allocated:** none.
+
+**Post-merge hardening PR 4A (2026-07-28) — the deterministic N→N+1
+transition extracted into a narrow, cycle-free internal kernel, checked by a
+genuinely independent oracle, with the internal ownership boundary pinned.
+The former single PR 4 was SPLIT after adversarial review; NO successful-run
+behaviour, persisted-format, policy, capacity, runtime-identity or replay
+contract change:**
+- **Why the split.** The monolithic PR 4 combined the production extraction,
+  the module-graph change, an independent correctness oracle,
+  persisted-artifact transition verification, gate placement and precedence,
+  hostile-artifact tests, the opaque boundary, replay reclassification and
+  measurement tooling in one diff — unreviewable, and with a tautology hazard
+  at its centre: producer and verifier calling the same newly extracted
+  implementation and appearing to "prove" each other with no independent
+  evidence the transition itself is correct. PR 4A owns the kernel, the
+  oracle and the boundary; PR 4B owns the persisted-artifact verdict.
+- **The kernel.** `src/sim/evolution-transition.js` exports exactly
+  `deriveNextGeneration({ population, pool, seed, mutation, baseIndividualId,
+  generationIndex }) -> { populationBytes, lineageBytes }` — the verbatim
+  extraction of evolution-run.js's private transition: elite order and
+  tie-break, elite count, fresh-ID allocation, per-child
+  `new Rng(seed).fork(childId)` streams (never a generation-global RNG, never
+  a slot-index fork), tournament replacement sampling, mutation field-walk
+  and draw order, one post-mutation repair, exact accounting retention,
+  dropped `rawGenotype`, serialization order, the immediate population
+  decode, and the lineage decode + cross-check. It sits BELOW both run
+  orchestration and replay verification — five imports (`prng`,
+  `evolution-operators`, `population`, `evolution-lineage`,
+  `evolution-contract`), closure-proven cycle-free — so PR 4B's
+  verified-artifact path can share it without a circular dependency. An
+  ES-module export here is an internal seam, NOT public run API: the pinned
+  production importer set is exactly `{ evolution-run.js }`, enforced by an
+  AST-based scan over all current repository module roots (src/, scripts/,
+  tests/, legacy/, the root configs), the configured HTML entrypoint's
+  module scripts, and every supported import
+  form — '.'-relative and Vite-root-absolute specifiers alike — with
+  computed dynamic import() and import.meta.glob refused outright, declared
+  as an allowlist PR 4B will
+  deliberately extend with `evolution-replay.js`
+  (tests/evolution-transition.test.js); there is
+  no `_internalState`, `_transition`, debug or testing accessor.
+- **The independent oracle.** Two narrow committed cases in
+  tests/evolution-transition.test.js never call the kernel, the run, or the
+  selection/mutation operators to compute expectations: elite rank/order, the
+  lower-id tie-break, tournament winners, mutation decisions/deltas/clamps
+  and all eleven accounting counters are re-derived inline and asserted
+  against committed literals (tournament uint32 draws, selected leaves with
+  their decision/unit values, repair-touched leaves, every counter). Shared
+  lower-level primitives are named with their claim boundary in the test
+  header: the locked Rng, the canonical codecs, fnv1a,
+  compileAssembly/forEachGenotypeField/repairGenotype, and the ELITE_COUNT /
+  TOURNAMENT_SIZE policy literals. Case A covers selection, elitism, the
+  tie-break, fresh ids and lineage shape, including a non-elite tournament
+  parent; Case B is repair-sensitive — a radius leaf drawn below the repair
+  floor is REDIRECTED by repair, and the size-bias feasibility bound landing
+  one ulp above the saturated parent value contributes an INTRODUCED leaf —
+  so retaining `rawGenotype` or skipping repair changes the bytes. Eleven
+  deliberate defects (swapped elite order, `fork(childId + 1)`, a
+  generation-global RNG, first-draw-only tournament, a reused elite id, an
+  altered accounting field, an origin change, retained `rawGenotype`,
+  skipped repair, a removed immediate decode, a removed cross-check) each
+  failed the named oracle case or the source-static canonicalization pin
+  during development; none is committed.
+- **Round-3 external review hardening (landed in the same PR).** Three
+  converging reviews (the Codex bot's P2 plus two external passes) showed the
+  first regex-based boundary guard missed double-quoted specifiers,
+  no-substitution template literals, re-export/dynamic cycle edges and
+  comment masking, and that Case B's 0.5-magnitude arithmetic was degenerate
+  (every selected parent leaf starts at 0.5, so the proposal equalled the
+  unit draw and a unit-assigning defective operator passed). Fixed: the
+  boundary scan is AST-based (espree via eslint's `Linter`, no new
+  dependency) over all four edge node types with adversarial self-tests and a
+  dataflow-bound canonicalization pin; computed dynamic import() specifiers
+  are refused outside the declared two-file rapier-probe allowlist (the
+  round-2 residual is CLOSED, not documented); Case B was re-authored at
+  magnitude 0.3 with a per-leaf value-≠-unit assertion; guard 2 is
+  now pinned through the stateful-accessor hostile-pool idiom (the earlier
+  "structurally unreachable" claim was demolished by review); and the oracle
+  asserts the kernel leaves its inputs unchanged. (One round-3 change did NOT
+  survive round 4: guard 1's message was rewritten "non-empty" → "empty"
+  before pinning — the round-4 review correctly ruled that a behavior change
+  smuggled into a behavior-preserving extraction, and the base wording was
+  restored verbatim; see the round-4 entry.)
+  Deferred to PR 4B, recorded
+  here: additional oracle boundary shapes (all-elite output, single-row pool,
+  a three-way elite-boundary tie; an exact decision==probability draw is
+  unreachable for non-dyadic probabilities with the real Rng), bounding of
+  PERSISTED kernel inputs (the kernel stays verbatim and the caller's
+  terminal gate owns the bound today; 4B must bound what it feeds from
+  artifacts), and the review appendix (CRLF pinning, scripts-walk
+  vacuousness floor, case-insensitive filesystems, O(size²) parent scan at
+  replay scale).
+- **Round-4 external review hardening (landed in the same PR).** A further
+  external pass showed the AST guard still modeled syntax rather than the
+  module graph the toolchain actually resolves, and every finding was
+  reproduced against
+  the round-3 guard before fixing: (1) only '.'-relative literal specifiers
+  were considered, so a Vite ROOT-ABSOLUTE import
+  (`'/src/sim/evolution-transition.js'` — the convention index.html itself
+  uses to boot /src/main.js) was an invisible production importer; (2)
+  `import.meta.glob`, which Vite rewrites into real imports that never appear
+  in the authored source, was unmodeled; (3) "production" was defined by
+  directory — tests/ and index.html were unwalked and a src -> tests-helper
+  -> kernel trampoline was recorded as an "accepted residual"; (4) the
+  computed-import allowlist pinned per-file COUNTS, not targets (a retargeted
+  probe variable left the count unchanged); (5) guard 1's round-3 message
+  rewrite violated the task's preserve-existing-error-behavior constraint —
+  the round-3 I1 accuracy argument and the round-4 behavior-parity argument
+  conflict, and behavior parity wins in an extraction: the base wording
+  ("tournament returned no parent from a non-empty selectable pool") is
+  restored VERBATIM and pinned as-is, with the wording correction deferred
+  to a deliberately scoped follow-up outside PR 4A; (6) the oracle's
+  input-immutability snapshot omitted the mutable `mutation` record and
+  pinned the pool only through JSON. Fixed: the resolver canonicalizes
+  root-absolute specifiers against the repo root (bare specifiers stay
+  unmodeled — no resolve.alias exists; adding one obligates updating the
+  resolver); `import.meta.glob`/`globEager` are classified as their own edge
+  form and refused in every scanned module; the scan walks all current
+  repository module roots — src/, scripts/, tests/, legacy/, the root config
+  modules — plus the configured
+  HTML entry's external+inline module scripts — and pins the kernel importer
+  set globally (production allowlist `{ evolution-run.js }` plus the declared
+  three-file test allowlist), with a separate pin forbidding any src/ module
+  importing the tests tree at all; the two rapier probes and the physics
+  smoke select between LITERAL import loaders so computed import() is refused
+  everywhere with NO allowlist (README's "refused outright" is now literally
+  true); and the oracle snapshots population bytes bit-exactly plus
+  deep-clones pool AND mutation for the post-call unchanged assertion.
+  All six escape classes (root-absolute importer, import.meta.glob,
+  tests-helper trampoline, computed import, inline index.html module,
+  src->tests import) were demonstrated RED against the fixed guard in
+  scratch probes; none is committed. A follow-on review wording pass scoped
+  the guard's claims to all current repository module roots, configured
+  entrypoints and supported import forms — the guard pins today's declared
+  graph and obligates BY-DECISION updates (a new resolve.alias, a new .html
+  entrypoint) rather than pretending to model future build-system
+  reconfigurations automatically.
+- **What did NOT change.** Every successful-run behaviour, fixture, golden,
+  lock and digest — the full Node, browser and cross-platform determinism
+  suites pass byte-identically and no expectation was updated; every
+  persisted layout and version; terminal/fitness/integrity/selection/
+  mutation policy and defaults; capacity formulas; runtime identity;
+  `REPLAY_STAGES`; the error taxonomy; seed allocation. No persisted-history
+  transition refusal was added — extraction and resume still accept a forged
+  but locally coherent N→N+1 history — and no verifier hook, optional
+  callback, debug escape hatch or public state accessor "for PR 4B" exists;
+  PR 4B will import the finished kernel directly.
+- **What PR 4B owns.** Exact persisted transition provenance — after capacity
+  and before runtime identity, reproduce every persisted adjacent N→N+1 pair
+  (generation N population + persisted fitness vector + header seed and
+  mutation policy + the exact fresh-ID block → the PR 4A kernel →
+  byte-compare derived population and lineage against generation N+1) — plus
+  the malformed-history taxonomy for transition contradictions, combined-
+  fault precedence, zero-physics and zero-runtime-identity refusal tests,
+  partial-history handling (a final nonterminal record has no persisted
+  successor and must not be described as having a verified transition),
+  replay-stage reclassification, and the final measurement-unblocking
+  decision. **Persisted histories are not yet transition-authentic,
+  deterministic physics replay is not replaced, and the breeding-pool,
+  false-negative and mutation-default measurements stay blocked until PR 4B
+  lands.**
+- **Seeds allocated:** none (the oracle's hand-built fixtures use test-local
+  literal seeds 20260728 and 35, not campaign allocations).
 
 ### Phase 1B PR 2 operator boundary
 

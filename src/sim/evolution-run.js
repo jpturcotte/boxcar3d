@@ -10,19 +10,28 @@
 // (Commit 2 adds `run.historyBytes()`; Commit 3 adds `resumeEvolutionRun`.)
 //
 // WHY THERE IS NO PUBLIC `advanceGeneration(population, evaluation, ...)`.
-// A stateless transition would have to accept a population and a fitness
-// result as INDEPENDENTLY SUPPLIED artifacts and then decide whether they
-// belong together. The only binding available for that decision is the fitness
-// vector's FNV-32 population-snapshot digest state — and PR 2's operator
-// boundary already ruled that this state is a same-source, in-process mismatch
-// SENTINEL, never equality between independently supplied artifacts (a 32-bit
-// hash collides by the birthday bound; one appears in seconds). Rather than
-// build a public seam whose safety depends on a hash that is documented not to
-// provide it, the transition is PRIVATE to an opaque run: the run decodes the
-// population from bytes it owns, evaluates exactly that population, and
-// derives the fitness vector from the same owned transition. The FNV state is
-// then still checked — as the sentinel it is, against values the module itself
-// produced moments earlier — and it is never asked to establish identity.
+// A stateless PUBLIC transition would have to accept a population and a
+// fitness result as INDEPENDENTLY SUPPLIED artifacts and then decide whether
+// they belong together. The only binding available for that decision is the
+// fitness vector's FNV-32 population-snapshot digest state — and PR 2's
+// operator boundary already ruled that this state is a same-source,
+// in-process mismatch SENTINEL, never equality between independently supplied
+// artifacts (a 32-bit hash collides by the birthday bound; one appears in
+// seconds). Rather than build a public seam whose safety depends on a hash
+// that is documented not to provide it, the transition is not reachable
+// through the public run API at all: the run decodes the population from
+// bytes it owns, evaluates exactly that population, and derives the fitness
+// vector from the same owned transition. The FNV state is then still checked
+// — as the sentinel it is, against values the module itself produced moments
+// earlier — and it is never asked to establish identity.
+//
+// The transition itself lives in evolution-transition.js (PR 4A): an INTERNAL
+// kernel below both this module and replay verification, referenced from
+// production only by an explicit, test-pinned importer allowlist (today this
+// module alone; PR 4B adds evolution-replay.js by decision). Its allowlisted
+// callers still pass only module-owned values — a design contract pinned by
+// the AST-based importer guard in tests/evolution-transition.test.js, not a
+// runtime check the kernel performs — and moving it did not make it public.
 //
 // WHAT THE RUN OWNS. Canonical header inputs, the pending population's
 // canonical snapshot bytes, the pending generation's lineage bytes, the next
@@ -45,11 +54,9 @@
 // retained: the run keeps the repaired, canonical genome and the frozen
 // accounting, and nothing else.
 
-import { Rng } from './prng.js';
 import {
   ELITE_COUNT, ELITISM_VERSION, PARAMETRIC_MUTATION_DEFAULTS, PARAMETRIC_MUTATION_VERSION,
-  TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE, mutateContinuousGenotype, selectElites,
-  selectTournamentParent,
+  TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
 } from './evolution-operators.js';
 import { copyOrdinaryBytes, typedArrayByteLength } from './bytes.js';
 import {
@@ -58,7 +65,7 @@ import {
   encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } from './evolution-history.js';
 import {
-  POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, serializePopulationSnapshot,
+  deserializePopulationSnapshot, serializePopulationSnapshot,
 } from './population.js';
 import {
   INITIAL_POPULATION_DEFAULTS, createInitialPopulation,
@@ -80,6 +87,7 @@ import {
   EVOLUTION_LINEAGE_VERSION, crossCheckLineage, deserializeLineage,
   serializeLineage, zeroLineageAccounting,
 } from './evolution-lineage.js';
+import { deriveNextGeneration } from './evolution-transition.js';
 import {
   MAX_EVOLUTION_HISTORY_BYTES, captureExpectedIdentity, checkExpectedIdentity,
   checkFitnessVectorCompatibility, checkRuntimeIdentity, failReplayDivergence,
@@ -290,7 +298,13 @@ function initialLineage(individualIds) {
   return { lineageVersion: EVOLUTION_LINEAGE_VERSION, generationIndex: 0, individuals };
 }
 
-/** The ascending id list of a decoded population (module-owned throughout). */
+/**
+ * The ascending id list of a decoded population (module-owned throughout).
+ * DELIBERATE per-module copy of evolution-transition.js's private helper of
+ * the same name — per-module privacy is the ruling (a shared home would be a
+ * sixth import for no behavioral gain); the two copies must stay identical,
+ * and each names the other so a future edit cannot drift silently.
+ */
 function populationIds(population) {
   const out = [];
   const individuals = population.individuals;
@@ -325,97 +339,16 @@ function captureEvaluationMetadata(evaluation, expectedSteps) {
 }
 
 /**
- * The private, same-source generation transition. It is a free function taking
- * only module-owned values so that its inputs are visibly incapable of pairing
- * a caller's population with a caller's fitness.
- *
- * Returns the next generation's canonical population bytes and lineage bytes.
- * The caller has already decided the run is non-terminal.
- */
-function deriveNextGeneration({
-  population, pool, seed, mutation, baseIndividualId, generationIndex,
-}) {
-  const currentIds = populationIds(population);
-  const size = currentIds.length;
-  // ELITES FIRST, in the order selectElites returns (canonical fitness rank).
-  // Each elite receives a FRESH id; its previous id survives only as lineage.
-  // Reusing an elite's id would collide two generations' RNG stream ids, which
-  // is the whole reason ids are never recycled.
-  const elites = selectElites(population, pool);
-  const eliteCount = elites.length;
-  const individuals = [];
-  const lineageRows = [];
-  const zero = zeroLineageAccounting();
-  for (let slot = 0; slot < size; slot += 1) {
-    const childId = baseIndividualId + slot;
-    if (slot < eliteCount) {
-      const elite = elites[slot];
-      individuals.push({ individualId: childId, genotype: elite.genotype });
-      lineageRows.push({
-        individualId: childId,
-        parentIndividualId: elite.individualId,
-        origin: 'eliteCopy',
-        accounting: zero,
-      });
-      continue;
-    }
-    // Every child derives its OWN stream from the run seed and its OWN id.
-    // There is no generation-global RNG: evaluation order, array order,
-    // diagnostics, wall clock, worker count, an exception after a draft, and
-    // draws made by any sibling cannot reach this stream.
-    const childRng = new Rng(seed).fork(childId);
-    const parentId = selectTournamentParent(pool, childRng);
-    if (parentId === null) {
-      // Unreachable: a non-terminal transition has a non-empty pool. Kept as a
-      // loud refusal rather than an assumption, because a null here would
-      // otherwise surface as an opaque lookup failure two lines down.
-      evolutionFail('malformedHistory', 'tournament returned no parent from a non-empty selectable pool', { childId });
-    }
-    let parentGenotype = null;
-    for (let i = 0; i < size; i += 1) {
-      if (population.individuals[i].individualId === parentId) {
-        parentGenotype = population.individuals[i].genotype;
-        break;
-      }
-    }
-    if (parentGenotype === null) {
-      evolutionFail('malformedHistory', `tournament selected id ${parentId}, which is not in generation ${generationIndex}`, { parentId, generationIndex });
-    }
-    const mutated = mutateContinuousGenotype(parentGenotype, childRng, mutation);
-    // `mutated.rawGenotype` is diagnostic-only and is deliberately dropped
-    // here: it never enters run state, a lineage row, or a persisted record.
-    individuals.push({ individualId: childId, genotype: mutated.genotype });
-    lineageRows.push({
-      individualId: childId,
-      parentIndividualId: parentId,
-      origin: 'continuousMutation',
-      accounting: mutated.accounting,
-    });
-  }
-  const nextGenerationIndex = generationIndex + 1;
-  const nextPopulation = { snapshotVersion: POPULATION_SNAPSHOT_VERSION, individuals };
-  const populationBytes = serializePopulationSnapshot(nextPopulation);
-  // Decode what was just encoded: the pending state must be re-decodable
-  // canonical bytes, proven now rather than discovered at the next advance.
-  const decoded = deserializePopulationSnapshot(populationBytes);
-  const lineage = {
-    lineageVersion: EVOLUTION_LINEAGE_VERSION,
-    generationIndex: nextGenerationIndex,
-    individuals: lineageRows,
-  };
-  const lineageBytes = serializeLineage(lineage);
-  crossCheckLineage(deserializeLineage(lineageBytes), nextGenerationIndex, populationIds(decoded), currentIds);
-  return { populationBytes, lineageBytes };
-}
-
-/**
  * THE ONE GENERATION TRANSITION, as a free function over module-owned values.
  *
  * `advance()` and `resumeEvolutionRun`'s replay both call exactly this — which
  * is what makes replay a REPLAY rather than a second implementation that has to
  * be kept in agreement by hand. It takes only bytes and scalars the caller
  * already owns, and it returns bytes: no caller can reach it, and it cannot
- * pair a population with a fitness result it did not produce.
+ * pair a population with a fitness result it did not produce. The N -> N+1
+ * derivation itself is delegated to the evolution-transition.js kernel — the
+ * one sanctioned internal function seam, called here with module-owned values
+ * only (see the header ruling).
  *
  * Returns `{ metadataBytes, fitnessVectorBytes, terminalReason, next }`, where
  * `next` is null exactly when the transition is terminal.
@@ -533,7 +466,11 @@ class EvolutionRun {
   // an internal accessor is a public method by any other name and would hand a
   // caller the pending population, the lineage rows and the record list the
   // opaque-state ruling exists to withhold. Sibling modules get PURE codec
-  // functions instead, called from inside this class with its own fields.
+  // functions instead, called from inside this class with its own fields —
+  // plus the ONE sanctioned internal function seam, evolution-transition.js's
+  // kernel, referenced from production only by the test-pinned importer
+  // allowlist and called only with module-owned values (both design
+  // contracts pinned by tests, not runtime checks).
   constructor(state) {
     this.#seed = state.seed;
     this.#populationSize = state.populationSize;

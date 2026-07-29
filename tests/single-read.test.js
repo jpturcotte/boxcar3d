@@ -94,6 +94,7 @@ import {
 import * as EvolutionContractNS from '../src/sim/evolution-contract.js';
 import * as EvolutionLineageNS from '../src/sim/evolution-lineage.js';
 import * as EvolutionRunNS from '../src/sim/evolution-run.js';
+import * as EvolutionTransitionNS from '../src/sim/evolution-transition.js';
 import {
   crossCheckLineage, deserializeLineage, serializeLineage, validateLineage,
   zeroLineageAccounting,
@@ -600,6 +601,7 @@ describe('single-read invariant over the public surface', () => {
 const NS = { assembly: AssemblyNS, population: PopulationNS, initializer: InitializerNS,
   evaluation: EvaluationNS, evolution: EvolutionNS, integrity: IntegrityNS, trace: TraceNS, forensics: ForensicsNS,
   evolutionContract: EvolutionContractNS, evolutionLineage: EvolutionLineageNS, evolutionRun: EvolutionRunNS,
+  evolutionTransition: EvolutionTransitionNS,
   evolutionHistory: EvolutionHistoryNS, sha256: Sha256NS, evolutionReplay: EvolutionReplayNS,
   evolutionCapacity: EvolutionCapacityNS };
 
@@ -694,6 +696,11 @@ const SINGLE_READ_COVERAGE = Object.freeze({
   verifyFitnessVectorMetadataCoherence: 'exempt: module-owned verified record in',
   captureExpectedIdentity: 'CASES row',
   resumeEvolutionRun: 'exempt: TypedArray input + physics (tests/evolution-replay.test.js)',
+  // evolution-transition.js — PR 4A's internal kernel: consumes module-owned
+  // decoded population and selection-pool values, never hostile caller data;
+  // the production importer allowlist in tests/evolution-transition.test.js
+  // enforces that boundary.
+  deriveNextGeneration: 'exempt: module-owned decoded inputs only; production importer allowlist enforced in tests/evolution-transition.test.js',
 });
 
 const casesCovered = new Set(CASES.map(([name]) => name.split(' ')[0].split('.').pop()));

@@ -3,10 +3,14 @@
 // uses.
 //
 // A PRIVATE IMPLEMENTATION MODULE, not a new public seam. It deliberately
-// contains no generation transition: `deriveNextGeneration` stays inside
-// `evolution-run.js`, because a transition exported anywhere would let a caller
-// pair a population with a fitness result it did not produce — the exact thing
-// the opaque-run design exists to prevent. What lives here is byte work:
+// contains no generation transition: `deriveNextGeneration` lives in the
+// internal evolution-transition.js kernel (PR 4A), importable only by the
+// test-pinned production allowlist and callable only with module-owned
+// values — a transition exported as a general-purpose seam would let a caller
+// pair a population with a fitness result it did not produce, the exact thing
+// the opaque-run design exists to prevent. (PR 4B will deliberately add this
+// module to that allowlist when persisted transitions are reproduced here.)
+// What lives here is byte work:
 // framing, digests, chain, identity, and how to describe a mismatch.
 //
 // WHY THE STAGES ARE SEPARATE. Verifying only the outer history digest would be

@@ -26,12 +26,12 @@
 // earlier — and it is never asked to establish identity.
 //
 // The transition itself lives in evolution-transition.js (PR 4A): an INTERNAL
-// kernel below both this module and replay verification, importable only by
-// an explicit, test-pinned production allowlist (today this module alone;
-// PR 4B adds evolution-replay.js by decision). It still takes only
-// module-owned values — moving it did not make it public, and the importer
-// guard in tests/evolution-transition.test.js is what keeps that distinction
-// enforced rather than merely written down.
+// kernel below both this module and replay verification, referenced from
+// production only by an explicit, test-pinned importer allowlist (today this
+// module alone; PR 4B adds evolution-replay.js by decision). Its allowlisted
+// callers still pass only module-owned values — a design contract pinned by
+// the AST-based importer guard in tests/evolution-transition.test.js, not a
+// runtime check the kernel performs — and moving it did not make it public.
 //
 // WHAT THE RUN OWNS. Canonical header inputs, the pending population's
 // canonical snapshot bytes, the pending generation's lineage bytes, the next
@@ -298,7 +298,13 @@ function initialLineage(individualIds) {
   return { lineageVersion: EVOLUTION_LINEAGE_VERSION, generationIndex: 0, individuals };
 }
 
-/** The ascending id list of a decoded population (module-owned throughout). */
+/**
+ * The ascending id list of a decoded population (module-owned throughout).
+ * DELIBERATE per-module copy of evolution-transition.js's private helper of
+ * the same name — per-module privacy is the ruling (a shared home would be a
+ * sixth import for no behavioral gain); the two copies must stay identical,
+ * and each names the other so a future edit cannot drift silently.
+ */
 function populationIds(population) {
   const out = [];
   const individuals = population.individuals;
@@ -462,8 +468,9 @@ class EvolutionRun {
   // opaque-state ruling exists to withhold. Sibling modules get PURE codec
   // functions instead, called from inside this class with its own fields —
   // plus the ONE sanctioned internal function seam, evolution-transition.js's
-  // kernel, importable only by the test-pinned production allowlist and
-  // called only with module-owned values.
+  // kernel, referenced from production only by the test-pinned importer
+  // allowlist and called only with module-owned values (both design
+  // contracts pinned by tests, not runtime checks).
   constructor(state) {
     this.#seed = state.seed;
     this.#populationSize = state.populationSize;

@@ -2826,6 +2826,8 @@ version, or successful-run behaviour change:**
   capacity placement; fixtures, goldens, locks, thresholds, dependencies.
   PR 4 (exact deterministic transition provenance and opaque-boundary
   enforcement) remains, and **measurements stay blocked until PR 4 lands**.
+  (Written pre-split; PR 4 was divided 2026-07-28 — see the PR 4A entry that
+  follows: 4A landed, 4B remains, measurements stay blocked until 4B.)
 - **Seeds allocated:** none.
 
 **Post-merge hardening PR 4A (2026-07-28) — the deterministic N→N+1
@@ -2858,10 +2860,10 @@ contract change:**
   `evolution-contract`), closure-proven cycle-free — so PR 4B's
   verified-artifact path can share it without a circular dependency. An
   ES-module export here is an internal seam, NOT public run API: the pinned
-  production importer set is exactly `{ evolution-run.js }` under all five
-  literal reference forms (a computed dynamic import() specifier is the
-  documented residual — the regex guard cannot resolve it; recorded in the
-  test and the PR description), declared as an allowlist PR 4B will
+  production importer set is exactly `{ evolution-run.js }`, enforced by an
+  AST-based scan over every module edge form with computed dynamic import()
+  specifiers refused outright outside a declared two-file rapier-probe
+  allowlist, declared as an allowlist PR 4B will
   deliberately extend with `evolution-replay.js`
   (tests/evolution-transition.test.js); there is
   no `_internalState`, `_transition`, debug or testing accessor.
@@ -2887,6 +2889,31 @@ contract change:**
   skipped repair, a removed immediate decode, a removed cross-check) each
   failed the named oracle case or the source-static canonicalization pin
   during development; none is committed.
+- **Round-3 external review hardening (landed in the same PR).** Three
+  converging reviews (the Codex bot's P2 plus two external passes) showed the
+  first regex-based boundary guard missed double-quoted specifiers,
+  no-substitution template literals, re-export/dynamic cycle edges and
+  comment masking, and that Case B's 0.5-magnitude arithmetic was degenerate
+  (every selected parent leaf starts at 0.5, so the proposal equalled the
+  unit draw and a unit-assigning defective operator passed). Fixed: the
+  boundary scan is AST-based (espree via eslint's `Linter`, no new
+  dependency) over all four edge node types with adversarial self-tests and a
+  dataflow-bound canonicalization pin; computed dynamic import() specifiers
+  are refused outside the declared two-file rapier-probe allowlist (the
+  round-2 residual is CLOSED, not documented); Case B was re-authored at
+  magnitude 0.3 with a per-leaf value-≠-unit assertion; guard 1's inverted
+  message ("non-empty" → "empty") was corrected before pinning; guard 2 is
+  now pinned through the stateful-accessor hostile-pool idiom (the earlier
+  "structurally unreachable" claim was demolished by review); and the oracle
+  asserts the kernel leaves its inputs unchanged. Deferred to PR 4B, recorded
+  here: additional oracle boundary shapes (all-elite output, single-row pool,
+  a three-way elite-boundary tie; an exact decision==probability draw is
+  unreachable for non-dyadic probabilities with the real Rng), bounding of
+  PERSISTED kernel inputs (the kernel stays verbatim and the caller's
+  terminal gate owns the bound today; 4B must bound what it feeds from
+  artifacts), and the review appendix (CRLF pinning, scripts-walk
+  vacuousness floor, case-insensitive filesystems, O(size²) parent scan at
+  replay scale).
 - **What did NOT change.** Every successful-run behaviour, fixture, golden,
   lock and digest — the full Node, browser and cross-platform determinism
   suites pass byte-identically and no expectation was updated; every

@@ -4,9 +4,10 @@
 //
 // A PRIVATE IMPLEMENTATION MODULE, not a new public seam. It deliberately
 // contains no generation transition: `deriveNextGeneration` lives in the
-// internal evolution-transition.js kernel (PR 4A), importable only by the
-// test-pinned production allowlist and callable only with module-owned
-// values — a transition exported as a general-purpose seam would let a caller
+// internal evolution-transition.js kernel (PR 4A), referenced from production
+// only by the test-pinned importer allowlist and called only with
+// module-owned values — both DESIGN CONTRACTS pinned by tests, not runtime
+// checks; a transition exported as a general-purpose seam would let a caller
 // pair a population with a fitness result it did not produce, the exact thing
 // the opaque-run design exists to prevent. (PR 4B will deliberately add this
 // module to that allowlist when persisted transitions are reproduced here.)

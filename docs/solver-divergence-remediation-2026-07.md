@@ -199,6 +199,24 @@ it.**
    speed. If it stays quiescent under drive, B graduates from "named follow-up"
    to a real representation-migration proposal with its own decision record.
 
+> **Status addendum (2026-07-28) — the former PR 4 was SPLIT.** After
+> adversarial review, the monolithic "exact deterministic transition
+> provenance and opaque-boundary enforcement" PR in item 2 was divided: it
+> combined the extraction, the module-graph change, the independent oracle,
+> the persisted-artifact verdict and the measurement decision in one diff,
+> with a tautology hazard at its centre (producer and verifier sharing the
+> same newly extracted implementation). **PR 4A has landed** — the
+> deterministic N→N+1 transition is extracted into the narrow, cycle-free
+> internal kernel `src/sim/evolution-transition.js` and checked by a
+> genuinely independent oracle, with the internal importer boundary pinned;
+> it changes no successful-run behaviour and makes no persisted-history
+> verdict. **PR 4B remains** — exact persisted N→N+1 transition verification
+> (reproducing every persisted adjacent transition against generation N+1)
+> and opaque-boundary completion. Every "after PR 4" in items 2–4 above reads
+> as **after PR 4B**: measurements stay blocked until PR 4B's exact
+> transition provenance lands. The original sequence and reasoning are
+> unchanged; only the PR numbering moved.
+
 ---
 
 ## 6. Decided / open / owner

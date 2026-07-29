@@ -55,11 +55,21 @@ allocation blocks (`generationIndex × populationSize + memberIndex`) are
 verified, the persisted terminal reason must equal the one the persisted
 facts imply through the contract's single `terminalReasonFor`, and the record
 count must not exceed the declared `maxGenerations` — all before runtime
-identity, with zero physics, by both readers. The remaining PR is PR 4 (exact
-deterministic transition provenance
-and opaque-boundary enforcement) — and the breeding-pool and false-negative
-measurements the persisted observations enable stay **blocked until PR 4
-lands**. Previously:
+identity, with zero physics, by both readers. The former single PR 4 (exact deterministic transition provenance and
+opaque-boundary enforcement) has been **split after adversarial review**
+(2026-07-28): the monolith combined too many distinct risks and carried a
+tautology hazard — producer and verifier calling the same newly extracted
+implementation and appearing to prove each other. **PR 4A has landed** — the
+deterministic N→N+1 transition now lives in a narrow, cycle-free internal
+kernel (`src/sim/evolution-transition.js`; one authorized production importer,
+pinned over every reference form) checked by a genuinely independent narrow
+oracle. PR 4A changes no successful-run behaviour, does NOT make persisted
+histories transition-authentic, and does NOT replace deterministic physics
+replay. **PR 4B remains** — exact persisted N→N+1 transition verification
+(reproducing every persisted adjacent transition and byte-comparing against
+generation N+1) and opaque-boundary completion — and the breeding-pool,
+false-negative and mutation-default measurements the persisted observations
+enable stay **blocked until PR 4B lands**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm

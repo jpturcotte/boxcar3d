@@ -7,6 +7,16 @@ import { describe, test, expect } from 'vitest';
 
 const FIXED_DT = 1 / 60;
 
+// Package selection stays data-driven, but every import() specifier is a
+// LITERAL: the PR 4A module-edge guard (tests/evolution-transition.test.js)
+// refuses computed import() specifiers in every scanned module, tests
+// included — a flavor maps to its literal loader, never to a variable that
+// is itself imported.
+const FLAVOR_LOADERS = {
+  '@dimforge/rapier3d-compat': () => import('@dimforge/rapier3d-compat'),
+  '@dimforge/rapier3d-deterministic-compat': () => import('@dimforge/rapier3d-deterministic-compat'),
+};
+
 function dropTest(RAPIER) {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
   world.timestep = FIXED_DT;
@@ -27,7 +37,7 @@ describe.each([
   ['@dimforge/rapier3d-deterministic-compat', 'deterministic flavor'],
 ])('%s (%s)', (pkg) => {
   test('initializes headless, cube falls, settles on ground, run-to-run identical', async () => {
-    const RAPIER = (await import(pkg)).default;
+    const RAPIER = (await FLAVOR_LOADERS[pkg]()).default;
     await RAPIER.init();
 
     const a = dropTest(RAPIER);

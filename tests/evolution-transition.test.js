@@ -95,27 +95,43 @@ const KERNEL = 'src/sim/evolution-transition.js';
 //
 // THE DECLARED production importer allowlist. Exactly one entry today; PR 4B
 // adds 'src/sim/evolution-replay.js' here BY DECISION, with its own review —
-// this set is pinned, not eternal. Tests import the kernel directly and are
-// outside this guard's walked roots by construction.
+// this set is pinned, not eternal. Tests import the kernel directly BY DESIGN
+// (the declared test allowlist); the scan below walks EVERY local module, so
+// both sets are pinned globally, not by directory convention.
 const AUTHORIZED_PRODUCTION_IMPORTERS = Object.freeze({
   'src/sim/evolution-run.js': true,
+});
+const AUTHORIZED_TEST_IMPORTERS = Object.freeze({
+  'tests/evolution-transition.test.js': true,
+  'tests/ownership-boundary.test.js': true,
+  'tests/single-read.test.js': true,
 });
 
 const walkModules = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (
   e.isDirectory() ? walkModules(`${dir}/${e.name}`) : (/\.m?js$/.test(e.name) ? [`${dir}/${e.name}`] : [])
 ));
 
-// Resolve a relative specifier against the importing file and NORMALIZE to
-// the repo-relative forward-slash form, so './evolution-transition.js',
-// './evolution-transition' and '../sim/evolution-transition.js' all
-// canonicalize to the one module path. Query/hash suffixes are stripped
-// (Vite resolves them), and a '..' that would escape the repo never
-// normalizes INTO it (round-3 review, I4).
+// Resolve a LOCAL specifier against the importing file and NORMALIZE to the
+// repo-relative forward-slash form, so './evolution-transition.js',
+// './evolution-transition', '../sim/evolution-transition.js' and the
+// Vite-root-absolute '/src/sim/evolution-transition.js' all canonicalize to
+// the one module path. Query/hash suffixes are stripped (Vite resolves
+// them), and a '..' that would escape the repo never normalizes INTO it
+// (round-3 review, I4). Root-absolute specifiers resolve against the REPO
+// ROOT — Vite's documented behavior and this repo's own entry convention
+// (index.html boots /src/main.js); the round-4 review showed a '.'-only
+// model missed that whole class. Bare/package specifiers are NOT modeled:
+// vite.config.js declares no resolve.alias, so no bare specifier can resolve
+// to the kernel in this repo — a future alias that could reach it must be
+// added to this resolver BY DECISION, with this guard updated in the same
+// change.
 function normalizeSpecifier(fromFile, spec) {
   const clean = spec.split(/[?#]/, 1)[0];
-  const dir = fromFile.slice(0, fromFile.lastIndexOf('/'));
+  const slash = fromFile.lastIndexOf('/');
+  const dir = slash === -1 ? '' : fromFile.slice(0, slash);
+  const baseParts = clean.startsWith('/') ? [] : dir.split('/');
   const out = [];
-  for (const part of [...dir.split('/'), ...clean.split('/')]) {
+  for (const part of [...baseParts, ...clean.split('/')]) {
     if (part === '' || part === '.') continue;
     if (part === '..') {
       if (out.length === 0) return '<outside-repo>';
@@ -143,11 +159,26 @@ function normalizeSpecifier(fromFile, spec) {
 // semicolons, comments and escape sequences can no longer matter, because the
 // parser cooks them all before the guard ever sees a specifier.
 //
-// What is still NOT scanned, deliberately: tests/ (this is a PRODUCTION
-// boundary; a src -> tests-helper -> kernel trampoline is an accepted,
-// recorded residual), and index.html's inline module script (the Vite entry;
-// same class). Bare/package specifiers are ignored because only '.'-relative
-// specifiers can resolve to the kernel under this repo's layout.
+// What is NOT modeled, deliberately — each item a recorded decision, not an
+// oversight: bare/package specifiers (no resolve.alias exists, so none can
+// reach the kernel; adding such an alias obligates updating the resolver
+// above); the HTML entry extraction assumes this repo's own simple
+// index.html (a NEW .html entrypoint must be added to ENTRYPOINT_FILES by
+// decision); and anything that is not a literal local module edge is REFUSED
+// rather than modeled — computed dynamic import() specifiers and Vite's
+// import.meta.glob / globEager (which Vite rewrites into real imports that
+// never appear in the authored source) are rejected in every scanned module.
+//
+// Round-4 external review closure: the round-3 version still walked only
+// src/ + scripts and only '.'-relative specifiers, recording a src ->
+// tests-helper -> kernel trampoline and index.html's inline module script as
+// "accepted residuals" — ordinary production-graph escapes, demonstrated
+// against that guard before this rewrite. There is no directory-defined
+// "production" anymore: src/, scripts/, tests/, legacy/, the root config
+// modules and the HTML entry's module scripts are ALL scanned, the kernel
+// importer set is pinned globally (production allowlist + declared test
+// allowlist), and a separate pin forbids any src/ module importing the
+// tests/ tree at all.
 
 const linter = new Linter();
 
@@ -189,11 +220,27 @@ function analyzeSource(file, code) {
         },
         ExportAllDeclaration: (node) => refs.push({ form: 're-export-star', ...specifierOf(node.source) }),
         ImportExpression: (node) => refs.push({ form: 'dynamic', ...specifierOf(node.source) }),
-        CallExpression: (node) => calls.push({
-          name: node.callee.type === 'Identifier' ? node.callee.name : null,
-          pos: node.range[0],
-          args: node.arguments.map(summarize),
-        }),
+        CallExpression: (node) => {
+          // Vite's import.meta.glob / globEager are transformed by Vite into
+          // real static or dynamic imports — a kernel reference through them
+          // leaves NO ImportDeclaration/ImportExpression in the authored
+          // source (round-4 review). Classified as their own edge form and
+          // REFUSED in every scanned module below (the repo uses neither).
+          const callee = node.callee;
+          if (callee.type === 'MemberExpression'
+            && callee.object.type === 'MetaProperty'
+            && callee.object.meta.name === 'import'
+            && callee.object.property.name === 'meta'
+            && callee.property.type === 'Identifier'
+            && (callee.property.name === 'glob' || callee.property.name === 'globEager')) {
+            refs.push({ form: 'import-meta-glob', literal: false, value: null });
+          }
+          calls.push({
+            name: node.callee.type === 'Identifier' ? node.callee.name : null,
+            pos: node.range[0],
+            args: node.arguments.map(summarize),
+          });
+        },
         VariableDeclarator: (node) => declarators.push({
           name: node.id.type === 'Identifier' ? node.id.name : null,
           init: summarize(node.init),
@@ -213,12 +260,50 @@ function analyzeSource(file, code) {
 
 const analyzeModule = (file) => analyzeSource(file, readFileSync(file, 'utf8'));
 
-// Only literal, '.'-relative specifiers can resolve into the repo.
+// Only literal LOCAL specifiers can resolve into the repo: '.'-relative or
+// Vite-root-absolute ('/src/...' — the round-4 escape class). Bare specifiers
+// cannot (no resolve.alias — see normalizeSpecifier).
 function localLiteralEdges(file, refs) {
   return refs
-    .filter((r) => r.literal && typeof r.value === 'string' && r.value.startsWith('.'))
+    .filter((r) => r.literal && typeof r.value === 'string'
+      && (r.value.startsWith('.') || r.value.startsWith('/')))
     .map((r) => ({ form: r.form, resolved: normalizeSpecifier(file, r.value) }));
 }
+
+// The HTML entry's module scripts are part of Vite's production module graph
+// — external src= (root-absolute against the repo root: index.html boots
+// /src/main.js) AND inline <script type="module"> code. Extracted as scan
+// units so the guard sees the ACTUAL entry surface (round-4 review). The
+// extraction is deliberately small and assumes this repo's own simple entry
+// file; inline units get virtual labels so a failure names the block.
+function htmlEntryUnits(file, html) {
+  const units = [];
+  const scriptPattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match;
+  let inlineCount = 0;
+  while ((match = scriptPattern.exec(html)) !== null) {
+    const attrs = match[1];
+    if (!/type\s*=\s*["']module["']/i.test(attrs)) continue;
+    const src = /\bsrc\s*=\s*["']([^"']+)["']/i.exec(attrs);
+    if (src !== null) {
+      units.push({ label: file, refs: [{ form: 'html-script-src', literal: true, value: src[1] }] });
+    } else {
+      // The virtual label ends in .js so eslint's default file matching
+      // actually applies the probe config to it (an extensionless label is
+      // silently skipped by the Linter — no parse, no refs, no fatal).
+      const label = `${file}#inline-module-${inlineCount}.js`;
+      inlineCount += 1;
+      units.push({ label, refs: analyzeSource(label, match[2]).refs });
+    }
+  }
+  return units;
+}
+
+// One file -> one or more scan units ({ label, refs }): a JS/ESM module is a
+// single unit; an HTML entry contributes one unit per module script.
+const analyzeEntryUnits = (file) => (/\.html$/.test(file)
+  ? htmlEntryUnits(file, readFileSync(file, 'utf8'))
+  : [{ label: file, refs: analyzeModule(file).refs }]);
 
 // The reachability walk, injectable so the adversarial self-tests can feed it
 // a synthetic graph.
@@ -234,41 +319,77 @@ function reachableFrom(start, refsOfFile) {
   return closure;
 }
 
-// Non-literal ImportExpression is REFUSED in production roots, except inside
-// this declared allowlist (rapier flavor probes; the count per file is
-// pinned, so a second computed import anywhere — including inside these two
-// files — fails). This CLOSES the round-2 computed-specifier residual rather
-// than documenting it.
-const COMPUTED_DYNAMIC_IMPORT_ALLOWLIST = Object.freeze({
-  'scripts/probe-rapier-package-smoke.js': 1,
-  'scripts/probe-rapier-timing.js': 1,
-});
+// EVERY local module is scanned — there is no directory-defined "production"
+// (round-4 review: the src+scripts walk left a src -> tests-helper -> kernel
+// trampoline and the HTML entry as escapes). The root sweep picks up the
+// config modules (vite/vitest/eslint); a new root-level module or a new
+// .html entrypoint is scanned automatically / added to ENTRYPOINT_FILES.
+const SCANNED_FILES = Object.freeze([
+  ...walkModules('src'),
+  ...walkModules('scripts'),
+  ...walkModules('tests'),
+  ...walkModules('legacy'),
+  ...readdirSync('.', { withFileTypes: true })
+    .filter((e) => e.isFile() && /\.m?js$/.test(e.name))
+    .map((e) => e.name),
+]);
+const ENTRYPOINT_FILES = Object.freeze(['index.html']);
 
 describe('the production importer / re-export guard', () => {
-  test('exactly the declared production allowlist references the kernel, over every module edge form', () => {
-    const files = [...walkModules('src'), ...walkModules('scripts')];
-    expect(files.length).toBeGreaterThan(20); // the walk is not vacuous
+  // Parses every local module through espree — the full-tree scan is slow
+  // under full-suite CPU contention, so it carries the repo's explicit
+  // per-test timeout idiom rather than the 5 s default.
+  test('exactly the declared allowlist references the kernel, over every local module and every module edge form', { timeout: 60000 }, () => {
+    expect(SCANNED_FILES.length).toBeGreaterThan(60); // the walk is not vacuous
+    // The scan REALLY covers the round-4 surfaces: a future refactor that
+    // quietly drops tests/, helpers, or the root configs from it fails here.
+    expect(SCANNED_FILES).toContain('tests/evolution-transition.test.js');
+    expect(SCANNED_FILES).toContain('tests/helpers/evolution-artifacts.js');
+    expect(SCANNED_FILES).toContain('legacy/PhysicsController.js');
+    expect(SCANNED_FILES).toContain('vite.config.js');
     const importers = {};
     const computed = {};
-    for (const file of files) {
-      const { refs } = analyzeModule(file);
-      for (const ref of refs) {
-        if (ref.form === 'dynamic' && !ref.literal) {
-          computed[file] = (computed[file] ?? 0) + 1;
-          continue;
-        }
-        if (ref.literal && typeof ref.value === 'string' && ref.value.startsWith('.')
-          && normalizeSpecifier(file, ref.value) === KERNEL) {
-          (importers[file] = importers[file] ?? []).push(ref.form);
+    const globEdges = {};
+    for (const file of [...SCANNED_FILES, ...ENTRYPOINT_FILES]) {
+      for (const unit of analyzeEntryUnits(file)) {
+        for (const ref of unit.refs) {
+          if (ref.form === 'import-meta-glob') {
+            globEdges[unit.label] = (globEdges[unit.label] ?? 0) + 1;
+            continue;
+          }
+          if (ref.form === 'dynamic' && !ref.literal) {
+            computed[unit.label] = (computed[unit.label] ?? 0) + 1;
+            continue;
+          }
+          if (ref.literal && typeof ref.value === 'string'
+            && (ref.value.startsWith('.') || ref.value.startsWith('/'))
+            && normalizeSpecifier(unit.label, ref.value) === KERNEL) {
+            (importers[unit.label] = importers[unit.label] ?? []).push(ref.form);
+          }
         }
       }
     }
-    expect(Object.keys(importers).sort()).toEqual(Object.keys(AUTHORIZED_PRODUCTION_IMPORTERS).sort());
+    expect(Object.keys(importers).sort()).toEqual(Object.keys({
+      ...AUTHORIZED_PRODUCTION_IMPORTERS, ...AUTHORIZED_TEST_IMPORTERS,
+    }).sort());
     for (const [file, forms] of Object.entries(importers)) {
       expect(forms, `${file} may only STATIC-import the kernel`).toEqual(['static']);
     }
-    expect(computed, 'computed dynamic import outside the declared rapier-probe allowlist')
-      .toEqual({ ...COMPUTED_DYNAMIC_IMPORT_ALLOWLIST });
+    // Computed dynamic import() is REFUSED in every scanned module — the
+    // round-3 two-file count allowlist pinned counts but not targets (a
+    // retargeted variable left the count unchanged); the rapier probes and
+    // the physics smoke now select between LITERAL loaders instead, so no
+    // exception exists at all.
+    expect(computed, 'computed dynamic import() is refused in every scanned module').toEqual({});
+    expect(globEdges, 'import.meta.glob is refused in every scanned module (Vite rewrites it into real imports)').toEqual({});
+  });
+
+  test('no src/ module reaches into the tests tree — the trampoline class is closed, not recorded', () => {
+    for (const file of walkModules('src')) {
+      for (const edge of localLiteralEdges(file, analyzeModule(file).refs)) {
+        expect(edge.resolved.startsWith('tests/'), `${file} must not import the tests tree (${edge.resolved})`).toBe(false);
+      }
+    }
   });
 
   test('evolution-run.js does not hand the kernel function out under any name', () => {
@@ -312,8 +433,8 @@ describe('cycle-free placement', () => {
 // ============================================================================
 //
 // A guard that cannot be shown to bite is a comment with regexes in it. Every
-// escape the round-2 and round-3 reviews demonstrated is fed to the scanner
-// here as a synthetic source.
+// escape the round-2, round-3 and round-4 reviews demonstrated is fed to the
+// scanner here as a synthetic source.
 
 describe('the reference scanner itself, adversarially', () => {
   const FAKE = 'src/sim/probe-target.js';
@@ -351,6 +472,40 @@ describe('the reference scanner itself, adversarially', () => {
   test('a call that lives only in a comment produces NO call nodes', () => {
     const masked = '// crossCheckLineage(deserializeLineage(lineageBytes), nextGenerationIndex, populationIds(decoded), currentIds);\nconst x = 1;';
     expect(analyzeSource(KERNEL, masked).calls).toEqual([]);
+  });
+
+  test('a Vite root-absolute specifier resolves against the repo root and is seen (round-4)', () => {
+    expect(kernelEdges("import { d } from '/src/sim/evolution-transition.js';")).toHaveLength(1);
+    expect(kernelEdges("const p = import('/src/sim/evolution-transition.js');")).toHaveLength(1);
+    expect(kernelEdges("export { d } from '/src/sim/evolution-transition.js';")).toHaveLength(1);
+  });
+
+  test('import.meta.glob is its own refused edge form — Vite rewrites it into real imports (round-4)', () => {
+    expect(analyzeSource(FAKE, "const m = import.meta.glob('/src/sim/evolution-transition.js', { eager: true });").refs)
+      .toEqual([{ form: 'import-meta-glob', literal: false, value: null }]);
+    expect(analyzeSource(FAKE, "const m = import.meta.globEager('./evolution-*.js');").refs)
+      .toEqual([{ form: 'import-meta-glob', literal: false, value: null }]);
+  });
+
+  test('the HTML entry surface: src= and inline module scripts are scanned (round-4)', () => {
+    const units = htmlEntryUnits('index.html', [
+      '<!doctype html><html><body>',
+      '<script type="module" src="/src/main.js"></script>',
+      '<script type="module">',
+      "  import { deriveNextGeneration } from '/src/sim/evolution-transition.js';",
+      '  window.leakedKernel = deriveNextGeneration;',
+      '</script>',
+      '<script>not a module — ignored</script>',
+      '</body></html>',
+    ].join('\n'));
+    expect(units).toHaveLength(2);
+    expect(units[0]).toEqual({
+      label: 'index.html',
+      refs: [{ form: 'html-script-src', literal: true, value: '/src/main.js' }],
+    });
+    expect(units[1].label).toBe('index.html#inline-module-0.js');
+    // The inline kernel import normalizes to the kernel from the virtual label.
+    expect(localLiteralEdges(units[1].label, units[1].refs).map((e) => e.resolved)).toEqual([KERNEL]);
   });
 });
 
@@ -672,14 +827,39 @@ function expectTransitionMatches(actual, derived, expectedChildIds) {
 // The kernel must be READ-ONLY over its inputs (round-3 review, I6): an
 // in-place population sort or pool rewrite would have passed every assertion
 // above whenever it happened to be output-neutral, so the inputs are
-// snapshotted before the call and asserted unchanged after it.
-function snapshotInputs(population, pool) {
-  return { populationBytes: serializePopulationSnapshot(population), poolJson: JSON.stringify(pool) };
+// snapshotted before the call and asserted unchanged after it. The round-4
+// review found the snapshot INCOMPLETE: the mutable `mutation` record was
+// not covered at all (a kernel rewriting mutation.probability after
+// consuming it still passed), and the pool was pinned only through JSON —
+// blind to undefined keys and non-finite numbers. The population stays
+// pinned BIT-EXACTLY through its canonical bytes; pool and mutation are
+// pinned STRUCTURALLY against a pre-call deep clone.
+//
+// Explicit hand-rolled clone, NOT structuredClone — the lint env's globals
+// do not define it (the genotype-schema.test.js / characterize-population.js
+// convention). The oracle's pool/mutation are plain frozen data — own
+// enumerable keys, arrays, primitives — so this preserves exactly what JSON
+// would drop: NaN, -0 and undefined-valued keys.
+const deepClone = (value) => {
+  if (Array.isArray(value)) return value.map(deepClone);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, deepClone(v)]));
+  }
+  return value;
+};
+
+function snapshotInputs(population, pool, mutation) {
+  return {
+    populationBytes: serializePopulationSnapshot(population),
+    poolClone: deepClone(pool),
+    mutationClone: deepClone(mutation),
+  };
 }
 
-function expectInputsUnchanged(population, pool, snapshot) {
+function expectInputsUnchanged(population, pool, mutation, snapshot) {
   expect(serializePopulationSnapshot(population)).toEqual(snapshot.populationBytes);
-  expect(JSON.stringify(pool)).toBe(snapshot.poolJson);
+  expect(pool).toEqual(snapshot.poolClone);
+  expect(mutation).toEqual(snapshot.mutationClone);
 }
 
 describe('the independent transition oracle', () => {
@@ -732,7 +912,7 @@ describe('the independent transition oracle', () => {
       expect(child.finalBytes).toEqual(serializeGenotype(child.parentGenotype));
     }
 
-    const inputsSnapshot = snapshotInputs(derived.population, derived.pool);
+    const inputsSnapshot = snapshotInputs(derived.population, derived.pool, mutation);
     const actual = deriveNextGeneration({
       population: derived.population,
       pool: derived.pool,
@@ -741,7 +921,7 @@ describe('the independent transition oracle', () => {
       baseIndividualId,
       generationIndex,
     });
-    expectInputsUnchanged(derived.population, derived.pool, inputsSnapshot);
+    expectInputsUnchanged(derived.population, derived.pool, mutation, inputsSnapshot);
     expectTransitionMatches(actual, derived, [20, 21, 22, 23, 24]);
 
     // The decoded elite rows retain the OLD parent ids; every row order is
@@ -883,7 +1063,7 @@ describe('the independent transition oracle', () => {
       finalByteDeltaCount: 7,
     });
 
-    const inputsSnapshot = snapshotInputs(derived.population, derived.pool);
+    const inputsSnapshot = snapshotInputs(derived.population, derived.pool, mutation);
     const actual = deriveNextGeneration({
       population: derived.population,
       pool: derived.pool,
@@ -892,7 +1072,7 @@ describe('the independent transition oracle', () => {
       baseIndividualId,
       generationIndex,
     });
-    expectInputsUnchanged(derived.population, derived.pool, inputsSnapshot);
+    expectInputsUnchanged(derived.population, derived.pool, mutation, inputsSnapshot);
     expectTransitionMatches(actual, derived, [40, 41, 42, 43]);
 
     // The lineage generation index is the NEXT generation's, and the elite
@@ -914,7 +1094,14 @@ describe('the independent transition oracle', () => {
 // terminal policy refuses an empty selectable pool before the transition is
 // ever derived — but it is reachable through the kernel's own contract with a
 // hand-built pool, which is exactly what a misplaced refusal would hide
-// behind. Pinned here: the code, the message, and the child-id context.
+// behind. Pinned here: the code, the message, and the child-id context. The
+// pinned MESSAGE is the base implementation's pre-existing wording
+// ("...from a non-empty selectable pool"), preserved VERBATIM under PR 4A's
+// behavior-parity ruling even though it reads inversely to the trigger —
+// error behavior is behavior, an extraction must not change it, and the
+// wording correction is a deliberately scoped follow-up (round-3 I1 asked
+// for the correction; the round-4 review and the task's no-behavior-change
+// constraint overruled it).
 //
 // GUARD 2 (tournament winner missing from the population) is unreachable
 // through any HONEST pool: capturePool binds every selectable row to an
@@ -963,7 +1150,7 @@ describe('the kernel refusal guards', () => {
     }
     expect(thrown).toBeInstanceOf(EvolutionError);
     expect(thrown.code).toBe('malformedHistory');
-    expect(thrown.message).toMatch(/tournament returned no parent from an empty selectable pool/);
+    expect(thrown.message).toMatch(/tournament returned no parent from a non-empty selectable pool/);
     expect(thrown.context).toEqual({ childId: 20 });
   });
 

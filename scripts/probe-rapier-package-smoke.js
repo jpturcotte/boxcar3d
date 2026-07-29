@@ -27,8 +27,16 @@
 /* eslint no-console: 0 */
 
 const FLAVORS = Object.freeze([
-  { name: '@dimforge/rapier3d-compat', deterministic: false },
-  { name: '@dimforge/rapier3d-deterministic-compat', deterministic: true },
+  {
+    name: '@dimforge/rapier3d-compat',
+    deterministic: false,
+    load: () => import('@dimforge/rapier3d-compat'),
+  },
+  {
+    name: '@dimforge/rapier3d-deterministic-compat',
+    deterministic: true,
+    load: () => import('@dimforge/rapier3d-deterministic-compat'),
+  },
 ]);
 
 const STEPS = 10;
@@ -70,7 +78,11 @@ for (const flavor of FLAVORS) {
   console.log(`package ${flavor.name}:`);
   let RAPIER;
   try {
-    RAPIER = await import(flavor.name);
+    // The flavor is a (name, LITERAL loader) pair, never an imported
+    // variable: the PR 4A module-edge guard refuses computed import()
+    // specifiers in every scanned module, so package selection stays
+    // data-driven while every specifier remains statically visible.
+    RAPIER = await flavor.load();
     await RAPIER.init();
     check('import + init()', true);
   } catch (err) {

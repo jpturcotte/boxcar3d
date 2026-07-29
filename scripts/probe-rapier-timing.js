@@ -41,8 +41,12 @@
 const FIXED_DT = 1 / 60; // the adapter's declared value (src/sim/physics/adapter.js)
 
 const FLAVORS = [
-  ['default', '@dimforge/rapier3d-compat'],
-  ['deterministic', '@dimforge/rapier3d-deterministic-compat'],
+  // Each flavor pairs its label/name with a LITERAL loader: the PR 4A
+  // module-edge guard refuses computed import() specifiers in every scanned
+  // module, so package selection stays data-driven while every specifier
+  // remains statically visible.
+  ['default', '@dimforge/rapier3d-compat', () => import('@dimforge/rapier3d-compat')],
+  ['deterministic', '@dimforge/rapier3d-deterministic-compat', () => import('@dimforge/rapier3d-deterministic-compat')],
 ];
 
 // Expected member set (measured 2026-07-11, rapier 0.19.3). A upgrade that
@@ -81,9 +85,9 @@ function buildTinyWorld(RAPIER) {
   return { world, body, ground };
 }
 
-async function probeFlavor(label, pkg) {
+async function probeFlavor(label, pkg, load) {
   console.log(`\n## ${label} flavor (${pkg})\n`);
-  const RAPIER = (await import(pkg)).default;
+  const RAPIER = (await load()).default;
   await RAPIER.init();
 
   // --- 1. member surface ----------------------------------------------------
@@ -208,8 +212,8 @@ async function probeFlavor(label, pkg) {
 }
 
 const perFlavor = [];
-for (const [label, pkg] of FLAVORS) {
-  perFlavor.push(await probeFlavor(label, pkg));
+for (const [label, pkg, load] of FLAVORS) {
+  perFlavor.push(await probeFlavor(label, pkg, load));
 }
 
 console.log('\n## Cross-flavor\n');

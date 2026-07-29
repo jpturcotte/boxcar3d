@@ -29,9 +29,12 @@
 // deliberately add evolution-replay.js when the verified-artifact path starts
 // reproducing persisted adjacent transitions. That allowlist is DECLARED and
 // pinned in tests/evolution-transition.test.js by an AST-based scan over
-// every module edge form, so an accidental re-export or a second production
-// importer fails a build; computed dynamic import() specifiers are refused
-// outright outside a declared two-file rapier-probe allowlist. The
+// EVERY local module — src/, scripts/, tests/, legacy/, the root configs and
+// the HTML entry's module scripts — and every module edge form (static,
+// re-export, dynamic, '.'-relative and Vite-root-absolute specifiers alike),
+// so an accidental re-export or a second production importer fails a build;
+// computed dynamic import() specifiers and import.meta.glob are refused
+// outright in every scanned module. The
 // module-owned-values rule is a DESIGN CONTRACT on the allowlisted callers,
 // not a runtime check this function performs: they never pair an
 // independently supplied population with an independently supplied fitness
@@ -112,12 +115,19 @@ export function deriveNextGeneration({
     const parentId = selectTournamentParent(pool, childRng);
     if (parentId === null) {
       // Unreachable in production: the terminal policy refuses an empty
-      // selectable pool before the transition is ever derived. A null here
-      // therefore means exactly one thing — the pool was empty — and the
-      // message says so. Kept as a loud refusal rather than an assumption,
-      // because a null would otherwise surface as an opaque lookup failure
-      // two lines down.
-      evolutionFail('malformedHistory', 'tournament returned no parent from an empty selectable pool', { childId });
+      // selectable pool before the transition is ever derived, so a null
+      // here means exactly one thing — the pool was empty. The MESSAGE is
+      // the base implementation's pre-existing wording, preserved VERBATIM:
+      // error behavior is behavior, and PR 4A's behavior-parity ruling
+      // forbids changing it inside an extraction — even though the text
+      // reads inversely to the trigger (round-3 review I1 asked for the
+      // correction; the round-4 review and the task's no-behavior-change
+      // constraint overrule it). The wording correction is a deliberately
+      // scoped follow-up, NOT something an extraction smuggles in. Kept as
+      // a loud refusal rather than an assumption, because a null would
+      // otherwise surface as an opaque lookup failure two lines down;
+      // pinned as-is in tests/evolution-transition.test.js.
+      evolutionFail('malformedHistory', 'tournament returned no parent from a non-empty selectable pool', { childId });
     }
     let parentGenotype = null;
     for (let i = 0; i < size; i += 1) {

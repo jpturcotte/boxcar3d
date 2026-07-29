@@ -2861,9 +2861,11 @@ contract change:**
   verified-artifact path can share it without a circular dependency. An
   ES-module export here is an internal seam, NOT public run API: the pinned
   production importer set is exactly `{ evolution-run.js }`, enforced by an
-  AST-based scan over every module edge form with computed dynamic import()
-  specifiers refused outright outside a declared two-file rapier-probe
-  allowlist, declared as an allowlist PR 4B will
+  AST-based scan over EVERY local module (src/, scripts/, tests/, legacy/,
+  the root configs and the HTML entry's module scripts) and every module
+  edge form — '.'-relative and Vite-root-absolute specifiers alike — with
+  computed dynamic import() and import.meta.glob refused outright, declared
+  as an allowlist PR 4B will
   deliberately extend with `evolution-replay.js`
   (tests/evolution-transition.test.js); there is
   no `_internalState`, `_transition`, debug or testing accessor.
@@ -2901,11 +2903,15 @@ contract change:**
   dataflow-bound canonicalization pin; computed dynamic import() specifiers
   are refused outside the declared two-file rapier-probe allowlist (the
   round-2 residual is CLOSED, not documented); Case B was re-authored at
-  magnitude 0.3 with a per-leaf value-≠-unit assertion; guard 1's inverted
-  message ("non-empty" → "empty") was corrected before pinning; guard 2 is
+  magnitude 0.3 with a per-leaf value-≠-unit assertion; guard 2 is
   now pinned through the stateful-accessor hostile-pool idiom (the earlier
   "structurally unreachable" claim was demolished by review); and the oracle
-  asserts the kernel leaves its inputs unchanged. Deferred to PR 4B, recorded
+  asserts the kernel leaves its inputs unchanged. (One round-3 change did NOT
+  survive round 4: guard 1's message was rewritten "non-empty" → "empty"
+  before pinning — the round-4 review correctly ruled that a behavior change
+  smuggled into a behavior-preserving extraction, and the base wording was
+  restored verbatim; see the round-4 entry.)
+  Deferred to PR 4B, recorded
   here: additional oracle boundary shapes (all-elite output, single-row pool,
   a three-way elite-boundary tie; an exact decision==probability draw is
   unreachable for non-dyadic probabilities with the real Rng), bounding of
@@ -2914,6 +2920,44 @@ contract change:**
   artifacts), and the review appendix (CRLF pinning, scripts-walk
   vacuousness floor, case-insensitive filesystems, O(size²) parent scan at
   replay scale).
+- **Round-4 external review hardening (landed in the same PR).** A further
+  external pass showed the AST guard still modeled syntax rather than the
+  repo's ACTUAL Vite module graph, and every finding was reproduced against
+  the round-3 guard before fixing: (1) only '.'-relative literal specifiers
+  were considered, so a Vite ROOT-ABSOLUTE import
+  (`'/src/sim/evolution-transition.js'` — the convention index.html itself
+  uses to boot /src/main.js) was an invisible production importer; (2)
+  `import.meta.glob`, which Vite rewrites into real imports that never appear
+  in the authored source, was unmodeled; (3) "production" was defined by
+  directory — tests/ and index.html were unwalked and a src -> tests-helper
+  -> kernel trampoline was recorded as an "accepted residual"; (4) the
+  computed-import allowlist pinned per-file COUNTS, not targets (a retargeted
+  probe variable left the count unchanged); (5) guard 1's round-3 message
+  rewrite violated the task's preserve-existing-error-behavior constraint —
+  the round-3 I1 accuracy argument and the round-4 behavior-parity argument
+  conflict, and behavior parity wins in an extraction: the base wording
+  ("tournament returned no parent from a non-empty selectable pool") is
+  restored VERBATIM and pinned as-is, with the wording correction deferred
+  to a deliberately scoped follow-up outside PR 4A; (6) the oracle's
+  input-immutability snapshot omitted the mutable `mutation` record and
+  pinned the pool only through JSON. Fixed: the resolver canonicalizes
+  root-absolute specifiers against the repo root (bare specifiers stay
+  unmodeled — no resolve.alias exists; adding one obligates updating the
+  resolver); `import.meta.glob`/`globEager` are classified as their own edge
+  form and refused in every scanned module; the scan walks EVERY local
+  module — src/, scripts/, tests/, legacy/, the root config modules and the
+  HTML entry's external+inline module scripts — and pins the kernel importer
+  set globally (production allowlist `{ evolution-run.js }` plus the declared
+  three-file test allowlist), with a separate pin forbidding any src/ module
+  importing the tests tree at all; the two rapier probes and the physics
+  smoke select between LITERAL import loaders so computed import() is refused
+  everywhere with NO allowlist (README's "refused outright" is now literally
+  true); and the oracle snapshots population bytes bit-exactly plus
+  deep-clones pool AND mutation for the post-call unchanged assertion.
+  All six escape classes (root-absolute importer, import.meta.glob,
+  tests-helper trampoline, computed import, inline index.html module,
+  src->tests import) were demonstrated RED against the fixed guard in
+  scratch probes; none is committed.
 - **What did NOT change.** Every successful-run behaviour, fixture, golden,
   lock and digest — the full Node, browser and cross-platform determinism
   suites pass byte-identically and no expectation was updated; every

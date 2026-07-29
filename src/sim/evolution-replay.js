@@ -9,7 +9,7 @@
 // module-owned values — both DESIGN CONTRACTS pinned by tests, not runtime
 // checks; a transition exported as a general-purpose seam would let a caller
 // pair a population with a fitness result it did not produce, the exact thing
-// the opaque-run design exists to prevent. (PR 4B will deliberately add this
+// the opaque-run design exists to prevent. (PR 4C will deliberately add this
 // module to that allowlist when persisted transitions are reproduced here.)
 // What lives here is byte work:
 // framing, digests, chain, identity, and how to describe a mismatch.

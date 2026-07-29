@@ -41,6 +41,10 @@ import {
   describe, test, expect, vi, beforeAll, beforeEach,
 } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
+// The kernel boundary requires the STATIC form from every importer — the AST
+// guard in tests/evolution-transition.test.js asserts it; this module's other
+// dependencies keep arriving through the post-mock destructuring below.
+import { deriveNextGeneration } from '../src/sim/evolution-transition.js';
 
 vi.mock('../src/sim/population-evaluation.js', async (importOriginal) => {
   const original = await importOriginal();
@@ -70,12 +74,13 @@ vi.mock('../src/sim/physics/adapter.js', async (importOriginal) => {
 
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS, terminalReasonFor,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS, checkedMultiply,
+  terminalReasonFor,
 } = await import('../src/sim/evolution-contract.js');
 const {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION, SHA256_DIGEST_BYTES,
-  assembleHistory, digestComponent, digestGeneration, digestHeader, encodeEvolutionHeader,
-  encodeGenerationPayload, serializeEvaluationMetadata,
+  assembleHistory, decodeGenerationPayload, digestComponent, digestGeneration, digestHeader,
+  encodeEvolutionHeader, encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
 const {
   EVOLUTION_LINEAGE_VERSION, deserializeLineage, serializeLineage, zeroLineageAccounting,
@@ -85,18 +90,19 @@ const {
   TOURNAMENT_SELECTION_VERSION, TOURNAMENT_SIZE,
 } = await import('../src/sim/evolution-operators.js');
 const {
-  createInitialPopulation, serializePopulationInitialization,
+  createInitialPopulation, deserializePopulationInitialization, serializePopulationInitialization,
 } = await import('../src/sim/population-initializer.js');
 const {
   POPULATION_SNAPSHOT_VERSION, deserializePopulationSnapshot, serializePopulationSnapshot,
 } = await import('../src/sim/population.js');
 const {
   FITNESS_VECTOR_VERSION, POPULATION_WORLD_MODE, canonicalizeEvaluationSpec,
-  deserializeFitnessVector, serializeFitnessVector,
+  deserializeFitnessVector, selectablePoolFromEvaluation, serializeFitnessVector,
 } = await import('../src/sim/population-evaluation.js');
 const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 const { readDeterministicRuntimeIdentity } = await import('../src/sim/physics/adapter.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
+const { verifyHistoryArtifact } = await import('../src/sim/evolution-replay.js');
 const { reforge, withLeadingU16 } = await import('./helpers/evolution-artifacts.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
@@ -134,20 +140,40 @@ const configAt = (populationSize, maxGenerations) => ({
 
 /**
  * The buildFeasibleCapacityArtifact pattern, generalized to multiple
- * generations: codec-only, NO physics. Generation 0 is the real initializer's
- * population (so the provenance recreation bind passes); every later
- * generation carries the SAME genotypes under the exact fresh id block
- * g × N + m, with 2 elite copies then mutated children whose parents all name
- * the immediately preceding generation. Terminal defaults: 'none' everywhere
- * except a final 'generationLimitReached' when count === maxGenerations.
- * `invalidPoolAt` makes one generation's rows unselectable (an empty pool).
+ * generations: codec-only, NO physics — and, since PR 4B, KERNEL-HONEST.
+ * Generation 0 is the real initializer's population (so the provenance
+ * recreation bind passes); every later generation's population and lineage
+ * components are the exact output of deriveNextGeneration over the previous
+ * record's persisted facts — the decoded population, the pool reconstructed
+ * from the record's own synthetic vector, the manifest seed, the header
+ * mutation policy, and the checked fresh-ID base (g + 1) × populationSize.
+ * Successor ids are therefore whatever the kernel returned, never assumed.
+ *
+ * PROOF ROLE (the 3.2 integration role, not the 3.1 oracle): an artifact
+ * built here AGREES with the production transition by construction, which is
+ * exactly what the local-semantics and capacity gates need — but it is not
+ * independent evidence that the kernel is correct (the same kernel produced
+ * it; that boundary lives in tests/evolution-transition.test.js).
+ *
+ * Terminal reasons are computed by the producer's own terminalReasonFor —
+ * never overridden — from the construction facts: the selectable count is
+ * `g === invalidPoolAt ? 0 : populationSize`, equal by construction to the
+ * record's persisted pool size, which is the value the producer reads back
+ * from its decoded vector (a verifier still recomputes the reason from the
+ * persisted vector and refuses a mismatch):
+ * an empty pool (invalidPoolAt) ends noSelectableParents, a full count ends
+ * generationLimitReached, anything else persists 'none'. A terminal record
+ * has no successor by policy, so requesting one is a caller configuration
+ * error and is refused loudly. `invalidPoolAt` makes one generation's rows
+ * unselectable (an empty pool) and is therefore only legal on the FINAL
+ * record. Deliberately-contradictory terminal states are built by reforging
+ * an honest artifact, never by asking this builder to lie.
  */
 async function buildSynthesizedArtifact(runtime, {
-  populationSize, generationCount, maxGenerations, terminalReasons = null, invalidPoolAt = -1,
+  populationSize, generationCount, maxGenerations, invalidPoolAt = -1,
+  seed = CAPACITY_POPULATION_SEED, mutation = PARAMETRIC_MUTATION_DEFAULTS,
 }) {
-  const initialization = createInitialPopulation({
-    seed: CAPACITY_POPULATION_SEED, populationSize,
-  });
+  const initialization = createInitialPopulation({ seed, populationSize });
   const initializationBytes = serializePopulationInitialization(initialization);
   const specBytes = canonicalizeEvaluationSpec(createCapacityEvaluationSpec()).bytes;
   const specState = fnv1aFold(FNV_OFFSET_BASIS, specBytes);
@@ -156,7 +182,6 @@ async function buildSynthesizedArtifact(runtime, {
     effectiveDt: Math.fround(1 / 60),
     executedSteps: 45,
   });
-  const genotypes = initialization.population.individuals.map((ind) => ind.genotype);
   const headerBytes = encodeEvolutionHeader({
     evolutionEngineVersion: EVOLUTION_ENGINE_VERSION,
     evolutionPolicyVersion: EVOLUTION_POLICY_VERSION,
@@ -173,41 +198,50 @@ async function buildSynthesizedArtifact(runtime, {
     rapierVersion: runtime.rapierVersion,
     populationSize,
     maxGenerations,
-    mutationProbability: PARAMETRIC_MUTATION_DEFAULTS.probability,
-    mutationMagnitude: PARAMETRIC_MUTATION_DEFAULTS.magnitude,
+    mutationProbability: mutation.probability,
+    mutationMagnitude: mutation.magnitude,
     initializationManifestBytes: initializationBytes,
     evaluationSpecBytes: specBytes,
   });
   const headerDigestBytes = await digestHeader(headerBytes);
   const generations = [];
   let previous = headerDigestBytes;
+  // The running kernel-honest state: generation 0 is the initializer's own
+  // snapshot; each later generation's bytes arrive from the kernel below.
+  let populationBytes = serializePopulationSnapshot(initialization.population);
+  let lineageBytes = null; // generation 0's all-initialized rows are built inline
   for (let g = 0; g < generationCount; g += 1) {
-    const ids = genotypes.map((_, m) => g * populationSize + m);
-    const populationBytes = serializePopulationSnapshot({
-      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
-      individuals: genotypes.map((genotype, m) => ({ individualId: ids[m], genotype })),
-    });
+    const population = deserializePopulationSnapshot(populationBytes);
+    const ids = population.individuals.map((ind) => ind.individualId);
     const fitnessVectorBytes = serializeFitnessVector({
       populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, populationBytes),
       evaluationSpecDigestState: specState,
       individuals: ids.map((id) => cleanRow(id, g !== invalidPoolAt)),
     });
-    const lineageBytes = serializeLineage({
-      lineageVersion: EVOLUTION_LINEAGE_VERSION,
+    if (g === 0) {
+      lineageBytes = serializeLineage({
+        lineageVersion: EVOLUTION_LINEAGE_VERSION,
+        generationIndex: 0,
+        individuals: ids.map((id) => ({
+          individualId: id,
+          parentIndividualId: null,
+          origin: 'initialized',
+          accounting: zeroLineageAccounting(),
+        })),
+      });
+    }
+    const terminalReason = terminalReasonFor({
+      selectableCount: g === invalidPoolAt ? 0 : populationSize,
       generationIndex: g,
-      individuals: ids.map((id, m) => (g === 0 ? {
-        individualId: id, parentIndividualId: null, origin: 'initialized',
-        accounting: zeroLineageAccounting(),
-      } : {
-        individualId: id,
-        parentIndividualId: (g - 1) * populationSize + (m % populationSize),
-        origin: m < ELITE_COUNT ? 'eliteCopy' : 'continuousMutation',
-        accounting: zeroLineageAccounting(),
-      })),
+      maxGenerations,
+      nextIndividualId: checkedMultiply(
+        g + 1, populationSize, 'evolution individual id allocation',
+      ),
+      populationSize,
     });
-    const terminalReason = terminalReasons !== null ? terminalReasons[g]
-      : (g === generationCount - 1 && generationCount === maxGenerations
-        ? 'generationLimitReached' : 'none');
+    if (terminalReason !== 'none' && g + 1 < generationCount) {
+      throw new Error(`buildSynthesizedArtifact: generation ${g} is terminal ('${terminalReason}') but a successor (${g + 1}) was requested — a terminal record has no persisted successor`);
+    }
     const record = {
       generationIndex: g,
       terminalReason,
@@ -226,6 +260,26 @@ async function buildSynthesizedArtifact(runtime, {
     const generationDigestBytes = await digestGeneration(previous, payloadBytes);
     previous = generationDigestBytes;
     generations.push({ payloadBytes, generationDigestBytes });
+    if (g + 1 < generationCount) {
+      // The PR 4C verifier's own idiom, reused for construction: decode the
+      // persisted population and vector, reconstruct the pool the producer
+      // used, and derive the successor from the SAME persisted facts.
+      const pool = selectablePoolFromEvaluation(deserializeFitnessVector(fitnessVectorBytes));
+      const derived = deriveNextGeneration({
+        population,
+        pool,
+        seed,
+        mutation: Object.freeze({
+          probability: mutation.probability, magnitude: mutation.magnitude,
+        }),
+        baseIndividualId: checkedMultiply(
+          g + 1, populationSize, 'evolution individual id allocation',
+        ),
+        generationIndex: g,
+      });
+      populationBytes = derived.populationBytes;
+      lineageBytes = derived.lineageBytes;
+    }
   }
   return (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
 }
@@ -372,22 +426,181 @@ describe('artifacts whose persisted facts agree pass the local-semantics pass', 
       .toEqual([6, 7, 8, 9, 10, 11]);
     expect(extracted.generations[1].terminalReason).toBe('generationLimitReached');
     expectNoProbes();
-    // Resume replay is deliberately NOT claimed: the synthesized clean rows
-    // are verification-coherent but not real physics output (the capacity
-    // file's source-artifact ruling).
+    // Resume replay is deliberately NOT claimed: the artifact is now
+    // transition-honest (PR 4B — the second record is the kernel's exact
+    // successor), but the synthesized clean rows are still not real physics
+    // output (the capacity file's source-artifact ruling).
   });
 
   test('an empty pool at the declared last generation with persisted noSelectableParents verifies', async () => {
     const artifact = await buildSynthesizedArtifact(runtime, {
-      populationSize: SMALL,
-      generationCount: 2,
-      maxGenerations: 2,
-      terminalReasons: ['none', 'noSelectableParents'],
-      invalidPoolAt: 1,
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: 1,
     });
     const extracted = await extractHistoryObservations(artifact);
     expect(extracted.generations[1].terminalReason).toBe('noSelectableParents');
     expectNoProbes();
+  });
+});
+
+// ============================================================================
+// Kernel-honest artifact construction (PR 4B): the builder routes EVERY
+// successor through deriveNextGeneration — integration evidence, NOT the
+// independent oracle (that boundary lives in tests/evolution-transition.test.js)
+// ============================================================================
+
+describe('kernel-honest synthesized artifacts (PR 4B)', () => {
+  // Read persisted facts back out of an artifact. verifyHistoryArtifact is
+  // digest/framing byte-work only — no runtime-identity read, no physics —
+  // and expectNoProbes re-proves it on every test below.
+  const readArtifact = async (artifact) => {
+    const verified = await verifyHistoryArtifact(artifact);
+    const { header, framing } = verified;
+    const records = framing.generations.map((g) => decodeGenerationPayload(g.payloadBytes));
+    const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+    return { header, records, manifest };
+  };
+
+  // Derive the successor transition from one record's persisted facts, exactly
+  // as the future PR 4C verifier will: persisted population + the pool the
+  // persisted vector reconstructs + the manifest seed + the header mutation
+  // policy + the exact fresh-ID base. Integration idiom — kernel calls here
+  // are NOT independent evidence; the oracle owns that role.
+  const deriveSuccessor = (components, {
+    seed, mutation, populationSize, generationIndex,
+  }) => {
+    const population = deserializePopulationSnapshot(components.population);
+    const vector = deserializeFitnessVector(components.fitnessVector);
+    const pool = selectablePoolFromEvaluation(vector);
+    return deriveNextGeneration({
+      population,
+      pool,
+      seed,
+      mutation: Object.freeze({ probability: mutation.probability, magnitude: mutation.magnitude }),
+      baseIndividualId: checkedMultiply(
+        generationIndex + 1, populationSize, 'evolution individual id allocation',
+      ),
+      generationIndex,
+    });
+  };
+
+  test("synth2's second record is the exact kernel-derived successor of its first", async () => {
+    const { header, records, manifest } = await readArtifact(synth2);
+    const derived = deriveSuccessor(records[0].components, {
+      seed: manifest.seed,
+      mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+      populationSize: header.populationSize,
+      generationIndex: 0,
+    });
+    expect(records[1].components.population).toEqual(derived.populationBytes);
+    expect(records[1].components.lineage).toEqual(derived.lineageBytes);
+    expectNoProbes();
+  });
+
+  test('an empty final pool still carries an honest predecessor transition', async () => {
+    const artifact = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: 1,
+    });
+    const { header, records, manifest } = await readArtifact(artifact);
+    const derived = deriveSuccessor(records[0].components, {
+      seed: manifest.seed,
+      mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+      populationSize: header.populationSize,
+      generationIndex: 0,
+    });
+    expect(records[1].components.population).toEqual(derived.populationBytes);
+    expect(records[1].components.lineage).toEqual(derived.lineageBytes);
+    expect(records[1].terminalReason).toBe('noSelectableParents');
+    expectNoProbes();
+  });
+
+  test('the builder consumes the header mutation policy, never the current defaults', async () => {
+    // The witness fixture: probability 1 against the 0.05 default. The
+    // inequality below is asserted as OBSERVED evidence for this fixture — no
+    // policy value is a theorem (repair/clamping can collapse proposals); the
+    // literal was confirmed at authoring time.
+    const policy = Object.freeze({ probability: 1, magnitude: 0.3 });
+    const artifact = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, mutation: policy,
+    });
+    const { header, records, manifest } = await readArtifact(artifact);
+    expect(header.mutationProbability).toBe(1);
+    expect(header.mutationMagnitude).toBe(0.3);
+    const underPersisted = deriveSuccessor(records[0].components, {
+      seed: manifest.seed, mutation: policy, populationSize: header.populationSize, generationIndex: 0,
+    });
+    const underDefaults = deriveSuccessor(records[0].components, {
+      seed: manifest.seed, mutation: PARAMETRIC_MUTATION_DEFAULTS,
+      populationSize: header.populationSize, generationIndex: 0,
+    });
+    expect(underPersisted.populationBytes).not.toEqual(underDefaults.populationBytes);
+    expect(records[1].components.population).toEqual(underPersisted.populationBytes);
+    expect(records[1].components.lineage).toEqual(underPersisted.lineageBytes);
+    expectNoProbes();
+  });
+
+  test('the builder transitions under the manifest seed, never another seed', async () => {
+    // 20260799 is a test-local authoring literal (NOT a campaign-seed
+    // allocation), accepted because the two derivations below were observed to
+    // differ for this fixture — the committed witness asserted here. Both
+    // derivations start from THE SAME persisted record-0 population and
+    // vector; only the transition seed changes, so initialization differences
+    // cannot confound the witness.
+    const S = 20260799;
+    const artifact = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, seed: S,
+    });
+    const { header, records, manifest } = await readArtifact(artifact);
+    expect(manifest.seed).toBe(S);
+    const underManifestSeed = deriveSuccessor(records[0].components, {
+      seed: S,
+      mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+      populationSize: header.populationSize, generationIndex: 0,
+    });
+    const underOtherSeed = deriveSuccessor(records[0].components, {
+      seed: CAPACITY_POPULATION_SEED,
+      mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+      populationSize: header.populationSize, generationIndex: 0,
+    });
+    expect(underManifestSeed.populationBytes).not.toEqual(underOtherSeed.populationBytes);
+    expect(records[1].components.population).toEqual(underManifestSeed.populationBytes);
+    expect(records[1].components.lineage).toEqual(underManifestSeed.lineageBytes);
+    expectNoProbes();
+  });
+
+  test('a three-record artifact carries both transitions, each derived from its own record', async () => {
+    // The g >= 1 coverage the two-record guards cannot see: a builder that
+    // froze generationIndex, reused record 0's pool, or stopped advancing
+    // the id base would pass every guard above. Record 2 must be the exact
+    // kernel successor of RECORD 1's persisted facts — not of record 0's.
+    const artifact = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 3, maxGenerations: 3,
+    });
+    const { header, records, manifest } = await readArtifact(artifact);
+    expect(records).toHaveLength(3);
+    for (const g of [0, 1]) {
+      const derived = deriveSuccessor(records[g].components, {
+        seed: manifest.seed,
+        mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+        populationSize: header.populationSize,
+        generationIndex: g,
+      });
+      expect(records[g + 1].components.population).toEqual(derived.populationBytes);
+      expect(records[g + 1].components.lineage).toEqual(derived.lineageBytes);
+    }
+    expect(records[2].terminalReason).toBe('generationLimitReached');
+    expectNoProbes();
+  });
+
+  test('a successor requested after an empty-pool terminal is a configuration error', async () => {
+    await expect(buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 3, invalidPoolAt: 0,
+    })).rejects.toThrow(/terminal \('noSelectableParents'\).*no persisted successor/);
+  });
+
+  test('a successor requested past the generation limit is a configuration error', async () => {
+    await expect(buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 1,
+    })).rejects.toThrow(/terminal \('generationLimitReached'\).*no persisted successor/);
   });
 });
 
@@ -653,10 +866,16 @@ describe('ID-allocation semantics', () => {
 
 describe('terminal semantics', () => {
   test('an empty selectable pool with persisted none is refused', async () => {
+    // Honest base first: the builder recomputes and persists
+    // 'noSelectableParents' for the empty pool; the reforge then lies about
+    // it, so the terminal rule — not the builder — is what the test isolates.
     const artifact = await buildSynthesizedArtifact(runtime, {
       populationSize: SMALL, generationCount: 1, maxGenerations: 2, invalidPoolAt: 0,
     });
-    const { extraction } = await expectBothReaders(artifact, 'malformedHistory');
+    const broken = await reforge(artifact, {
+      mutateRecord: (record) => { record.terminalReason = 'none'; },
+    });
+    const { extraction } = await expectBothReaders(broken, 'malformedHistory');
     expect(extraction.context).toMatchObject({
       rule: 'terminalReasonMismatch', generationIndex: 0, stored: 'none', expected: 'noSelectableParents',
     });

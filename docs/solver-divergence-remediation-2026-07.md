@@ -219,9 +219,10 @@ it.**
 
 > **Status addendum (2026-07-29) — the follow-on sequence was SPLIT again.**
 > The remaining work above is now sequenced: **PR 4B (proposed)** —
-> independent-oracle boundary completion and kernel-honest multigeneration
-> test artifacts, a behavior-preserving test/documentation hardening PR with
-> no production change; **PR 4C** — exact persisted N→N+1 transition
+> completion of the three PR-4A-deferred oracle boundary shapes and
+> kernel-honest multigeneration test artifacts, a behavior-preserving
+> test/documentation hardening PR with no production change; **PR 4C** —
+> exact persisted N→N+1 transition
 > authentication before runtime identity; **PR 4D** — scale validation of the
 > landed verifier and the measurement-unblocking decision. Every "after PR 4"
 > and "after PR 4B" in this document therefore reads as **after PR 4C** for

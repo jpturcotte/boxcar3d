@@ -69,9 +69,9 @@ computed dynamic import() and import.meta.glob refused outright) checked by a ge
 independent narrow oracle. PR 4A changes no successful-run behaviour, does NOT make persisted
 histories transition-authentic, and does NOT replace deterministic physics
 replay. The remaining work is **re-sequenced (2026-07-29)**: **PR 4B is
-proposed** — independent-oracle boundary completion (the all-elite,
-single-selectable-parent and three-way elite-boundary-tie shapes PR 4A
-deferred) and kernel-honest multigeneration test artifacts, with no
+proposed** — completion of the three PR-4A-deferred oracle boundary shapes
+(all-elite output, single selectable parent, three-way elite-boundary tie)
+and kernel-honest multigeneration test artifacts, with no
 production change and no persisted-transition verdict; **PR 4C** — exact
 persisted N→N+1 transition authentication before runtime identity
 (reproducing every persisted adjacent transition and byte-comparing against

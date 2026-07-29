@@ -3068,7 +3068,7 @@ add persisted-transition authentication: no new persisted artifact is
 refused, evolution-replay.js still does not import the kernel, runtime
 identity and deterministic physics replay are unchanged, REPLAY_STAGES is
 unchanged, and measurements remain blocked pending PR 4C, PR 4D and
-independent review. Two external review rounds were dispositioned into the
+independent review. Three external review rounds were dispositioned into the
 branch before merge. Round one: an upfront invalidPoolAt domain refusal
 (out-of-range, fractional or < -1 values can no longer silently build a
 fully selectable artifact), terminal facts derived from the reconstructed
@@ -3086,7 +3086,11 @@ mid-flight), transitions run under the manifest-bound initialization.seed,
 and the oracle claim was narrowed from 'complete the independent oracle'
 to the three PR-4A-deferred shapes — the populationSize = 1 boundary above
 was reassigned from a 'PR 4C candidate' to a standalone oracle-hardening
-follow-up at the same time.
+follow-up at the same time. Round three (documentation-only): the scoped
+wording replaced the lingering 'independent-oracle boundary completion'
+phrase in README.md's active status and the solver-divergence addendum, and
+the PR description's red-on-base count was clarified as the original six
+planned kernel-honesty tests.
 - **Seeds allocated:** none (the new oracle cases use test-local literal
   seeds 1 and 20260728 and the anti-seed test uses 20260799 — authoring
   literals documented in-test, NOT campaign allocations).

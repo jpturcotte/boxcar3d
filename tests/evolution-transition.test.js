@@ -358,6 +358,9 @@ describe('the production importer / re-export guard', () => {
     expect(SCANNED_FILES).toContain('tests/helpers/evolution-artifacts.js');
     expect(SCANNED_FILES).toContain('legacy/PhysicsController.js');
     expect(SCANNED_FILES).toContain('vite.config.js');
+    // The scripts/ walk has its own canary too (external-review finding: the
+    // count floor alone stays green without it).
+    expect(SCANNED_FILES).toContain('scripts/history-observations.js');
     const importers = {};
     const computed = {};
     const globEdges = {};
@@ -617,8 +620,9 @@ function oraclePool(population, rows, evaluatedIds = rows.map((r) => r.individua
     // The same-source FNV sentinel, folded over the population's own canonical
     // bytes — exactly the value production computes from the decoded vector.
     populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population)),
-    evaluatedIndividualIds: Object.freeze(evaluatedIds),
-    individuals: Object.freeze(rows.map((r) => Object.freeze(r))),
+    // Owned COPIES — never freeze a caller's fixture in place.
+    evaluatedIndividualIds: Object.freeze([...evaluatedIds]),
+    individuals: Object.freeze(rows.map((r) => Object.freeze({ ...r }))),
   });
 }
 
@@ -1192,10 +1196,11 @@ describe('the independent transition oracle', () => {
     const ids = [10, 11, 12, 13];
     const hues = [0.1, 0.2, 0.3, 0.4];
     // VESTIGIAL once selectableRows is given: production's pool carries
-    // fitness only for selectable rows, so evaluated-but-unselectable fitness
-    // never reaches the kernel. Deliberately provocative — every unselectable
-    // member OUTRANKS id 11, so a defect consulting the evaluated rows
-    // instead of the selectable set changes the result.
+    // fitness only for selectable rows (evaluatedIndividualIds is ids-only),
+    // so evaluated-but-unselectable fitness CANNOT reach the kernel — that
+    // invisibility is exactly the boundary this case pins. The deliberately
+    // provocative values (every unselectable member outranks id 11) document
+    // it: even fitness that would dominate cannot influence the result.
     const fitnesses = [9, 1, 9, 9];
     const selectableRows = [{ individualId: 11, fitness: 1 }];
     const genotypesById = new Map(ids.map((id, i) => [id, canonical(0, hues[i])]));
@@ -1379,7 +1384,10 @@ describe('the independent transition oracle', () => {
     // the tied loser, selected as a NON-ELITE parent. A kernel that dropped
     // id 12 from tournament eligibility would resolve draw % 5 to a smaller
     // row set and a different winner; a kernel that made id 12 an elite would
-    // place it in slot 2 instead of deriving a child there.
+    // place it in slot 2 instead of deriving a child there. (Children 22 and
+    // 23's triples are identical to Case D's: both cases share seed 1, and
+    // the streams fork by (seed, fresh child id) alone — never by pool
+    // content.)
     const expectedDraws = new Map([
       [22, [3829732629, 983983396, 2627111204]],
       [23, [3496370375, 2162362694, 4053625609]],

@@ -156,23 +156,27 @@ const configAt = (populationSize, maxGenerations) => ({
  * it; that boundary lives in tests/evolution-transition.test.js).
  *
  * Terminal reasons are computed by the producer's own terminalReasonFor —
- * never overridden — from the construction facts: the selectable count is
- * `g === invalidPoolAt ? 0 : populationSize`, equal by construction to the
- * record's persisted pool size, which is the value the producer reads back
- * from its decoded vector (a verifier still recomputes the reason from the
- * persisted vector and refuses a mismatch):
- * an empty pool (invalidPoolAt) ends noSelectableParents, a full count ends
+ * never overridden — from the selectable pool reconstructed out of each
+ * record's OWN persisted vector, exactly the producer's idiom
+ * (evolution-run.js): an empty pool (invalidPoolAt) ends
+ * noSelectableParents, a full count ends
  * generationLimitReached, anything else persists 'none'. A terminal record
  * has no successor by policy, so requesting one is a caller configuration
  * error and is refused loudly. `invalidPoolAt` makes one generation's rows
  * unselectable (an empty pool) and is therefore only legal on the FINAL
- * record. Deliberately-contradictory terminal states are built by reforging
+ * record; any value that names no generation at all (out of range,
+ * fractional, < -1) is likewise a loud caller configuration error.
+ * Deliberately-contradictory terminal states are built by reforging
  * an honest artifact, never by asking this builder to lie.
  */
 async function buildSynthesizedArtifact(runtime, {
   populationSize, generationCount, maxGenerations, invalidPoolAt = -1,
   seed = CAPACITY_POPULATION_SEED, mutation = PARAMETRIC_MUTATION_DEFAULTS,
 }) {
+  if (!(invalidPoolAt === -1
+    || (Number.isInteger(invalidPoolAt) && invalidPoolAt >= 0 && invalidPoolAt < generationCount))) {
+    throw new Error(`buildSynthesizedArtifact: invalidPoolAt ${invalidPoolAt} is not -1 or an integer generation index in [0, ${generationCount}) — a caller configuration error`);
+  }
   const initialization = createInitialPopulation({ seed, populationSize });
   const initializationBytes = serializePopulationInitialization(initialization);
   const specBytes = canonicalizeEvaluationSpec(createCapacityEvaluationSpec()).bytes;
@@ -230,8 +234,13 @@ async function buildSynthesizedArtifact(runtime, {
         })),
       });
     }
+    // The producer's exact idiom (evolution-run.js): reconstruct the
+    // selectable pool from the record's OWN persisted vector, compute the
+    // terminal reason from that pool, and derive the successor from the
+    // same pool — the construction shortcut never interprets the vector.
+    const pool = selectablePoolFromEvaluation(deserializeFitnessVector(fitnessVectorBytes));
     const terminalReason = terminalReasonFor({
-      selectableCount: g === invalidPoolAt ? 0 : populationSize,
+      selectableCount: pool.individuals.length,
       generationIndex: g,
       maxGenerations,
       nextIndividualId: checkedMultiply(
@@ -261,10 +270,9 @@ async function buildSynthesizedArtifact(runtime, {
     previous = generationDigestBytes;
     generations.push({ payloadBytes, generationDigestBytes });
     if (g + 1 < generationCount) {
-      // The PR 4C verifier's own idiom, reused for construction: decode the
-      // persisted population and vector, reconstruct the pool the producer
-      // used, and derive the successor from the SAME persisted facts.
-      const pool = selectablePoolFromEvaluation(deserializeFitnessVector(fitnessVectorBytes));
+      // The PR 4C verifier's own idiom, reused for construction: derive the
+      // successor from the SAME persisted facts — the decoded population and
+      // the pool reconstructed above from this record's own vector.
       const derived = deriveNextGeneration({
         population,
         pool,
@@ -601,6 +609,21 @@ describe('kernel-honest synthesized artifacts (PR 4B)', () => {
     await expect(buildSynthesizedArtifact(runtime, {
       populationSize: SMALL, generationCount: 2, maxGenerations: 1,
     })).rejects.toThrow(/terminal \('generationLimitReached'\).*no persisted successor/);
+  });
+
+  test('an invalidPoolAt naming no generation is a configuration error', async () => {
+    // Out-of-domain values must fail loudly rather than silently build a
+    // fully selectable artifact (external-review finding: 99, -2, 1.5 and
+    // generationCount itself all used to slip past the loop untouched).
+    await expect(buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: 2,
+    })).rejects.toThrow(/invalidPoolAt 2 .*configuration error/);
+    await expect(buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: 1.5,
+    })).rejects.toThrow(/invalidPoolAt 1.5 .*configuration error/);
+    await expect(buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: -2,
+    })).rejects.toThrow(/invalidPoolAt -2 .*configuration error/);
   });
 });
 

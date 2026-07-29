@@ -2936,8 +2936,12 @@ contract change:**
   terminal gate owns the bound today; PR 4C must bound what it feeds from
   artifacts), and the review appendix (CRLF pinning and case-insensitive
   filesystems — separable guard-hardening follow-ups; the scripts-walk
-  vacuousness floor — already covered; the O(size²) parent scan at
-  replay scale — PR 4D's scale-validation call, with measurements).
+  vacuousness floor — covered by an explicit `scripts/history-observations.js`
+  canary alongside the count floor; the O(size²) parent scan at
+  replay scale — PR 4D's scale-validation call, with measurements), and —
+  recorded from PR 4B's external reviews — a populationSize = 1 oracle
+  boundary (one elite, zero children, no tournament draws): a legal
+  transition shape no oracle case pins yet, a PR 4C/follow-up candidate.
 - **Round-4 external review hardening (landed in the same PR).** A further
   external pass showed the AST guard still modeled syntax rather than the
   module graph the toolchain actually resolves, and every finding was
@@ -2992,7 +2996,8 @@ contract change:**
   transition refusal was added — extraction and resume still accept a forged
   but locally coherent N→N+1 history — and no verifier hook, optional
   callback, debug escape hatch or public state accessor "for PR 4B" exists;
-  PR 4B will import the finished kernel directly.
+  the replay verifier (PR 4C after the 2026-07-29 re-sequencing) will import
+  the finished kernel directly.
 - **What PR 4B owns (proposed 2026-07-29; see the entry that follows).**
   Independent-oracle boundary completion and kernel-honest multigeneration
   test artifacts — no production change. **What PR 4C owns.** Exact persisted

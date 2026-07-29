@@ -28,9 +28,10 @@
 // one authorized production importer today is evolution-run.js; PR 4B will
 // deliberately add evolution-replay.js when the verified-artifact path starts
 // reproducing persisted adjacent transitions. That allowlist is DECLARED and
-// pinned in tests/evolution-transition.test.js over every reference form, so
-// an accidental re-export or a second production importer fails a build. The
-// function still accepts module-owned values only: it never pairs an
+// pinned in tests/evolution-transition.test.js over every LITERAL reference
+// form, so an accidental re-export or a second production importer fails a
+// build (a computed dynamic import() specifier is the documented residual —
+// the regex rows cannot resolve it; see the test). The function still accepts module-owned values only: it never pairs an
 // independently supplied population with an independently supplied fitness
 // artifact (evolution-run.js's FNV sentinel ruling is unchanged by the move).
 //

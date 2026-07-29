@@ -2859,8 +2859,11 @@ contract change:**
   verified-artifact path can share it without a circular dependency. An
   ES-module export here is an internal seam, NOT public run API: the pinned
   production importer set is exactly `{ evolution-run.js }` under all five
-  reference forms, declared as an allowlist PR 4B will deliberately extend
-  with `evolution-replay.js` (tests/evolution-transition.test.js); there is
+  literal reference forms (a computed dynamic import() specifier is the
+  documented residual — the regex guard cannot resolve it; recorded in the
+  test and the PR description), declared as an allowlist PR 4B will
+  deliberately extend with `evolution-replay.js`
+  (tests/evolution-transition.test.js); there is
   no `_internalState`, `_transition`, debug or testing accessor.
 - **The independent oracle.** Two narrow committed cases in
   tests/evolution-transition.test.js never call the kernel, the run, or the

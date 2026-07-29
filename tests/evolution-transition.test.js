@@ -69,6 +69,7 @@ import { describe, expect, test } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 
 import { deriveNextGeneration } from '../src/sim/evolution-transition.js';
+import { EvolutionError } from '../src/sim/evolution-contract.js';
 import { Rng } from '../src/sim/prng.js';
 import {
   compileAssembly, deserializeGenotype, forEachGenotypeField, repairGenotype, serializeGenotype,
@@ -127,6 +128,16 @@ const REFERENCE_FORMS = Object.freeze([
   ['dynamic', /\bimport\(\s*'([^']+)'\s*\)/g],
 ]);
 
+// RESIDUAL, stated honestly (round-2 review): these guards resolve LITERAL
+// specifiers only. A computed dynamic specifier —
+// import(`./evolution-${'transition'}.js`) — evades every regex row. A NEW
+// file attempting it still trips ownership-boundary's derived lint-scope
+// tooth, but the same line added inside an existing module would not be
+// caught anywhere. Closing that is a repo-policy decision (e.g. an eslint
+// no-restricted-syntax ban on non-literal ImportExpression), not a test
+// regex — recorded here and in the PR description; PR 4B, which edits this
+// allowlist deliberately, inherits the note.
+
 function referencesToKernel(file) {
   const source = readFileSync(file, 'utf8');
   const hits = [];
@@ -167,9 +178,12 @@ describe('the production importer / re-export guard', () => {
 
 function staticImportsOf(file) {
   const source = readFileSync(file, 'utf8');
+  // The trailing semicolon is OPTIONAL (\s*;?) — the round-2 review showed a
+  // semicolon-less import otherwise evaded both this closure walk and the
+  // five-import declaration pin above while eslint enforces no `semi` rule.
   const specs = [
-    ...[...source.matchAll(/^\s*import\s[^;]*?\bfrom\s*'([^']+)';/gm)].map((m) => m[1]),
-    ...[...source.matchAll(/^\s*import\s*'([^']+)';/gm)].map((m) => m[1]),
+    ...[...source.matchAll(/^\s*import\s[^;]*?\bfrom\s*'([^']+)'\s*;?/gm)].map((m) => m[1]),
+    ...[...source.matchAll(/^\s*import\s*'([^']+)'\s*;?/gm)].map((m) => m[1]),
   ];
   return specs.filter((s) => s.startsWith('.')).map((s) => normalizeSpecifier(file, s));
 }
@@ -702,5 +716,63 @@ describe('the independent transition oracle', () => {
       .toEqual([[40, 31, 'eliteCopy'], [41, 33, 'eliteCopy']]);
     expect(lineage.individuals[2].accounting).toEqual(derived.children.get(42).accounting);
     expect(lineage.individuals[3].accounting).toEqual(derived.children.get(43).accounting);
+  });
+});
+
+// ============================================================================
+// (5) THE KERNEL REFUSAL GUARDS (round-2 review: previously coverage-dark)
+// ============================================================================
+//
+// GUARD 1 (null tournament parent) is unreachable in PRODUCTION — the
+// terminal policy refuses an empty selectable pool before the transition is
+// ever derived — but it is reachable through the kernel's own contract with a
+// hand-built pool, which is exactly what a misplaced refusal would hide
+// behind. Pinned here: the code, the message, and the child-id context.
+//
+// GUARD 2 (tournament winner missing from the population) is STRUCTURALLY
+// unreachable through the kernel's own call graph: capturePool binds every
+// selectable row to an evaluated id, and selectElites binds the evaluated ids
+// to the population's members exactly, so any winner is necessarily a member
+// id. It stays in the kernel as a loud refusal rather than an assumption —
+// and this comment is the record of why no direct test can reach it without
+// stubbing the operators under test.
+
+describe('the kernel refusal guards', () => {
+  test('an empty selectable pool is refused as malformedHistory, naming the child id', () => {
+    // A WELL-FORMED pool whose selectable row set is empty: the evaluated ids
+    // still bind the population exactly (selectElites runs, finds no elites),
+    // so the tournament itself returns null and the kernel must refuse loudly
+    // rather than surface an opaque parent-lookup failure two lines later.
+    const ids = [10, 11, 12, 13, 14];
+    const hues = [0.1, 0.2, 0.3, 0.4, 0.5];
+    const genotypesById = new Map(ids.map((id, i) => [id, canonical(0, hues[i])]));
+    const population = {
+      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
+      individuals: ids.map((id) => ({ individualId: id, genotype: genotypesById.get(id) })),
+    };
+    const pool = Object.freeze({
+      selectionPoolVersion: SELECTION_POOL_VERSION,
+      fitnessPolicyVersion: FITNESS_POLICY_VERSION,
+      populationSnapshotDigestState: fnv1aFold(FNV_OFFSET_BASIS, serializePopulationSnapshot(population)),
+      evaluatedIndividualIds: Object.freeze(ids),
+      individuals: Object.freeze([]),
+    });
+    let thrown = null;
+    try {
+      deriveNextGeneration({
+        population,
+        pool,
+        seed: 20260728,
+        mutation: { probability: 0, magnitude: 0 },
+        baseIndividualId: 20,
+        generationIndex: 0,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(EvolutionError);
+    expect(thrown.code).toBe('malformedHistory');
+    expect(thrown.message).toMatch(/tournament returned no parent from a non-empty selectable pool/);
+    expect(thrown.context).toEqual({ childId: 20 });
   });
 });

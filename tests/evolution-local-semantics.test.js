@@ -177,6 +177,15 @@ async function buildSynthesizedArtifact(runtime, {
     || (Number.isInteger(invalidPoolAt) && invalidPoolAt >= 0 && invalidPoolAt < generationCount))) {
     throw new Error(`buildSynthesizedArtifact: invalidPoolAt ${invalidPoolAt} is not -1 or an integer generation index in [0, ${generationCount}) — a caller configuration error`);
   }
+  // Capture the caller-owned policy ONCE, before the first await — the
+  // initializer's own capture-once idiom (population-initializer.js). The
+  // header below and every kernel call in the loop must consume this same
+  // owned copy: rereading `mutation` after a digest await would let a caller
+  // mutating its own object while the promise is pending (or a stateful
+  // getter) derive the successor under a policy the header never persisted.
+  const persistedMutation = Object.freeze({
+    probability: mutation.probability, magnitude: mutation.magnitude,
+  });
   const initialization = createInitialPopulation({ seed, populationSize });
   const initializationBytes = serializePopulationInitialization(initialization);
   const specBytes = canonicalizeEvaluationSpec(createCapacityEvaluationSpec()).bytes;
@@ -202,8 +211,8 @@ async function buildSynthesizedArtifact(runtime, {
     rapierVersion: runtime.rapierVersion,
     populationSize,
     maxGenerations,
-    mutationProbability: mutation.probability,
-    mutationMagnitude: mutation.magnitude,
+    mutationProbability: persistedMutation.probability,
+    mutationMagnitude: persistedMutation.magnitude,
     initializationManifestBytes: initializationBytes,
     evaluationSpecBytes: specBytes,
   });
@@ -276,10 +285,10 @@ async function buildSynthesizedArtifact(runtime, {
       const derived = deriveNextGeneration({
         population,
         pool,
-        seed,
-        mutation: Object.freeze({
-          probability: mutation.probability, magnitude: mutation.magnitude,
-        }),
+        // The manifest-bound seed — the exact field
+        // serializePopulationInitialization persisted above.
+        seed: initialization.seed,
+        mutation: persistedMutation,
         baseIndividualId: checkedMultiply(
           g + 1, populationSize, 'evolution individual id allocation',
         ),
@@ -624,6 +633,43 @@ describe('kernel-honest synthesized artifacts (PR 4B)', () => {
     await expect(buildSynthesizedArtifact(runtime, {
       populationSize: SMALL, generationCount: 2, maxGenerations: 2, invalidPoolAt: -2,
     })).rejects.toThrow(/invalidPoolAt -2 .*configuration error/);
+  });
+
+  test('a policy mutated after the call cannot contradict the persisted header', async () => {
+    // External-review finding: the builder used to read the caller-owned
+    // mutation object TWICE — synchronously for the header, then again after
+    // the digest awaits for the kernel call. A caller mutating its own object
+    // while the promise was pending (below) got a successor derived under a
+    // policy the header never persisted. The builder now captures an owned
+    // frozen copy ONCE, before the first await — the initializer's own
+    // capture-once idiom (population-initializer.js).
+    const policy = { probability: 0, magnitude: 0 };
+    const pending = buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 2, maxGenerations: 2, mutation: policy,
+    });
+    // The header is already encoded (synchronously, before the first digest
+    // await) and the builder is suspended. Mutate the caller-owned object.
+    policy.probability = 1;
+    policy.magnitude = 0.3;
+    const artifact = await pending;
+    const { header, records, manifest } = await readArtifact(artifact);
+    expect(header.mutationProbability).toBe(0);
+    expect(header.mutationMagnitude).toBe(0);
+    const underPersisted = deriveSuccessor(records[0].components, {
+      seed: manifest.seed, mutation: { probability: 0, magnitude: 0 },
+      populationSize: header.populationSize, generationIndex: 0,
+    });
+    const underMutated = deriveSuccessor(records[0].components, {
+      seed: manifest.seed, mutation: { probability: 1, magnitude: 0.3 },
+      populationSize: header.populationSize, generationIndex: 0,
+    });
+    // Observed witness for this fixture (the anti-default guard's idiom): the
+    // two policies genuinely diverge, so the equality below can bite.
+    expect(underPersisted.populationBytes).not.toEqual(underMutated.populationBytes);
+    // The persisted successor follows the HEADER policy, not the post-call mutation.
+    expect(records[1].components.population).toEqual(underPersisted.populationBytes);
+    expect(records[1].components.lineage).toEqual(underPersisted.lineageBytes);
+    expectNoProbes();
   });
 });
 

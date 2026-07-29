@@ -2486,9 +2486,10 @@ single clean commit `9c5f24c`):**
   extraction, independent oracle and internal boundary pinning; no
   successful-run behaviour change, histories not yet transition-authentic) is
   LANDED; the remaining work is now sequenced (re-sequenced 2026-07-29)
-  PR 4B (independent-oracle boundary completion and kernel-honest test
-  artifacts — no production change), PR 4C (exact persisted N→N+1 transition
-  authentication before runtime identity) and PR 4D (scale validation and
+  PR 4B (completion of the three PR-4A-deferred oracle boundary shapes and
+  kernel-honest test artifacts — no production change), PR 4C (exact
+  persisted N→N+1 transition authentication before runtime identity) and
+  PR 4D (scale validation and
   the measurement decision); the breeding-pool, false-negative and
   mutation-default measurements stay blocked pending PR 4C, PR 4D and
   independent review. The recorded items then apply, in order: (1) escalate the alert
@@ -2670,10 +2671,10 @@ policy, selection or mutation behaviour change:**
   (2026-07-28) into PR 4A (transition-kernel extraction, independent oracle
   and internal boundary pinning — LANDED, no successful-run behaviour change)
   and a follow-on sequence re-sequenced 2026-07-29: PR 4B
-  (independent-oracle boundary completion and kernel-honest test artifacts —
-  no production change), PR 4C (exact persisted N→N+1 transition
-  authentication before runtime identity) and PR 4D (scale validation and
-  the measurement decision). **The breeding-pool and false-negative
+  (completion of the three PR-4A-deferred oracle boundary shapes and
+  kernel-honest test artifacts — no production change), PR 4C (exact
+  persisted N→N+1 transition authentication before runtime identity) and
+  PR 4D (scale validation and the measurement decision). **The breeding-pool and false-negative
   measurements stay blocked pending PR 4C, PR 4D and independent review** —
   the experiment schema,
   the campaign, retained workspace histories, the forensic adjudicator,
@@ -2838,9 +2839,9 @@ version, or successful-run behaviour change:**
   enforcement) remains, and **measurements stay blocked until PR 4 lands**.
   (Written pre-split; PR 4 was divided 2026-07-28 and its follow-on
   re-sequenced 2026-07-29 — see the PR 4A and PR 4B entries that follow:
-  4A landed; then 4B (oracle boundary completion and honest test artifacts),
-  4C (persisted-transition authentication) and 4D (scale validation and the
-  measurement decision); measurements stay blocked pending PR 4C, PR 4D and
+  4A landed; then 4B (the three PR-4A-deferred oracle boundary shapes and
+  honest test artifacts), 4C (persisted-transition authentication) and 4D
+  (scale validation and the measurement decision); measurements stay blocked pending PR 4C, PR 4D and
   independent review.)
 - **Seeds allocated:** none.
 
@@ -2941,7 +2942,10 @@ contract change:**
   replay scale — PR 4D's scale-validation call, with measurements), and —
   recorded from PR 4B's external reviews — a populationSize = 1 oracle
   boundary (one elite, zero children, no tournament draws): a legal
-  transition shape no oracle case pins yet, a PR 4C/follow-up candidate.
+  transition shape no oracle case pins yet, deferred to a standalone
+  oracle-hardening follow-up — deliberately NOT PR 4C scope (PR 4C owns only
+  the atomic production-verifier change), which is why PR 4B's oracle claim
+  is scoped to the three PR-4A-deferred shapes rather than the whole oracle.
 - **Round-4 external review hardening (landed in the same PR).** A further
   external pass showed the AST guard still modeled syntax rather than the
   module graph the toolchain actually resolves, and every finding was
@@ -2999,8 +3003,9 @@ contract change:**
   the replay verifier (PR 4C after the 2026-07-29 re-sequencing) will import
   the finished kernel directly.
 - **What PR 4B owns (proposed 2026-07-29; see the entry that follows).**
-  Independent-oracle boundary completion and kernel-honest multigeneration
-  test artifacts — no production change. **What PR 4C owns.** Exact persisted
+  Completion of the three PR-4A-deferred oracle boundary shapes (all-elite
+  output, single selectable parent, three-way elite-boundary tie) and
+  kernel-honest multigeneration test artifacts — no production change. **What PR 4C owns.** Exact persisted
   transition provenance — after capacity
   and before runtime identity, reproduce every persisted adjacent N→N+1 pair
   (generation N population + persisted fitness vector + the manifest seed —
@@ -3021,9 +3026,10 @@ contract change:**
 - **Seeds allocated:** none (the oracle's hand-built fixtures use test-local
   literal seeds 20260728 and 35, not campaign allocations).
 
-**Post-merge hardening PR 4B (proposed, 2026-07-29) — independent-oracle
-boundary completion and kernel-honest multigeneration test artifacts. NO
-production-behavior, persisted-format or successful-run change:** the three
+**Post-merge hardening PR 4B (proposed, 2026-07-29) — completion of the
+three PR-4A-deferred oracle boundary shapes and kernel-honest
+multigeneration test artifacts. NO production-behavior, persisted-format or
+successful-run change:** the three
 oracle boundary shapes PR 4A deferred are now independently derived and
 byte-pinned in tests/evolution-transition.test.js — Case C (all-elite
 output: population size == ELITE_COUNT with equal fitness, so every
@@ -3062,7 +3068,25 @@ add persisted-transition authentication: no new persisted artifact is
 refused, evolution-replay.js still does not import the kernel, runtime
 identity and deterministic physics replay are unchanged, REPLAY_STAGES is
 unchanged, and measurements remain blocked pending PR 4C, PR 4D and
-independent review.
+independent review. Two external review rounds were dispositioned into the
+branch before merge. Round one: an upfront invalidPoolAt domain refusal
+(out-of-range, fractional or < -1 values can no longer silently build a
+fully selectable artifact), terminal facts derived from the reconstructed
+persisted pool rather than a parallel interpretation of the vector, an
+explicit scripts/history-observations.js canary in the importer guard's
+anti-vacuity pins, oraclePool owning copies before freezing (pinned by an
+ownership test), stale PR-4B→4C forward references corrected, and a Case D
+fixture comment narrowed. Round two: the caller-owned mutation policy is
+captured ONCE into a frozen owned copy before the first await — the
+initializer's capture-once idiom — so a caller mutating its own object
+while the promise is pending cannot make the derived successor contradict
+the persisted header policy (demonstrated RED against the unfixed builder:
+header persists 0/0 while the caller flips its object to 1/0.3
+mid-flight), transitions run under the manifest-bound initialization.seed,
+and the oracle claim was narrowed from 'complete the independent oracle'
+to the three PR-4A-deferred shapes — the populationSize = 1 boundary above
+was reassigned from a 'PR 4C candidate' to a standalone oracle-hardening
+follow-up at the same time.
 - **Seeds allocated:** none (the new oracle cases use test-local literal
   seeds 1 and 20260728 and the anti-seed test uses 20260799 — authoring
   literals documented in-test, NOT campaign allocations).

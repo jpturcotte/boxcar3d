@@ -632,6 +632,32 @@ const fieldRows = (g) => {
   return rows;
 };
 
+describe('oracle helper ownership', () => {
+  // External-review hardening: oraclePool once froze the caller's OWN id
+  // array and row objects in place (fixed to own-then-freeze). Pin the
+  // contract so a regression reaching into caller fixtures turns red instead
+  // of silently mutating shared test data.
+  test('oraclePool freezes owned copies and never freezes the caller\'s fixtures', () => {
+    const population = {
+      snapshotVersion: POPULATION_SNAPSHOT_VERSION,
+      individuals: [
+        { individualId: 10, genotype: canonical(0, 0.25) },
+        { individualId: 11, genotype: canonical(0, 0.75) },
+      ],
+    };
+    const ids = [10, 11];
+    const rows = [{ individualId: 10, fitness: 0.9 }, { individualId: 11, fitness: 0.8 }];
+    const pool = oraclePool(population, rows, ids);
+    expect(Object.isFrozen(ids)).toBe(false);
+    expect(Object.isFrozen(rows)).toBe(false);
+    expect(Object.isFrozen(rows[0])).toBe(false);
+    expect(pool.evaluatedIndividualIds).not.toBe(ids);
+    expect(pool.individuals[0]).not.toBe(rows[0]);
+    expect(Object.isFrozen(pool.evaluatedIndividualIds)).toBe(true);
+    expect(Object.isFrozen(pool.individuals[0])).toBe(true);
+  });
+});
+
 // --- The independent derivation. Hand-written arithmetic over the shared ---
 // --- primitives named in the header; NEVER the production operators.      ---
 

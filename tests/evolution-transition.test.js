@@ -5,8 +5,9 @@
 // authorized production importer today is evolution-run.js, and PR 4B will
 // deliberately extend the allowlist with evolution-replay.js when the
 // verified-artifact path starts reproducing persisted transitions. That
-// allowlist is DECLARED below and pinned over every reference form, so an
-// accidental production re-export or a second importer fails a build.
+// allowlist is DECLARED below and pinned over every supported reference
+// form, so an accidental production re-export or a second importer fails a
+// build.
 //
 // ============================================================================
 // THE ORACLE'S CLAIM BOUNDARY (read before trusting it)
@@ -96,8 +97,8 @@ const KERNEL = 'src/sim/evolution-transition.js';
 // THE DECLARED production importer allowlist. Exactly one entry today; PR 4B
 // adds 'src/sim/evolution-replay.js' here BY DECISION, with its own review —
 // this set is pinned, not eternal. Tests import the kernel directly BY DESIGN
-// (the declared test allowlist); the scan below walks EVERY local module, so
-// both sets are pinned globally, not by directory convention.
+// (the declared test allowlist); the scan below walks all current repository
+// module roots, so both sets are pinned globally, not by directory convention.
 const AUTHORIZED_PRODUCTION_IMPORTERS = Object.freeze({
   'src/sim/evolution-run.js': true,
 });
@@ -273,7 +274,7 @@ function localLiteralEdges(file, refs) {
 // The HTML entry's module scripts are part of Vite's production module graph
 // — external src= (root-absolute against the repo root: index.html boots
 // /src/main.js) AND inline <script type="module"> code. Extracted as scan
-// units so the guard sees the ACTUAL entry surface (round-4 review). The
+// units so the guard sees the CONFIGURED entry surface (round-4 review). The
 // extraction is deliberately small and assumes this repo's own simple entry
 // file; inline units get virtual labels so a failure names the block.
 function htmlEntryUnits(file, html) {
@@ -319,7 +320,8 @@ function reachableFrom(start, refsOfFile) {
   return closure;
 }
 
-// EVERY local module is scanned — there is no directory-defined "production"
+// All current repository module roots are scanned — there is no
+// directory-defined "production"
 // (round-4 review: the src+scripts walk left a src -> tests-helper -> kernel
 // trampoline and the HTML entry as escapes). The root sweep picks up the
 // config modules (vite/vitest/eslint); a new root-level module or a new
@@ -336,10 +338,10 @@ const SCANNED_FILES = Object.freeze([
 const ENTRYPOINT_FILES = Object.freeze(['index.html']);
 
 describe('the production importer / re-export guard', () => {
-  // Parses every local module through espree — the full-tree scan is slow
-  // under full-suite CPU contention, so it carries the repo's explicit
-  // per-test timeout idiom rather than the 5 s default.
-  test('exactly the declared allowlist references the kernel, over every local module and every module edge form', { timeout: 60000 }, () => {
+  // Parses all current repository module roots through espree — the
+  // full-tree scan is slow under full-suite CPU contention, so it carries
+  // the repo's explicit per-test timeout idiom rather than the 5 s default.
+  test('exactly the declared allowlist references the kernel, over all current repository module roots, configured entrypoints, and supported import forms', { timeout: 60000 }, () => {
     expect(SCANNED_FILES.length).toBeGreaterThan(60); // the walk is not vacuous
     // The scan REALLY covers the round-4 surfaces: a future refactor that
     // quietly drops tests/, helpers, or the root configs from it fails here.

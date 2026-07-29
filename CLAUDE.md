@@ -2861,9 +2861,10 @@ contract change:**
   verified-artifact path can share it without a circular dependency. An
   ES-module export here is an internal seam, NOT public run API: the pinned
   production importer set is exactly `{ evolution-run.js }`, enforced by an
-  AST-based scan over EVERY local module (src/, scripts/, tests/, legacy/,
-  the root configs and the HTML entry's module scripts) and every module
-  edge form — '.'-relative and Vite-root-absolute specifiers alike — with
+  AST-based scan over all current repository module roots (src/, scripts/,
+  tests/, legacy/, the root configs), the configured HTML entrypoint's
+  module scripts, and every supported import
+  form — '.'-relative and Vite-root-absolute specifiers alike — with
   computed dynamic import() and import.meta.glob refused outright, declared
   as an allowlist PR 4B will
   deliberately extend with `evolution-replay.js`
@@ -2922,7 +2923,8 @@ contract change:**
   replay scale).
 - **Round-4 external review hardening (landed in the same PR).** A further
   external pass showed the AST guard still modeled syntax rather than the
-  repo's ACTUAL Vite module graph, and every finding was reproduced against
+  module graph the toolchain actually resolves, and every finding was
+  reproduced against
   the round-3 guard before fixing: (1) only '.'-relative literal specifiers
   were considered, so a Vite ROOT-ABSOLUTE import
   (`'/src/sim/evolution-transition.js'` — the convention index.html itself
@@ -2944,8 +2946,9 @@ contract change:**
   root-absolute specifiers against the repo root (bare specifiers stay
   unmodeled — no resolve.alias exists; adding one obligates updating the
   resolver); `import.meta.glob`/`globEager` are classified as their own edge
-  form and refused in every scanned module; the scan walks EVERY local
-  module — src/, scripts/, tests/, legacy/, the root config modules and the
+  form and refused in every scanned module; the scan walks all current
+  repository module roots — src/, scripts/, tests/, legacy/, the root config
+  modules — plus the configured
   HTML entry's external+inline module scripts — and pins the kernel importer
   set globally (production allowlist `{ evolution-run.js }` plus the declared
   three-file test allowlist), with a separate pin forbidding any src/ module
@@ -2957,7 +2960,12 @@ contract change:**
   All six escape classes (root-absolute importer, import.meta.glob,
   tests-helper trampoline, computed import, inline index.html module,
   src->tests import) were demonstrated RED against the fixed guard in
-  scratch probes; none is committed.
+  scratch probes; none is committed. A follow-on review wording pass scoped
+  the guard's claims to all current repository module roots, configured
+  entrypoints and supported import forms — the guard pins today's declared
+  graph and obligates BY-DECISION updates (a new resolve.alias, a new .html
+  entrypoint) rather than pretending to model future build-system
+  reconfigurations automatically.
 - **What did NOT change.** Every successful-run behaviour, fixture, golden,
   lock and digest — the full Node, browser and cross-platform determinism
   suites pass byte-identically and no expectation was updated; every

@@ -62,8 +62,9 @@ tautology hazard — producer and verifier calling the same newly extracted
 implementation and appearing to prove each other. **PR 4A has landed** — the
 deterministic N→N+1 transition now lives in a narrow, cycle-free internal
 kernel (`src/sim/evolution-transition.js`; one authorized production importer,
-pinned by an AST-based guard over every local module — tests, legacy, root
-configs and the HTML entry included — and every module edge form, with
+pinned by an AST-based guard over all current repository module roots —
+tests, legacy, root configs and the configured HTML entrypoint included —
+and every supported import form, with
 computed dynamic import() and import.meta.glob refused outright) checked by a genuinely
 independent narrow oracle. PR 4A changes no successful-run behaviour, does NOT make persisted
 histories transition-authentic, and does NOT replace deterministic physics

@@ -29,8 +29,9 @@
 // deliberately add evolution-replay.js when the verified-artifact path starts
 // reproducing persisted adjacent transitions. That allowlist is DECLARED and
 // pinned in tests/evolution-transition.test.js by an AST-based scan over
-// EVERY local module — src/, scripts/, tests/, legacy/, the root configs and
-// the HTML entry's module scripts — and every module edge form (static,
+// all current repository module roots — src/, scripts/, tests/, legacy/,
+// the root configs — plus the configured HTML entrypoint's module scripts,
+// covering every supported import form (static,
 // re-export, dynamic, '.'-relative and Vite-root-absolute specifiers alike),
 // so an accidental re-export or a second production importer fails a build;
 // computed dynamic import() specifiers and import.meta.glob are refused

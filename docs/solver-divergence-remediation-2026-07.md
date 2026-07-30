@@ -230,6 +230,21 @@ it.**
 > measurements stay blocked pending PR 4C, PR 4D and independent review. The
 > historical sections are unchanged; only the sequencing moved.
 
+> **Status addendum (2026-07-29, PR 4C) — PR 4B has landed; PR 4C is the
+> active proposal.** PR 4B landed as #35 (the three PR-4A-deferred oracle
+> boundary shapes and kernel-honest multigeneration test artifacts; no
+> production change). The active proposal is **PR 4C** — exact persisted
+> N→N+1 transition authentication before runtime identity: the shared
+> stage-11 verifier reproduces every actual persisted adjacent pair with the
+> PR-4A kernel and byte-compares against the persisted successor (population,
+> then lineage), after capacity and before runtime identity, so extraction
+> and resume share the verdict. Scale validation of the PR-4C verifier after
+> it lands, and the measurement-unblocking decision, remain **PR 4D**. Every
+> "after PR 4" and "after PR 4B" above still reads as **after PR 4C** for
+> transition authentication, with the measurement decision in **PR 4D**:
+> measurements stay blocked pending PR 4C, PR 4D and independent review. The
+> earlier addenda and historical sections are unchanged.
+
 ---
 
 ## 6. Decided / open / owner

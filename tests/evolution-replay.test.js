@@ -10,6 +10,19 @@
 // downstream digest, re-chains, and re-assembles, so verification passes
 // cleanly and the divergence must be found by re-running the generation.
 //
+// PR 4C NOTE: a reforged artifact whose fault lives in a SUCCESSOR record's
+// population or lineage no longer reaches replay at all — stage 11's
+// persisted-transition authentication proves every successor's population and
+// lineage are the kernel's exact output before runtime identity, so those
+// forgeries are malformedHistory with zero evaluations (the reclassified
+// tests in the first-divergence describe below). Only generation-0 content
+// faults (provenance-checked separately), replay-owned component faults
+// (evaluation metadata, fitness-vector content, terminal-impossible states)
+// and a FINAL record's replay-owned-component faults (a final record is
+// never a transition SOURCE — while its population and lineage are still
+// authenticated as a successor, so those faults refuse pre-physics too)
+// still reach the replay stages this suite exists to order.
+//
 // Seeds declared: population 20260740, terrain 20260741 (shared declaration
 // site: tests/helpers/evolution-capacity-config.js).
 
@@ -48,7 +61,9 @@ const {
   decodeGenerationPayload, decodeHistoryFraming, deserializeEvaluationMetadata,
   digestGeneration, encodeGenerationPayload, serializeEvaluationMetadata,
 } = await import('../src/sim/evolution-history.js');
-const { reforge } = await import('./helpers/evolution-artifacts.js');
+const {
+  flipByte, rebindFitnessVectorToPopulation, reforge,
+} = await import('./helpers/evolution-artifacts.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
 } = await import('./helpers/evolution-capacity-config.js');
@@ -59,7 +74,6 @@ const { EVOLUTION_FIXTURE_A, evolutionRunConfigFor } = await import('../src/sim/
 const { EVOLUTION_GOLDEN_LOCKS } = await import('../src/sim/evolution-locks.js');
 const { bytesToHex } = await import('../src/sim/bytes.js');
 const { sha256 } = await import('../src/platform/sha256.js');
-const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 
 const kimiFixtureBytes = () => new Uint8Array(Buffer.from(
   readFileSync(new URL('./fixtures/evolution-v1-kimi-k3max.base64', import.meta.url), 'utf8').trim(),
@@ -94,23 +108,6 @@ async function runGenerations(count, cfg = config({ evolution: { maxGenerations:
   const run = createEvolutionRun(cfg);
   for (let i = 0; i < count; i += 1) await run.advance();
   return run.historyBytes();
-}
-
-const flipByte = (bytes, offset = 0) => {
-  const copy = new Uint8Array(bytes);
-  copy[offset] ^= 0xff;
-  return copy;
-};
-
-function rebindFitnessVectorToPopulation(record) {
-  const vector = deserializeFitnessVector(record.components.fitnessVector);
-  record.components.fitnessVector = serializeFitnessVector({
-    populationSnapshotDigestState: fnv1aFold(
-      FNV_OFFSET_BASIS, record.components.population,
-    ),
-    evaluationSpecDigestState: vector.evaluationSpecDigestState,
-    individuals: vector.individuals,
-  });
 }
 
 async function expectCodeAsync(promiseFn, code, re) {
@@ -551,9 +548,12 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     // initialized row must carry the no-parent sentinel — both checked from
     // persisted facts alone, before any physics, so the drifted initial
     // lineage below is refused at the pass's lineage decode rather than found
-    // by re-running the generation. What replay's lineage stage still owns is
-    // gate-invisible content (a mutation row's accounting — pinned by the
-    // multiple-faults test below).
+    // by re-running the generation. Since PR 4C the SUCCESSOR lineage and
+    // population comparisons are structurally unreachable too (every byte,
+    // accounting counters included, is authenticated against the kernel
+    // before runtime — see the two reclassified tests below); what remains
+    // at the replay stages is defense-in-depth, exactly like the
+    // initialization and terminalReason stages before them.
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
@@ -571,7 +571,16 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.generationIndex).toBe(0);
   });
 
-  test("generation 1's population diverges at stage 'population', with generation 0 agreed", async () => {
+  test("generation 1's population is now refused PRE-PHYSICS — the stage-'population' replay comparison is structurally unreachable for successor generations", async () => {
+    // PR 4C reclassification (the attack shape is unchanged): a forged
+    // successor population with the vector's FNV state re-attested and every
+    // digest recomputed is a contradiction among PERSISTED facts — generation
+    // 1 is not the kernel's exact output for generation 0's persisted
+    // population and fitness vector — so it is malformedHistory in stage 11,
+    // before runtime identity or physics, never replayDivergence. The replay
+    // 'population' comparison below stays as defense-in-depth (the stage-13a
+    // comment in evolution-run.js carries why it can no longer fire for a
+    // verified artifact).
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
@@ -581,14 +590,19 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
         }
       },
     });
-    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
-    expect(err.context.stage).toBe('population');
-    expect(err.context.generationIndex).toBe(1);
-    expect(err.context.lastAgreedGenerationIndex).toBe(0);
-    expect(err.context.byteOffset).toBe(40);
-    expect(typeof err.context.expectedByte).toBe('number');
-    expect(typeof err.context.actualByte).toBe('number');
-    expect(err.context.expectedByte).not.toBe(err.context.actualByte);
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.context).toMatchObject({
+      rule: 'persistedTransitionPopulationMismatch',
+      component: 'population',
+      sourceGenerationIndex: 0,
+      successorGenerationIndex: 1,
+      byteOffset: 40,
+    });
+    expect(typeof err.context.storedByte).toBe('number');
+    expect(typeof err.context.recomputedByte).toBe('number');
+    expect(err.context.storedByte).not.toBe(err.context.recomputedByte);
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
   test("a changed effective timestep diverges at stage 'evaluationMetadata' — BEFORE fitness", async () => {
@@ -650,7 +664,13 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.expected).toBe('generationLimitReached');
   });
 
-  test("a changed lineage diverges at stage 'lineage'", async () => {
+  test("a changed successor lineage is now refused PRE-PHYSICS — the stage-'lineage' replay comparison is structurally unreachable", async () => {
+    // PR 4C reclassification (the attack shape is unchanged): the first row's
+    // parent id, at header(10) + id(4), rewritten to another valid
+    // generation-0 member stays locally legal — crossCheckLineage requires
+    // only predecessor membership — but contradicts the kernel's exact
+    // output, so it is malformedHistory in stage 11, before runtime identity
+    // or physics. The replay 'lineage' comparison stays as defense-in-depth.
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
@@ -662,26 +682,43 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
         }
       },
     });
-    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
-    expect(err.context.stage).toBe('lineage');
-    expect(err.context.generationIndex).toBe(1);
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.context).toMatchObject({
+      rule: 'persistedTransitionLineageMismatch',
+      component: 'lineage',
+      sourceGenerationIndex: 0,
+      successorGenerationIndex: 1,
+      byteOffset: 14,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
   });
 
-  test("multiple faults report evaluationMetadata before lineage", async () => {
+  test("multiple faults report evaluationMetadata before fitnessVector (both replay-owned stages)", async () => {
+    // PR 4C repair: the lineage-accounting fault this test used to stack is
+    // no longer replay-reachable — EVERY successor lineage byte, accounting
+    // counters included, is authenticated against the kernel in stage 11 (the
+    // reclassified lineage test above), so that fault dies pre-physics as
+    // malformedHistory. The reachable ordering tooth now stacks two
+    // REPLAY-OWNED stages on the FINAL record, which is never a transition
+    // source: a gate-invisible metadata drift (byte 3 — the same field the
+    // generation-0 metadata test uses) plus a fitness-content rewrite. Both
+    // reach replay, which REPLAY_STAGES orders evaluationMetadata first.
     const artifact = await runGenerations(2);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
         if (i !== 1) return;
         record.components.evaluationMetadata = flipByte(record.components.evaluationMetadata, 3);
-        // A GATE-INVISIBLE lineage fault, so this test stays at the replay
-        // stage ordering it pins: generation 1's last row is a
-        // continuousMutation row, whose eleven accounting counters are
-        // codec-legal at any u32 (verifying them against genotype deltas is
-        // PR 4). Byte 284 is that row's first counter — header(10) + 5 rows
-        // × 53 + id(4) + parent(4) + origin(1). Replay regenerates the real
-        // accounting, so the drift is found at stage 'lineage' — after the
-        // metadata fault, which REPLAY_STAGES orders first.
-        record.components.lineage = flipByte(record.components.lineage, 284);
+        const vector = deserializeFitnessVector(record.components.fitnessVector);
+        const individuals = vector.individuals.map((row, index) => (index === 0 ? {
+          ...row,
+          fitness: row.fitness + 1,
+        } : row));
+        record.components.fitnessVector = serializeFitnessVector({
+          populationSnapshotDigestState: vector.populationSnapshotDigestState,
+          evaluationSpecDigestState: vector.evaluationSpecDigestState,
+          individuals,
+        });
       },
     });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
@@ -690,7 +727,12 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
     expect(err.context.lastAgreedGenerationIndex).toBe(0);
   });
 
-  test('replay stops at the FIRST divergent generation, not the last', async () => {
+  test('transition authentication stops at the FIRST contradictory pair, not the last', async () => {
+    // PR 4C reclassification (the attack shape is unchanged): forged
+    // successor populations at generations 1 AND 2 are now a pre-physics
+    // verdict — pair 0 -> 1 is contradictory, so the verifier never reaches
+    // pair 1 -> 2 and replay never runs. Replay-owned first divergence is
+    // pinned by the next test.
     const artifact = await runGenerations(3);
     const broken = await reforge(artifact, {
       mutateRecord: (record, i) => {
@@ -700,7 +742,33 @@ describe('deterministic replay reports the FIRST divergence, localized', () => {
         }
       },
     });
+    globalThis.__replayProbe.evaluations = 0;
+    const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'malformedHistory');
+    expect(err.context).toMatchObject({
+      rule: 'persistedTransitionPopulationMismatch',
+      component: 'population',
+      sourceGenerationIndex: 0,
+      successorGenerationIndex: 1,
+    });
+    expect(globalThis.__replayProbe.evaluations).toBe(0);
+  });
+
+  test('replay still stops at the FIRST divergent generation for a replay-owned component', async () => {
+    // A metadata drift is invisible to the transition verifier (the kernel's
+    // inputs are the source population, the source pool, the seed, the
+    // policy, the id base and the index — never metadata), so identical
+    // drifts at generations 1 AND 2 reach replay, which must report the
+    // FIRST one.
+    const artifact = await runGenerations(3);
+    const broken = await reforge(artifact, {
+      mutateRecord: (record, i) => {
+        if (i >= 1) {
+          record.components.evaluationMetadata = flipByte(record.components.evaluationMetadata, 3);
+        }
+      },
+    });
     const err = await expectCodeAsync(() => resumeEvolutionRun(broken), 'replayDivergence');
+    expect(err.context.stage).toBe('evaluationMetadata');
     expect(err.context.generationIndex).toBe(1);
     expect(err.context.lastAgreedGenerationIndex).toBe(0);
   });
@@ -1433,9 +1501,23 @@ describe('the peak<->catastrophic equivalence and the nested metadata version', 
           ...metadata, effectiveDt: FOREIGN_DT,
         });
         const decoded = deserializeFitnessVector(record.components.fitnessVector);
-        const individuals = decoded.individuals.map((row, m) => (m === 0 ? okRow({
-          peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null,
-        })(row) : row));
+        // PR 4C repair: the observation rewrite must be POOL-NEUTRAL. okRow
+        // marks the row invalid with zero fitness, which changes generation
+        // 0's selection pool — the persisted generation 1 is then genuinely
+        // transition-false and the artifact is refused pre-physics as
+        // malformedHistory, never reaching the replay verdict this test pins.
+        // Keeping valid/integrityStatus/fitness and touching only the
+        // observations preserves the pool (Gate B reads only observations and
+        // metadata, so the dt-coherence property is judged identically), the
+        // transition stays honest, and the foreign-dt metadata fault reaches
+        // replay.
+        const individuals = decoded.individuals.map((row, m) => (m === 0 ? {
+          ...row,
+          integrityObservations: {
+            ...row.integrityObservations,
+            peakStepDisplacement: 20, firstAlertStep: 2, firstCatastrophicStep: null,
+          },
+        } : row));
         record.components.fitnessVector = serializeFitnessVector({
           populationSnapshotDigestState: decoded.populationSnapshotDigestState,
           evaluationSpecDigestState: decoded.evaluationSpecDigestState,

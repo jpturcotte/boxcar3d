@@ -61,21 +61,23 @@ opaque-boundary enforcement) has been **split after adversarial review**
 tautology hazard — producer and verifier calling the same newly extracted
 implementation and appearing to prove each other. **PR 4A has landed** — the
 deterministic N→N+1 transition now lives in a narrow, cycle-free internal
-kernel (`src/sim/evolution-transition.js`; one authorized production importer,
+kernel (`src/sim/evolution-transition.js`; its authorized production
+importers — one at PR-4A landing, two since PR-4C —
 pinned by an AST-based guard over all current repository module roots —
 tests, legacy, root configs and the configured HTML entrypoint included —
 and every supported import form, with
 computed dynamic import() and import.meta.glob refused outright) checked by a genuinely
 independent narrow oracle. PR 4A changes no successful-run behaviour, does NOT make persisted
 histories transition-authentic, and does NOT replace deterministic physics
-replay. The remaining work is **re-sequenced (2026-07-29)**: **PR 4B is
-proposed** — completion of the three PR-4A-deferred oracle boundary shapes
-(all-elite output, single selectable parent, three-way elite-boundary tie)
-and kernel-honest multigeneration test artifacts, with no
-production change and no persisted-transition verdict; **PR 4C** — exact
+replay. **PR 4B has landed** (#35) — completion of the three PR-4A-deferred
+oracle boundary shapes (all-elite output, single selectable parent, three-way
+elite-boundary tie) and kernel-honest multigeneration test artifacts, with no
+production change and no persisted-transition verdict. The remaining work is
+**re-sequenced (2026-07-29)**: the active proposal is **PR 4C** — exact
 persisted N→N+1 transition authentication before runtime identity
-(reproducing every persisted adjacent transition and byte-comparing against
-generation N+1); **PR 4D** — scale validation of the landed verifier and the
+(reproducing every persisted adjacent transition with the PR-4A kernel and
+byte-comparing against generation N+1's persisted population, then lineage);
+**PR 4D** owns scale validation of the PR-4C verifier after it lands, and the
 measurement decision. The breeding-pool, false-negative and mutation-default
 measurements the persisted observations enable stay **blocked pending
 PR 4C, PR 4D and independent review**. Previously:

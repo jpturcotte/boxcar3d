@@ -2,17 +2,19 @@
 // BEFORE any physics, plus the first-divergence reporting the replay itself
 // uses.
 //
-// A PRIVATE IMPLEMENTATION MODULE, not a new public seam. It deliberately
-// contains no generation transition: `deriveNextGeneration` lives in the
-// internal evolution-transition.js kernel (PR 4A), referenced from production
-// only by the test-pinned importer allowlist and called only with
-// module-owned values — both DESIGN CONTRACTS pinned by tests, not runtime
-// checks; a transition exported as a general-purpose seam would let a caller
-// pair a population with a fitness result it did not produce, the exact thing
-// the opaque-run design exists to prevent. (PR 4C will deliberately add this
-// module to that allowlist when persisted transitions are reproduced here.)
-// What lives here is byte work:
-// framing, digests, chain, identity, and how to describe a mismatch.
+// A PRIVATE IMPLEMENTATION MODULE, not a new public seam. The generation
+// transition itself is NOT implemented here: `deriveNextGeneration` lives in
+// the internal evolution-transition.js kernel (PR 4A), referenced from
+// production only by the test-pinned importer allowlist — evolution-run.js
+// and, since PR 4C, THIS module — and called only with module-owned values,
+// both DESIGN CONTRACTS pinned by tests, not runtime checks; a transition
+// exported as a general-purpose seam would let a caller pair a population
+// with a fitness result it did not produce, the exact thing the opaque-run
+// design exists to prevent. What lives here is digest and format byte work —
+// framing, digests, chain, identity, and how to describe a mismatch — plus,
+// since PR 4C, ONE deterministic, physics-free recomputation: stage 11 closes
+// by reproducing every persisted adjacent transition with that same kernel
+// and byte-comparing the result against the persisted successor.
 //
 // WHY THE STAGES ARE SEPARATE. Verifying only the outer history digest would be
 // one line and would tell a user nothing: every corruption class — a flipped
@@ -36,8 +38,10 @@
 //  10. fitness-vector metadata coherence           (malformed current format)
 //  11. current-artifact semantics + bindings          (malformed current format)
 //      …closing with exact generation-zero provenance, the local
-//      lineage/ID/terminal/count semantics pass, and the
-//      history-capacity policy gate                   (resourceLimitExceeded)
+//      lineage/ID/terminal/count semantics pass, the
+//      history-capacity policy gate                   (resourceLimitExceeded),
+//      and exact persisted adjacent-transition authentication
+//      (malformed current format — PR 4C)
 //  12. deterministic flavor + exact Rapier version    (before physics)
 //  13. deterministic replay, stopping at the first byte divergence
 //
@@ -55,9 +59,11 @@
 // when offline extraction requests them, and closes by recreating generation 0
 // from the manifest config: exact byte identity with the persisted population is
 // the provenance verdict, the FNV state only its prefilter. The capacity policy
-// gate runs last inside stage 11, on the recreated population the provenance
-// bind just produced, so an over-declared history is refused before the runtime
-// gate by every reader. Every format verdict
+// gate follows the local-semantics pass inside stage 11, on the recreated
+// population the provenance bind just produced, so an over-declared history is
+// refused before the runtime gate by every reader — and exact persisted
+// adjacent-transition authentication (PR 4C) runs last inside stage 11, after
+// capacity. Every format verdict
 // therefore RAISES after stage 8, so corruption or staleness is never masked.
 //
 // MEMORY MODEL, and why verification does NOT return decoded payloads.
@@ -72,8 +78,8 @@
 // documented peak. The local-semantics pass keeps the same trade-off: one
 // transient decoded payload at a time, retaining only the previous
 // generation's id array and per-generation scalars. Offline extraction
-// deliberately retains its result rows from stage 11 and does not decode them
-// a fourth time. Stage 11's generation-0 recreation adds no retention class:
+// deliberately retains its result rows from stage 11 and never decodes them
+// again. Stage 11's generation-0 recreation adds no retention class:
 // it is the same `createInitialPopulation` call resume used to run after the
 // runtime gate, moved before it, and resume replays from the returned
 // recreation — the current working population the bound already counts. The
@@ -81,7 +87,15 @@
 // its sibling metadata, only when BOTH components' versions are current) plus
 // one lineage version peek (a bare u16, no decode) inside the same one-payload
 // window; what is retained is one first-failure descriptor of each kind per
-// gate, so the bound above is unchanged.
+// gate, so the bound above is unchanged. Stage 11's persisted-transition
+// authentication (PR 4C) keeps the same trade-off: per source/successor pair
+// it retains ONE decoded source payload with its decoded population, vector
+// and pool (lexically scoped, dead before the successor decode), the two
+// derived output byte arrays, and ONE decoded successor payload while
+// comparing — a middle record is decoded once as a successor and again as a
+// source on the next iteration, deliberately exchanging repeated decoding for
+// bounded retention. No decoded generation, transition input or derived
+// output is ever accumulated.
 
 import { typedArrayByteLength } from './bytes.js';
 import {
@@ -121,6 +135,12 @@ import {
   INTEGRITY_POLICY_VERSION, INTEGRITY_REFERENCE_CAPTURE_DT, INTEGRITY_THRESHOLDS,
 } from './integrity.js';
 import { FNV_OFFSET_BASIS, fnv1aFold } from './fnv1a.js';
+// THE SECOND AUTHORIZED PRODUCTION IMPORTER of the transition kernel (PR 4C):
+// the kernel is called here for VERIFICATION only, with module-owned values
+// decoded from the verified artifact — the same design contract
+// evolution-run.js is bound by, pinned by the AST importer guard in
+// tests/evolution-transition.test.js. Never re-exported (see the header).
+import { deriveNextGeneration } from './evolution-transition.js';
 
 /** The replay stages, in the order a record's components are compared. */
 export const REPLAY_STAGES = Object.freeze([
@@ -819,8 +839,9 @@ export function verifyFitnessVectorMetadataCoherence(verified) {
  * without runtime identity, physics, or reproducing generation N+1. (It is
  * NOT "everything provable from persisted facts": elite-genotype equality,
  * parent ranking/selectability, replacement-shape agreement and accounting-
- * vs-delta verification are all persisted-fact checks too — and they are
- * PR 4's transition-provenance scope, deliberately not this pass's.) Runs at
+ * vs-delta verification are all persisted-fact checks too — and they are the
+ * transition-provenance scope of `verifyPersistedTransitions` below (PR 4C),
+ * deliberately not this pass's.) Runs at
  * the end of stage 11,
  * AFTER the generation-zero provenance verdict and BEFORE the
  * history-capacity gate: the ladder reads provenance → local semantics →
@@ -991,6 +1012,168 @@ function verifyLocalHistorySemantics(header, framing) {
 }
 
 /**
+ * Raise a persisted adjacent-transition contradiction (`malformedHistory`).
+ * `stored` is the byte component persisted in generation N+1; `recomputed` is
+ * what the deterministic kernel produced from generation N — the same
+ * stored/recomputed terminology as the generation-zero recreation bind, never
+ * `expected`/`actual` (which replay keeps for its own diagnostics).
+ * `offset` is the first-difference index the caller already computed with
+ * `firstByteDifference(stored, recomputed)` — passed under that name because
+ * the byte-family lint bans reading a `byteOffset` PROPERTY (TypedArray
+ * geometry; writing the plain diagnostic record's key below is the precedent
+ * the generation-zero recreation bind set). Context carries owned scalars
+ * only; the individual bytes are included only when the offset lies inside
+ * the corresponding array (a length mismatch puts it past one of them). That
+ * length-mismatch branch is DEFENSE-IN-DEPTH: every wrong-length component is
+ * refused earlier by the count and decode guards (the population peek/decode
+ * binds, the lineage geometry bound and exact-length identity), so it is
+ * unreachable through the readers and cannot be covered by an artifact test.
+ */
+function failPersistedTransitionMismatch({
+  rule, component, sourceGenerationIndex, offset, stored, recomputed,
+}) {
+  const storedByteLength = typedArrayByteLength(stored);
+  const recomputedByteLength = typedArrayByteLength(recomputed);
+  const context = {
+    rule,
+    component,
+    sourceGenerationIndex,
+    successorGenerationIndex: sourceGenerationIndex + 1,
+    byteOffset: offset,
+    storedByteLength,
+    recomputedByteLength,
+  };
+  if (offset < storedByteLength) context.storedByte = stored[offset];
+  if (offset < recomputedByteLength) context.recomputedByte = recomputed[offset];
+  evolutionFail('malformedHistory',
+    `generation ${sourceGenerationIndex + 1} ${component} is not the exact deterministic `
+    + `transition of generation ${sourceGenerationIndex} (first differing byte ${offset})`,
+    context);
+}
+
+/**
+ * EXACT PERSISTED ADJACENT-TRANSITION AUTHENTICATION (PR 4C) — the gate that
+ * closes stage 11. For every ACTUAL persisted adjacent record pair N -> N+1,
+ * generation N+1's population and lineage must be the exact canonical output
+ * of the deterministic transition kernel applied to generation N's persisted
+ * population and fitness vector, the initialization manifest's seed, the
+ * header's persisted mutation policy, the checked fresh-ID base
+ * ((N + 1) × populationSize — the same arithmetic the producer and the
+ * ID-allocation rule above use), and source generation index N. A
+ * contradiction among those persisted facts is malformed current-format
+ * history — never runtime drift, never replay divergence — and it is refused
+ * here, AFTER the capacity gate and BEFORE runtime identity, world creation,
+ * evaluation or replay, by every reader of this shared stage.
+ *
+ * WHY THIS GATE EXISTS. Before PR 4C an artifact could be correctly framed,
+ * SHA-256-attested, current-format, locally coherent, consistent in
+ * population/vector ids, legal in lineage shape, compliant with the
+ * ID-allocation and terminal policies, consistent with its initialization
+ * manifest and capacity-compliant — and still carry a fabricated but locally
+ * plausible generation N+1 whose attacker recomputed every FNV state and
+ * SHA-256 digest. Extraction accepted such a history outright; resume
+ * discovered the contradiction only later, mid-replay, as `replayDivergence`
+ * — after runtime identity was read and physics had begun.
+ *
+ * THE VERDICT ORDER IS THE CONTRACT. Across pairs, the first contradictory
+ * pair in generation order wins (the throw exits the loop). Within a pair,
+ * the successor POPULATION is compared first and the LINEAGE second, so a
+ * combined population-and-lineage forgery reports the population rule.
+ *
+ * ONLY PERSISTED PAIRS. A final nonterminal record of a partial history has
+ * no persisted successor: the loop bound `sourceGenerationIndex + 1 <
+ * recordCount` never derives — let alone "authenticates" — an unpersisted
+ * transition. Replay still derives that pending successor later, for its own
+ * continuation state; this gate does not.
+ *
+ * INPUTS ARE THE PERSISTED FACTS, captured once before the loop: the seed
+ * from the initialization MANIFEST (there is no "header seed"), the mutation
+ * policy from the persisted header (never the current defaults), and the
+ * header population size. Per pair, the selection pool is reconstructed from
+ * the SOURCE record's vector (`selectablePoolFromEvaluation`) — never the
+ * successor's: a successor pool is bound to the successor population and the
+ * kernel's own population/pool binding would refuse the pairing.
+ *
+ * NO CATCH AROUND THE KERNEL. An `EvolutionError` thrown by
+ * `deriveNextGeneration` propagates with its object identity, code, message,
+ * context and cause intact — it is never wrapped in or replaced by a
+ * transition-authentication error.
+ *
+ * MEMORY: per iteration, one decoded source payload with its decoded
+ * population/vector/pool (lexically scoped, dead before the successor
+ * decode), the two derived output arrays, and one decoded successor payload —
+ * the header's memory model. The kernel's correctness evidence is the
+ * PR-4A/PR-4B independent oracle suite; this gate authenticates the
+ * production composition, it is not a second oracle. Scale validation of the
+ * O(population)-decode / O(population²)-lookup cost at the v1 caps is PR 4D's.
+ */
+function verifyPersistedTransitions({ header, framing, manifest }) {
+  const seed = manifest.seed;
+  const mutation = Object.freeze({
+    probability: header.mutationProbability,
+    magnitude: header.mutationMagnitude,
+  });
+  const populationSize = header.populationSize;
+  const recordCount = framing.generations.length;
+  for (
+    let sourceGenerationIndex = 0;
+    sourceGenerationIndex + 1 < recordCount;
+    sourceGenerationIndex += 1
+  ) {
+    let derived;
+    { // The source decodes die with this block, before the successor decode.
+      const sourcePayload = decodeGenerationPayload(
+        framing.generations[sourceGenerationIndex].payloadBytes,
+      );
+      const sourcePopulation = deserializePopulationSnapshot(sourcePayload.components.population);
+      const sourceVector = deserializeFitnessVector(sourcePayload.components.fitnessVector);
+      const sourcePool = selectablePoolFromEvaluation(sourceVector);
+      derived = deriveNextGeneration({
+        population: sourcePopulation,
+        pool: sourcePool,
+        seed,
+        mutation,
+        baseIndividualId: checkedMultiply(
+          sourceGenerationIndex + 1, populationSize, 'evolution individual id allocation',
+        ),
+        generationIndex: sourceGenerationIndex,
+      });
+    }
+    const successorPayload = decodeGenerationPayload(
+      framing.generations[sourceGenerationIndex + 1].payloadBytes,
+    );
+    // POPULATION FIRST: a combined population-and-lineage forgery reports the
+    // population rule.
+    const populationOffset = firstByteDifference(
+      successorPayload.components.population, derived.populationBytes,
+    );
+    if (populationOffset !== -1) {
+      failPersistedTransitionMismatch({
+        rule: 'persistedTransitionPopulationMismatch',
+        component: 'population',
+        sourceGenerationIndex,
+        offset: populationOffset,
+        stored: successorPayload.components.population,
+        recomputed: derived.populationBytes,
+      });
+    }
+    const lineageOffset = firstByteDifference(
+      successorPayload.components.lineage, derived.lineageBytes,
+    );
+    if (lineageOffset !== -1) {
+      failPersistedTransitionMismatch({
+        rule: 'persistedTransitionLineageMismatch',
+        component: 'lineage',
+        sourceGenerationIndex,
+        offset: lineageOffset,
+        stored: successorPayload.components.lineage,
+        recomputed: derived.lineageBytes,
+      });
+    }
+  }
+}
+
+/**
  * Stage 11 — shared current-artifact semantics and bindings. Decode the header
  * evaluation spec and initialization manifest; require an executable,
  * deterministic spec and the header/manifest population agreement; bind every
@@ -1049,7 +1232,7 @@ function verifyLocalHistorySemantics(header, framing) {
  * (WORLD_MODES has exactly one entry, so any other value is malformed at
  * decode).
  *
- * The stage closes with the history-capacity policy gate — the same
+ * The history-capacity policy gate runs next — the same
  * worst-case projection fresh creation applies — evaluated on the recreated
  * generation-zero population, the decoded header and the canonical spec. A
  * persisted artifact declaring more generations than the retained-history
@@ -1057,6 +1240,20 @@ function verifyLocalHistorySemantics(header, framing) {
  * generation-zero provenance and the local-semantics pass and before runtime
  * identity, world creation, evaluation or replay; capacity is a pure byte
  * projection and needs no physics attestation.
+ *
+ * The stage then CLOSES with exact persisted adjacent-transition
+ * authentication (`verifyPersistedTransitions` above, PR 4C): every actual
+ * persisted adjacent pair N -> N+1 is reproduced with the deterministic
+ * transition kernel — from generation N's persisted population and fitness
+ * vector, the manifest seed, the header's persisted mutation policy, the
+ * checked fresh-ID base and source index N — and generation N+1's persisted
+ * population, then lineage, must equal the kernel output byte for byte. A
+ * contradiction is malformed current-format history, refused before the
+ * return — therefore before runtime identity, world creation, evaluation or
+ * replay on every reader path. The placement contract is provenance → local
+ * semantics → capacity → transition authentication: an over-declared history
+ * is refused before a single kernel call, and a transition contradiction
+ * outranks the runtime gate without consulting it.
  */
 export function verifyEvolutionArtifactSemantics(verified, collectGenerations = false) {
   const { header, framing } = verified;
@@ -1284,9 +1481,8 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
   // verdict and before the capacity gate (the placement contract is the
   // function docblock's).
   verifyLocalHistorySemantics(header, framing);
-  // The history-capacity policy gate closes the stage, evaluated on the
-  // trusted values this stage produced (the placement contract is the
-  // function docblock's).
+  // The history-capacity policy gate, evaluated on the trusted values this
+  // stage produced (the placement contract is the function docblock's).
   assertHistoryCapacity({
     population: recreated.population,
     populationSize: header.populationSize,
@@ -1295,6 +1491,12 @@ export function verifyEvolutionArtifactSemantics(verified, collectGenerations = 
     specBytes: header.evaluationSpecBytes,
     spec,
   });
+  // Exact persisted adjacent-transition authentication closes the stage
+  // (PR 4C): after capacity — an over-declared history is refused before a
+  // single kernel call — and before the return, so before runtime identity,
+  // world creation, evaluation or replay on every reader path (the placement
+  // contract is the function docblock's).
+  verifyPersistedTransitions({ header, framing, manifest });
   // Resume replays FROM this recreation — it is exactly the recreation resume
   // used to run as stage 13a after the runtime gate — so the replay loop's
   // generation-0 population comparison starts from bytes this gate already

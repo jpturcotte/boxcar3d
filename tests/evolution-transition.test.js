@@ -1,12 +1,13 @@
 // PR 4A — the deterministic N -> N+1 transition kernel: static boundary pins
 // and an INDEPENDENT correctness oracle.
 //
-// The kernel (src/sim/evolution-transition.js) is an INTERNAL seam: the one
-// authorized production importer today is evolution-run.js, and PR 4C will
-// deliberately extend the allowlist with evolution-replay.js when the
-// verified-artifact path starts reproducing persisted transitions. That
+// The kernel (src/sim/evolution-transition.js) is an INTERNAL seam: the
+// authorized production importers are exactly evolution-run.js and — since
+// PR 4C, deliberately and with its own review — evolution-replay.js, whose
+// verified-artifact path reproduces persisted transitions before runtime
+// identity. That
 // allowlist is DECLARED below and pinned over every supported reference
-// form, so an accidental production re-export or a second importer fails a
+// form, so an accidental production re-export or a third importer fails a
 // build.
 //
 // ============================================================================
@@ -15,8 +16,8 @@
 //
 // Moving deriveNextGeneration into a kernel and watching the existing suite
 // stay green proves only behavior CONTINUITY. It does not protect against
-// extracting a subtly wrong transition that the producer and the future PR 4C
-// verifier will then share — the tautology the PR 4 split exists to avoid.
+// extracting a subtly wrong transition that the producer and the PR 4C
+// verifier would then share — the tautology the PR 4 split exists to avoid.
 // The oracle below therefore derives its expected transition INDEPENDENTLY:
 //
 // NEVER CALLED to compute an expected result (the central subjects of the
@@ -102,13 +103,14 @@ const KERNEL = 'src/sim/evolution-transition.js';
 // (1) THE PRODUCTION IMPORTER / RE-EXPORT GUARD
 // ============================================================================
 //
-// THE DECLARED production importer allowlist. Exactly one entry today; PR 4C
-// adds 'src/sim/evolution-replay.js' here BY DECISION, with its own review —
+// THE DECLARED production importer allowlist. Exactly two entries: PR 4C
+// added 'src/sim/evolution-replay.js' here BY DECISION, with its own review —
 // this set is pinned, not eternal. Tests import the kernel directly BY DESIGN
 // (the declared test allowlist); the scan below walks all current repository
 // module roots, so both sets are pinned globally, not by directory convention.
 const AUTHORIZED_PRODUCTION_IMPORTERS = Object.freeze({
   'src/sim/evolution-run.js': true,
+  'src/sim/evolution-replay.js': true,
 });
 const AUTHORIZED_TEST_IMPORTERS = Object.freeze({
   'tests/evolution-local-semantics.test.js': true,
@@ -269,6 +271,68 @@ function analyzeSource(file, code) {
 }
 
 const analyzeModule = (file) => analyzeSource(file, readFileSync(file, 'utf8'));
+
+// Function ranges and richly-summarized call expressions, for the PR-4C
+// verifier implementation pins below: the shared analyzeSource collection
+// drops member-callee names and summarizes call arguments too shallowly for
+// them. One parse per call.
+function analyzeFunctionBodies(file) {
+  const functions = [];
+  const calls = [];
+  const summarizeValue = (node) => {
+    if (node === null || node === undefined) return null;
+    switch (node.type) {
+      case 'Identifier': return { type: 'Identifier', name: node.name };
+      case 'Literal': return { type: 'Literal', value: node.value };
+      case 'BinaryExpression':
+        return {
+          type: 'BinaryExpression',
+          operator: node.operator,
+          left: summarizeValue(node.left),
+          right: summarizeValue(node.right),
+        };
+      case 'ObjectExpression':
+        return {
+          type: 'ObjectExpression',
+          properties: node.properties.map((p) => ({
+            key: p.key.type === 'Identifier' ? p.key.name : null,
+            value: summarizeValue(p.value),
+          })),
+        };
+      case 'CallExpression':
+        return {
+          type: 'CallExpression',
+          calleeName: node.callee.type === 'Identifier' ? node.callee.name : null,
+          args: node.arguments.map(summarizeValue),
+        };
+      default: return { type: node.type };
+    }
+  };
+  const collect = {
+    create() {
+      return {
+        FunctionDeclaration: (node) => {
+          if (node.id !== null) functions.push({ name: node.id.name, range: node.range });
+        },
+        CallExpression: (node) => calls.push({
+          name: node.callee.type === 'Identifier' ? node.callee.name : null,
+          memberName: node.callee.type === 'MemberExpression' && node.callee.property.type === 'Identifier'
+            ? node.callee.property.name : null,
+          range: node.range,
+          args: node.arguments.map(summarizeValue),
+        }),
+      };
+    },
+  };
+  const messages = linter.verify(readFileSync(file, 'utf8'), {
+    languageOptions: { ecmaVersion: 2022, sourceType: 'module' },
+    plugins: { probe: { rules: { collect } } },
+    rules: { 'probe/collect': 'error' },
+  }, file);
+  const fatal = messages.find((m) => m.fatal);
+  expect(fatal === undefined, `${file} must parse as an ES module (${fatal && fatal.message})`).toBe(true);
+  return { functions, calls };
+}
 
 // Only literal LOCAL specifiers can resolve into the repo: '.'-relative or
 // Vite-root-absolute ('/src/...' — the round-4 escape class). Bare specifiers
@@ -439,6 +503,75 @@ describe('cycle-free placement', () => {
     const closure = reachableFrom(KERNEL, (f) => analyzeModule(f).refs);
     expect(closure.has('src/sim/evolution-run.js')).toBe(false);
     expect(closure.has('src/sim/evolution-replay.js')).toBe(false);
+  });
+});
+
+// ============================================================================
+// (2c) THE PR-4C PERSISTED-TRANSITION VERIFIER'S IMPLEMENTATION PINS
+// ============================================================================
+//
+// Two NARROW static pins over evolution-replay.js's private
+// verifyPersistedTransitions — properties no behavioral test can observe.
+// The fresh-ID base pin exists because the forbidden stored-first-ID
+// implementation is NUMERICALLY IDENTICAL to the required computation for
+// every artifact that reaches the verifier: stage 11's ID-allocation rule has
+// already forced the successor's first persisted id to
+// (N + 1) × populationSize, so no behavioral test can distinguish reading it
+// from computing it — the misuse gets a static tooth instead of a false
+// behavioral claim. The retention pin exists because no test can observe what
+// a verifier retains. HONEST SCOPE: the retention pin asserts the intended
+// direct two-decode implementation and catches the deliberate array-push
+// accumulation sabotage; it is NOT a general memory-bound proof — indexed
+// assignment, concat, a Map, a closure or a helper would evade it. Measured
+// peak-memory validation is PR 4D's.
+
+describe("the persisted-transition verifier's implementation pins (AST-static)", () => {
+  const REPLAY = 'src/sim/evolution-replay.js';
+  const callsInsideVerifier = () => {
+    const { functions, calls } = analyzeFunctionBodies(REPLAY);
+    const fn = functions.find((f) => f.name === 'verifyPersistedTransitions');
+    expect(fn, `${REPLAY} must declare verifyPersistedTransitions — a rename or removal `
+      + 'must update this pin in the same commit, never silently un-gate it').toBeDefined();
+    return calls.filter((c) => c.range[0] >= fn.range[0] && c.range[1] <= fn.range[1]);
+  };
+
+  test('the verifier is the intended direct two-decode implementation with no accumulation', () => {
+    const calls = callsInsideVerifier();
+    expect(
+      calls.filter((c) => c.name === 'decodeGenerationPayload'),
+      'the verifier decodes exactly one source payload and one successor payload per pair',
+    ).toHaveLength(2);
+    expect(
+      calls.filter((c) => c.memberName === 'push'),
+      'no decoded payload, transition input or derived output is accumulated inside the verifier',
+    ).toEqual([]);
+  });
+
+  test('the fresh-ID base is directly the checked multiply of the successor generation block', () => {
+    const calls = callsInsideVerifier();
+    const kernelCalls = calls.filter((c) => c.name === 'deriveNextGeneration');
+    expect(kernelCalls, 'the verifier calls the kernel exactly once per pair').toHaveLength(1);
+    const [inputs] = kernelCalls[0].args;
+    expect(inputs.type).toBe('ObjectExpression');
+    const base = inputs.properties.find((p) => p.key === 'baseIndividualId');
+    expect(base, 'the kernel call must pass baseIndividualId explicitly').toBeDefined();
+    // The EXACT expression, not an equivalent: reading the successor's first
+    // persisted id would satisfy every behavioral test (see the header) and
+    // fails here.
+    expect(base.value).toEqual({
+      type: 'CallExpression',
+      calleeName: 'checkedMultiply',
+      args: [
+        {
+          type: 'BinaryExpression',
+          operator: '+',
+          left: { type: 'Identifier', name: 'sourceGenerationIndex' },
+          right: { type: 'Literal', value: 1 },
+        },
+        { type: 'Identifier', name: 'populationSize' },
+        { type: 'Literal', value: 'evolution individual id allocation' },
+      ],
+    });
   });
 });
 

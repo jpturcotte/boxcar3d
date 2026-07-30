@@ -396,10 +396,13 @@ describe('extractHistoryObservations', () => {
     expect(globalThis.__observationsProbe.worlds).toBe(0);
     // Gate B decodes each vector once; the binding guard decodes it once more
     // and returns those checked rows to the seam; the local-semantics pass
-    // decodes it a third time, transiently, to reconstruct the selectable pool
-    // — the documented decode-work-for-retention trade-off. A FOURTH
-    // extraction decode is an avoidable full-population pass.
-    expect(deserializeFitnessVector).toHaveBeenCalledTimes(9);
+    // decodes it a third time, transiently, to reconstruct the selectable pool;
+    // and the PR-4C transition verifier decodes each SOURCE record's vector a
+    // fourth time — once per persisted pair (2 pairs here), transiently — for
+    // the same pool reconstruction. All are the documented
+    // decode-work-for-retention trade-off; a FURTHER extraction decode is an
+    // avoidable full-population pass.
+    expect(deserializeFitnessVector).toHaveBeenCalledTimes(11);
 
     expect(bytesToHex(extracted.historyDigestBytes)).toBe(LOCK.historyDigest);
     expect(Object.isFrozen(extracted)).toBe(true);

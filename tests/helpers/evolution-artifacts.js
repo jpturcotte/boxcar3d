@@ -25,6 +25,10 @@ import {
   encodeEvolutionHeader,
   encodeGenerationPayload,
 } from '../../src/sim/evolution-history.js';
+import { FNV_OFFSET_BASIS, fnv1aFold } from '../../src/sim/fnv1a.js';
+import {
+  deserializeFitnessVector, serializeFitnessVector,
+} from '../../src/sim/population-evaluation.js';
 
 /**
  * Rebuild a complete, self-consistent artifact after mutating the header
@@ -83,4 +87,33 @@ export function withLeadingU16(bytes, value) {
   const copy = new Uint8Array(bytes);
   new DataView(copy.buffer).setUint16(0, value, true);
   return copy;
+}
+
+/**
+ * Copy `bytes` with one byte XORed at `offset` — the minimal content forgery
+ * the adversarial suites share. Pair with `reforge` (digests recomputed) so
+ * the artifact stays self-consistent and only the targeted gate can fire.
+ */
+export function flipByte(bytes, offset = 0) {
+  const copy = new Uint8Array(bytes);
+  copy[offset] ^= 0xff;
+  return copy;
+}
+
+/**
+ * Re-attest a record's fitness-vector population FNV state after its
+ * population component was rewritten, so the forged population keeps passing
+ * the stage-11 population/vector coherence bind and fails only at a later
+ * gate (e.g. PR 4C transition authentication). NEVER authenticity tooling —
+ * see the header.
+ */
+export function rebindFitnessVectorToPopulation(record) {
+  const vector = deserializeFitnessVector(record.components.fitnessVector);
+  record.components.fitnessVector = serializeFitnessVector({
+    populationSnapshotDigestState: fnv1aFold(
+      FNV_OFFSET_BASIS, record.components.population,
+    ),
+    evaluationSpecDigestState: vector.evaluationSpecDigestState,
+    individuals: vector.individuals,
+  });
 }

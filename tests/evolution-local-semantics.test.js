@@ -23,6 +23,15 @@
 //   - record-count semantics: count ≤ header.maxGenerations (contiguity and
 //     terminal-last stay at stage 5, covered in evolution-replay.test.js).
 //
+// PR 4C adds the stage's CLOSING gate — exact persisted adjacent-transition
+// authentication, after capacity and before runtime identity — and the
+// 'persisted adjacent-transition authentication (PR 4C)' describe below owns
+// its matrix: honest-artifact kernel-call counts, hostile but self-consistent
+// artifacts, both-reader parity, gate precedence, and kernel-error
+// passthrough. Probe discipline extends to the kernel probe below: reset it
+// after every construction (building an artifact uses the kernel) and before
+// the measured reader call — construction calls are never verifier calls.
+//
 // RED-FIRST. On the pre-PR main every sabotage case below passed ALL
 // pre-physics gates: extraction — the reader that runs no physics — accepted
 // each artifact outright, and resume refused none of them before replay
@@ -72,10 +81,36 @@ vi.mock('../src/sim/physics/adapter.js', async (importOriginal) => {
   };
 });
 
+// The transition-kernel probe (PR 4C): a PASS-THROUGH wrapper that counts
+// every deriveNextGeneration call in this process — the PR 4C verifier's
+// (evolution-replay.js), replay's (evolution-run.js), and this file's own
+// construction calls all flow through it — and can be armed to throw a
+// supplied sentinel ONCE (failWith self-clears, so each reader must be armed
+// separately). It otherwise delegates to the real kernel: honest artifact
+// construction and honest verification behave exactly as unmocked.
+vi.mock('../src/sim/evolution-transition.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    deriveNextGeneration: (inputs) => {
+      const probe = globalThis.__transitionProbe;
+      if (probe) {
+        probe.calls += 1;
+        if (probe.failWith) {
+          const armed = probe.failWith;
+          probe.failWith = null;
+          throw armed;
+        }
+      }
+      return original.deriveNextGeneration(inputs);
+    },
+  };
+});
+
 const { createEvolutionRun, resumeEvolutionRun } = await import('../src/sim/evolution-run.js');
 const {
-  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, MAX_EVOLUTION_GENERATIONS, checkedMultiply,
-  terminalReasonFor,
+  EVOLUTION_ENGINE_VERSION, EVOLUTION_POLICY_VERSION, EvolutionError, MAX_EVOLUTION_GENERATIONS,
+  checkedMultiply, terminalReasonFor,
 } = await import('../src/sim/evolution-contract.js');
 const {
   COMPONENT_KINDS, EVALUATION_METADATA_VERSION, GENERATION_RECORD_VERSION, SHA256_DIGEST_BYTES,
@@ -103,7 +138,9 @@ const { FNV_OFFSET_BASIS, fnv1aFold } = await import('../src/sim/fnv1a.js');
 const { readDeterministicRuntimeIdentity } = await import('../src/sim/physics/adapter.js');
 const { extractHistoryObservations } = await import('../scripts/history-observations.js');
 const { verifyHistoryArtifact } = await import('../src/sim/evolution-replay.js');
-const { reforge, withLeadingU16 } = await import('./helpers/evolution-artifacts.js');
+const {
+  flipByte, rebindFitnessVectorToPopulation, reforge, withLeadingU16,
+} = await import('./helpers/evolution-artifacts.js');
 const {
   CAPACITY_POPULATION_SEED, createCapacityEvaluationSpec,
 } = await import('./helpers/evolution-capacity-config.js');
@@ -114,6 +151,21 @@ const CAP = 256; // the over-declared-capacity population (mfg is read, never pi
 
 const expectNoProbes = () => expect(globalThis.__semanticsProbe)
   .toEqual({ identityReads: 0, worlds: 0, evaluations: 0 });
+
+// The kernel probe (PR 4C): ALWAYS reset after constructing or reforging an
+// artifact and before the measured reader call — construction calls the
+// kernel, and construction calls are never verifier calls.
+const resetTransitionProbe = () => {
+  globalThis.__transitionProbe = { calls: 0, failWith: null };
+};
+const transitionCalls = () => globalThis.__transitionProbe.calls;
+// Intra-test construction (a genuine run evaluates physics; a build reads
+// the runtime identity) must not leak into the measured reader phase: reset
+// BOTH probes after every construction/reforge and before the reader call.
+const resetProbes = () => {
+  globalThis.__semanticsProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
+  resetTransitionProbe();
+};
 
 // Clean, coherence-legal v3 rows (the capacity file's cleanRow precedent):
 // null onsets and zero peaks stay coherent with any positive-dt metadata, and
@@ -137,6 +189,18 @@ const configAt = (populationSize, maxGenerations) => ({
   evaluationSpec: createCapacityEvaluationSpec(),
   evolution: { maxGenerations },
 });
+
+// A GENUINE run of `records` committed generations (real physics — the replay
+// tests' runGenerations pattern): the only artifact source whose resume path
+// replay reproduces, so it is the required source for both-reader parity,
+// resume call counts and red-first old-behavior claims. The synthesized
+// builder below is extraction-only by design (its rows are not physics
+// output).
+const runGenuine = async (records, maxGenerations = 8) => {
+  const run = createEvolutionRun(configAt(SMALL, maxGenerations));
+  for (let i = 0; i < records; i += 1) await run.advance();
+  return run.historyBytes();
+};
 
 /**
  * The buildFeasibleCapacityArtifact pattern, generalized to multiple
@@ -368,6 +432,43 @@ const expectBothReaders = async (artifact, code, re) => {
   return { extraction, resume };
 };
 
+// Read persisted facts back out of an artifact. verifyHistoryArtifact is
+// digest/framing byte-work only — no runtime-identity read, no physics.
+// Most uses below re-prove that with expectNoProbes; the PR-4C witness and
+// count tests instead reset BOTH probes after this read and before the
+// measured reader call (construction/witness work must not leak into the
+// measurement).
+const readArtifact = async (artifact) => {
+  const verified = await verifyHistoryArtifact(artifact);
+  const { header, framing } = verified;
+  const records = framing.generations.map((g) => decodeGenerationPayload(g.payloadBytes));
+  const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
+  return { header, records, manifest };
+};
+
+// Derive the successor transition from one record's persisted facts, exactly
+// as the PR 4C verifier does: persisted population + the pool the persisted
+// vector reconstructs + the manifest seed + the header mutation policy + the
+// exact fresh-ID base. Integration idiom — kernel calls here are NOT
+// independent evidence; the oracle owns that role.
+const deriveSuccessor = (components, {
+  seed, mutation, populationSize, generationIndex,
+}) => {
+  const population = deserializePopulationSnapshot(components.population);
+  const vector = deserializeFitnessVector(components.fitnessVector);
+  const pool = selectablePoolFromEvaluation(vector);
+  return deriveNextGeneration({
+    population,
+    pool,
+    seed,
+    mutation: Object.freeze({ probability: mutation.probability, magnitude: mutation.magnitude }),
+    baseIndividualId: checkedMultiply(
+      generationIndex + 1, populationSize, 'evolution individual id allocation',
+    ),
+    generationIndex,
+  });
+};
+
 let runtime;
 let terminalArtifact; // genuine: 3 records, final generationLimitReached
 let partialArtifact; // genuine: 1 record, final none, count < maxGenerations
@@ -377,6 +478,7 @@ let overDeclared; // synthesized population-256 2-record artifact declaring mfg 
 
 beforeAll(async () => {
   globalThis.__semanticsProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
+  resetTransitionProbe();
   runtime = await readDeterministicRuntimeIdentity();
 
   const terminalRun = createEvolutionRun(configAt(SMALL, 3));
@@ -404,15 +506,19 @@ beforeAll(async () => {
   });
 
   // Probe liveness: the genuine runs evaluated and built worlds, the builders
-  // read the runtime identity. Zeroed before any reader runs below.
+  // read the runtime identity, and the synthesized constructions called the
+  // kernel. Zeroed before any reader runs below.
   expect(globalThis.__semanticsProbe.identityReads).toBeGreaterThan(0);
   expect(globalThis.__semanticsProbe.worlds).toBeGreaterThan(0);
   expect(globalThis.__semanticsProbe.evaluations).toBeGreaterThan(0);
+  expect(transitionCalls()).toBeGreaterThan(0);
   globalThis.__semanticsProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
+  resetTransitionProbe();
 }, 240000);
 
 beforeEach(() => {
   globalThis.__semanticsProbe = { identityReads: 0, worlds: 0, evaluations: 0 };
+  resetTransitionProbe();
 });
 
 // ============================================================================
@@ -466,40 +572,6 @@ describe('artifacts whose persisted facts agree pass the local-semantics pass', 
 // ============================================================================
 
 describe('kernel-honest synthesized artifacts (PR 4B)', () => {
-  // Read persisted facts back out of an artifact. verifyHistoryArtifact is
-  // digest/framing byte-work only — no runtime-identity read, no physics —
-  // and expectNoProbes re-proves it on every test below.
-  const readArtifact = async (artifact) => {
-    const verified = await verifyHistoryArtifact(artifact);
-    const { header, framing } = verified;
-    const records = framing.generations.map((g) => decodeGenerationPayload(g.payloadBytes));
-    const manifest = deserializePopulationInitialization(header.initializationManifestBytes);
-    return { header, records, manifest };
-  };
-
-  // Derive the successor transition from one record's persisted facts, exactly
-  // as the future PR 4C verifier will: persisted population + the pool the
-  // persisted vector reconstructs + the manifest seed + the header mutation
-  // policy + the exact fresh-ID base. Integration idiom — kernel calls here
-  // are NOT independent evidence; the oracle owns that role.
-  const deriveSuccessor = (components, {
-    seed, mutation, populationSize, generationIndex,
-  }) => {
-    const population = deserializePopulationSnapshot(components.population);
-    const vector = deserializeFitnessVector(components.fitnessVector);
-    const pool = selectablePoolFromEvaluation(vector);
-    return deriveNextGeneration({
-      population,
-      pool,
-      seed,
-      mutation: Object.freeze({ probability: mutation.probability, magnitude: mutation.magnitude }),
-      baseIndividualId: checkedMultiply(
-        generationIndex + 1, populationSize, 'evolution individual id allocation',
-      ),
-      generationIndex,
-    });
-  };
-
   test("synth2's second record is the exact kernel-derived successor of its first", async () => {
     const { header, records, manifest } = await readArtifact(synth2);
     const derived = deriveSuccessor(records[0].components, {
@@ -670,6 +742,343 @@ describe('kernel-honest synthesized artifacts (PR 4B)', () => {
     expect(records[1].components.population).toEqual(underPersisted.populationBytes);
     expect(records[1].components.lineage).toEqual(underPersisted.lineageBytes);
     expectNoProbes();
+  });
+});
+
+// ============================================================================
+// PR 4C — EXACT PERSISTED ADJACENT-TRANSITION AUTHENTICATION. Stage 11 now
+// closes by reproducing every persisted N -> N+1 transition with the kernel
+// and byte-comparing against the persisted successor (population first, then
+// lineage), after capacity and before runtime identity — so both readers
+// share every verdict below. Artifact sources: GENUINE runs for both-reader
+// parity, resume call counts and old-behavior claims (replay reproduces
+// them); SYNTHESIZED kernel-honest artifacts for extraction-only checks
+// (their rows are not physics output — no resume success is ever claimed).
+// ============================================================================
+
+describe('persisted adjacent-transition authentication (PR 4C)', () => {
+  // The B1/B3/population precedence forgery, shared: flip one genotype byte
+  // of the successor's population (ids untouched, the replay file's proven
+  // offset-40 shape) and re-attest the vector's population FNV state so the
+  // artifact stays self-consistent through every earlier gate.
+  const forgeSuccessorPopulation = (record) => {
+    record.components.population = flipByte(record.components.population, 40);
+    rebindFitnessVectorToPopulation(record);
+  };
+  // The B2a/B4 lineage forgery, shared: reassign the LAST row's parent id —
+  // a continuousMutation row for population 6 — to ANOTHER valid member of
+  // the immediately preceding generation, at header(10) + 5 rows × 53 +
+  // id(4) = byte 279. Locally legal (crossCheckLineage requires only
+  // membership in the predecessor generation) but transition-false.
+  const reassignLastLineageParent = (record) => {
+    const lineage = new Uint8Array(record.components.lineage);
+    const view = new DataView(lineage.buffer);
+    const current = view.getUint32(279, true);
+    view.setUint32(279, (current + 1) % SMALL, true);
+    record.components.lineage = lineage;
+  };
+
+  test('A1: honest extraction invokes the verifier R - 1 times, with no runtime or physics', async () => {
+    // A synthesized 3-record PARTIAL artifact (final 'none': maxGenerations 4).
+    const synth3 = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 3, maxGenerations: 4,
+    });
+    resetProbes();
+    await extractHistoryObservations(synth3);
+    expect(transitionCalls()).toBe(2); // 3 records -> 2 persisted pairs
+    expectNoProbes();
+    // The same per-artifact count for a GENUINE complete-terminal artifact
+    // (3 records), measured independently after its own reset.
+    resetProbes();
+    await extractHistoryObservations(terminalArtifact);
+    expect(transitionCalls()).toBe(2);
+    expectNoProbes();
+  });
+
+  test('A2: a complete terminal resume makes 2R - 2 kernel calls — verifier R - 1, replay R - 1', async () => {
+    // terminalArtifact: 3 genuine records, final generationLimitReached.
+    resetProbes();
+    await extractHistoryObservations(terminalArtifact);
+    expect(transitionCalls()).toBe(2); // the verifier's share: R - 1
+    resetProbes();
+    await resumeEvolutionRun(terminalArtifact);
+    // 2 verifier + 2 replay = 2R - 2 (replay's share is the difference).
+    expect(transitionCalls()).toBe(4);
+    // Resume's replay re-evaluates every record — expected physics, not a leak.
+    expect(globalThis.__semanticsProbe.identityReads).toBe(1);
+    expect(globalThis.__semanticsProbe.evaluations).toBe(3);
+  });
+
+  test('A3: a partial final-none resume makes 2R - 1 kernel calls — replay also derives the pending successor', async () => {
+    const genuine2 = await runGenuine(2, 3); // 2 genuine records, final 'none' (count < maxGenerations)
+    resetProbes();
+    await resumeEvolutionRun(genuine2);
+    // 1 verifier (the one persisted pair) + 2 replay (every record is
+    // non-terminal, so replay derives each successor — including the final
+    // pending one, which has no persisted record to authenticate) = 2R - 1.
+    expect(transitionCalls()).toBe(3);
+    expect(globalThis.__semanticsProbe.evaluations).toBe(2);
+  });
+
+  test('A4: a single-record history has no persisted pair — extraction makes 0 verifier calls; resume’s 1 call belongs to replay', async () => {
+    // partialArtifact: 1 genuine record, final 'none'.
+    resetProbes();
+    await extractHistoryObservations(partialArtifact);
+    expect(transitionCalls()).toBe(0); // no source/successor pair exists
+    expectNoProbes();
+    resetProbes();
+    await resumeEvolutionRun(partialArtifact);
+    // The verifier ran 0 times (the extraction half proves it contributes
+    // nothing for one record); replay derived the pending successor once.
+    expect(transitionCalls()).toBe(1);
+    expect(globalThis.__semanticsProbe.evaluations).toBe(1); // replay re-evaluated the one record
+  });
+
+  test('A5: a non-default manifest seed and persisted mutation policy authenticate — with observed divergence witnesses', async () => {
+    // The witnessed non-default values of the PR-4B builder tests: policy
+    // probability 1 / magnitude 0.3 against the 0.05 default, and seed
+    // 20260799 (a test-local authoring literal, NOT a campaign seed).
+    const policy = Object.freeze({ probability: 1, magnitude: 0.3 });
+    const artifact = await buildSynthesizedArtifact(runtime, {
+      populationSize: SMALL, generationCount: 3, maxGenerations: 4, seed: 20260799, mutation: policy,
+    });
+    const { header, records, manifest } = await readArtifact(artifact);
+    expect(header.mutationProbability).toBe(1);
+    expect(header.mutationMagnitude).toBe(0.3);
+    expect(manifest.seed).toBe(20260799);
+    const inputs = {
+      seed: manifest.seed,
+      mutation: { probability: header.mutationProbability, magnitude: header.mutationMagnitude },
+      populationSize: header.populationSize,
+      generationIndex: 0,
+    };
+    const underPersisted = deriveSuccessor(records[0].components, inputs);
+    // Anti-default-policy tooth (OBSERVED for this fixture, never a theorem —
+    // the idiom of 'the builder consumes the header mutation policy, never
+    // the current defaults' above): hardcoding the defaults in the verifier
+    // makes this test fail below.
+    const underDefaults = deriveSuccessor(records[0].components, {
+      ...inputs, mutation: PARAMETRIC_MUTATION_DEFAULTS,
+    });
+    expect(underPersisted.populationBytes).not.toEqual(underDefaults.populationBytes);
+    // Anti-fixed-seed tooth (same OBSERVED idiom): hardcoding another seed
+    // makes this test fail below.
+    const underOtherSeed = deriveSuccessor(records[0].components, {
+      ...inputs, seed: CAPACITY_POPULATION_SEED,
+    });
+    expect(underPersisted.populationBytes).not.toEqual(underOtherSeed.populationBytes);
+    resetProbes();
+    await extractHistoryObservations(artifact);
+    expect(transitionCalls()).toBe(2);
+    expectNoProbes();
+  });
+
+  test('B1: a population-only contradiction is malformedHistory for both readers, before any runtime or physics', async () => {
+    const broken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => { if (i === 1) forgeSuccessorPopulation(record); },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory',
+      /generation 1 population is not the exact deterministic transition of generation 0/);
+    for (const err of [extraction, resume]) {
+      expect(err.context).toMatchObject({
+        rule: 'persistedTransitionPopulationMismatch',
+        component: 'population',
+        sourceGenerationIndex: 0,
+        successorGenerationIndex: 1,
+        byteOffset: 40,
+      });
+      expect(typeof err.context.storedByte).toBe('number');
+      expect(typeof err.context.recomputedByte).toBe('number');
+      expect(err.context.storedByte).not.toBe(err.context.recomputedByte);
+      expect(typeof err.context.storedByteLength).toBe('number');
+      expect(typeof err.context.recomputedByteLength).toBe('number');
+      expect(err.context.storedByteLength).toBeGreaterThan(err.context.byteOffset);
+      expect(err.context.recomputedByteLength).toBeGreaterThan(err.context.byteOffset);
+    }
+    expect(transitionCalls()).toBe(2); // 1 verifier call per reader, then the throw
+    expectNoProbes();
+  });
+
+  test('B2a: a lineage-only contradiction — a locally legal parent reassignment — is refused by both readers', async () => {
+    const broken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => { if (i === 1) reassignLastLineageParent(record); },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+    for (const err of [extraction, resume]) {
+      expect(err.context).toMatchObject({
+        rule: 'persistedTransitionLineageMismatch',
+        component: 'lineage',
+        sourceGenerationIndex: 0,
+        successorGenerationIndex: 1,
+        byteOffset: 279,
+      });
+      expect(typeof err.context.storedByte).toBe('number');
+      expect(typeof err.context.recomputedByte).toBe('number');
+    }
+    expect(transitionCalls()).toBe(2);
+    expectNoProbes();
+  });
+
+  test('B2b: a lineage-only contradiction — a codec-legal accounting-counter flip — is refused by both readers', async () => {
+    // Byte 284 is the last row's FIRST accounting counter — header(10) +
+    // 5 rows × 53 + id(4) + parent(4) + origin(1) — codec-legal at any u32
+    // and deliberately unchecked by local semantics, but transition-false.
+    const broken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => {
+        if (i === 1) record.components.lineage = flipByte(record.components.lineage, 284);
+      },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+    for (const err of [extraction, resume]) {
+      expect(err.context).toMatchObject({
+        rule: 'persistedTransitionLineageMismatch',
+        component: 'lineage',
+        sourceGenerationIndex: 0,
+        successorGenerationIndex: 1,
+        byteOffset: 284,
+      });
+    }
+    expect(transitionCalls()).toBe(2);
+    expectNoProbes();
+  });
+
+  test('B3: a combined population+lineage forgery reports the POPULATION rule', async () => {
+    const broken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => {
+        if (i === 1) {
+          forgeSuccessorPopulation(record);
+          record.components.lineage = flipByte(record.components.lineage, 284);
+        }
+      },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+    for (const err of [extraction, resume]) {
+      expect(err.context.rule).toBe('persistedTransitionPopulationMismatch');
+    }
+    expectNoProbes();
+  });
+
+  test('B4: a contradiction at pair 1 -> 2 stops the verifier — k + 1 calls, with an honest pair behind it', async () => {
+    // FOUR genuine records, so a continue-after-mismatch verifier still has
+    // the genuinely valid pair 2 -> 3 left to call: the correct count is
+    // k + 1 = 2 per reader, the defective count is 3. The forgery is
+    // LINEAGE-ONLY, so record 2's population and vector stay genuine and
+    // pair 2 -> 3 really is honest (lineage is not a transition input).
+    const broken = await reforge(await runGenuine(4), {
+      mutateRecord: (record, i) => {
+        if (i === 2) record.components.lineage = flipByte(record.components.lineage, 284);
+      },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+    for (const err of [extraction, resume]) {
+      expect(err.context).toMatchObject({
+        rule: 'persistedTransitionLineageMismatch',
+        component: 'lineage',
+        sourceGenerationIndex: 1,
+        successorGenerationIndex: 2,
+        byteOffset: 284,
+      });
+    }
+    expect(transitionCalls()).toBe(4); // 2 readers × (pair 0 -> 1 OK, pair 1 -> 2 throws)
+    expectNoProbes();
+  });
+
+  test('B5: both readers return the same verdict, context field for context field', async () => {
+    const populationBroken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => { if (i === 1) forgeSuccessorPopulation(record); },
+    });
+    const lineageBroken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => { if (i === 1) reassignLastLineageParent(record); },
+    });
+    resetProbes();
+    for (const broken of [populationBroken, lineageBroken]) {
+      const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+      // The complete context — rule, component, indices, first differing
+      // byte, lengths and bytes — agrees exactly. Resume never reclassifies
+      // the same contradiction as replayDivergence.
+      expect(resume.context).toEqual(extraction.context);
+    }
+    expectNoProbes();
+  });
+
+  test('staleness is decided before transition authentication — the verifier never runs', async () => {
+    const broken = await reforge(await runGenuine(2), {
+      mutateRecord: (record, i) => { if (i === 1) forgeSuccessorPopulation(record); },
+    });
+    const wrongDigest = new Uint8Array(SHA256_DIGEST_BYTES);
+    resetProbes();
+    await expectCodeAsync(
+      () => extractHistoryObservations(broken, { expectedHistoryDigestBytes: wrongDigest }),
+      'staleOrWrongArtifact',
+    );
+    await expectCodeAsync(
+      () => resumeEvolutionRun(broken, { expectedHistoryDigestBytes: wrongDigest }),
+      'staleOrWrongArtifact',
+    );
+    expect(transitionCalls()).toBe(0);
+    expectNoProbes();
+  });
+
+  test('capacity is decided before transition authentication — the verifier never runs', async () => {
+    // The over-declared-capacity witness, also carrying a successor
+    // transition contradiction: resourceLimitExceeded must win, by both
+    // readers, before a single kernel call.
+    const broken = await reforge(overDeclared, {
+      mutateRecord: (record, i) => { if (i === 1) forgeSuccessorPopulation(record); },
+    });
+    resetProbes();
+    await expectBothReaders(broken, 'resourceLimitExceeded');
+    expect(transitionCalls()).toBe(0);
+    expectNoProbes();
+  });
+
+  test('transition authentication beats a foreign runtime identity — without consulting the runtime', async () => {
+    const broken = await reforge(await runGenuine(2), {
+      mutateHeader: (header) => ({ ...header, rapierVersion: '0.0.0-foreign' }),
+      mutateRecord: (record, i) => { if (i === 1) forgeSuccessorPopulation(record); },
+    });
+    resetProbes();
+    const { extraction, resume } = await expectBothReaders(broken, 'malformedHistory');
+    for (const err of [extraction, resume]) {
+      expect(err.context.rule).toBe('persistedTransitionPopulationMismatch');
+    }
+    // identityReads 0 on BOTH readers: the contradiction won before the
+    // runtime gate, and extraction never reads runtime identity at all.
+    expectNoProbes();
+  });
+
+  test('a kernel EvolutionError propagates with its identity — never wrapped by transition authentication', async () => {
+    // synth2 is synthesized: the verifier necessarily throws before runtime,
+    // so no resume success is claimed for it (the artifact-role ruling).
+    const cause = new Error('sentinel cause');
+    const sentinel = new EvolutionError(
+      'malformedHistory', 'sentinel kernel refusal', { rule: 'sentinelRule', marker: 42 }, cause,
+    );
+    resetProbes();
+    globalThis.__transitionProbe.failWith = sentinel;
+    let thrown = null;
+    try { await extractHistoryObservations(synth2); } catch (e) { thrown = e; }
+    expect(thrown).toBe(sentinel);
+    // The mock self-clears after one throw: re-arm the SAME sentinel for the
+    // second reader, or its assertion would be vacuous.
+    globalThis.__transitionProbe.failWith = sentinel;
+    thrown = null;
+    try { await resumeEvolutionRun(synth2); } catch (e) { thrown = e; }
+    expect(thrown).toBe(sentinel);
+    // Object identity is the tooth. Reading the RECEIVED error's payload
+    // (rather than the sentinel's own fields) documents what the reader
+    // delivered: code, message, context and cause arrive un-buried because
+    // nothing wrapped the kernel's error.
+    expect(thrown.code).toBe('malformedHistory');
+    expect(thrown.message).toBe('evolution [malformedHistory]: sentinel kernel refusal');
+    expect(thrown.context).toEqual({ rule: 'sentinelRule', marker: 42 });
+    expect(thrown.cause).toBe(cause);
+    resetProbes();
   });
 });
 

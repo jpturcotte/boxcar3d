@@ -32,13 +32,19 @@
 // after every construction (building an artifact uses the kernel) and before
 // the measured reader call — construction calls are never verifier calls.
 //
-// RED-FIRST. On the pre-PR main every sabotage case below passed ALL
-// pre-physics gates: extraction — the reader that runs no physics — accepted
-// each artifact outright, and resume refused none of them before replay
-// (several classes were caught later by deterministic replay; the
+// RED-FIRST (PR 3). On the pre-PR-3 main every sabotage case below passed
+// ALL pre-physics gates: extraction — the reader that runs no physics —
+// accepted each artifact outright, and resume refused none of them before
+// replay (several classes were caught later by deterministic replay; the
 // shifted/recycled ID block and the count rule had no pre-physics verdict
-// anywhere). Captured: 30 of the 40 tests fail on the merge-base, all 40
-// green after the implementation.
+// anywhere). The 30-of-40 capture describes the ORIGINAL PR-3 matrix alone:
+// 30 of its 40 tests failed on the PR-3 merge-base, all 40 green after the
+// PR-3 implementation — the file has grown past that matrix since (the
+// PR-4C describe below), so the 40 is historical, not a count of this file.
+// RED-FIRST (PR 4C): on the PR-4B merge-base every PR-4C hostile artifact
+// below was accepted by extraction and reported replayDivergence on resume;
+// the PR-4C describe's matrix is red on that base except its honestly-noted
+// characterization guards.
 //
 // PROBE DISCIPLINE. Artifact construction reads the runtime identity ONCE
 // (to bind header identity strings) and the genuine runs touch physics;

@@ -1,6 +1,6 @@
 // THE VERIFIED HISTORY-OBSERVATION SEAM (PR 29, R6): read the five integrity
 // observations a persisted evolution history carries — from a VERIFIED
-// artifact, with NO re-simulation.
+// artifact, with NO physics re-simulation.
 //
 // WHY THIS EXISTS. Fitness-vector v3 persists the integrity observations the
 // online detector already computed, so an offline consumer can read alert-band
@@ -12,7 +12,8 @@
 // header digest, every component digest, the chain, the whole-history digest)
 // and all three pre-physics gates (fitness-vector compatibility, metadata
 // coherence, then shared artifact semantics/bindings, closing with exact
-// generation-zero provenance and the history-capacity policy gate) — before
+// generation-zero provenance, the history-capacity policy gate and — since
+// PR 4C — exact persisted adjacent-transition authentication) — before
 // returning anything, sharing the resume checks and error taxonomy rather
 // than growing a second, script-local interpretation. The third gate decodes
 // the evaluation spec and initialization manifest, checks the
@@ -30,7 +31,8 @@
 //
 // `extractHistoryObservations(historyBytes, options?)` is ASYNC because
 // SHA-256 is, and pure with respect to filesystem, clock, randomness and
-// physics: verification is byte work only, and decoding runs no evaluation.
+// physics: verification is digest and format byte work plus deterministic,
+// physics-free transition recomputation, and decoding runs no evaluation.
 // It returns, per generation, the decoded row plus its observations and the
 // generation's persisted `executedSteps`, `effectiveDt` and `worldMode` — NO
 // aggregation, gates, sampling, counterfactuals or policy analysis (those are
@@ -39,9 +41,15 @@
 // WHAT THIS SEAM ESTABLISHES — and what it does not. A returned artifact has
 // self-consistency (the full digest ladder), local coherence (the
 // vector/metadata relationships), generation-zero provenance (exact
-// recreation) and capacity-policy compliance for the declared generation
-// count (the actual record count is bound only at replay — a later ladder
-// rung). External expected artifact
+// recreation), capacity-policy compliance for the declared generation count,
+// and a bound actual record count (the shared local-semantics pass requires
+// recordCount <= maxGenerations before anything is returned). Since PR 4C it
+// also has byte-exact authenticity of every persisted adjacent
+// population/lineage transition: each persisted successor is proven to be the
+// deterministic kernel's exact output for its persisted predecessor — the
+// source population and fitness vector, the manifest seed, the persisted
+// header mutation policy, the checked fresh-ID base and the source generation
+// index — before anything is returned. External expected artifact
 // identity — freshness — holds only when the caller supplies the optional
 // expected digest; without it the ladder proves the artifact attests itself,
 // not that it is the expected one. `effectiveDt`
@@ -83,8 +91,11 @@ function malformed(path, value) {
  *   integrityObservations }`. `effectiveDt` and `worldMode` are the persisted
  *   SHA-attested metadata values (their vector relationship checked as local
  *   coherence); they are not by themselves proof of equality with current
- *   runtime readback — runtime identity is never read here, and resume replay
- *   remains necessary for physics authenticity.
+ *   runtime readback. Every persisted adjacent population/lineage transition
+ *   has been authenticated byte-for-byte against the deterministic kernel
+ *   (PR 4C); the evaluation metadata and fitness-vector observations have not
+ *   — runtime identity is never read here, and resume replay remains
+ *   necessary for physics authenticity.
  */
 export async function extractHistoryObservations(historyBytes, options = undefined) {
   // The intake seam mirrors resume's: ceiling on the INTRINSIC length before

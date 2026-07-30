@@ -19,23 +19,24 @@
 // RNG, the selection and mutation operators, the population and lineage
 // codecs, the error taxonomy — and nothing above: no run, no replay, no
 // offline scripts, no UI, no runtime identity, no physics orchestration. That
-// is what lets the future PR 4C verified-artifact path reproduce persisted
-// transitions against the SAME kernel the producer uses, without a cycle. The
-// closure is pinned in tests/evolution-transition.test.js.
+// is what lets the PR 4C verified-artifact path (evolution-replay.js)
+// reproduce persisted transitions against the SAME kernel the producer uses,
+// without a cycle. The closure is pinned in tests/evolution-transition.test.js.
 //
 // THIS IS NOT A PUBLIC SEAM. An ES-module export from this file is an
 // internal repository boundary, never part of BoxCar3D's public run API. The
-// one authorized production importer today is evolution-run.js; PR 4C will
-// deliberately add evolution-replay.js when the verified-artifact path starts
-// reproducing persisted adjacent transitions. That allowlist is DECLARED and
+// authorized production importers are exactly evolution-run.js and — since
+// PR 4C, by decision and with its own review — evolution-replay.js, whose
+// verified-artifact path reproduces persisted adjacent transitions against
+// this kernel before runtime identity. That allowlist is DECLARED and
 // pinned in tests/evolution-transition.test.js by an AST-based scan over
 // all current repository module roots — src/, scripts/, tests/, legacy/,
 // the root configs — plus the configured HTML entrypoint's module scripts,
 // covering every supported import form (static,
 // re-export, dynamic, '.'-relative and Vite-root-absolute specifiers alike),
-// so an accidental re-export or a second production importer fails a build;
+// so an accidental re-export or a third production importer fails a build;
 // computed dynamic import() specifiers and import.meta.glob are refused
-// outright in every scanned module. The
+// outright in every scanned module. The set is pinned, not eternal. The
 // module-owned-values rule is a DESIGN CONTRACT on the allowlisted callers,
 // not a runtime check this function performs: they never pair an
 // independently supplied population with an independently supplied fitness

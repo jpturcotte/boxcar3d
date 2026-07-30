@@ -27,8 +27,9 @@
 //
 // The transition itself lives in evolution-transition.js (PR 4A): an INTERNAL
 // kernel below both this module and replay verification, referenced from
-// production only by an explicit, test-pinned importer allowlist (today this
-// module alone; PR 4C adds evolution-replay.js by decision). Its allowlisted
+// production only by an explicit, test-pinned importer allowlist (this module
+// and evolution-replay.js — the two authorized production importers; PR 4C
+// added replay by decision, with its own review). Its allowlisted
 // callers still pass only module-owned values — a design contract pinned by
 // the AST-based importer guard in tests/evolution-transition.test.js, not a
 // runtime check the kernel performs — and moving it did not make it public.
@@ -802,7 +803,10 @@ async function resumeFromOwnedBytes(owned, expected) {
   // Stages 9-11: fitness-vector compatibility (unsupported format), metadata
   // coherence, and shared current-artifact semantics/bindings (both malformed
   // current format), all AFTER external identity and BEFORE the runtime gate.
-  // The escalation ladder is corruption -> wrong artifact -> unsupported ->
+  // Stage 11 closes with exact persisted adjacent-transition authentication
+  // (PR 4C): every persisted N -> N+1 population/lineage pair is proven to be
+  // the kernel's exact output before any runtime identity is read. The
+  // escalation ladder is corruption -> wrong artifact -> unsupported ->
   // malformed -> runtime mismatch -> deterministic divergence. This is a named
   // resume-path insertion only; the generation transition is untouched.
   checkFitnessVectorCompatibility(verified);
@@ -816,8 +820,8 @@ async function resumeFromOwnedBytes(owned, expected) {
   const populationSize = header.populationSize;
 
   // Stage 12: the runtime gate, after all product-level resource/coherence
-  // checks — capacity included, applied inside stage 11 — but before a single
-  // world is created.
+  // checks — capacity and persisted-transition authentication included,
+  // applied inside stage 11 — but before a single world is created.
   const runtime = await readDeterministicRuntimeIdentity();
   checkRuntimeIdentity(header, runtime);
 
@@ -830,8 +834,15 @@ async function resumeFromOwnedBytes(owned, expected) {
   // verified artifact: the population half by that recreation bind, and the
   // lineage half because the local-semantics pass pins generation-0 lineage
   // from persisted facts (the codec's sentinel/zero-accounting rules, then
-  // crossCheckLineage: all-initialized, ids == population ids). Both
-  // comparisons stay as defense-in-depth; everything later is a derived
+  // crossCheckLineage: all-initialized, ids == population ids). Since PR 4C
+  // the 'population' and 'lineage' comparisons for generations >= 1 are
+  // structurally unreachable for a verified artifact too: before replay could
+  // reach generation N+1, generation N's population and fitness vector have
+  // already matched replay byte for byte, so the kernel receives identical
+  // inputs — and stage 11's persisted-transition authentication already
+  // proved generation N+1's stored population and lineage equal that exact
+  // kernel output. All of these comparisons stay as defense-in-depth, and
+  // REPLAY_STAGES is unchanged; everything later is a derived
   // generation.
   let populationBytes = generationZero.populationBytes;
   let lineageBytes = serializeLineage(initialLineage(populationIds(

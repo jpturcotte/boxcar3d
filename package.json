@@ -26,6 +26,8 @@
     "experiment:evolution": "node scripts/experiment-evolution.js",
     "probe:package-smoke": "node scripts/probe-rapier-package-smoke.js",
     "bench:physics": "node scripts/bench-physics.js",
+    "bench:evolution-verification": "node scripts/bench-evolution-verification.js",
+    "bench:evolution-verification:browser": "node scripts/bench-evolution-verification-browser.js",
     "lint": "eslint ."
   },
   "dependencies": {

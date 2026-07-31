@@ -1656,6 +1656,13 @@ describe('terminalReasonFor — the one terminal-policy home', () => {
 
 const POLICY_MODULE = 'src/sim/evolution-contract.js';
 const POLICY_READERS = ['src/sim/evolution-run.js', 'src/sim/evolution-replay.js'];
+// PR 4D BY DECISION: the benchmark's kernel-honest artifact builder computes
+// terminal reasons through the contract leaf's one policy function — USING
+// the one implementation home this guard exists to enforce, never a local
+// copy — so it is a declared reference, not a violation. It never re-exports
+// the policy (pinned below) and the kernel boundary guard separately pins
+// its importer status.
+const POLICY_DECLARED_REFERENCES = ['scripts/bench-evolution-verification-artifacts.js'];
 const POLICY_IMPORT = /import\s*\{[^}]*\bterminalReasonFor\b[^}]*\}\s*from\s*['"]\.\/evolution-contract\.js['"]/;
 
 const walkJs = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -1692,9 +1699,20 @@ describe('the terminal policy has exactly one implementation home', () => {
   test('no other src/ or scripts/ module even references the policy name', () => {
     for (const file of SOURCE_FILES) {
       if (file === POLICY_MODULE || POLICY_READERS.includes(file)) continue;
+      if (POLICY_DECLARED_REFERENCES.includes(file)) continue;
       const source = readFileSync(file, 'utf8');
       expect(source.includes('terminalReasonFor'), `${file} must not reference terminalReasonFor`)
         .toBe(false);
+    }
+  });
+
+  test('the declared benchmark reference never re-exports the policy, in any export shape', () => {
+    const namedReExport = /export\s*\{[^}]*\bterminalReasonFor\b[^}]*\}/;
+    const starReExport = /export\s+\*\s+from\s*['"][^'"]*evolution-contract\.js['"]/;
+    for (const file of POLICY_DECLARED_REFERENCES) {
+      const source = readFileSync(file, 'utf8');
+      expect(namedReExport.test(source), `${file} must not re-export terminalReasonFor`).toBe(false);
+      expect(starReExport.test(source), `${file} must not star re-export evolution-contract.js`).toBe(false);
     }
   });
 

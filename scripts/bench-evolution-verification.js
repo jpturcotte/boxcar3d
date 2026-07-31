@@ -43,6 +43,7 @@ import process from 'node:process';
 
 import { extractHistoryObservations } from './history-observations.js';
 import { resumeEvolutionRun } from '../src/sim/evolution-run.js';
+import { MAX_EVOLUTION_GENERATIONS } from '../src/sim/evolution-contract.js';
 import { sha256 } from '../src/platform/sha256.js';
 import { bytesToHex } from '../src/sim/bytes.js';
 import { readSourceIdentity } from './experiment-evolution.js';
@@ -294,6 +295,15 @@ export function configFromArgs(argv) {
   if (!MODES.includes(mode)) {
     throw new Error(`bench: invalid --mode '${String(mode)}' (one of ${MODES.join(', ')})`);
   }
+  if ((population === null) !== (records === null)) {
+    throw new Error('bench: --population and --records must be given together — a lone axis is never silently ignored');
+  }
+  if (records !== null && records > MAX_EVOLUTION_GENERATIONS) {
+    throw new Error(`bench: --records ${records} exceeds MAX_EVOLUTION_GENERATIONS (${MAX_EVOLUTION_GENERATIONS})`);
+  }
+  if (values.smoke && (mode === 'batch' || mode === 'resume-full' || mode === 'profile-one')) {
+    throw new Error(`bench: --mode ${mode} is not supported with --smoke (the smoke matrix carries no such rows — zero rows would be a vacuous success)`);
+  }
   return Object.freeze({
     ...base,
     mode,
@@ -322,7 +332,9 @@ function contractKernelCalls(mode, recordCount, contradictionAtPair) {
 
 // The full Node matrix. Genuine rows come from GENUINE_CORPUS_PLANS;
 // synthetic rows are declared here. Every row: { id, mode, reader, ... }.
-function buildNodeRows(config, derived) {
+// Exported so the schema test can pin the row list itself (a silent edit to
+// the matrix must fail loudly in CI, not only change the manual evidence).
+export function buildNodeRows(config, derived) {
   const rows = [];
   const mfg = derived.maximumFeasibleGenerations;
   if (!config.smoke) {
@@ -415,6 +427,20 @@ function buildNodeRows(config, derived) {
         artifact: { kind: 'synthetic', populationSize: 4, recordCount: 3, maxGenerations: 4, contradictionAtPair: 0 },
         samples: config.samples, warmups: config.warmups,
       },
+      // A genuine full-resume row at smoke scale: the only smoke row whose
+      // `physics: true` label is exercised, and the cheapest proof that a
+      // production-run artifact resumes cleanly end to end.
+      {
+        id: 'S1-resume-full', mode: 'resume-full', reader: 'resumeEvolutionRun',
+        artifact: {
+          kind: 'genuine',
+          plan: {
+            id: 'S-genuine', label: 'smoke-genuine', probability: 0.05, magnitude: 0.05,
+            generations: 2, populationSeed: 20260801, terrainSeed: 20260809,
+          },
+        },
+        samples: config.samples, warmups: config.warmups,
+      },
     );
   }
   return rows;
@@ -424,7 +450,7 @@ function buildNodeRows(config, derived) {
 // THE FORK ENVELOPES (the child's side)
 // ---------------------------------------------------------------------------
 
-async function operateOnce(mode, reader, bytes) {
+async function operateOnce(reader, bytes) {
   if (reader === 'extractHistoryObservations') return extractHistoryObservations(bytes);
   return resumeEvolutionRun(bytes);
 }
@@ -465,9 +491,9 @@ async function runOneSample(envelope) {
     return { ok: true, elapsedMs: member.provenance.evolveMs, provenance: member.provenance };
   }
   for (let i = 0; i < envelope.warmups; i += 1) {
-    try { await operateOnce(envelope.mode, envelope.reader, bytes); } catch { /* warm-up verdicts are discarded by design */ }
+    try { await operateOnce(envelope.reader, bytes); } catch { /* warm-up verdicts are discarded by design */ }
   }
-  const measured = await measureOperationWithEventLoop(() => operateOnce(envelope.mode, envelope.reader, bytes));
+  const measured = await measureOperationWithEventLoop(() => operateOnce(envelope.reader, bytes));
   return {
     ok: true,
     elapsedMs: measured.elapsedMs,
@@ -479,7 +505,7 @@ async function runOneSample(envelope) {
 
 // The long-lived batch process: one process, the whole genuine corpus in
 // memory, extractions in campaign proportions, passes measured contiguously.
-async function runBatchSample(envelope) {
+export async function runBatchSample(envelope) {
   const members = envelope.members.map((m) => ({
     ...m, bytes: readFileSync(m.path),
   }));
@@ -493,33 +519,58 @@ async function runBatchSample(envelope) {
   const heapUsedBefore = process.memoryUsage().heapUsed;
   let betweenOpSamples = 0;
   const sampler = setInterval(() => { betweenOpSamples += 1; }, 10);
-  const passes = [];
-  const firstDigests = {};
-  for (let passIndex = 1; passIndex <= envelope.maxPass; passIndex += 1) {
-    const perArtifactMs = [];
-    const passStart = performance.now();
-    for (const member of draws) {
-      const t0 = performance.now();
-      const result = await extractHistoryObservations(member.bytes); // sequential by design — the batch IS one long-lived reader
-      perArtifactMs.push(performance.now() - t0);
-      if (!firstDigests[member.id]) firstDigests[member.id] = bytesToHex(result.historyDigestBytes);
+  try {
+    const passes = [];
+    const firstDigests = {};
+    for (let passIndex = 1; passIndex <= envelope.maxPass; passIndex += 1) {
+      const perArtifactMs = [];
+      const passStart = performance.now();
+      for (const member of draws) {
+        const t0 = performance.now();
+        const result = await extractHistoryObservations(member.bytes); // sequential by design — the batch IS one long-lived reader
+        perArtifactMs.push(performance.now() - t0);
+        if (!firstDigests[member.id]) firstDigests[member.id] = bytesToHex(result.historyDigestBytes);
+      }
+      passes.push(Object.freeze({
+        passIndex,
+        draws: draws.length,
+        perArtifactMs: perArtifactMs.map(roundMs),
+        totalMs: performance.now() - passStart,
+      }));
     }
-    passes.push(Object.freeze({
-      passIndex,
-      draws: draws.length,
-      perArtifactMs: perArtifactMs.map(roundMs),
-      totalMs: performance.now() - passStart,
-    }));
+    const heapUsedAfter = process.memoryUsage().heapUsed;
+    return {
+      ok: true,
+      passes,
+      firstDigests,
+      betweenOpSamples,
+      memory: { heapUsedBefore, heapUsedAfter, processMaxRssKb: process.resourceUsage().maxRSS },
+    };
+  } finally {
+    clearInterval(sampler);
   }
-  clearInterval(sampler);
-  const heapUsedAfter = process.memoryUsage().heapUsed;
-  return {
-    ok: true,
-    passes,
-    firstDigests,
-    betweenOpSamples,
-    memory: { heapUsedBefore, heapUsedAfter, processMaxRssKb: process.resourceUsage().maxRSS },
-  };
+}
+
+// The batch REPORT section, assembled from the child's raw result. Exported
+// so the schema test can pin its invariants (declaredPasses mirrors the raw
+// pass array; firstDigests bind draws to members; per-pass medians present).
+export function assembleBatchReport(batchResult) {
+  return Object.freeze({
+    campaignProportions: Object.freeze({ thirty: 156, sixty: 48 }),
+    declaredPasses: batchResult.passes.length,
+    passes: batchResult.passes.map((p) => Object.freeze({
+      ...p, totalMs: roundMs(p.totalMs),
+      medianPerArtifactMs: roundMs(median(p.perArtifactMs)),
+      p90PerArtifactMs: roundMs(percentile(p.perArtifactMs, 0.9)),
+    })),
+    firstDigests: batchResult.firstDigests,
+    betweenOpSamples: batchResult.betweenOpSamples,
+    memory: Object.freeze({
+      heapUsedBefore: batchResult.memory.heapUsedBefore,
+      heapUsedAfter: batchResult.memory.heapUsedAfter,
+      processMaxRssBytes: batchResult.memory.processMaxRssKb * 1024,
+    }),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +693,7 @@ export function assembleRow(row, samples, noopBaseline, config) {
     medianMs: roundMs(median(samplesMs)),
     p90Ms: roundMs(percentile(samplesMs, 0.9)),
     eventLoop: Object.freeze({
-      method: samples[0].eventLoop.method,
+      method: `${samples[0].eventLoop.method}; row stats are max-across-samples of the per-sample histogram values`,
       primed: true,
       drained: true,
       maxMs: roundMs(Math.max(...samples.map((s) => s.eventLoop.maxMs))),
@@ -650,7 +701,7 @@ export function assembleRow(row, samples, noopBaseline, config) {
       p99Ms: roundMs(Math.max(...samples.map((s) => s.eventLoop.p99Ms))),
     }),
     memory: memoryClaimed ? Object.freeze({
-      method: 'before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim',
+      method: 'before/after process.memoryUsage (from the FINAL sample) + max-across-samples process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim',
       before: samples[samples.length - 1].memory.before,
       after: samples[samples.length - 1].memory.after,
       processMaxRssBytes: maxRssKb * 1024,
@@ -689,18 +740,21 @@ async function sha256Hex(bytes) {
   return bytesToHex(await sha256(bytes));
 }
 
-async function constructRowArtifact(row, runtime, tmpDir, corpusMembers) {
+async function constructRowArtifact(row, runtime, tmpDir, corpusMembers, { smoke = false } = {}) {
   const spec = row.artifact;
   if (spec.kind === 'genuine') {
     const cached = corpusMembers.get(spec.plan.id);
     if (cached) return cached;
-    const built = await buildGenuineCorpusMember(spec.plan, { protocolKind: 'full' });
+    const built = await buildGenuineCorpusMember(spec.plan, { protocolKind: smoke ? 'smoke' : 'full' });
     const record = {
       id: spec.plan.id,
       kind: 'genuine',
       bytes: built.bytes,
       provenance: built.provenance,
-      recordCount: spec.plan.generations,
+      // MEASURED by the run, never asserted from the plan (the corpus
+      // builder counts advances and reports the actual terminal verdict).
+      recordCount: built.provenance.advanceCount,
+      terminalReason: built.provenance.terminalReason,
       populationSize: built.provenance.populationSize,
       sha256Hex: await sha256Hex(built.bytes),
       constructionMs: built.provenance.evolveMs,
@@ -722,6 +776,7 @@ async function constructRowArtifact(row, runtime, tmpDir, corpusMembers) {
     } : {}),
   });
   let bytes = built.bytes;
+  const reforged = spec.foreignRuntimeIdentity === true || spec.contradictionAtPair !== undefined;
   if (spec.foreignRuntimeIdentity) bytes = await withForeignRuntimeIdentity(bytes);
   if (spec.contradictionAtPair !== undefined) bytes = await withContradictionAtPair(bytes, spec.contradictionAtPair);
   return {
@@ -735,6 +790,11 @@ async function constructRowArtifact(row, runtime, tmpDir, corpusMembers) {
     foreignRuntimeIdentity: spec.foreignRuntimeIdentity === true,
     contradictionAtPair: spec.contradictionAtPair ?? null,
     sha256Hex: await sha256Hex(bytes),
+    // A reforged artifact is never successfully read, so no reader-reported
+    // digest exists — but its format history digest is the 32-byte TRAILER
+    // of the artifact (assembleHistory appends it outside the hashed body,
+    // src/sim/evolution-history.js). Record it from there, honestly sourced.
+    historyDigestHex: reforged ? bytesToHex(bytes.slice(bytes.length - 32)) : null,
     constructionMs: performance.now() - startedAt,
   };
 }
@@ -749,7 +809,7 @@ function artifactReportEntry(artifact) {
     byteLength: artifact.bytes.length,
     sha256Hex: artifact.sha256Hex,
     historyDigestHex: artifact.historyDigestHex ?? null,
-    terminalReason: artifact.terminalReason ?? (artifact.kind === 'genuine' ? 'generationLimitReached' : null),
+    terminalReason: artifact.terminalReason ?? null,
     provenance: artifact.provenance ?? null,
     foreignRuntimeIdentity: artifact.foreignRuntimeIdentity ?? null,
     contradictionAtPair: artifact.contradictionAtPair ?? null,
@@ -830,49 +890,74 @@ async function runPairedResumeRows(row, artifact, config, emit) {
   });
 }
 
-function evaluateBudgets(report) {
+// Every threshold comes from BUDGETS itself — the evaluation never
+// re-hardcodes a number the report echoes as predeclared (a desync would
+// make the report gate on different numbers than it displays).
+function thresholdFor(id) {
+  const budget = BUDGETS.find((b) => b.id === id);
+  if (!budget) throw new Error(`bench: unknown budget id '${String(id)}'`);
+  return budget.threshold;
+}
+
+export function evaluateBudgets(report) {
   const outcomes = [];
   const corpusRows = report.rows.filter((r) => r.id.startsWith('R-corpus-') && !r.id.endsWith('-repeat'));
+  const b1 = thresholdFor('B1');
   outcomes.push(Object.freeze({
     id: 'B1', gating: true,
     perMember: corpusRows.map((r) => Object.freeze({ id: r.id, medianMs: r.medianMs, p90Ms: r.p90Ms })),
-    pass: corpusRows.length === 0 ? null : corpusRows.every((r) => r.medianMs <= 2000 && r.p90Ms <= 3000),
+    pass: corpusRows.length === 0 ? null : corpusRows.every((r) => r.medianMs <= b1.medianMs && r.p90Ms <= b1.p90Ms),
     ...(corpusRows.length === 0 ? { note: 'not measured in this configuration' } : {}),
   }));
-  const onePass = report.batch ? report.batch.passes.find((p) => p.passIndex === 1).totalMs : null;
+  const b2 = thresholdFor('B2');
+  const firstPass = report.batch && report.batch.passes.length > 0
+    ? report.batch.passes.find((p) => p.passIndex === 1)
+    : null;
+  const onePass = firstPass ? firstPass.totalMs : null;
   outcomes.push(Object.freeze({
     id: 'B2', gating: true,
     onePassTotalMs: onePass === null ? null : roundMs(onePass),
-    pass: onePass === null ? null : onePass <= 210000,
-    ...(onePass === null ? { note: 'not measured in this configuration' } : {}),
+    pass: onePass === null ? null : onePass <= b2.totalMs,
+    ...(onePass === null ? { note: report.batch ? 'batch produced no passes' : 'not measured in this configuration' } : {}),
   }));
+  const b3 = thresholdFor('B3');
   const d1 = report.rows.find((r) => r.id === 'D1-legal-max-extraction');
+  const d1Delta = d1 && d1.memory && Number.isFinite(d1.memory.highWaterDeltaBytes)
+    ? d1.memory.highWaterDeltaBytes : null;
   outcomes.push(Object.freeze({
     id: 'B3', gating: false,
     medianMs: d1 ? d1.medianMs : null,
-    highWaterDeltaBytes: d1 && d1.memory && d1.memory.highWaterDeltaBytes !== undefined ? d1.memory.highWaterDeltaBytes : null,
-    pass: d1 ? (d1.medianMs <= 60000 && d1.memory.highWaterDeltaBytes <= 536870912) : null,
-    ...(d1 ? {} : { note: 'not measured in this configuration' }),
+    highWaterDeltaBytes: d1Delta,
+    // null when the memory channel is unmeasured (in-process) — never a
+    // false failure beside a null echo.
+    pass: d1 && d1Delta !== null ? (d1.medianMs <= b3.medianMs && d1Delta <= b3.highWaterDeltaBytes) : null,
+    ...(d1 ? (d1Delta === null ? { note: 'memory channel unavailable in this isolation mode' } : {}) : { note: 'not measured in this configuration' }),
   }));
+  const b4 = thresholdFor('B4');
   const r4rows = report.rows.filter((r) => r.pairedResume);
   outcomes.push(Object.freeze({
     id: 'B4', gating: false,
     perShape: r4rows.map((r) => Object.freeze({ id: r.id, ratio: r.pairedResume.medianRatio })),
-    pass: r4rows.length > 0 ? r4rows.every((r) => r.pairedResume.medianRatio <= 1.35) : null,
+    pass: r4rows.length > 0 ? r4rows.every((r) => r.pairedResume.medianRatio <= b4.ratio) : null,
     ...(r4rows.length === 0 ? { note: 'not measured in this configuration' } : {}),
   }));
   outcomes.push(Object.freeze({
     id: 'B5', gating: false, pass: null,
     note: 'browser rows are merged by scripts/bench-evolution-verification-browser.js — pending in a Node-only report',
   }));
+  const b6 = thresholdFor('B6');
+  const b6Rows = corpusRows.map((r) => Object.freeze({
+    id: r.id,
+    highWaterDeltaBytes: r.memory && Number.isFinite(r.memory.highWaterDeltaBytes) ? r.memory.highWaterDeltaBytes : null,
+  }));
   outcomes.push(Object.freeze({
     id: 'B6', gating: true,
-    perRow: corpusRows.map((r) => Object.freeze({
-      id: r.id,
-      highWaterDeltaBytes: r.memory && r.memory.highWaterDeltaBytes !== undefined ? r.memory.highWaterDeltaBytes : null,
-    })),
-    pass: corpusRows.length === 0 ? null : corpusRows.every((r) => r.memory && r.memory.highWaterDeltaBytes !== undefined && r.memory.highWaterDeltaBytes <= 134217728),
-    ...(corpusRows.length === 0 ? { note: 'not measured in this configuration' } : {}),
+    perRow: b6Rows,
+    pass: corpusRows.length === 0 ? null
+      : (b6Rows.some((r) => r.highWaterDeltaBytes === null) ? null
+        : b6Rows.every((r) => r.highWaterDeltaBytes <= b6.highWaterDeltaBytes)),
+    ...(corpusRows.length === 0 ? { note: 'not measured in this configuration' }
+      : (b6Rows.some((r) => r.highWaterDeltaBytes === null) ? { note: 'memory channel unavailable in this isolation mode' } : {})),
   }));
   return Object.freeze(outcomes);
 }
@@ -955,13 +1040,13 @@ export async function runBenchmark(config) {
     for (const plan of GENUINE_CORPUS_PLANS) {
       const artifact = await constructRowArtifact(
         { id: `corpus-${plan.id}`, artifact: { kind: 'genuine', plan } },
-        runtime, tmpDir, corpusMembers,
+        runtime, tmpDir, corpusMembers, working,
       );
       emit({ type: 'artifact-built', row: `corpus-${plan.id}`, artifact: artifact.sha256Hex });
     }
   }
   for (const row of selectedRows) {
-    const artifact = await constructRowArtifact(row, runtime, tmpDir, corpusMembers);
+    const artifact = await constructRowArtifact(row, runtime, tmpDir, corpusMembers, working);
     emit({ type: 'artifact-built', row: row.id, artifact: artifact.sha256Hex });
     artifacts.set(row.id, artifact);
   }
@@ -973,7 +1058,7 @@ export async function runBenchmark(config) {
       artifact: { kind: 'synthetic', populationSize: working.population, recordCount: working.records, maxGenerations: working.records + 1 },
       samples: working.samples, warmups: working.warmups,
     };
-    const artifact = await constructRowArtifact(row, runtime, tmpDir, corpusMembers);
+    const artifact = await constructRowArtifact(row, runtime, tmpDir, corpusMembers, working);
     emit({ type: 'artifact-built', row: row.id, artifact: artifact.sha256Hex });
     artifacts.set(row.id, artifact);
     selectedRows.push(row);
@@ -1016,21 +1101,7 @@ export async function runBenchmark(config) {
     const batchResult = working.isolation === 'in-process'
       ? await runBatchSample({ members: memberEnvelopes, maxPass: Math.max(...working.passes) })
       : await forkChild('batch', { members: memberEnvelopes, maxPass: Math.max(...working.passes) }, { timeoutMs: 3600000 });
-    report.batch = Object.freeze({
-      campaignProportions: Object.freeze({ thirty: 156, sixty: 48 }),
-      declaredPasses: batchResult.passes.length,
-      passes: batchResult.passes.map((p) => Object.freeze({
-        ...p, totalMs: roundMs(p.totalMs),
-        medianPerArtifactMs: roundMs(median(p.perArtifactMs)),
-        p90PerArtifactMs: roundMs(percentile(p.perArtifactMs, 0.9)),
-      })),
-      betweenOpSamples: batchResult.betweenOpSamples,
-      memory: Object.freeze({
-        heapUsedBefore: batchResult.memory.heapUsedBefore,
-        heapUsedAfter: batchResult.memory.heapUsedAfter,
-        processMaxRssBytes: batchResult.memory.processMaxRssKb * 1024,
-      }),
-    });
+    report.batch = assembleBatchReport(batchResult);
     const pass1 = batchResult.passes.find((p) => p.passIndex === 1).totalMs;
     const meanPerPass = batchResult.passes.reduce((s, p) => s + p.totalMs, 0) / batchResult.passes.length;
     report.cumulative = Object.freeze({
@@ -1039,7 +1110,7 @@ export async function runBenchmark(config) {
       threePassMs: roundMs(batchResult.passes.reduce((s, p) => s + p.totalMs, 0)),
       campaignProductionMs: CAMPAIGN_PRODUCTION_MS,
       overheadFractionPerPass: Math.round((pass1 / CAMPAIGN_PRODUCTION_MS) * 10000) / 10000,
-      maxAffordablePassesWithinB2: Math.max(0, Math.floor(210000 / meanPerPass)),
+      maxAffordablePassesWithinB2: Math.max(0, Math.floor(thresholdFor('B2').totalMs / meanPerPass)),
       formula: 'overhead = passes × perPassMs; passes = 1 if downstream analyses reuse each verified extraction (declared handoff), else the declared pass count',
     });
     // Corpus identities backfilled from the batch child's first extractions.

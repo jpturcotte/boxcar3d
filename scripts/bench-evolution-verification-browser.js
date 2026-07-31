@@ -30,10 +30,11 @@
 //   - event-loop evidence is the page's primed/drained rAF + 4 ms timer
 //     heartbeat (scripts/browser-bench/page.js carries the contract); a
 //     sample without primed AND drained evidence fails the row loudly;
-//   - memory is driver CDP Performance.getMetrics polling at 100 ms plus
-//     in-page performance.memory before/after — CDP may not observe in-block
-//     peaks inside the synchronous verifier and NEITHER is a process memory
-//     measure; the row says so verbatim;
+//   - memory is driver CDP Performance.getMetrics polling at 100 ms — it may
+//     not observe in-block peaks inside the synchronous verifier and is NOT a
+//     process memory measure. In-page performance.memory is collected by the
+//     page but deliberately NOT aggregated into rows (deprecated, rounded);
+//     the row method string says exactly this;
 //   - no CI millisecond threshold exists anywhere here: B5 is a predeclared,
 //     non-gating budget echoed verbatim from the instrument and evaluated in
 //     the evidence doc.
@@ -235,8 +236,9 @@ async function startBenchServer(repoRoot, artifactFiles) {
 
 // One measured sample: fresh page, CDP JSHeapUsedSize polling at 100 ms
 // while the row runs, then the page's own heartbeat-measured row result.
-// The poll loop is the driver's; it terminates when the row completes and
-// tolerates the page closing underneath it.
+// The poll loop is the driver's; it terminates IN FINALLY (a throwing page
+// must not leak a permanent timer chain — the post-review audit reproduced
+// the leak) and tolerates the page closing underneath it.
 async function runOneBrowserSample(browser, port, artifact) {
   const page = await browser.newPage();
   try {
@@ -260,19 +262,23 @@ async function runOneBrowserSample(browser, port, artifact) {
         await new Promise((resolve) => { globalThis.setTimeout(resolve, 100); });
       }
     })();
-    await page.goto(`http://127.0.0.1:${port}/scripts/browser-bench/evolution-verification.html`);
-    await page.waitForFunction(() => globalThis.__benchPage !== undefined);
-    const result = await page.evaluate(
-      (spec) => globalThis.__benchPage.runBrowserExtractionRow(spec),
-      {
-        artifactUrl: `/__bench_artifact__/${artifact.id}`,
-        expectedByteLength: artifact.bytes.length,
-        expectedSha256Hex: artifact.sha256Hex,
-        rowId: artifact.id,
-      },
-    );
-    polling = false;
-    await pollLoop;
+    let result;
+    try {
+      await page.goto(`http://127.0.0.1:${port}/scripts/browser-bench/evolution-verification.html`);
+      await page.waitForFunction(() => globalThis.__benchPage !== undefined);
+      result = await page.evaluate(
+        (spec) => globalThis.__benchPage.runBrowserExtractionRow(spec),
+        {
+          artifactUrl: `/__bench_artifact__/${artifact.id}`,
+          expectedByteLength: artifact.bytes.length,
+          expectedSha256Hex: artifact.sha256Hex,
+          rowId: artifact.id,
+        },
+      );
+    } finally {
+      polling = false;
+      await pollLoop;
+    }
     // THE DRIVER-SIDE BYTE-IDENTITY TOOTH: the page proved it received the
     // driver's bytes; here the driver proves the page's reported identity IS
     // its own artifact. Node-vs-browser byte-identity is asserted, never
@@ -290,7 +296,7 @@ async function runOneBrowserSample(browser, port, artifact) {
 // 4. ROW ASSEMBLY (the non-vacuous teeth live here)
 // ---------------------------------------------------------------------------
 
-function consistentVerdict(verdicts, rowId) {
+export function consistentVerdict(verdicts, rowId) {
   const first = JSON.stringify(verdicts[0]);
   for (const verdict of verdicts) {
     if (JSON.stringify(verdict) !== first) {
@@ -302,13 +308,19 @@ function consistentVerdict(verdicts, rowId) {
 
 // Assemble one report row from raw page samples. The guards mirror the Node
 // instrument's assembleRow: primed/drained heartbeat evidence on EVERY
-// sample (defects 8/9, browser leg), verdict consistency, and the extraction
-// row contract (an extraction row that refuses is a mislabeled artifact, not
-// a timing).
-function assembleBrowserRow(artifact, samples, browserVersion) {
+// sample (defects 8/9, browser leg) INCLUDING the tick-channel prime tooth
+// (frame-begin rAF timestamps self-prime, so only the tick channel can carry
+// it), verdict consistency, and the extraction row contract (an extraction
+// row that refuses is a mislabeled artifact, not a timing). Exported so the
+// Node-side schema test can pin these refusals directly — the repo's
+// assembleRow export-and-guard-test precedent.
+export function assembleBrowserRow(artifact, samples, browserVersion) {
   for (const sample of samples) {
     if (!sample.frameGap || sample.frameGap.primed !== true || sample.frameGap.drained !== true) {
       throw new Error(`browser-bench: row '${artifact.id}' has a sample without primed/drained heartbeat evidence`);
+    }
+    if (sample.frameGap.tickPrimedBeforeT0 !== true) {
+      throw new Error(`browser-bench: row '${artifact.id}' has a sample whose tick channel was not live before t0 — the prime tooth rides the tick channel (rAF frame-begin timestamps self-prime)`);
     }
   }
   const verdict = consistentVerdict(samples.map((s) => s.verdict), artifact.id);
@@ -343,12 +355,13 @@ function assembleBrowserRow(artifact, samples, browserVersion) {
       method: samples[0].frameGap.method,
       primed: true,
       drained: true,
+      tickPrimedBeforeT0: true, // asserted per sample by the guard above
       maxGapMs,
       gapsOver50ms,
       band: responsivenessBand(maxGapMs),
     }),
     memory: Object.freeze({
-      method: 'driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure',
+      method: 'driver CDP Performance.getMetrics polling at 100 ms (may not observe in-block peaks; NOT a process memory measure); in-page performance.memory is collected by the page but deliberately NOT aggregated here — it is deprecated and rounded',
       cdpSampleCount,
       jsHeapUsedBefore: firstCdp ? firstCdp.jsHeapUsedSize : null,
       jsHeapUsedAfter: lastCdp ? lastCdp.jsHeapUsedSize : null,
@@ -381,7 +394,7 @@ function collectMeta(config, browserVersion) {
     },
     browser: { name: 'chromium', version: browserVersion },
     benchmarkConfig: config,
-    memoryMethod: 'driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure',
+    memoryMethod: 'driver CDP Performance.getMetrics polling at 100 ms (may not observe in-block peaks; NOT a process memory measure); in-page performance.memory collected by the page but deliberately not aggregated (deprecated, rounded)',
     eventLoopMethod: 'page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1',
     percentileMethod: 'nearest-rank ceil(p*N), 1-indexed on sorted samples; median = p0.5, upper = p90',
     argv: process.argv.slice(2),

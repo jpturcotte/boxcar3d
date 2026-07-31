@@ -3197,7 +3197,16 @@ touched. The kernel boundary guard gains exactly one declared benchmark
 importer (`scripts/bench-evolution-verification-artifacts.js`) and the
 terminal-policy guard one declared reference, each BY DECISION with its own
 comment; the capacity-test input is mirrored, never imported (the schema
-test pins it). **Final unblocking remains contingent on merge and
+test pins it). A six-round adversarial audit of the branch (21 parallel
+review/skeptic/critic agents) independently re-proved the evidence's core
+mechanics — Node↔browser byte-identity, the 227-call foreign-runtime path,
+the digest chain-of-custody, the frozen budgets — and found zero hard spec
+violations; its defect findings (a broken construction-order test tooth, a
+dead browser prime tooth now riding the 4 ms tick channel, an overclaimed
+in-page memory leg, budget evaluation desync risk, and CI-presence gaps for
+the batch path, the driver guards, the corpus plan and the row matrix) are
+fixed in the review-hardening commit and enumerated in the evidence doc's
+§11. **Final unblocking remains contingent on merge and
 independent review: the breeding-pool, false-negative and mutation-default
 measurements remain blocked pending PR 4D and independent review.**
 - **Seeds allocated:** bench corpus population seeds 20260800-20260807,

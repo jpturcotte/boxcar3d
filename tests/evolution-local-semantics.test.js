@@ -1660,8 +1660,9 @@ const POLICY_READERS = ['src/sim/evolution-run.js', 'src/sim/evolution-replay.js
 // terminal reasons through the contract leaf's one policy function — USING
 // the one implementation home this guard exists to enforce, never a local
 // copy — so it is a declared reference, not a violation. It never re-exports
-// the policy (pinned below) and the kernel boundary guard separately pins
-// its importer status.
+// the policy (pinned below, in any star shape) and its continuing reference
+// is itself pinned (a stale exemption is loud), so this entry can neither
+// leak the policy nor silently widen the guard's hole.
 const POLICY_DECLARED_REFERENCES = ['scripts/bench-evolution-verification-artifacts.js'];
 const POLICY_IMPORT = /import\s*\{[^}]*\bterminalReasonFor\b[^}]*\}\s*from\s*['"]\.\/evolution-contract\.js['"]/;
 
@@ -1708,11 +1709,25 @@ describe('the terminal policy has exactly one implementation home', () => {
 
   test('the declared benchmark reference never re-exports the policy, in any export shape', () => {
     const namedReExport = /export\s*\{[^}]*\bterminalReasonFor\b[^}]*\}/;
-    const starReExport = /export\s+\*\s+from\s*['"][^'"]*evolution-contract\.js['"]/;
+    const starReExport = /export\s+\*\s+(?:as\s+\w+\s+)?from\s*['"][^'"]*evolution-contract\.js['"]/;
     for (const file of POLICY_DECLARED_REFERENCES) {
       const source = readFileSync(file, 'utf8');
       expect(namedReExport.test(source), `${file} must not re-export terminalReasonFor`).toBe(false);
-      expect(starReExport.test(source), `${file} must not star re-export evolution-contract.js`).toBe(false);
+      expect(starReExport.test(source), `${file} must not star re-export evolution-contract.js (in any star shape, including export * as ns)`).toBe(false);
+    }
+  });
+
+  test('the declared benchmark reference still references the policy (a stale exemption is loud)', () => {
+    // The skip above trusts the declaration; this pins it: if the bench
+    // module stops referencing terminalReasonFor, the exemption must be
+    // removed in the same change rather than silently widening the guard's
+    // hole forever.
+    for (const file of POLICY_DECLARED_REFERENCES) {
+      const source = readFileSync(file, 'utf8');
+      expect(
+        source.includes('terminalReasonFor'),
+        `${file} no longer references terminalReasonFor — remove it from POLICY_DECLARED_REFERENCES in the same change`,
+      ).toBe(true);
     }
   });
 

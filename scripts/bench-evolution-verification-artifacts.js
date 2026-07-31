@@ -192,12 +192,13 @@ export async function buildScaleArtifact(runtime, {
   });
   const initialization = createInitialPopulation({ seed, populationSize });
   const initializationBytes = serializePopulationInitialization(initialization);
-  const specBytes = canonicalizeEvaluationSpec(spec ?? createBenchSyntheticEvaluationSpec()).bytes;
+  const evaluationSpec = spec ?? createBenchSyntheticEvaluationSpec();
+  const specBytes = canonicalizeEvaluationSpec(evaluationSpec).bytes;
   const specState = fnv1aFold(FNV_OFFSET_BASIS, specBytes);
   const metadataBytes = serializeEvaluationMetadata({
     worldMode: POPULATION_WORLD_MODE,
     effectiveDt: Math.fround(1 / 60),
-    executedSteps: (spec ?? createBenchSyntheticEvaluationSpec()).maxSteps,
+    executedSteps: evaluationSpec.maxSteps,
   });
   const headerBytes = encodeEvolutionHeader({
     evolutionEngineVersion: EVOLUTION_ENGINE_VERSION,
@@ -297,15 +298,13 @@ export async function buildScaleArtifact(runtime, {
     }
   }
   const bytes = (await assembleHistory({ headerBytes, headerDigestBytes, generations })).bytes;
-  const lastRecord = generations.length > 0
-    ? decodeGenerationPayload(generations[generations.length - 1].payloadBytes)
-    : null;
+  const lastRecord = decodeGenerationPayload(generations[generations.length - 1].payloadBytes);
   return Object.freeze({
     bytes,
     recordCount,
     populationSize,
     maxGenerations,
-    terminalReason: lastRecord ? lastRecord.terminalReason : null,
+    terminalReason: lastRecord.terminalReason,
   });
 }
 
@@ -385,9 +384,15 @@ export async function withForeignRuntimeIdentity(bytes, { rapierVersion = '99.99
  * offset-40 shape: inside member 0's genotype payload for every population
  * size (the genotype schema is shared), never an id field, always decodable,
  * so every earlier gate stays intact and only transition authentication can
- * fire.
+ * fire. k is validated loudly: an out-of-range or fractional k would
+ * otherwise silently return the HONEST bytes, and a negative one would fire
+ * the wrong gate — both are caller configuration errors, not artifacts.
  */
 export async function withContradictionAtPair(bytes, k) {
+  const recordCount = decodeHistoryFraming(bytes).generations.length;
+  if (!Number.isInteger(k) || k < 0 || k + 1 >= recordCount) {
+    throw new Error(`withContradictionAtPair: k ${String(k)} is not an integer pair index in [0, ${recordCount - 1}) for a ${recordCount}-record artifact — a caller configuration error`);
+  }
   return reforgeBench(bytes, {
     mutateRecord: (record, recordIndex) => {
       if (recordIndex !== k + 1) return;

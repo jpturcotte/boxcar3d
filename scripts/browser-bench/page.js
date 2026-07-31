@@ -33,6 +33,18 @@
 // test's busy-block assertion is that tooth). Neither wait may hang the page:
 // both carry a 10 s guard and report primed/drained: false on starvation.
 //
+// THE rAF CHANNEL CANNOT CARRY THE PRIME TOOTH — MEASURED, NOT THEORIZED.
+// Chromium's rAF timestamps are frame-BEGIN times: the first callback that
+// fires after a synchronous block carries a pre-block vsync timestamp, so the
+// rAF channel "self-primes" even if the priming wait is deleted (a
+// post-review audit reproduced a deleted-prime run PASSING on the rAF gap
+// alone, 6/6). The 4 ms timer channel has no such mercy — its first post-
+// deletion timestamp lands strictly after t0 — so the structural prime tooth
+// rides the tick channel: frameGap.tickPrimedBeforeT0 records whether the
+// first recorded tick preceded t0, and the smoke test asserts it. The drain
+// tooth works on both channels (a deleted drain leaves no post-t1 timestamp
+// at all).
+//
 // MEMORY LIMITATIONS. performance.memory is deprecated, Chromium-only, and
 // rounded; a before/after pair is not a peak and says nothing about the
 // mid-operation high-water mark inside a synchronous verifier. The row
@@ -199,6 +211,14 @@ export async function measureWithHeartbeat(operation) {
       gapsOver50ms,
       frameCount: frames.length,
       tickCount: ticks.length,
+      // The structural prime tooth (the header explains why it rides the
+      // tick channel: rAF frame-begin timestamps self-prime). A deleted
+      // priming wait makes this false.
+      tickPrimedBeforeT0: ticks[0] < t0,
+      firstTickMs: ticks[0],
+      firstFrameMs: frames[0],
+      t0Ms: t0,
+      t1Ms: t1,
     }),
     memory: memoryReport(memoryBefore, memoryAfter),
   };

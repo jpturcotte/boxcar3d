@@ -3,10 +3,14 @@
 > **Committed reference run — machine-specific, NOT a universal package property.**
 > All numbers below come from the two machine-readable reports committed beside
 > this document — `evolution-transition-verifier-scale-evidence-node-2026-07.json`
-> and `evolution-transition-verifier-scale-evidence-browser-2026-07.json` — which
-> carry every raw sample. They are NOT asserted by any test; the only CI
-> touchpoints are the schema smoke in `tests/evolution-verification-bench-schema.test.js`
-> and the tiny browser liveness in `tests/browser/evolution-verification-bench-smoke.test.js`.
+> and `evolution-transition-verifier-scale-evidence-browser-2026-07.json` —
+> which carry the raw timing samples (per-row `samplesMs`, batch
+> `perArtifactMs`, both paired-resume arm arrays). Per-sample event-loop
+> histograms, frame-gap series, and memory snapshots are aggregated as
+> disclosed in §3, not carried sample-by-sample. They are NOT asserted by any
+> test; the only CI touchpoints are the schema smoke in
+> `tests/evolution-verification-bench-schema.test.js` and the tiny browser
+> liveness in `tests/browser/evolution-verification-bench-smoke.test.js`.
 
 **Status: PR 4D evidence, pre-merge.** §8 is the branch's evidence-backed
 recommendation. Final unblocking of the breeding-pool, false-negative and
@@ -94,8 +98,9 @@ Instruments (manual evidence commands, never CI jobs):
   artifact and runs nothing. Operation-moment heap peaks inside the
   synchronous verifier are unavailable by construction (no same-thread sampler
   can execute inside it; pinned by a harness self-test), and nothing here is
-  called "peak memory". Browser: driver CDP `Performance.getMetrics` polling
-  plus in-page before/after JS heap — labeled non-peak, non-process.
+  called "peak memory". Browser: driver CDP `Performance.getMetrics` polling,
+  labeled non-peak and non-process; in-page `performance.memory` is collected
+  by the page but deliberately not aggregated into rows (deprecated, rounded).
 - **Artifact classes.** Synthetic artifacts are kernel-honest (every successor
   is the production kernel's exact output over the previous record's persisted
   facts; extraction-only by design). Genuine artifacts are production-run
@@ -143,7 +148,10 @@ and Node success is never claimed as browser responsiveness.
 - **Legal envelope (D1/D2):** population 256, 228 records (derived maximum),
   capacity-test configuration. Measured artifact: **55,711,346 bytes
   (53.13 MiB)**, SHA-256 `979db982…`, terminal `generationLimitReached`;
-  construction 15.8 s (synthetic, kernel-honest). Genuine maximum-scale resume
+  construction 15.8 s (synthetic, kernel-honest). D2's artifact is the same
+  base with a foreign runtime identity reforged in — **55,711,348 bytes**,
+  SHA-256 `d1fe9da4…` (the two extra bytes are the longer version string).
+  Genuine maximum-scale resume
   is NOT claimed: no genuine maximum history was constructed.
 - **Hostile (E1/E2):** population 64, 32 records, population contradiction at
   pair 0 and at pair 30, both readers.
@@ -368,3 +376,65 @@ accepts the decision.**
 - **Browser.** Imported-history browser verification is fine at representative
   shapes; at the legal envelope it is R1-classified — do not promise
   interactivity there without the worker/yielding follow-up.
+
+## 11. Post-review hardening (2026-07-31)
+
+After the evidence commits, the branch went through a six-round adversarial
+audit (21 parallel agents: spec-axis reviewers, implementation reviewers,
+skeptics, critics, and a test-layer pass). Its headline conclusions are worth
+recording here because they are independent confirmation of this document's
+load-bearing claims:
+
+- **Zero hard spec violations.** No `src/` changes, no deferred-campaign
+  execution, documentation-truth wording clean, budgets provably frozen before
+  measurement (byte-identical echo in both evidence JSONs), and the red-first
+  claims verified against the PR-4C merge commit.
+- **The evidence's core mechanics were independently re-proven:** Node↔browser
+  artifact byte-identity (matching SHA-256s), the foreign-runtime artifact
+  executing all 227 kernel calls before `runtimeVersionMismatch`, the digest
+  chain-of-custody (recomputed with `node:crypto`, bypassing the repo codecs),
+  and every spot-checked headline number (0.75 %, 20,080 ms, 363 MiB, 0.996,
+  13,885 ms) recomputing exactly from the committed JSONs.
+
+The audit also found real defects — none in the measured paths, so the
+evidence above stands unchanged — and they were fixed in a follow-up
+hardening commit on this branch:
+
+1. **The construction-order test tooth was broken** (set-membership, not
+   order; vacuous on an empty event stream). Rewritten as a single-pass
+   prefix guard with a non-vacuity canary and cardinality asserts.
+2. **The browser prime-deletion tooth was dead:** Chromium rAF timestamps are
+   frame-begin times, so the rAF channel self-primes even with the priming
+   wait deleted (reproduced 6/6). The structural prime tooth now rides the
+   4 ms tick channel (`tickPrimedBeforeT0`, asserted in CI and by the driver's
+   row guard); the drain tooth was always real.
+3. **In-page memory was collected but silently dropped while three places
+   claimed it.** The claim, not the data channel, was wrong: driver method
+   strings and this document now say CDP-only, with in-page
+   `performance.memory` explicitly not aggregated.
+4. **Budget evaluation re-hardcoded the thresholds it echoed.** Evaluation
+   now reads `BUDGETS` by id; null is reported honestly where a channel is
+   unmeasured (no false failures).
+5. **`withContradictionAtPair` silently returned honest bytes for invalid k.**
+   It now validates the pair index loudly.
+6. **CI-presence gaps closed:** the B2 batch path (`runBatchSample` +
+   `assembleBatchReport`), the browser driver's assembly guards
+   (`assembleBrowserRow`, incl. the tick-tooth refusal), the corpus plan, and
+   the full row matrix (`buildNodeRows`) are all exported and pinned in the
+   schema test; the smoke matrix gained a genuine `resume-full` row so the
+   `physics: true` leg is exercised in CI.
+7. **Latent plumbing fixes:** the CDP poll loop now terminates in `finally`
+   on the error path; `runBatchSample`'s sampler clears in `finally`;
+   lone `--population`/`--records` and vacuous `--smoke` mode combinations
+   refuse loudly; corpus provenance counts advances and records the actual
+   terminal verdict instead of asserting them from the plan; reforged
+   artifacts record their format history digest (the 32-byte trailer) instead
+   of `null`; a stale `POLICY_DECLARED_REFERENCES` entry is now loud, and the
+   star re-export regex covers `export * as ns`.
+
+Disclosure, in the same spirit as §2: these fixes touch reporting fields,
+guards, tests, and documentation — never a measured interval (t0/t1 are
+captured inside the child processes and pages), so the committed evidence
+JSONs remain valid as measured. The schema test now byte-pins the smoke
+artifact's SHA-256, so any construction drift these fixes might have caused
+would have failed loudly; it did not.

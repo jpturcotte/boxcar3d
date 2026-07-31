@@ -57,8 +57,10 @@ export async function buildGenuineCorpusMember(plan, { protocolKind = 'full' } =
   const startedAt = performance.now();
   const run = createEvolutionRun(config);
   let result;
+  let advanceCount = 0;
   do {
     result = await run.advance(); // sequential generations are the protocol
+    advanceCount += 1;
   } while (result.kind !== 'terminal');
   const evolveMs = performance.now() - startedAt;
   const bytes = run.historyBytes();
@@ -75,7 +77,11 @@ export async function buildGenuineCorpusMember(plan, { protocolKind = 'full' } =
       magnitude: plan.magnitude,
       populationSeed: plan.populationSeed,
       terrainSeed: plan.terrainSeed,
-      advanceCount: plan.generations,
+      // MEASURED, never asserted from the plan: the run's actual advance
+      // count and terminal verdict (an early noSelectableParents termination
+      // would show up here instead of silently falsifying provenance).
+      advanceCount,
+      terminalReason: result.reason ?? null,
       evolveMs,
     }),
   });

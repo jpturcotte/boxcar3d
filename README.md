@@ -73,14 +73,22 @@ replay. **PR 4B has landed** (#35) — completion of the three PR-4A-deferred
 oracle boundary shapes (all-elite output, single selectable parent, three-way
 elite-boundary tie) and kernel-honest multigeneration test artifacts, with no
 production change and no persisted-transition verdict. The remaining work is
-**re-sequenced (2026-07-29)**: the active proposal is **PR 4C** — exact
+**re-sequenced (2026-07-29)**: **PR 4C has landed** (#36) — exact
 persisted N→N+1 transition authentication before runtime identity
 (reproducing every persisted adjacent transition with the PR-4A kernel and
 byte-comparing against generation N+1's persisted population, then lineage);
-**PR 4D** owns scale validation of the PR-4C verifier after it lands, and the
-measurement decision. The breeding-pool, false-negative and mutation-default
-measurements the persisted observations enable stay **blocked pending
-PR 4C, PR 4D and independent review**. Previously:
+the active proposal is **PR 4D** — scale validation of the landed PR-4C
+verifier, and the measurement decision. Its evidence
+(`docs/evolution-transition-verifier-scale-2026-07.md`) recommends
+**GO WITH RESTRICTIONS**: every gating budget passes on the landed code
+(representative extraction p90 ≤ 430 ms; one verification pass over the
+campaign's 204 histories ≈ 0.75 % of the 70-minute production wall;
+high-water deltas ≤ 65 MiB), with one named restriction — the browser legal
+envelope is batch/non-interactive (a ~14 s synchronous main-thread block at
+population 256/228 records). Final unblocking remains contingent on merge
+and independent review: the breeding-pool, false-negative and
+mutation-default measurements the persisted observations enable stay
+**blocked pending PR 4D and independent review**. Previously:
 GA Phase 1B PR 4 — the broad evolution experiment — landed on PR 3's
 deterministic evolution engine. **BoxCar3D now evolves end to end, persists and
 replays runs, and has been measured doing it.** The campaign (204 runs, 26-arm
@@ -494,4 +502,4 @@ validation or tuning of those defaults. Crossover, structural mutation, and
 discrete mutation are explicitly deferred. (Written pre-split; PR 4 was
 divided 2026-07-28 and its follow-on re-sequenced 2026-07-29 — see the
 status block above: the measurement decision now lives in PR 4D, blocked
-pending PR 4C, PR 4D and independent review.)
+pending PR 4D and independent review; PR 4C landed as #36.)

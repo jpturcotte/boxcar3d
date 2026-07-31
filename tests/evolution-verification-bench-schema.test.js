@@ -33,6 +33,7 @@ import { describe, test, expect } from 'vitest';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync, rmSync } from 'node:fs';
+import { URL } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
 import {
   BENCH_SCHEMA, BUDGETS, CAMPAIGN_PRODUCTION_MS, assembleRow, busyBlock,

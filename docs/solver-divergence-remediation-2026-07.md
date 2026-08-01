@@ -245,6 +245,26 @@ it.**
 > measurements stay blocked pending PR 4C, PR 4D and independent review. The
 > earlier addenda and historical sections are unchanged.
 
+> **Status addendum (2026-07-30, PR 4C landed) — PR 4C landed as #36; PR 4D
+> is the active proposal.** PR 4C landed as **#36** (exact persisted
+> adjacent-transition authentication before runtime identity, as described
+> immediately above). **PR 4D** — scale validation of the landed verifier
+> and the measurement-unblocking decision — is now the active proposal. Its
+> evidence (`docs/evolution-transition-verifier-scale-2026-07.md`) recommends
+> **GO WITH RESTRICTIONS**: every gating budget passes on the landed code
+> (representative extraction p90 ≤ 430 ms against 2000/3000 ms; one
+> verification pass over the campaign's 204 histories ≈ 0.75 % of the
+> 70-minute production wall against 5 %; representative high-water deltas ≤
+> 65 MiB against 128 MiB), the legal v1 envelope completes as a ~20 s batch
+> read with a ~363 MiB high-water delta, full genuine resume costs ≈ the
+> production physics it replays (ratio ≈ 1.00-1.02), and one restriction is
+> named — the browser legal envelope is batch/non-interactive (a ~13.9 s
+> synchronous main-thread block at population 256/228 records). Final
+> unblocking remains contingent on merge and independent review: the
+> breeding-pool, false-negative and mutation-default measurements stay
+> blocked pending PR 4D and independent review. The earlier addenda and
+> historical sections are unchanged; only the sequencing moved.
+
 ---
 
 ## 6. Decided / open / owner

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>boxcar3d — PR-4D browser verification bench page</title>
+  </head>
+  <body>
+    <!--
+      PR-4D BROWSER MEASURED PAGE. Loaded by the Playwright driver
+      (scripts/bench-evolution-verification-browser.js) through the Vite dev
+      server, which serves /scripts/... module paths from the repo root. This
+      page NEVER builds artifacts: the driver builds them Node-side, serves
+      the bytes at /__bench_artifact__/<id>, and calls into
+      globalThis.__benchPage.runBrowserExtractionRow with the expected byte
+      identity. The status element doubles as the driver's readiness signal.
+    -->
+    <pre id="status">booting</pre>
+    <script type="module">
+      import * as page from '/scripts/browser-bench/page.js';
+      globalThis.__benchPage = page;
+      document.getElementById('status').textContent = 'bench-page-ready';
+    </script>
+  </body>
+</html>

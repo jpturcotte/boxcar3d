@@ -1,0 +1,367 @@
+{
+  "schema": "boxcar3d.bench-evolution-verification/1",
+  "meta": {
+    "generatedUtc": "2026-07-31T02:37:10.423Z",
+    "commit": "5edca1b7a6e69ce0d2ef08d8b5d543871b75d424",
+    "dirtyTree": false,
+    "os": {
+      "platform": "win32",
+      "release": "10.0.26200",
+      "arch": "x64"
+    },
+    "cpu": {
+      "model": "Intel(R) Core(TM) i7-14650HX",
+      "count": 24
+    },
+    "node": "v22.19.0",
+    "rapier": {
+      "compat": "0.19.3",
+      "deterministicCompat": "0.19.3"
+    },
+    "browser": {
+      "name": "chromium",
+      "version": "149.0.7827.55"
+    },
+    "benchmarkConfig": {
+      "json": "C:/Users/jp2k5/AppData/Local/Temp/pr4d-evidence-browser.json",
+      "samples": 3,
+      "selfCheck": false
+    },
+    "memoryMethod": "driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure",
+    "eventLoopMethod": "page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1",
+    "percentileMethod": "nearest-rank ceil(p*N), 1-indexed on sorted samples; median = p0.5, upper = p90",
+    "argv": [
+      "--json",
+      "C:/Users/jp2k5/AppData/Local/Temp/pr4d-evidence-browser.json"
+    ]
+  },
+  "budgets": [
+    {
+      "id": "B1",
+      "scope": "genuine-corpus extraction, fresh child, Node",
+      "metric": "per-member medianMs and p90Ms",
+      "threshold": {
+        "medianMs": 2000,
+        "p90Ms": 3000
+      },
+      "unit": "ms",
+      "gating": true,
+      "protects": "analyst iteration in the measurement workflow (204 histories per pass)",
+      "consequence": "Phase C optimization or NO-GO"
+    },
+    {
+      "id": "B2",
+      "scope": "cumulative campaign verification — batch row in campaign proportions",
+      "metric": "one-pass totalMs",
+      "threshold": {
+        "totalMs": 210000
+      },
+      "unit": "ms (5% of the 70-min campaign production wall)",
+      "gating": true,
+      "protects": "campaign schedule; sustained-state realism",
+      "consequence": "Phase C optimization or NO-GO"
+    },
+    {
+      "id": "B3",
+      "scope": "legal-maximum Node extraction (population 256, derived record maximum)",
+      "metric": "medianMs and highWaterDeltaBytes",
+      "threshold": {
+        "medianMs": 60000,
+        "highWaterDeltaBytes": 536870912
+      },
+      "unit": "ms / bytes (≈10× artifact)",
+      "gating": false,
+      "protects": "legal-envelope operability as a batch read",
+      "consequence": "named restriction unless catastrophic (> 5 min or crash → NO-GO for the envelope claim)"
+    },
+    {
+      "id": "B4",
+      "scope": "full genuine resume, population 20 (30 and 60 records)",
+      "metric": "median(resumeMs) / median(productionMs), paired arms",
+      "threshold": {
+        "ratio": 1.35
+      },
+      "unit": "ratio",
+      "gating": false,
+      "protects": "resume-dependent tooling (identity probes)",
+      "consequence": "named restriction; the campaign itself does not resume"
+    },
+    {
+      "id": "B5",
+      "scope": "browser representative extraction (prebuilt bytes, fresh page)",
+      "metric": "median max frame gap",
+      "threshold": {
+        "maxGapMs": 1000
+      },
+      "unit": "ms (responsiveness bands)",
+      "gating": false,
+      "protects": "honesty about interactive use of imported histories",
+      "consequence": "named restriction (browser classified per band)"
+    },
+    {
+      "id": "B6",
+      "scope": "representative Node memory (genuine-corpus extraction)",
+      "metric": "per-row highWaterDeltaBytes",
+      "threshold": {
+        "highWaterDeltaBytes": 134217728
+      },
+      "unit": "bytes",
+      "gating": true,
+      "protects": "CI/dev machines running batch verification",
+      "consequence": "Phase C optimization or NO-GO"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "B-synthetic-20-30",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": 31,
+      "byteLength": 444126,
+      "sha256Hex": "3bb92bca63d50ea81e8fb925d601cf12fa96c4b2247ddcdfdfaeaded19571bbb",
+      "historyDigestHex": "2b4a72294abcf87f2d41b2fc3bb738c98149404c3f16b38091791048e586152a",
+      "terminalReason": "none",
+      "constructionMs": 160
+    },
+    {
+      "id": "B-synthetic-20-60",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 20,
+      "recordCount": 60,
+      "maxGenerations": 61,
+      "byteLength": 877010,
+      "sha256Hex": "413f813666c886428b3cdb5de3a6c5c7b05110773e4746dd8e05833ed2481766",
+      "historyDigestHex": "b2633bc6a2ff778ce821011f1f96812dfa7704d56319f93a4bcaf1df084e640c",
+      "terminalReason": "none",
+      "constructionMs": 226
+    },
+    {
+      "id": "B-genuine-G2",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": null,
+      "byteLength": 394462,
+      "sha256Hex": "c6697602182040f6fc22a57277efad528643d0a37bdd135f5b5bb26e8a9bba70",
+      "historyDigestHex": "5f2c4e80c4199ed94abfd55a1dd6e8e39364e591ac693900170e9468097d2a27",
+      "terminalReason": "generationLimitReached",
+      "constructionMs": 13256
+    },
+    {
+      "id": "B-legal-max",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 256,
+      "recordCount": 228,
+      "maxGenerations": 228,
+      "byteLength": 55711346,
+      "sha256Hex": "979db982dbdb1143c81ffb2a406a39ca9c21d4720ed6507b60a098cb4033e7f6",
+      "historyDigestHex": "4bb2567f57c9087eeb388a68a7da86d65a43fe0ce0e39f11b2805ced8863a78b",
+      "terminalReason": "generationLimitReached",
+      "constructionMs": 16848
+    }
+  ],
+  "browserRows": [
+    {
+      "id": "B-synthetic-20-30",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "chromium",
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55"
+      },
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "2b4a72294abcf87f2d41b2fc3bb738c98149404c3f16b38091791048e586152a"
+      },
+      "samplesMs": [
+        153,
+        138,
+        131
+      ],
+      "medianMs": 138,
+      "p90Ms": 153,
+      "frameGap": {
+        "method": "page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1",
+        "primed": true,
+        "drained": true,
+        "maxGapMs": 154,
+        "gapsOver50ms": 6,
+        "band": "noticeable"
+      },
+      "memory": {
+        "method": "driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure",
+        "cdpSampleCount": 11,
+        "jsHeapUsedBefore": 531104,
+        "jsHeapUsedAfter": 7761244
+      },
+      "pageSaw": {
+        "byteLength": 444126,
+        "sha256Hex": "3bb92bca63d50ea81e8fb925d601cf12fa96c4b2247ddcdfdfaeaded19571bbb",
+        "matchesDriverArtifact": true
+      }
+    },
+    {
+      "id": "B-synthetic-20-60",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "chromium",
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55"
+      },
+      "physics": false,
+      "verifierKernelCalls": 59,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "b2633bc6a2ff778ce821011f1f96812dfa7704d56319f93a4bcaf1df084e640c"
+      },
+      "samplesMs": [
+        241,
+        230,
+        233
+      ],
+      "medianMs": 233,
+      "p90Ms": 241,
+      "frameGap": {
+        "method": "page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1",
+        "primed": true,
+        "drained": true,
+        "maxGapMs": 241,
+        "gapsOver50ms": 6,
+        "band": "noticeable"
+      },
+      "memory": {
+        "method": "driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure",
+        "cdpSampleCount": 12,
+        "jsHeapUsedBefore": 531104,
+        "jsHeapUsedAfter": 8041888
+      },
+      "pageSaw": {
+        "byteLength": 877010,
+        "sha256Hex": "413f813666c886428b3cdb5de3a6c5c7b05110773e4746dd8e05833ed2481766",
+        "matchesDriverArtifact": true
+      }
+    },
+    {
+      "id": "B-genuine-G2",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "chromium",
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55"
+      },
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "5f2c4e80c4199ed94abfd55a1dd6e8e39364e591ac693900170e9468097d2a27"
+      },
+      "samplesMs": [
+        119,
+        115,
+        115
+      ],
+      "medianMs": 115,
+      "p90Ms": 119,
+      "frameGap": {
+        "method": "page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1",
+        "primed": true,
+        "drained": true,
+        "maxGapMs": 119,
+        "gapsOver50ms": 6,
+        "band": "noticeable"
+      },
+      "memory": {
+        "method": "driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure",
+        "cdpSampleCount": 9,
+        "jsHeapUsedBefore": 531104,
+        "jsHeapUsedAfter": 9363164
+      },
+      "pageSaw": {
+        "byteLength": 394462,
+        "sha256Hex": "c6697602182040f6fc22a57277efad528643d0a37bdd135f5b5bb26e8a9bba70",
+        "matchesDriverArtifact": true
+      }
+    },
+    {
+      "id": "B-legal-max",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "chromium",
+      "browser": {
+        "name": "chromium",
+        "version": "149.0.7827.55"
+      },
+      "physics": false,
+      "verifierKernelCalls": 227,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "4bb2567f57c9087eeb388a68a7da86d65a43fe0ce0e39f11b2805ced8863a78b"
+      },
+      "samplesMs": [
+        13932,
+        13884,
+        13772
+      ],
+      "medianMs": 13884,
+      "p90Ms": 13932,
+      "frameGap": {
+        "method": "page rAF + 4 ms timer heartbeats, primed >= 2 pre-op timestamps before t0 and drained post-op timestamps after t1",
+        "primed": true,
+        "drained": true,
+        "maxGapMs": 13933,
+        "gapsOver50ms": 6,
+        "band": "batch/non-interactive"
+      },
+      "memory": {
+        "method": "driver CDP Performance.getMetrics polling at 100 ms + in-page performance.memory before/after; CDP may not observe in-block peaks; NOT a process memory measure",
+        "cdpSampleCount": 394,
+        "jsHeapUsedBefore": 531104,
+        "jsHeapUsedAfter": 68117756
+      },
+      "pageSaw": {
+        "byteLength": 55711346,
+        "sha256Hex": "979db982dbdb1143c81ffb2a406a39ca9c21d4720ed6507b60a098cb4033e7f6",
+        "matchesDriverArtifact": true
+      }
+    }
+  ],
+  "budgetOutcomes": [
+    {
+      "id": "B5",
+      "gating": false,
+      "perRow": [
+        {
+          "id": "B-synthetic-20-30",
+          "medianMaxGapMs": 138,
+          "band": "noticeable"
+        },
+        {
+          "id": "B-synthetic-20-60",
+          "medianMaxGapMs": 233,
+          "band": "noticeable"
+        },
+        {
+          "id": "B-genuine-G2",
+          "medianMaxGapMs": 116,
+          "band": "noticeable"
+        },
+        {
+          "id": "B-legal-max",
+          "medianMaxGapMs": 13885,
+          "band": "batch/non-interactive"
+        }
+      ],
+      "pass": true
+    }
+  ]
+}

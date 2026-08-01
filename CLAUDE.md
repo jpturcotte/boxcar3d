@@ -2487,11 +2487,14 @@ single clean commit `9c5f24c`):**
   successful-run behaviour change, histories not yet transition-authentic) is
   LANDED; PR 4B (completion of the three PR-4A-deferred oracle boundary shapes
   and kernel-honest test artifacts — no production change) is LANDED (#35);
-  the active proposal (re-sequenced 2026-07-29) is PR 4C (exact persisted
-  N→N+1 transition authentication before runtime identity), and PR 4D owns
-  scale validation of the PR-4C verifier after it lands, and
-  the measurement decision; the breeding-pool, false-negative and
-  mutation-default measurements stay blocked pending PR 4C, PR 4D and
+  PR 4C (exact persisted N→N+1 transition authentication before runtime
+  identity) is LANDED (#36); the active proposal is PR 4D — scale validation
+  of the landed verifier and the measurement decision. Its evidence
+  (`docs/evolution-transition-verifier-scale-2026-07.md`) recommends
+  GO WITH RESTRICTIONS — all gating budgets pass; the browser legal envelope
+  is batch/non-interactive — and final unblocking remains contingent on
+  merge and independent review: the breeding-pool, false-negative and
+  mutation-default measurements stay blocked pending PR 4D and
   independent review. The recorded items then apply, in order: (1) escalate the alert
   band — the COST is now measured (2.5%, all ≥142 m/s, no false-positive cluster);
   what remains is PR-B's false-NEGATIVE half plus the version bump and re-lock;
@@ -2671,11 +2674,12 @@ policy, selection or mutation behaviour change:**
   (2026-07-28) into PR 4A (transition-kernel extraction, independent oracle
   and internal boundary pinning — LANDED, no successful-run behaviour change),
   PR 4B (completion of the three PR-4A-deferred oracle boundary shapes and
-  kernel-honest test artifacts — LANDED (#35), no production change), the
-  active proposal PR 4C (exact persisted N→N+1 transition authentication
-  before runtime identity), and PR 4D, which owns scale validation of the
-  PR-4C verifier after it lands, and the measurement decision. **The breeding-pool and false-negative
-  measurements stay blocked pending PR 4C, PR 4D and independent review** —
+  kernel-honest test artifacts — LANDED (#35), no production change),
+  PR 4C (exact persisted N→N+1 transition authentication
+  before runtime identity — LANDED as #36), and PR 4D, which owns scale
+  validation of the landed verifier and the measurement decision and is the
+  active proposal. **The breeding-pool and false-negative
+  measurements stay blocked pending PR 4D and independent review** —
   the experiment schema,
   the campaign, retained workspace histories, the forensic adjudicator,
   counterfactual analysis, empirical gates and the escalation verdict all
@@ -2743,9 +2747,9 @@ change:**
   deterministic transition provenance and opaque-boundary enforcement)
   remain, and **measurements stay blocked until PR 4 lands**. (Written
   pre-split: PR 3, PR 4A and PR 4B (#35) have since landed; the follow-on
-  sequence is PR 4C — persisted-transition authentication, the active
-  proposal — and PR 4D — scale validation and the measurement decision;
-  measurements stay blocked pending PR 4C, PR 4D and independent review.)
+  sequence is PR 4C — persisted-transition authentication, LANDED as #36 —
+  and PR 4D — scale validation and the measurement decision, the active
+  proposal; measurements stay blocked pending PR 4D and independent review.)
 - **Seeds allocated:** none (the capacity boundary reuses 20260740/20260741
   from the engine register above).
 
@@ -2844,8 +2848,9 @@ version, or successful-run behaviour change:**
   (Written pre-split; PR 4 was divided 2026-07-28 and its follow-on
   re-sequenced 2026-07-29 — see the PR 4A and PR 4B entries that follow:
   4A landed; then 4B (the three PR-4A-deferred oracle boundary shapes and
-  honest test artifacts), 4C (persisted-transition authentication) and 4D
-  (scale validation and the measurement decision); measurements stay blocked pending PR 4C, PR 4D and
+  honest test artifacts), 4C (persisted-transition authentication — LANDED
+  as #36) and 4D (scale validation and the measurement decision — the active
+  proposal); measurements stay blocked pending PR 4D and
   independent review.)
 - **Seeds allocated:** none.
 
@@ -3022,11 +3027,14 @@ contract change:**
   partial-history handling (a final nonterminal record has no persisted
   successor and must not be described as having a verified transition), and
   replay-stage reclassification. **What PR 4D owns.** Scale validation of the
-  landed verifier and the final measurement-unblocking decision.
-  **Persisted histories are not yet transition-authentic,
-  deterministic physics replay is not replaced, and the breeding-pool,
+  landed verifier and the final measurement-unblocking decision — the active
+  proposal, whose evidence recommends GO WITH RESTRICTIONS (all gating
+  budgets pass; the browser legal envelope is batch/non-interactive).
+  **Deterministic physics replay is not replaced, and the breeding-pool,
   false-negative and mutation-default measurements stay blocked pending
-  PR 4C, PR 4D and independent review.**
+  PR 4D and independent review.** (PR 4C has since landed as #36: every
+  actual persisted adjacent transition is now authenticated before runtime
+  identity.)
 - **Seeds allocated:** none (the oracle's hand-built fixtures use test-local
   literal seeds 20260728 and 35, not campaign allocations).
 
@@ -3101,7 +3109,7 @@ planned kernel-honesty tests.
   seeds 1 and 20260728 and the anti-seed test uses 20260799 — authoring
   literals documented in-test, NOT campaign allocations).
 
-**Post-merge hardening PR 4C (proposed, 2026-07-29) — exact persisted
+**Post-merge hardening PR 4C (landed as #36, 2026-07-29) — exact persisted
 adjacent-transition authentication before runtime identity.** The shared
 stage-11 verifier (`verifyEvolutionArtifactSemantics` in
 src/sim/evolution-replay.js) now CLOSES — after generation-zero provenance,
@@ -3135,17 +3143,84 @@ ID-allocation gate, so the misuse gets a static tooth). The replay
 documented as defense-in-depth like the initialization and terminalReason
 stages before them; the three forged successor-population/lineage tests that
 expected replayDivergence are reclassified as early-refusal evidence, and the
-replay ordering teeth now use replay-owned stages. This tree contains the
-proposed PR 4C implementation. Every actual persisted adjacent
-population/lineage transition is authenticated against the deterministic
-kernel before runtime identity. Deterministic physics replay remains
-necessary to authenticate the evaluation metadata and fitness-vector
-observations against the current deterministic runtime. PR 4D owns scale
-validation of the PR-4C verifier after it lands, and the measurement
-decision; the breeding-pool, false-negative and mutation-default measurements
-remain blocked pending PR 4C, PR 4D and independent review.
+replay ordering teeth now use replay-owned stages. PR 4C landed as #36:
+every actual persisted adjacent population/lineage transition is
+authenticated against the deterministic kernel before runtime identity.
+Deterministic physics replay remains necessary to authenticate the
+evaluation metadata and fitness-vector observations against the current
+deterministic runtime. PR 4D owns scale validation of the landed verifier
+and the measurement decision and is the active proposal; its evidence
+(`docs/evolution-transition-verifier-scale-2026-07.md`) recommends GO WITH
+RESTRICTIONS — every gating budget passes, with the browser legal envelope
+batch/non-interactive — and final unblocking remains contingent on merge and
+independent review: the breeding-pool, false-negative and mutation-default
+measurements remain blocked pending PR 4D and independent review.
 - **Seeds allocated:** none (the non-default seed witness reuses 20260799 — a
   test-local authoring literal, NOT a campaign allocation).
+
+**Post-merge hardening PR 4D (active proposal, 2026-07-30) — scale
+validation of the landed PR-4C verifier and the measurement-unblocking
+decision.** The instrument (`scripts/bench-evolution-verification.js` for
+Node, `scripts/bench-evolution-verification-browser.js` for Chromium — both
+manual evidence commands, never CI jobs) measures the four truth-model
+questions separately: shared pre-runtime extraction, the resume pre-replay
+gate (a transition-honest artifact with a foreign runtime identity, never
+labeled full resume), full genuine resume (paired fresh-process arms against
+fresh production runs), and event-loop/main-thread stall. Methodology:
+artifacts constructed once per row before any measured interval; a fresh
+child process (or browser page) per measured sample with discarded warm-ups;
+event-loop delay measured primed before t0 and drained after t1 (the
+histogram is timer-based — unprimed it records nothing); memory as
+before/after `memoryUsage` plus the process-lifetime `maxRSS` high-water
+differenced against a no-op baseline child — no same-thread sampler is ever
+called peak memory, because the synchronous verifier blocks it; the legal
+envelope derived through the public capacity refusal (228 at population 256,
+912 at 64, asserted and reported); and a stratified 8-member GENUINE corpus
+through the committed PR-4 protocol shape, because transition cost is
+data-dependent (the defaults-arm 60-record histories are physically ~1.7×
+larger and cost ~1.7-1.9× the extraction of their siblings — one convenient
+synthetic history would have hidden it). Budgets B1-B6 are predeclared as
+data in the instrument and echoed verbatim into every report. The evidence
+(`docs/evolution-transition-verifier-scale-2026-07.md`, plus the two
+machine-readable JSON reports beside it) recommends **GO WITH RESTRICTIONS**:
+all gating budgets pass on the landed code (representative extraction p90 ≤
+430 ms against 2000/3000 ms; one verification pass over the campaign's 204
+histories ≈ 0.75 % of the 70-minute production wall against 5 %; high-water
+deltas ≤ 65 MiB against 128 MiB), the legal envelope completes as a ~20 s,
+one-synchronous-block batch read with a ~363 MiB high-water delta, full
+genuine resume costs ≈ the production physics it replays (ratio ≈ 1.00-1.02),
+and one restriction is named — the browser legal envelope is
+batch/non-interactive (a ~13.9 s synchronous main-thread block in Chromium
+149), leaving worker/yielding browser work as the separate architectural
+follow-up it always was. No production change: nothing under src/ is
+touched. The kernel boundary guard gains exactly one declared benchmark
+importer (`scripts/bench-evolution-verification-artifacts.js`) and the
+terminal-policy guard one declared reference, each BY DECISION with its own
+comment; the capacity-test input is mirrored, never imported (the schema
+test pins it). A six-round adversarial audit of the branch (21 parallel
+review/skeptic/critic agents) independently re-proved the evidence's core
+mechanics — driver-to-page byte-identity on every browser row plus
+cross-report identity for G2 and the legal maximum, the 227-call
+foreign-runtime path,
+the digest chain-of-custody, the frozen budgets — and found zero hard spec
+violations; its defect findings (a broken construction-order test tooth, a
+dead browser prime tooth now riding the 4 ms tick channel, an overclaimed
+in-page memory leg, budget evaluation desync risk, and CI-presence gaps for
+the batch path, the driver guards, the corpus plan and the row matrix) are
+fixed in the review-hardening commit and enumerated in the evidence doc's
+§11. The external review of PR #37 upheld the GO WITH RESTRICTIONS result
+and required five reporting-layer corrections — campaign-shaped genuine
+provenance on every reporting path (one shared loud shape gate),
+budget-source-driven B5 evaluation, the --records 1024 CLI boundary,
+cross-environment byte-identity claimed exactly where proven, and
+consistent memory units — all fixed with failing-on-removal tests and
+enumerated in the evidence doc's §12. **Final unblocking remains contingent
+on merge and
+independent review: the breeding-pool, false-negative and mutation-default
+measurements remain blocked pending PR 4D and independent review.**
+- **Seeds allocated:** bench corpus population seeds 20260800-20260807,
+  terrain seeds 20260808-20260815, synthetic-builder literals
+  20260816-20260817 — a new bench block, never campaign-allocated seeds.
 
 ### Phase 1B PR 2 operator boundary
 

@@ -1,0 +1,2810 @@
+{
+  "schema": "boxcar3d.bench-evolution-verification/1",
+  "meta": {
+    "generatedUtc": "2026-07-31T02:22:52.074Z",
+    "commit": "ec21f4ace4c8f04135c1732d0fd27683fd399c21",
+    "dirtyTree": false,
+    "os": {
+      "platform": "win32",
+      "release": "10.0.26200",
+      "arch": "x64"
+    },
+    "cpu": {
+      "model": "Intel(R) Core(TM) i7-14650HX",
+      "count": 24
+    },
+    "node": "v22.19.0",
+    "rapier": {
+      "compat": "0.19.3",
+      "deterministicCompat": "0.19.3"
+    },
+    "benchmarkConfig": {
+      "smoke": false,
+      "mode": "matrix",
+      "samples": 5,
+      "samplesHeavy": 3,
+      "warmups": 2,
+      "population": null,
+      "records": null,
+      "json": "C:/Users/jp2k5/AppData/Local/Temp/pr4d-evidence-node-final.json",
+      "isolation": "fresh-child-per-sample",
+      "passes": [
+        1,
+        2,
+        3
+      ],
+      "profileOne": false,
+      "runOne": false,
+      "runBatch": false,
+      "tmpDir": "C:\\Users\\jp2k5\\AppData\\Local\\Temp\\boxcar3d-bench-31932"
+    },
+    "isolation": "fresh-child-per-sample",
+    "gcDisclosure": "normal runtime; no --expose-gc; no forced collection; fresh child process per measured sample (in-process for CI smoke)",
+    "memoryMethod": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process-lifetime high-water, fresh child) vs no-op baseline child; operation-moment heap peaks are unavailable — the PR-4C verifier is synchronous and no same-thread sampler can observe them",
+    "eventLoopMethod": "perf_hooks.monitorEventLoopDelay (resolution 1 ms), primed 2 timer turns before t0 and drained 2 turns after t1; turns excluded from t0–t1",
+    "percentileMethod": "nearest-rank ceil(p*N), 1-indexed on sorted samples; median = p0.5, upper = p90",
+    "argv": [
+      "--json",
+      "C:/Users/jp2k5/AppData/Local/Temp/pr4d-evidence-node-final.json"
+    ]
+  },
+  "budgets": [
+    {
+      "id": "B1",
+      "scope": "genuine-corpus extraction, fresh child, Node",
+      "metric": "per-member medianMs and p90Ms",
+      "threshold": {
+        "medianMs": 2000,
+        "p90Ms": 3000
+      },
+      "unit": "ms",
+      "gating": true,
+      "protects": "analyst iteration in the measurement workflow (204 histories per pass)",
+      "consequence": "Phase C optimization or NO-GO"
+    },
+    {
+      "id": "B2",
+      "scope": "cumulative campaign verification — batch row in campaign proportions",
+      "metric": "one-pass totalMs",
+      "threshold": {
+        "totalMs": 210000
+      },
+      "unit": "ms (5% of the 70-min campaign production wall)",
+      "gating": true,
+      "protects": "campaign schedule; sustained-state realism",
+      "consequence": "Phase C optimization or NO-GO"
+    },
+    {
+      "id": "B3",
+      "scope": "legal-maximum Node extraction (population 256, derived record maximum)",
+      "metric": "medianMs and highWaterDeltaBytes",
+      "threshold": {
+        "medianMs": 60000,
+        "highWaterDeltaBytes": 536870912
+      },
+      "unit": "ms / bytes (≈10× artifact)",
+      "gating": false,
+      "protects": "legal-envelope operability as a batch read",
+      "consequence": "named restriction unless catastrophic (> 5 min or crash → NO-GO for the envelope claim)"
+    },
+    {
+      "id": "B4",
+      "scope": "full genuine resume, population 20 (30 and 60 records)",
+      "metric": "median(resumeMs) / median(productionMs), paired arms",
+      "threshold": {
+        "ratio": 1.35
+      },
+      "unit": "ratio",
+      "gating": false,
+      "protects": "resume-dependent tooling (identity probes)",
+      "consequence": "named restriction; the campaign itself does not resume"
+    },
+    {
+      "id": "B5",
+      "scope": "browser representative extraction (prebuilt bytes, fresh page)",
+      "metric": "median max frame gap",
+      "threshold": {
+        "maxGapMs": 1000
+      },
+      "unit": "ms (responsiveness bands)",
+      "gating": false,
+      "protects": "honesty about interactive use of imported histories",
+      "consequence": "named restriction (browser classified per band)"
+    },
+    {
+      "id": "B6",
+      "scope": "representative Node memory (genuine-corpus extraction)",
+      "metric": "per-row highWaterDeltaBytes",
+      "threshold": {
+        "highWaterDeltaBytes": 134217728
+      },
+      "unit": "bytes",
+      "gating": true,
+      "protects": "CI/dev machines running batch verification",
+      "consequence": "Phase C optimization or NO-GO"
+    }
+  ],
+  "capacity": {
+    "population256": {
+      "maximumFeasibleGenerations": 228,
+      "derivedFrom": "resourceLimitExceeded context",
+      "expectedLiteral": 228,
+      "matchesExpected": true
+    },
+    "population64": {
+      "maximumFeasibleGenerations": 912,
+      "derivedFrom": "resourceLimitExceeded context",
+      "expectedLiteral": 912,
+      "matchesExpected": true
+    },
+    "population4": {
+      "maximumFeasibleGenerations": 1024,
+      "derivedFrom": "policy maximum (no refusal)",
+      "note": "exercises the no-refusal policy-maximum path"
+    }
+  },
+  "artifacts": [
+    {
+      "id": "G1",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": null,
+      "byteLength": 324062,
+      "sha256Hex": "8a23c46f1b816be8c3015d252043ec0e2f8a980dec3afa1ffd2023051abbcc7b",
+      "historyDigestHex": "bd04920ce6f1791b9d25a20cd3eb71737f72f00c3bec4e967ea041921536a7be",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G1",
+        "label": "control-30",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 30,
+        "probability": 0,
+        "magnitude": 0,
+        "populationSeed": 20260800,
+        "terrainSeed": 20260808,
+        "advanceCount": 30,
+        "evolveMs": 10101.3451
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 10101
+    },
+    {
+      "id": "G2",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": null,
+      "byteLength": 394462,
+      "sha256Hex": "c6697602182040f6fc22a57277efad528643d0a37bdd135f5b5bb26e8a9bba70",
+      "historyDigestHex": "5f2c4e80c4199ed94abfd55a1dd6e8e39364e591ac693900170e9468097d2a27",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G2",
+        "label": "defaults-30",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 30,
+        "probability": 0.05,
+        "magnitude": 0.05,
+        "populationSeed": 20260801,
+        "terrainSeed": 20260809,
+        "advanceCount": 30,
+        "evolveMs": 13560.235499999999
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 13560
+    },
+    {
+      "id": "G3",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": null,
+      "byteLength": 395998,
+      "sha256Hex": "59922322a8a017db60b95b57f5447b41f4da540c0d9aeab8a30626da2a2f7bb7",
+      "historyDigestHex": "94586c2020ffe50e56214d13b6b604a5eee8b66f542c25e87080d745f000fa8a",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G3",
+        "label": "aggressive-30",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 30,
+        "probability": 0.2,
+        "magnitude": 0.2,
+        "populationSeed": 20260802,
+        "terrainSeed": 20260810,
+        "advanceCount": 30,
+        "evolveMs": 16538.774599999997
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 16539
+    },
+    {
+      "id": "G4",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": null,
+      "byteLength": 394334,
+      "sha256Hex": "2c28497a2fc8020653a93f734fbb6f59fad648ccebc7bc5a581999813066a8b0",
+      "historyDigestHex": "83ba42fa7d064d0a6bac443c42a08e207441374281f5e19bc5b8e2817acf1753",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G4",
+        "label": "defaults-alt-30",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 30,
+        "probability": 0.05,
+        "magnitude": 0.05,
+        "populationSeed": 20260803,
+        "terrainSeed": 20260811,
+        "advanceCount": 30,
+        "evolveMs": 16888.610800000002
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 16889
+    },
+    {
+      "id": "G5",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 60,
+      "maxGenerations": null,
+      "byteLength": 788306,
+      "sha256Hex": "cf17b1665035faf494a623a5550febec53a6dff3428dbabbcd223d0bfda90eb2",
+      "historyDigestHex": "fc80264d3985f74142fb8276d5bd8e5a6e0ba28f6d60a743afbcc7e257bd6edc",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G5",
+        "label": "control-60",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 60,
+        "probability": 0,
+        "magnitude": 0,
+        "populationSeed": 20260804,
+        "terrainSeed": 20260812,
+        "advanceCount": 60,
+        "evolveMs": 26056.673200000005
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 26057
+    },
+    {
+      "id": "G6",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 60,
+      "maxGenerations": null,
+      "byteLength": 1370194,
+      "sha256Hex": "392e0250e1f441ff9c6411d525d17161a1422a0c765b7833532ab025333dc5d0",
+      "historyDigestHex": "01fe161555f317330c33cfe5f030cb8e11964c57cb2935468118173aa49d6f90",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G6",
+        "label": "defaults-60",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 60,
+        "probability": 0.05,
+        "magnitude": 0.05,
+        "populationSeed": 20260805,
+        "terrainSeed": 20260813,
+        "advanceCount": 60,
+        "evolveMs": 37563.44350000001
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 37563
+    },
+    {
+      "id": "G7",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 60,
+      "maxGenerations": null,
+      "byteLength": 791762,
+      "sha256Hex": "46c137a5cedd4f87c4a7b1805f823421f6b96347fa99ff9e29322ae9aa12293f",
+      "historyDigestHex": "f18175f17b6eacef1b8378233b620da9860f5d5f2f3099a2cec7bea39adde174",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G7",
+        "label": "aggressive-60",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 60,
+        "probability": 0.2,
+        "magnitude": 0.2,
+        "populationSeed": 20260806,
+        "terrainSeed": 20260814,
+        "advanceCount": 60,
+        "evolveMs": 41298.169599999994
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 41298
+    },
+    {
+      "id": "G8",
+      "construction": "production-run-genuine",
+      "populationSize": 20,
+      "recordCount": 60,
+      "maxGenerations": null,
+      "byteLength": 1227474,
+      "sha256Hex": "a50d1e8ed956ba403d02cd158be1fd61be65180d230ae02e83df9ec1b5b1bf28",
+      "historyDigestHex": "c4732c8264c7b66bb83a9ac6074ed762fddfb6ba75a0c4c7c67f290df751ed80",
+      "terminalReason": "generationLimitReached",
+      "provenance": {
+        "construction": "production-run-genuine",
+        "id": "G8",
+        "label": "defaults-alt-60",
+        "protocolKind": "full",
+        "populationSize": 20,
+        "generations": 60,
+        "probability": 0.05,
+        "magnitude": 0.05,
+        "populationSeed": 20260807,
+        "terrainSeed": 20260815,
+        "advanceCount": 60,
+        "evolveMs": 39225.241100000014
+      },
+      "foreignRuntimeIdentity": null,
+      "contradictionAtPair": null,
+      "constructionMs": 39225
+    },
+    {
+      "id": "R3-resume-gate-20-30",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 20,
+      "recordCount": 30,
+      "maxGenerations": 30,
+      "byteLength": 444128,
+      "sha256Hex": "b1b3af70b7cb3cb32fd2a1eaf73610eba3b02d311950af3fb0d496604bff6ce0",
+      "historyDigestHex": null,
+      "terminalReason": "generationLimitReached",
+      "provenance": null,
+      "foreignRuntimeIdentity": true,
+      "contradictionAtPair": null,
+      "constructionMs": 123
+    },
+    {
+      "id": "C1-pop-16",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 16,
+      "recordCount": 16,
+      "maxGenerations": 17,
+      "byteLength": 184202,
+      "sha256Hex": "25285b0e0329dc306d5e411f4040b8de5131a870e457a6587041dd94d93ceaf2",
+      "historyDigestHex": "b76e1fefbb0bb039799e1f3d9e514e7d7288817ab4dc18cb8c68d7e44517ea8c",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 45
+    },
+    {
+      "id": "C1-pop-64",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 16,
+      "maxGenerations": 17,
+      "byteLength": 724362,
+      "sha256Hex": "1933fb3fa27a423db7986e1ab8845bd2ded3277a526fefff9dbe981630c7f921",
+      "historyDigestHex": "3fc11a08d1f6f70e9a6fbbd2133c4cf8c009a94a6e2c795ed7ea70aa8c8dc6bf",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 176
+    },
+    {
+      "id": "C1-pop-128",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 128,
+      "recordCount": 16,
+      "maxGenerations": 17,
+      "byteLength": 1559306,
+      "sha256Hex": "6eae6ab96fde77cc1f2d5e0c6aa3f31291420c3c694a9e91389e6dbd9660d9ea",
+      "historyDigestHex": "37e3a302abde735940779eba6454c12e0be32d78512cc5b0cdeeb5337ae424a4",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 377
+    },
+    {
+      "id": "C1-pop-256",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 256,
+      "recordCount": 16,
+      "maxGenerations": 17,
+      "byteLength": 3282058,
+      "sha256Hex": "7a6b1c1d771fa6c111188317e10e538e1fd4ef1e2233c35e0c4ec0db87c3ee43",
+      "historyDigestHex": "1420e10de14cad4f4d629770aaf062a6aa162dca0789dcdceda5842f2efb34de",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 866
+    },
+    {
+      "id": "C2-records-1",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 1,
+      "maxGenerations": 2,
+      "byteLength": 53788,
+      "sha256Hex": "50a88b6aacc849c25b9b328f0c3d93899e7560f420ee6ff968230aee265f0566",
+      "historyDigestHex": "666ba7b837c875a9b988ca360364133fc0458da349b605d2aa32f0ff6cadb795",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 7
+    },
+    {
+      "id": "C2-records-8",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 8,
+      "maxGenerations": 9,
+      "byteLength": 364154,
+      "sha256Hex": "c693c29a8466b2cfa5abff236710233cff121e119f4eb73e8fcc8c5e12ff2a39",
+      "historyDigestHex": "aae4f93d80cd25977c037e18f7cfd4e6d30ab24d39fecd4a0579b093fbddebec",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 82
+    },
+    {
+      "id": "C2-records-32",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 32,
+      "maxGenerations": 33,
+      "byteLength": 1484202,
+      "sha256Hex": "7e339e4e74e350ec6a5ec046afedd8883e4452f3281841ca2eb03824a063da31",
+      "historyDigestHex": "a8f90a2b6f495fddd68552b4e7d62856a5930a7e51124f6386a1da5b9025512c",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 349
+    },
+    {
+      "id": "C2-records-64",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 64,
+      "maxGenerations": 65,
+      "byteLength": 2987242,
+      "sha256Hex": "b10415ac525e7dc25d4da0809b69514a4541b0ba08292239783af5086c2e9701",
+      "historyDigestHex": "1cd31b1103b5e8c1d1cf656bfe8107dff78b30c40a9f712ecafd05f72f598da5",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 771
+    },
+    {
+      "id": "C2-records-128",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 128,
+      "maxGenerations": 129,
+      "byteLength": 5862122,
+      "sha256Hex": "71dc0110aba1437a306c9ee26994d41a9ff692d35a4868b2f0ff6a318b11d81b",
+      "historyDigestHex": "da3be0dab8dfd37d8e4ef592ce862d53bba7e1298298d0547f3de6f3351b9361",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 1486
+    },
+    {
+      "id": "C3-128-64",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 128,
+      "recordCount": 64,
+      "maxGenerations": 65,
+      "byteLength": 5879274,
+      "sha256Hex": "fde6fda43c4fcfcf7c901df0a674c0897c4833dacceacc8a06d483f748f866c9",
+      "historyDigestHex": "584555fafea7ef9ac15122f402983ebed8951b3f6160bd05bfad9f5ef7cc86c2",
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 1503
+    },
+    {
+      "id": "D1-legal-max-extraction",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 256,
+      "recordCount": 228,
+      "maxGenerations": 228,
+      "byteLength": 55711346,
+      "sha256Hex": "979db982dbdb1143c81ffb2a406a39ca9c21d4720ed6507b60a098cb4033e7f6",
+      "historyDigestHex": "4bb2567f57c9087eeb388a68a7da86d65a43fe0ce0e39f11b2805ced8863a78b",
+      "terminalReason": "generationLimitReached",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": null,
+      "constructionMs": 15841
+    },
+    {
+      "id": "D2-legal-max-resume-gate",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 256,
+      "recordCount": 228,
+      "maxGenerations": 228,
+      "byteLength": 55711348,
+      "sha256Hex": "d1fe9da43ae58e3dbc1a45041d93e58ac1ee1b78d1f48315c58290107f912a25",
+      "historyDigestHex": null,
+      "terminalReason": "generationLimitReached",
+      "provenance": null,
+      "foreignRuntimeIdentity": true,
+      "contradictionAtPair": null,
+      "constructionMs": 16047
+    },
+    {
+      "id": "E-hostile-k0-extraction",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 32,
+      "maxGenerations": 33,
+      "byteLength": 1484202,
+      "sha256Hex": "5ff1ba5ef1e35bd5b16d67240846989d1a62b0d457e57b71a5ae25acd2a9b509",
+      "historyDigestHex": null,
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": 0,
+      "constructionMs": 440
+    },
+    {
+      "id": "E-hostile-k30-extraction",
+      "construction": "kernel-honest-synthetic",
+      "populationSize": 64,
+      "recordCount": 32,
+      "maxGenerations": 33,
+      "byteLength": 1484202,
+      "sha256Hex": "e79e562e066fbdc772255f3c7b82d9f6004eca3b4fea89c5784e088aa84d0a8f",
+      "historyDigestHex": null,
+      "terminalReason": "none",
+      "provenance": null,
+      "foreignRuntimeIdentity": false,
+      "contradictionAtPair": 30,
+      "constructionMs": 397
+    }
+  ],
+  "rows": [
+    {
+      "id": "R-corpus-G1",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "bd04920ce6f1791b9d25a20cd3eb71737f72f00c3bec4e967ea041921536a7be"
+      },
+      "samplesMs": [
+        91,
+        88,
+        89,
+        91,
+        87
+      ],
+      "medianMs": 89,
+      "p90Ms": 91,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 85,
+        "meanMs": 12,
+        "p99Ms": 85
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 85712896,
+          "heapUsed": 15971912,
+          "external": 4358488,
+          "arrayBuffers": 2136888
+        },
+        "after": {
+          "rss": 87519232,
+          "heapUsed": 16786264,
+          "external": 5926963,
+          "arrayBuffers": 3705291
+        },
+        "processMaxRssBytes": 90234880,
+        "noopBaselineMaxRssBytes": 47456256,
+        "highWaterDeltaBytes": 42778624
+      }
+    },
+    {
+      "id": "R-corpus-G2",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "5f2c4e80c4199ed94abfd55a1dd6e8e39364e591ac693900170e9468097d2a27"
+      },
+      "samplesMs": [
+        114,
+        111,
+        113,
+        110,
+        114
+      ],
+      "medianMs": 113,
+      "p90Ms": 114,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 108,
+        "meanMs": 15,
+        "p99Ms": 108
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 87334912,
+          "heapUsed": 18251592,
+          "external": 4885618,
+          "arrayBuffers": 2663858
+        },
+        "after": {
+          "rss": 89235456,
+          "heapUsed": 10744176,
+          "external": 6895475,
+          "arrayBuffers": 4415995
+        },
+        "processMaxRssBytes": 91983872,
+        "noopBaselineMaxRssBytes": 47439872,
+        "highWaterDeltaBytes": 44544000
+      }
+    },
+    {
+      "id": "R-corpus-G3",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "94586c2020ffe50e56214d13b6b604a5eee8b66f542c25e87080d745f000fa8a"
+      },
+      "samplesMs": [
+        113,
+        118,
+        116,
+        119,
+        116
+      ],
+      "medianMs": 116,
+      "p90Ms": 119,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 113,
+        "meanMs": 15,
+        "p99Ms": 113
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 87126016,
+          "heapUsed": 9697064,
+          "external": 4972948,
+          "arrayBuffers": 2474152
+        },
+        "after": {
+          "rss": 89255936,
+          "heapUsed": 10555440,
+          "external": 6876931,
+          "arrayBuffers": 4401723
+        },
+        "processMaxRssBytes": 92200960,
+        "noopBaselineMaxRssBytes": 47345664,
+        "highWaterDeltaBytes": 44855296
+      }
+    },
+    {
+      "id": "R-corpus-G4",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "83ba42fa7d064d0a6bac443c42a08e207441374281f5e19bc5b8e2817acf1753"
+      },
+      "samplesMs": [
+        114,
+        110,
+        108,
+        111,
+        109
+      ],
+      "medianMs": 110,
+      "p90Ms": 114,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 108,
+        "meanMs": 16,
+        "p99Ms": 108
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 86827008,
+          "heapUsed": 18196720,
+          "external": 4846780,
+          "arrayBuffers": 2625116
+        },
+        "after": {
+          "rss": 88809472,
+          "heapUsed": 10596120,
+          "external": 6853489,
+          "arrayBuffers": 4375693
+        },
+        "processMaxRssBytes": 91631616,
+        "noopBaselineMaxRssBytes": 47345664,
+        "highWaterDeltaBytes": 44285952
+      }
+    },
+    {
+      "id": "R-corpus-G5",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 59,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "fc80264d3985f74142fb8276d5bd8e5a6e0ba28f6d60a743afbcc7e257bd6edc"
+      },
+      "samplesMs": [
+        228,
+        224,
+        219,
+        221,
+        213
+      ],
+      "medianMs": 221,
+      "p90Ms": 228,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 216,
+        "meanMs": 17,
+        "p99Ms": 216
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 93663232,
+          "heapUsed": 11864640,
+          "external": 8361886,
+          "arrayBuffers": 5872906
+        },
+        "after": {
+          "rss": 98177024,
+          "heapUsed": 22529272,
+          "external": 12104501,
+          "arrayBuffers": 9883085
+        },
+        "processMaxRssBytes": 99594240,
+        "noopBaselineMaxRssBytes": 47628288,
+        "highWaterDeltaBytes": 51965952
+      }
+    },
+    {
+      "id": "R-corpus-G6",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 59,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "01fe161555f317330c33cfe5f030cb8e11964c57cb2935468118173aa49d6f90"
+      },
+      "samplesMs": [
+        430,
+        414,
+        424,
+        423,
+        414
+      ],
+      "medianMs": 423,
+      "p90Ms": 430,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 414,
+        "meanMs": 25,
+        "p99Ms": 414
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 96866304,
+          "heapUsed": 8830672,
+          "external": 11165232,
+          "arrayBuffers": 8664976
+        },
+        "after": {
+          "rss": 101027840,
+          "heapUsed": 29354696,
+          "external": 11035007,
+          "arrayBuffers": 8813655
+        },
+        "processMaxRssBytes": 116105216,
+        "noopBaselineMaxRssBytes": 48381952,
+        "highWaterDeltaBytes": 67723264
+      }
+    },
+    {
+      "id": "R-corpus-G7",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 59,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "f18175f17b6eacef1b8378233b620da9860f5d5f2f3099a2cec7bea39adde174"
+      },
+      "samplesMs": [
+        222,
+        230,
+        230,
+        225,
+        225
+      ],
+      "medianMs": 225,
+      "p90Ms": 230,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 218,
+        "meanMs": 16,
+        "p99Ms": 218
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 92581888,
+          "heapUsed": 25179472,
+          "external": 8651546,
+          "arrayBuffers": 6430202
+        },
+        "after": {
+          "rss": 98738176,
+          "heapUsed": 21337536,
+          "external": 12404347,
+          "arrayBuffers": 10182931
+        },
+        "processMaxRssBytes": 100065280,
+        "noopBaselineMaxRssBytes": 47702016,
+        "highWaterDeltaBytes": 52363264
+      }
+    },
+    {
+      "id": "R-corpus-G8",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 59,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "c4732c8264c7b66bb83a9ac6074ed762fddfb6ba75a0c4c7c67f290df751ed80"
+      },
+      "samplesMs": [
+        375,
+        362,
+        380,
+        372,
+        366
+      ],
+      "medianMs": 372,
+      "p90Ms": 380,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 365,
+        "meanMs": 20,
+        "p99Ms": 365
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 104333312,
+          "heapUsed": 25217552,
+          "external": 16101291,
+          "arrayBuffers": 13879947
+        },
+        "after": {
+          "rss": 97918976,
+          "heapUsed": 17468032,
+          "external": 9856741,
+          "arrayBuffers": 7635357
+        },
+        "processMaxRssBytes": 106561536,
+        "noopBaselineMaxRssBytes": 48230400,
+        "highWaterDeltaBytes": 58331136
+      }
+    },
+    {
+      "id": "R3-resume-gate-20-30",
+      "mode": "resume-gate",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "runtimeVersionMismatch",
+        "rule": null,
+        "sourceGenerationIndex": null,
+        "field": "rapierVersion"
+      },
+      "samplesMs": [
+        136,
+        135,
+        135,
+        129,
+        135
+      ],
+      "medianMs": 135,
+      "p90Ms": 136,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 130,
+        "meanMs": 16,
+        "p99Ms": 130
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 100687872,
+          "heapUsed": 27336096,
+          "external": 12153345,
+          "arrayBuffers": 7211002
+        },
+        "after": {
+          "rss": 101396480,
+          "heapUsed": 18085512,
+          "external": 14410420,
+          "arrayBuffers": 7588422
+        },
+        "processMaxRssBytes": 106192896,
+        "noopBaselineMaxRssBytes": 47230976,
+        "highWaterDeltaBytes": 58961920
+      }
+    },
+    {
+      "id": "R4-resume-full-G2",
+      "mode": "resume-full",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": true,
+      "verifierKernelCalls": 58,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": null
+      },
+      "samplesMs": [
+        13664,
+        13656,
+        13530
+      ],
+      "medianMs": 13656,
+      "p90Ms": 13664,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 13455,
+        "meanMs": 913,
+        "p99Ms": 13455
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 47624192,
+          "heapUsed": 7803384,
+          "external": 2990204,
+          "arrayBuffers": 431042
+        },
+        "after": {
+          "rss": 147038208,
+          "heapUsed": 28866608,
+          "external": 10954845,
+          "arrayBuffers": 5754578
+        },
+        "processMaxRssBytes": 153604096,
+        "noopBaselineMaxRssBytes": 47529984,
+        "highWaterDeltaBytes": 106074112
+      },
+      "pairedResume": {
+        "armA_productionMs": [
+          13778,
+          13492,
+          13711
+        ],
+        "armB_resumeMs": [
+          13664,
+          13656,
+          13530
+        ],
+        "medianProductionMs": 13711,
+        "medianResumeMs": 13656,
+        "medianRatio": 0.996,
+        "samples": 3,
+        "warmups": 0,
+        "isolation": "fresh-child-per-sample",
+        "interleaving": "arms alternate per sample; starting arm alternates per pair index"
+      }
+    },
+    {
+      "id": "R4-resume-full-G6",
+      "mode": "resume-full",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": true,
+      "verifierKernelCalls": 118,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": null
+      },
+      "samplesMs": [
+        38715,
+        38443,
+        38405
+      ],
+      "medianMs": 38443,
+      "p90Ms": 38715,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 38218,
+        "meanMs": 1490,
+        "p99Ms": 38218
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 48877568,
+          "heapUsed": 7849400,
+          "external": 3965936,
+          "arrayBuffers": 1406774
+        },
+        "after": {
+          "rss": 172998656,
+          "heapUsed": 74952952,
+          "external": 8373866,
+          "arrayBuffers": 2976991
+        },
+        "processMaxRssBytes": 180412416,
+        "noopBaselineMaxRssBytes": 48402432,
+        "highWaterDeltaBytes": 132009984
+      },
+      "pairedResume": {
+        "armA_productionMs": [
+          37683,
+          37586,
+          37471
+        ],
+        "armB_resumeMs": [
+          38715,
+          38443,
+          38405
+        ],
+        "medianProductionMs": 37586,
+        "medianResumeMs": 38443,
+        "medianRatio": 1.0228,
+        "samples": 3,
+        "warmups": 0,
+        "isolation": "fresh-child-per-sample",
+        "interleaving": "arms alternate per sample; starting arm alternates per pair index"
+      }
+    },
+    {
+      "id": "C1-pop-16",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 15,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "b76e1fefbb0bb039799e1f3d9e514e7d7288817ab4dc18cb8c68d7e44517ea8c"
+      },
+      "samplesMs": [
+        58,
+        60,
+        57,
+        59,
+        59
+      ],
+      "medianMs": 59,
+      "p90Ms": 60,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 56,
+        "meanMs": 11,
+        "p99Ms": 56
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 68501504,
+          "heapUsed": 13888592,
+          "external": 3514724,
+          "arrayBuffers": 1293156
+        },
+        "after": {
+          "rss": 76902400,
+          "heapUsed": 10321728,
+          "external": 4621279,
+          "arrayBuffers": 2143211
+        },
+        "processMaxRssBytes": 77443072,
+        "noopBaselineMaxRssBytes": 47460352,
+        "highWaterDeltaBytes": 29982720
+      }
+    },
+    {
+      "id": "C1-pop-64",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 15,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "3fc11a08d1f6f70e9a6fbbd2133c4cf8c009a94a6e2c795ed7ea70aa8c8dc6bf"
+      },
+      "samplesMs": [
+        211,
+        206,
+        215,
+        216,
+        217
+      ],
+      "medianMs": 215,
+      "p90Ms": 217,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 212,
+        "meanMs": 25,
+        "p99Ms": 212
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 104419328,
+          "heapUsed": 33516184,
+          "external": 10153640,
+          "arrayBuffers": 7932296
+        },
+        "after": {
+          "rss": 115699712,
+          "heapUsed": 33806616,
+          "external": 14301113,
+          "arrayBuffers": 12079697
+        },
+        "processMaxRssBytes": 116121600,
+        "noopBaselineMaxRssBytes": 47808512,
+        "highWaterDeltaBytes": 68313088
+      }
+    },
+    {
+      "id": "C1-pop-128",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 15,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "37e3a302abde735940779eba6454c12e0be32d78512cc5b0cdeeb5337ae424a4"
+      },
+      "samplesMs": [
+        480,
+        479,
+        459,
+        478,
+        471
+      ],
+      "medianMs": 478,
+      "p90Ms": 480,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 470,
+        "meanMs": 41,
+        "p99Ms": 470
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 131801088,
+          "heapUsed": 19732624,
+          "external": 6951341,
+          "arrayBuffers": 4730029
+        },
+        "after": {
+          "rss": 132616192,
+          "heapUsed": 19028232,
+          "external": 7279857,
+          "arrayBuffers": 4705541
+        },
+        "processMaxRssBytes": 146038784,
+        "noopBaselineMaxRssBytes": 48562176,
+        "highWaterDeltaBytes": 97476608
+      }
+    },
+    {
+      "id": "C1-pop-256",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 15,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "1420e10de14cad4f4d629770aaf062a6aa162dca0789dcdceda5842f2efb34de"
+      },
+      "samplesMs": [
+        1086,
+        1050,
+        1056,
+        1079,
+        1062
+      ],
+      "medianMs": 1062,
+      "p90Ms": 1086,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 1070,
+        "meanMs": 63,
+        "p99Ms": 1070
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 157519872,
+          "heapUsed": 49046936,
+          "external": 14007741,
+          "arrayBuffers": 11790009
+        },
+        "after": {
+          "rss": 155774976,
+          "heapUsed": 41191880,
+          "external": 12588297,
+          "arrayBuffers": 10370525
+        },
+        "processMaxRssBytes": 187342848,
+        "noopBaselineMaxRssBytes": 50421760,
+        "highWaterDeltaBytes": 136921088
+      }
+    },
+    {
+      "id": "C2-records-1",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 0,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "666ba7b837c875a9b988ca360364133fc0458da349b605d2aa32f0ff6cadb795"
+      },
+      "samplesMs": [
+        13,
+        15,
+        15,
+        14,
+        14
+      ],
+      "medianMs": 14,
+      "p90Ms": 15,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 14,
+        "meanMs": 6,
+        "p99Ms": 14
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 60006400,
+          "heapUsed": 8201496,
+          "external": 3133661,
+          "arrayBuffers": 912317
+        },
+        "after": {
+          "rss": 66641920,
+          "heapUsed": 8761616,
+          "external": 2700038,
+          "arrayBuffers": 294343
+        },
+        "processMaxRssBytes": 68284416,
+        "noopBaselineMaxRssBytes": 47349760,
+        "highWaterDeltaBytes": 20934656
+      }
+    },
+    {
+      "id": "C2-records-8",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 7,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "aae4f93d80cd25977c037e18f7cfd4e6d30ab24d39fecd4a0579b093fbddebec"
+      },
+      "samplesMs": [
+        110,
+        108,
+        110,
+        105,
+        115
+      ],
+      "medianMs": 110,
+      "p90Ms": 115,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 110,
+        "meanMs": 20,
+        "p99Ms": 110
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 90091520,
+          "heapUsed": 18198816,
+          "external": 5119906,
+          "arrayBuffers": 2898370
+        },
+        "after": {
+          "rss": 93360128,
+          "heapUsed": 25026000,
+          "external": 7242563,
+          "arrayBuffers": 5020955
+        },
+        "processMaxRssBytes": 96608256,
+        "noopBaselineMaxRssBytes": 47230976,
+        "highWaterDeltaBytes": 49377280
+      }
+    },
+    {
+      "id": "C2-records-16",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 15,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "3fc11a08d1f6f70e9a6fbbd2133c4cf8c009a94a6e2c795ed7ea70aa8c8dc6bf"
+      },
+      "samplesMs": [
+        212,
+        216,
+        222,
+        209,
+        221
+      ],
+      "medianMs": 216,
+      "p90Ms": 222,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 214,
+        "meanMs": 23,
+        "p99Ms": 214
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 103145472,
+          "heapUsed": 35591640,
+          "external": 10242172,
+          "arrayBuffers": 8020828
+        },
+        "after": {
+          "rss": 115904512,
+          "heapUsed": 38289136,
+          "external": 14432617,
+          "arrayBuffers": 12211201
+        },
+        "processMaxRssBytes": 116035584,
+        "noopBaselineMaxRssBytes": 47521792,
+        "highWaterDeltaBytes": 68513792
+      }
+    },
+    {
+      "id": "C2-records-32",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 31,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "a8f90a2b6f495fddd68552b4e7d62856a5930a7e51124f6386a1da5b9025512c"
+      },
+      "samplesMs": [
+        445,
+        452,
+        445,
+        452,
+        463
+      ],
+      "medianMs": 452,
+      "p90Ms": 463,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 452,
+        "meanMs": 34,
+        "p99Ms": 452
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 109252608,
+          "heapUsed": 24282592,
+          "external": 13011762,
+          "arrayBuffers": 10790130
+        },
+        "after": {
+          "rss": 113901568,
+          "heapUsed": 10963224,
+          "external": 5778615,
+          "arrayBuffers": 3302363
+        },
+        "processMaxRssBytes": 131444736,
+        "noopBaselineMaxRssBytes": 48664576,
+        "highWaterDeltaBytes": 82780160
+      }
+    },
+    {
+      "id": "C2-records-64",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 63,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "1cd31b1103b5e8c1d1cf656bfe8107dff78b30c40a9f712ecafd05f72f598da5"
+      },
+      "samplesMs": [
+        891,
+        897,
+        956,
+        965,
+        976
+      ],
+      "medianMs": 956,
+      "p90Ms": 976,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 952,
+        "meanMs": 40,
+        "p99Ms": 952
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 132890624,
+          "heapUsed": 42013096,
+          "external": 23399256,
+          "arrayBuffers": 21177688
+        },
+        "after": {
+          "rss": 132644864,
+          "heapUsed": 42005176,
+          "external": 23117317,
+          "arrayBuffers": 20895933
+        },
+        "processMaxRssBytes": 153968640,
+        "noopBaselineMaxRssBytes": 49913856,
+        "highWaterDeltaBytes": 104054784
+      }
+    },
+    {
+      "id": "C2-records-128",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 127,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "da3be0dab8dfd37d8e4ef592ce862d53bba7e1298298d0547f3de6f3351b9361"
+      },
+      "samplesMs": [
+        1902,
+        1927,
+        1910,
+        1880,
+        1923
+      ],
+      "medianMs": 1910,
+      "p90Ms": 1927,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 1878,
+        "meanMs": 43,
+        "p99Ms": 1878
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 152948736,
+          "heapUsed": 40665240,
+          "external": 24023743,
+          "arrayBuffers": 21549815
+        },
+        "after": {
+          "rss": 144285696,
+          "heapUsed": 52789224,
+          "external": 24908209,
+          "arrayBuffers": 22690437
+        },
+        "processMaxRssBytes": 183877632,
+        "noopBaselineMaxRssBytes": 60116992,
+        "highWaterDeltaBytes": 123760640
+      }
+    },
+    {
+      "id": "C3-128-64",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 63,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "584555fafea7ef9ac15122f402983ebed8951b3f6160bd05bfad9f5ef7cc86c2"
+      },
+      "samplesMs": [
+        1951,
+        1937,
+        1963,
+        1971,
+        2043
+      ],
+      "medianMs": 1963,
+      "p90Ms": 2043,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 2006,
+        "meanMs": 53,
+        "p99Ms": 2006
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 155475968,
+          "heapUsed": 15451480,
+          "external": 15005765,
+          "arrayBuffers": 12788033
+        },
+        "after": {
+          "rss": 155635712,
+          "heapUsed": 13861736,
+          "external": 15221413,
+          "arrayBuffers": 12672301
+        },
+        "processMaxRssBytes": 196501504,
+        "noopBaselineMaxRssBytes": 60252160,
+        "highWaterDeltaBytes": 136249344
+      }
+    },
+    {
+      "id": "D1-legal-max-extraction",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 227,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "4bb2567f57c9087eeb388a68a7da86d65a43fe0ce0e39f11b2805ced8863a78b"
+      },
+      "samplesMs": [
+        20483,
+        20080,
+        19779
+      ],
+      "medianMs": 20080,
+      "p90Ms": 20483,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 20233,
+        "meanMs": 108,
+        "p99Ms": 16
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 304107520,
+          "heapUsed": 30742424,
+          "external": 115608284,
+          "arrayBuffers": 113390552
+        },
+        "after": {
+          "rss": 303685632,
+          "heapUsed": 84504552,
+          "external": 124510628,
+          "arrayBuffers": 122292856
+        },
+        "processMaxRssBytes": 490303488,
+        "noopBaselineMaxRssBytes": 110145536,
+        "highWaterDeltaBytes": 380157952
+      }
+    },
+    {
+      "id": "D2-legal-max-resume-gate",
+      "mode": "resume-gate",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 227,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "runtimeVersionMismatch",
+        "rule": null,
+        "sourceGenerationIndex": null,
+        "field": "rapierVersion"
+      },
+      "samplesMs": [
+        19349,
+        19261,
+        19194
+      ],
+      "medianMs": 19261,
+      "p90Ms": 19349,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 19126,
+        "meanMs": 113,
+        "p99Ms": 16
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 298577920,
+          "heapUsed": 31921088,
+          "external": 119964577,
+          "arrayBuffers": 115026462
+        },
+        "after": {
+          "rss": 301535232,
+          "heapUsed": 39512032,
+          "external": 121586683,
+          "arrayBuffers": 116648528
+        },
+        "processMaxRssBytes": 474890240,
+        "noopBaselineMaxRssBytes": 110260224,
+        "highWaterDeltaBytes": 364630016
+      }
+    },
+    {
+      "id": "E-hostile-k0-extraction",
+      "mode": "hostile",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 1,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "malformedHistory",
+        "rule": "persistedTransitionPopulationMismatch",
+        "sourceGenerationIndex": 0,
+        "field": null
+      },
+      "samplesMs": [
+        124,
+        124,
+        124
+      ],
+      "medianMs": 124,
+      "p90Ms": 124,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 115,
+        "meanMs": 12,
+        "p99Ms": 115
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 100290560,
+          "heapUsed": 13553968,
+          "external": 9146301,
+          "arrayBuffers": 6924701
+        },
+        "after": {
+          "rss": 105369600,
+          "heapUsed": 13803736,
+          "external": 13873890,
+          "arrayBuffers": 11652218
+        },
+        "processMaxRssBytes": 114999296,
+        "noopBaselineMaxRssBytes": 56020992,
+        "highWaterDeltaBytes": 58978304
+      }
+    },
+    {
+      "id": "E-hostile-k0-resume",
+      "mode": "hostile",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 1,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "malformedHistory",
+        "rule": "persistedTransitionPopulationMismatch",
+        "sourceGenerationIndex": 0,
+        "field": null
+      },
+      "samplesMs": [
+        129,
+        129,
+        130
+      ],
+      "medianMs": 129,
+      "p90Ms": 130,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 117,
+        "meanMs": 8,
+        "p99Ms": 117
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 108593152,
+          "heapUsed": 19721464,
+          "external": 13274697,
+          "arrayBuffers": 11053353
+        },
+        "after": {
+          "rss": 101773312,
+          "heapUsed": 10641640,
+          "external": 8978989,
+          "arrayBuffers": 6517661
+        },
+        "processMaxRssBytes": 114438144,
+        "noopBaselineMaxRssBytes": 56061952,
+        "highWaterDeltaBytes": 58376192
+      }
+    },
+    {
+      "id": "E-hostile-k30-extraction",
+      "mode": "hostile",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 31,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "malformedHistory",
+        "rule": "persistedTransitionPopulationMismatch",
+        "sourceGenerationIndex": 30,
+        "field": null
+      },
+      "samplesMs": [
+        457,
+        440,
+        450
+      ],
+      "medianMs": 450,
+      "p90Ms": 457,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 447,
+        "meanMs": 32,
+        "p99Ms": 447
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 116944896,
+          "heapUsed": 22699048,
+          "external": 13207010,
+          "arrayBuffers": 10710954
+        },
+        "after": {
+          "rss": 121511936,
+          "heapUsed": 10915672,
+          "external": 5758059,
+          "arrayBuffers": 3301163
+        },
+        "processMaxRssBytes": 156381184,
+        "noopBaselineMaxRssBytes": 56246272,
+        "highWaterDeltaBytes": 100134912
+      }
+    },
+    {
+      "id": "E-hostile-k30-resume",
+      "mode": "hostile",
+      "reader": "resumeEvolutionRun",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 31,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "refused": "malformedHistory",
+        "rule": "persistedTransitionPopulationMismatch",
+        "sourceGenerationIndex": 30,
+        "field": null
+      },
+      "samplesMs": [
+        461,
+        443,
+        454
+      ],
+      "medianMs": 454,
+      "p90Ms": 461,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 449,
+        "meanMs": 32,
+        "p99Ms": 449
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 117755904,
+          "heapUsed": 23208192,
+          "external": 13055098,
+          "arrayBuffers": 10559234
+        },
+        "after": {
+          "rss": 122163200,
+          "heapUsed": 11425360,
+          "external": 6057649,
+          "arrayBuffers": 3591069
+        },
+        "processMaxRssBytes": 138838016,
+        "noopBaselineMaxRssBytes": 55865344,
+        "highWaterDeltaBytes": 82972672
+      }
+    },
+    {
+      "id": "R-corpus-G2-repeat",
+      "mode": "extraction",
+      "reader": "extractHistoryObservations",
+      "environment": "node",
+      "physics": false,
+      "verifierKernelCalls": 29,
+      "verifierKernelCallsBasis": "contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured",
+      "verdict": {
+        "success": true,
+        "historyDigestHex": "5f2c4e80c4199ed94abfd55a1dd6e8e39364e591ac693900170e9468097d2a27"
+      },
+      "samplesMs": [
+        110,
+        112,
+        110,
+        111,
+        114
+      ],
+      "medianMs": 111,
+      "p90Ms": 114,
+      "eventLoop": {
+        "method": "perf_hooks.monitorEventLoopDelay (resolution 1 ms); primed 2 timer turns before t0, drained 2 turns after t1",
+        "primed": true,
+        "drained": true,
+        "maxMs": 109,
+        "meanMs": 14,
+        "p99Ms": 109
+      },
+      "memory": {
+        "method": "before/after process.memoryUsage + process.resourceUsage().maxRSS (process lifetime, fresh child per sample) vs a no-op baseline child; operation-moment heap peaks unavailable — no same-thread sampler claim",
+        "before": {
+          "rss": 94363648,
+          "heapUsed": 18507688,
+          "external": 4851576,
+          "arrayBuffers": 2629912
+        },
+        "after": {
+          "rss": 96399360,
+          "heapUsed": 10588904,
+          "external": 6877217,
+          "arrayBuffers": 4378381
+        },
+        "processMaxRssBytes": 99307520,
+        "noopBaselineMaxRssBytes": 54657024,
+        "highWaterDeltaBytes": 44650496
+      }
+    }
+  ],
+  "batch": {
+    "campaignProportions": {
+      "thirty": 156,
+      "sixty": 48
+    },
+    "declaredPasses": 3,
+    "passes": [
+      {
+        "passIndex": 1,
+        "draws": 204,
+        "perArtifactMs": [
+          152,
+          129,
+          117,
+          109,
+          85,
+          112,
+          109,
+          108,
+          88,
+          105,
+          109,
+          115,
+          83,
+          107,
+          110,
+          113,
+          87,
+          111,
+          114,
+          109,
+          83,
+          107,
+          114,
+          108,
+          83,
+          105,
+          114,
+          107,
+          85,
+          110,
+          119,
+          113,
+          83,
+          108,
+          117,
+          111,
+          84,
+          109,
+          119,
+          109,
+          84,
+          114,
+          117,
+          110,
+          86,
+          115,
+          119,
+          112,
+          87,
+          110,
+          113,
+          106,
+          88,
+          137,
+          115,
+          117,
+          85,
+          109,
+          113,
+          113,
+          81,
+          113,
+          111,
+          111,
+          85,
+          115,
+          112,
+          115,
+          85,
+          111,
+          114,
+          112,
+          84,
+          106,
+          117,
+          113,
+          84,
+          107,
+          110,
+          111,
+          88,
+          110,
+          112,
+          109,
+          81,
+          106,
+          117,
+          110,
+          83,
+          106,
+          118,
+          109,
+          86,
+          109,
+          118,
+          106,
+          83,
+          108,
+          115,
+          107,
+          85,
+          126,
+          116,
+          109,
+          81,
+          106,
+          115,
+          108,
+          82,
+          107,
+          112,
+          109,
+          84,
+          121,
+          114,
+          115,
+          87,
+          109,
+          113,
+          110,
+          86,
+          109,
+          112,
+          115,
+          85,
+          113,
+          116,
+          114,
+          86,
+          111,
+          117,
+          110,
+          85,
+          110,
+          111,
+          109,
+          80,
+          109,
+          116,
+          106,
+          81,
+          106,
+          113,
+          104,
+          81,
+          111,
+          116,
+          106,
+          83,
+          125,
+          118,
+          107,
+          100,
+          105,
+          111,
+          104,
+          219,
+          430,
+          229,
+          366,
+          218,
+          423,
+          228,
+          370,
+          218,
+          411,
+          229,
+          373,
+          227,
+          429,
+          241,
+          361,
+          223,
+          414,
+          238,
+          362,
+          221,
+          404,
+          240,
+          369,
+          225,
+          419,
+          232,
+          356,
+          210,
+          413,
+          230,
+          372,
+          222,
+          421,
+          235,
+          368,
+          215,
+          406,
+          234,
+          365,
+          218,
+          419,
+          280,
+          390,
+          243,
+          478,
+          251,
+          428
+        ],
+        "totalMs": 31545,
+        "medianPerArtifactMs": 112,
+        "p90PerArtifactMs": 365
+      },
+      {
+        "passIndex": 2,
+        "draws": 204,
+        "perArtifactMs": [
+          91,
+          111,
+          111,
+          107,
+          91,
+          123,
+          123,
+          114,
+          92,
+          115,
+          117,
+          116,
+          83,
+          113,
+          111,
+          116,
+          88,
+          106,
+          108,
+          111,
+          83,
+          105,
+          112,
+          111,
+          82,
+          106,
+          113,
+          105,
+          79,
+          105,
+          117,
+          112,
+          84,
+          110,
+          117,
+          108,
+          83,
+          107,
+          115,
+          107,
+          84,
+          112,
+          130,
+          105,
+          82,
+          110,
+          112,
+          108,
+          87,
+          109,
+          114,
+          106,
+          88,
+          106,
+          114,
+          110,
+          83,
+          110,
+          109,
+          109,
+          83,
+          115,
+          110,
+          114,
+          83,
+          109,
+          110,
+          112,
+          82,
+          105,
+          120,
+          109,
+          80,
+          103,
+          119,
+          105,
+          84,
+          108,
+          114,
+          113,
+          85,
+          108,
+          115,
+          110,
+          83,
+          110,
+          120,
+          109,
+          87,
+          107,
+          132,
+          122,
+          84,
+          109,
+          116,
+          106,
+          84,
+          111,
+          111,
+          107,
+          87,
+          109,
+          113,
+          108,
+          89,
+          108,
+          111,
+          110,
+          82,
+          106,
+          109,
+          108,
+          81,
+          105,
+          113,
+          111,
+          82,
+          110,
+          119,
+          114,
+          86,
+          109,
+          119,
+          106,
+          82,
+          103,
+          113,
+          104,
+          83,
+          107,
+          116,
+          105,
+          86,
+          110,
+          117,
+          110,
+          86,
+          113,
+          107,
+          128,
+          87,
+          111,
+          114,
+          110,
+          88,
+          111,
+          114,
+          107,
+          88,
+          107,
+          112,
+          107,
+          90,
+          111,
+          112,
+          107,
+          215,
+          417,
+          231,
+          361,
+          210,
+          414,
+          226,
+          370,
+          219,
+          411,
+          254,
+          370,
+          218,
+          414,
+          227,
+          370,
+          227,
+          418,
+          243,
+          381,
+          216,
+          417,
+          228,
+          369,
+          222,
+          412,
+          244,
+          390,
+          232,
+          428,
+          240,
+          379,
+          227,
+          419,
+          239,
+          365,
+          211,
+          404,
+          231,
+          358,
+          216,
+          418,
+          230,
+          388,
+          228,
+          400,
+          240,
+          366
+        ],
+        "totalMs": 31240,
+        "medianPerArtifactMs": 111,
+        "p90PerArtifactMs": 366
+      },
+      {
+        "passIndex": 3,
+        "draws": 204,
+        "perArtifactMs": [
+          86,
+          108,
+          111,
+          108,
+          84,
+          110,
+          110,
+          107,
+          86,
+          106,
+          111,
+          106,
+          88,
+          108,
+          114,
+          112,
+          83,
+          106,
+          116,
+          105,
+          82,
+          103,
+          106,
+          112,
+          87,
+          126,
+          114,
+          111,
+          82,
+          112,
+          112,
+          113,
+          92,
+          109,
+          111,
+          109,
+          85,
+          111,
+          114,
+          112,
+          82,
+          108,
+          114,
+          113,
+          87,
+          108,
+          117,
+          111,
+          82,
+          103,
+          105,
+          106,
+          83,
+          113,
+          112,
+          111,
+          81,
+          106,
+          113,
+          114,
+          88,
+          106,
+          109,
+          111,
+          81,
+          108,
+          114,
+          110,
+          79,
+          107,
+          111,
+          113,
+          85,
+          107,
+          109,
+          117,
+          84,
+          109,
+          110,
+          112,
+          83,
+          129,
+          117,
+          116,
+          85,
+          109,
+          123,
+          116,
+          83,
+          111,
+          114,
+          114,
+          85,
+          107,
+          113,
+          108,
+          82,
+          112,
+          107,
+          105,
+          80,
+          106,
+          114,
+          109,
+          84,
+          107,
+          112,
+          108,
+          83,
+          104,
+          107,
+          112,
+          84,
+          108,
+          107,
+          109,
+          80,
+          108,
+          110,
+          112,
+          83,
+          107,
+          112,
+          111,
+          79,
+          105,
+          112,
+          108,
+          84,
+          137,
+          113,
+          116,
+          85,
+          119,
+          112,
+          113,
+          80,
+          102,
+          111,
+          109,
+          84,
+          109,
+          115,
+          108,
+          80,
+          105,
+          105,
+          107,
+          83,
+          107,
+          110,
+          110,
+          86,
+          108,
+          114,
+          107,
+          217,
+          403,
+          234,
+          369,
+          222,
+          403,
+          233,
+          370,
+          226,
+          408,
+          231,
+          374,
+          219,
+          414,
+          228,
+          372,
+          219,
+          414,
+          226,
+          368,
+          219,
+          410,
+          230,
+          397,
+          211,
+          438,
+          228,
+          364,
+          220,
+          416,
+          228,
+          370,
+          221,
+          404,
+          229,
+          376,
+          219,
+          407,
+          247,
+          373,
+          232,
+          425,
+          228,
+          369,
+          211,
+          406,
+          221,
+          372
+        ],
+        "totalMs": 31027,
+        "medianPerArtifactMs": 111,
+        "p90PerArtifactMs": 369
+      }
+    ],
+    "betweenOpSamples": 762,
+    "memory": {
+      "heapUsedBefore": 8574328,
+      "heapUsedAfter": 13315392,
+      "processMaxRssBytes": 123785216
+    }
+  },
+  "cumulative": {
+    "perPassMs": 31545,
+    "twoPassCalculatedMs": 62541,
+    "threePassMs": 93811,
+    "campaignProductionMs": 4183321.9,
+    "overheadFractionPerPass": 0.0075,
+    "maxAffordablePassesWithinB2": 6,
+    "formula": "overhead = passes × perPassMs; passes = 1 if downstream analyses reuse each verified extraction (declared handoff), else the declared pass count"
+  },
+  "budgetOutcomes": [
+    {
+      "id": "B1",
+      "gating": true,
+      "perMember": [
+        {
+          "id": "R-corpus-G1",
+          "medianMs": 89,
+          "p90Ms": 91
+        },
+        {
+          "id": "R-corpus-G2",
+          "medianMs": 113,
+          "p90Ms": 114
+        },
+        {
+          "id": "R-corpus-G3",
+          "medianMs": 116,
+          "p90Ms": 119
+        },
+        {
+          "id": "R-corpus-G4",
+          "medianMs": 110,
+          "p90Ms": 114
+        },
+        {
+          "id": "R-corpus-G5",
+          "medianMs": 221,
+          "p90Ms": 228
+        },
+        {
+          "id": "R-corpus-G6",
+          "medianMs": 423,
+          "p90Ms": 430
+        },
+        {
+          "id": "R-corpus-G7",
+          "medianMs": 225,
+          "p90Ms": 230
+        },
+        {
+          "id": "R-corpus-G8",
+          "medianMs": 372,
+          "p90Ms": 380
+        }
+      ],
+      "pass": true
+    },
+    {
+      "id": "B2",
+      "gating": true,
+      "onePassTotalMs": 31545,
+      "pass": true
+    },
+    {
+      "id": "B3",
+      "gating": false,
+      "medianMs": 20080,
+      "highWaterDeltaBytes": 380157952,
+      "pass": true
+    },
+    {
+      "id": "B4",
+      "gating": false,
+      "perShape": [
+        {
+          "id": "R4-resume-full-G2",
+          "ratio": 0.996
+        },
+        {
+          "id": "R4-resume-full-G6",
+          "ratio": 1.0228
+        }
+      ],
+      "pass": true
+    },
+    {
+      "id": "B5",
+      "gating": false,
+      "pass": null,
+      "note": "browser rows are merged by scripts/bench-evolution-verification-browser.js — pending in a Node-only report"
+    },
+    {
+      "id": "B6",
+      "gating": true,
+      "perRow": [
+        {
+          "id": "R-corpus-G1",
+          "highWaterDeltaBytes": 42778624
+        },
+        {
+          "id": "R-corpus-G2",
+          "highWaterDeltaBytes": 44544000
+        },
+        {
+          "id": "R-corpus-G3",
+          "highWaterDeltaBytes": 44855296
+        },
+        {
+          "id": "R-corpus-G4",
+          "highWaterDeltaBytes": 44285952
+        },
+        {
+          "id": "R-corpus-G5",
+          "highWaterDeltaBytes": 51965952
+        },
+        {
+          "id": "R-corpus-G6",
+          "highWaterDeltaBytes": 67723264
+        },
+        {
+          "id": "R-corpus-G7",
+          "highWaterDeltaBytes": 52363264
+        },
+        {
+          "id": "R-corpus-G8",
+          "highWaterDeltaBytes": 58331136
+        }
+      ],
+      "pass": true
+    }
+  ]
+}

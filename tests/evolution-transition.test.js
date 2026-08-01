@@ -118,6 +118,15 @@ const AUTHORIZED_TEST_IMPORTERS = Object.freeze({
   'tests/ownership-boundary.test.js': true,
   'tests/single-read.test.js': true,
 });
+// PR 4D added the benchmark's kernel-honest artifact builder here BY
+// DECISION: scale measurement needs artifacts whose successors ARE the
+// production kernel's output, so exactly one scripts module imports the
+// kernel — under the same header-declared proof role as the test builder
+// (integration tooling, NEVER an independent oracle; the oracle lives in
+// this file). This set is pinned like the other two, not eternal.
+const AUTHORIZED_BENCHMARK_IMPORTERS = Object.freeze({
+  'scripts/bench-evolution-verification-artifacts.js': true,
+});
 
 const walkModules = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (
   e.isDirectory() ? walkModules(`${dir}/${e.name}`) : (/\.m?js$/.test(e.name) ? [`${dir}/${e.name}`] : [])
@@ -448,7 +457,7 @@ describe('the production importer / re-export guard', () => {
       }
     }
     expect(Object.keys(importers).sort()).toEqual(Object.keys({
-      ...AUTHORIZED_PRODUCTION_IMPORTERS, ...AUTHORIZED_TEST_IMPORTERS,
+      ...AUTHORIZED_PRODUCTION_IMPORTERS, ...AUTHORIZED_TEST_IMPORTERS, ...AUTHORIZED_BENCHMARK_IMPORTERS,
     }).sort());
     for (const [file, forms] of Object.entries(importers)) {
       expect(forms, `${file} may only STATIC-import the kernel`).toEqual(['static']);

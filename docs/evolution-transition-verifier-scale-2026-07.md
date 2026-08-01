@@ -489,4 +489,32 @@ above stands. Each fix carries a failing-on-removal test in
    browser-only synthetic rows' committed SHA-256s.
 5. **Memory units are consistent.** The legal-envelope high-water delta
    (380,157,952 bytes = 362.5 MiB) is now reported as **363 MiB** everywhere
-   (the "~380 MiB" phrasing is gone from this document and CLAUDE.md).
+   (the "~380 MiB" phrasing is gone from this document, CLAUDE.md, and the
+   solver-divergence addendum).
+
+### Round 2 (re-review, 2026-07-31)
+
+The re-review confirmed all five round-1 corrections and the substantive
+result, and required three more fixes before the instrument could be called
+fail-closed. All three are fixed with failing-on-removal tests:
+
+6. **B5 now fails closed on incomplete representative evidence.**
+   `assembleB5Outcome` filtered to the representative ids and called
+   `.every(...)` — and `[].every()` is `true`, so an empty, partial,
+   duplicated, or non-finite representative set could publish `pass: true`.
+   Non-self-check evaluation now requires exactly one finite
+   `medianMaxGapMs` for each of `B-synthetic-20-30`, `B-synthetic-20-60`,
+   and `B-genuine-G2`, and throws on missing, duplicated, or non-finite
+   rows (the legal-max row remains an additional non-gating classification).
+   Tested: empty input, one missing representative, a duplicate replacing
+   another, `NaN`/`Infinity`, and the exact valid three-row set.
+7. **B4's fresh-production denominator is shape-authenticated.** Each paired
+   arm A sample is a NEW production run whose provenance was previously
+   discarded — a 7-record early-terminated production could have been
+   silently ratio-ed against a 30-record resume. Paired assembly
+   (`assemblePairedResume`, exported) now requires every arm A sample to
+   pass the campaign-shape gate against its plan AND to match the arm B
+   artifact's measured `recordCount`/`terminalReason`, or no ratio is
+   emitted. Tested with a 7-advanced / `noSelectableParents` arm A sample.
+8. **The last `~380 MiB` is gone** — the solver-divergence addendum now
+   reads ~363 MiB like every other active surface (repo-wide sweep clean).

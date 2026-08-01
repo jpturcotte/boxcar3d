@@ -256,7 +256,7 @@ it.**
 > verification pass over the campaign's 204 histories ≈ 0.75 % of the
 > 70-minute production wall against 5 %; representative high-water deltas ≤
 > 65 MiB against 128 MiB), the legal v1 envelope completes as a ~20 s batch
-> read with a ~380 MiB high-water delta, full genuine resume costs ≈ the
+> read with a ~363 MiB high-water delta, full genuine resume costs ≈ the
 > production physics it replays (ratio ≈ 1.00-1.02), and one restriction is
 > named — the browser legal envelope is batch/non-interactive (a ~13.9 s
 > synchronous main-thread block at population 256/228 records). Final

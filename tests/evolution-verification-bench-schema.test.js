@@ -36,7 +36,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { URL } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
 import {
-  BENCH_SCHEMA, BUDGETS, CAMPAIGN_PRODUCTION_MS, assembleBatchReport, assembleRow,
+  BENCH_SCHEMA, BUDGETS, CAMPAIGN_PRODUCTION_MS, assembleBatchReport, assemblePairedResume, assembleRow,
   buildNodeRows, busyBlock, configFromArgs, constructRowArtifact, customSyntheticRow,
   defaultConfig, evaluateBudgets, measureOperationWithEventLoop, median, percentile,
   responsivenessBand, runBatchSample, runBenchmark, smokeConfig, validateCorpusMembers,
@@ -901,5 +901,89 @@ describe('finding 4 — cross-environment byte identity is claimed exactly where
       });
       expect(bytesToHex(await sha256(rebuilt.bytes))).toBe(recorded.sha256Hex);
     }
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// EXTERNAL REVIEW, ROUND 2 (PR #37 re-review). Fail-closed teeth for the two
+// remaining P2s. See the evidence doc's §12 round-2 addendum.
+// ---------------------------------------------------------------------------
+
+describe('round-2 finding 1 — B5 fails closed on incomplete representative evidence', () => {
+  const row = (id, gap) => ({ id, medianMaxGapMs: gap });
+  const valid = () => [row('B-synthetic-20-30', 138), row('B-synthetic-20-60', 233), row('B-genuine-G2', 116)];
+
+  test('the exact valid three-row set evaluates against the budget (and legal-max may ride along)', () => {
+    expect(assembleB5Outcome(valid(), { selfCheck: false }).pass).toBe(true);
+    expect(assembleB5Outcome([...valid(), row('B-legal-max', 13885)], { selfCheck: false }).pass).toBe(true);
+    expect(assembleB5Outcome(valid().map((r) => row(r.id, 1500)), { selfCheck: false }).pass).toBe(false);
+  });
+
+  test('empty input is not a pass ([].every() === true was the defect)', () => {
+    expect(() => assembleB5Outcome([], { selfCheck: false })).toThrow(/exactly one/);
+  });
+
+  test('one missing representative is not a pass', () => {
+    expect(() => assembleB5Outcome([row('B-synthetic-20-30', 1), row('B-synthetic-20-60', 2)], { selfCheck: false }))
+      .toThrow(/B-genuine-G2/);
+  });
+
+  test('a duplicate representative replacing another is not a pass', () => {
+    expect(() => assembleB5Outcome([
+      row('B-synthetic-20-30', 1), row('B-synthetic-20-30', 2), row('B-synthetic-20-60', 3),
+    ], { selfCheck: false })).toThrow(/exactly one/);
+  });
+
+  test('unrecognized ids only, and non-finite values, are not passes', () => {
+    expect(() => assembleB5Outcome([row('B-unknown', 1)], { selfCheck: false })).toThrow(/exactly one/);
+    expect(() => assembleB5Outcome([row('B-synthetic-20-30', Number.NaN), row('B-synthetic-20-60', 2), row('B-genuine-G2', 3)], { selfCheck: false }))
+      .toThrow(/non-finite/);
+    expect(() => assembleB5Outcome([row('B-synthetic-20-30', Infinity), row('B-synthetic-20-60', 2), row('B-genuine-G2', 3)], { selfCheck: false }))
+      .toThrow(/non-finite/);
+  });
+});
+
+describe('round-2 finding 2 — a mis-shaped arm A production run emits no B4 ratio', () => {
+  const plan = { id: 'G2', generations: 30 };
+  const row = {
+    id: 'R4-stub', mode: 'resume-full', reader: 'resumeEvolutionRun',
+    artifact: { kind: 'genuine', plan }, samples: 3, warmups: 0,
+  };
+  const artifact = { recordCount: 30, terminalReason: 'generationLimitReached' };
+  const good = (ms) => ({
+    elapsedMs: ms,
+    provenance: {
+      construction: 'production-run-genuine', id: 'G2', generations: 30,
+      probability: 0.05, magnitude: 0.05, populationSeed: 20260801, terrainSeed: 20260809,
+      advanceCount: 30, terminalReason: 'generationLimitReached',
+    },
+  });
+  const early = {
+    elapsedMs: 5,
+    provenance: {
+      ...good(5).provenance, advanceCount: 7, terminalReason: 'noSelectableParents',
+    },
+  };
+  const resumeRow = { id: 'R4-stub', samplesMs: [10, 11, 12] };
+  const config = { isolation: 'fresh-child-per-sample' };
+
+  test('the reviewer’s arm A stub (7 records, noSelectableParents) throws before any ratio', () => {
+    expect(() => assemblePairedResume(row, artifact, [good(9), early, good(10)], resumeRow, config))
+      .toThrow(/did not reach its planned campaign shape/);
+  });
+
+  test('a plan-shaped arm A that does not match the arm B artifact is refused', () => {
+    const otherArtifact = { recordCount: 29, terminalReason: 'generationLimitReached' };
+    expect(() => assemblePairedResume(row, otherArtifact, [good(9), good(10), good(11)], resumeRow, config))
+      .toThrow(/same-shape/);
+  });
+
+  test('valid same-shape arms produce the paired ratio', () => {
+    const assembled = assemblePairedResume(row, artifact, [good(9), good(10), good(11)], resumeRow, config);
+    expect(assembled.pairedResume.armA_productionMs).toEqual([9, 10, 11]);
+    expect(assembled.pairedResume.armB_resumeMs).toEqual([10, 11, 12]);
+    expect(assembled.pairedResume.medianRatio).toBe(1.1);
+    expect(assembled.pairedResume.interleaving).toContain('altern');
   });
 });

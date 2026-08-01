@@ -388,9 +388,29 @@ export function assembleBrowserRow(artifact, samples, browserVersion) {
 // echoes — never a literal (external review finding 2: a future budget edit
 // must change display and verdict together). `budgets` is injectable so the
 // test can prove the outcome follows the SUPPLIED budget.
+//
+// FAIL CLOSED on the representative set (external review, PR #37 round 2):
+// B5's claim is "all three representative rows pass", so the three must
+// EXIST — exactly once each, with finite values. `[].every()` is true, and
+// a missing, duplicated, or non-finite representative must never become a
+// passing verdict. Additional rows (the legal-max classification) are
+// allowed; replacement of a representative is not.
 export function assembleB5Outcome(budgetPerRow, { selfCheck = false, budgets = BUDGETS } = {}) {
   const b5 = budgets.find((b) => b.id === 'B5');
   if (!b5) throw new Error("browser-bench: no budget with id 'B5' in the supplied budgets");
+  let representative = null;
+  if (!selfCheck) {
+    representative = B5_REPRESENTATIVE_IDS.map((id) => {
+      const matches = budgetPerRow.filter((r) => r.id === id);
+      if (matches.length !== 1) {
+        throw new Error(`browser-bench: B5 requires exactly one result for representative row '${id}', got ${matches.length} — a missing or duplicated representative row is not a passing budget outcome`);
+      }
+      if (!Number.isFinite(matches[0].medianMaxGapMs)) {
+        throw new Error(`browser-bench: B5 representative row '${id}' carries non-finite medianMaxGapMs (${String(matches[0].medianMaxGapMs)}) — not a measurable outcome`);
+      }
+      return matches[0];
+    });
+  }
   return Object.freeze({
     id: 'B5',
     gating: false,
@@ -401,9 +421,7 @@ export function assembleB5Outcome(budgetPerRow, { selfCheck = false, budgets = B
     // not-measured-in-this-configuration convention.
     pass: selfCheck
       ? null
-      : budgetPerRow
-        .filter((r) => B5_REPRESENTATIVE_IDS.includes(r.id))
-        .every((r) => r.medianMaxGapMs <= b5.threshold.maxGapMs),
+      : representative.every((r) => r.medianMaxGapMs <= b5.threshold.maxGapMs),
   });
 }
 

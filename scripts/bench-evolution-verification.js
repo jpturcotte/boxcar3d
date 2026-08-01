@@ -900,7 +900,27 @@ async function runPairedResumeRows(row, artifact, config, emit) {
   }
   const noopBaseline = await forkChild('one', { id: `${row.id}-noop`, mode: 'noop-baseline', artifactPath }, { timeoutMs: 120000 });
   const resumeRow = assembleRow(row, armB, noopBaseline, config, artifact.recordCount);
-  const productionMs = armA.map((s) => roundMs(s.elapsedMs));
+  return assemblePairedResume(row, artifact, armA, resumeRow, config);
+}
+
+// Assemble the paired B4 row from measured arm results. FAIL CLOSED
+// (external review, PR #37 round 2): every arm A fresh production run must
+// be campaign-shaped against its plan AND match the preconstructed arm B
+// artifact's measured shape — otherwise the ratio could compare a 7-record
+// production against a 30-record resume, which is not B4's same-shape
+// pairing. Arm A's provenance is therefore used, never discarded. Exported
+// so the schema test can drive it without forking processes.
+export function assemblePairedResume(row, artifact, armAResults, resumeRow, config) {
+  for (const [index, sample] of armAResults.entries()) {
+    assertGenuineMemberShape(row.artifact.plan, sample.provenance);
+    if (sample.provenance.advanceCount !== artifact.recordCount
+      || sample.provenance.terminalReason !== artifact.terminalReason) {
+      throw new Error(
+        `bench: paired-resume arm A sample ${index} is not the arm B artifact's shape — fresh production measured advanceCount ${sample.provenance.advanceCount}, terminalReason '${sample.provenance.terminalReason}', but arm B resumes a ${artifact.recordCount}-record '${artifact.terminalReason}' artifact; B4 compares same-shape arms only, so no ratio is emitted`,
+      );
+    }
+  }
+  const productionMs = armAResults.map((s) => roundMs(s.elapsedMs));
   const resumeMs = resumeRow.samplesMs;
   return Object.freeze({
     ...resumeRow,

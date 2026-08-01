@@ -53,7 +53,7 @@ import {
   withContradictionAtPair, withForeignRuntimeIdentity,
 } from './bench-evolution-verification-artifacts.js';
 import {
-  GENUINE_CORPUS_PLANS, buildGenuineCorpusMember,
+  GENUINE_CORPUS_PLANS, assertGenuineMemberShape, buildGenuineCorpusMember,
 } from './bench-evolution-verification-corpus.js';
 
 export const BENCH_SCHEMA = 'boxcar3d.bench-evolution-verification/1';
@@ -446,6 +446,22 @@ export function buildNodeRows(config, derived) {
   return rows;
 }
 
+// A single-row population/records CLI override. records + 1 keeps the final
+// record partial ('none'); at the policy maximum the artifact is TERMINAL
+// at the cap instead — a 1025th generation cannot exist (external review
+// finding 3: the parser accepted a 1024-record row it could not build).
+export function customSyntheticRow(population, records, samples, warmups) {
+  return {
+    id: `custom-${population}-${records}`, mode: 'extraction',
+    reader: 'extractHistoryObservations',
+    artifact: {
+      kind: 'synthetic', populationSize: population, recordCount: records,
+      maxGenerations: Math.min(records + 1, MAX_EVOLUTION_GENERATIONS),
+    },
+    samples, warmups,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // THE FORK ENVELOPES (the child's side)
 // ---------------------------------------------------------------------------
@@ -661,8 +677,12 @@ function assertExpectedVerdict(row, verdict) {
  * non-vacuous teeth: sample-count honesty (defect 3), verdict consistency,
  * primed/drained event-loop evidence (defects 8/9), and the no-op baseline
  * requirement for child-mode memory claims (defect 5).
+ * `actualRecordCount` is the CONSTRUCTED artifact's measured record count
+ * (genuine rows: the run's advanceCount — never the plan's requested
+ * generations, external review finding 1). Synthetic callers may omit it;
+ * it then falls back to the row's declared shape.
  */
-export function assembleRow(row, samples, noopBaseline, config) {
+export function assembleRow(row, samples, noopBaseline, config, actualRecordCount = undefined) {
   if (samples.length !== row.samples) {
     throw new Error(`bench: row '${row.id}' produced ${samples.length} samples, expected ${row.samples} — warm-up leakage or a lost sample`);
   }
@@ -676,6 +696,7 @@ export function assembleRow(row, samples, noopBaseline, config) {
       throw new Error(`bench: row '${row.id}' has a sample without primed/drained event-loop evidence`);
     }
   }
+  const recordCount = actualRecordCount ?? row.artifact.recordCount ?? row.artifact.plan?.generations;
   const samplesMs = samples.map((s) => roundMs(s.elapsedMs));
   const maxRssKb = Math.max(...samples.map((s) => s.memory.processMaxRssKb));
   const verdict = consistentVerdict(samples.map((s) => s.verdict), row.id);
@@ -686,7 +707,7 @@ export function assembleRow(row, samples, noopBaseline, config) {
     reader: row.reader,
     environment: 'node',
     physics: row.mode === 'resume-full',
-    verifierKernelCalls: contractKernelCalls(row.mode, row.artifact.recordCount ?? row.artifact.plan?.generations, row.artifact.contradictionAtPair),
+    verifierKernelCalls: contractKernelCalls(row.mode, recordCount, row.artifact.contradictionAtPair),
     verifierKernelCallsBasis: 'contract-derived (tests/evolution-local-semantics.test.js A1-A4/B4), not measured',
     verdict,
     samplesMs,
@@ -721,8 +742,10 @@ export function validateCorpusMembers(members) {
     const p = member.provenance;
     if (!p || p.construction !== 'production-run-genuine'
       || !Number.isInteger(p.populationSeed) || !Number.isInteger(p.terrainSeed)
-      || !Number.isInteger(p.generations) || !Number.isFinite(p.probability) || !Number.isFinite(p.magnitude)) {
-      throw new Error(`bench: corpus member '${member.id}' lacks complete production-run provenance`);
+      || !Number.isInteger(p.generations) || !Number.isFinite(p.probability) || !Number.isFinite(p.magnitude)
+      || !Number.isInteger(p.advanceCount) || typeof p.terminalReason !== 'string'
+      || p.advanceCount !== p.generations || p.terminalReason !== 'generationLimitReached') {
+      throw new Error(`bench: corpus member '${member.id}' lacks complete, campaign-shaped production-run provenance (construction, seeds, generations, arm, MEASURED advanceCount and terminalReason)`);
     }
     if (digests.has(member.sha256Hex)) {
       throw new Error(`bench: corpus members '${member.id}' duplicates another member's digest — a substituted corpus is not a corpus`);
@@ -740,19 +763,24 @@ async function sha256Hex(bytes) {
   return bytesToHex(await sha256(bytes));
 }
 
-async function constructRowArtifact(row, runtime, tmpDir, corpusMembers, { smoke = false } = {}) {
+// Exported (with an injectable genuine builder) so the schema test can prove
+// a mis-shaped genuine run can never be published at planned dimensions.
+export async function constructRowArtifact(row, runtime, tmpDir, corpusMembers, { smoke = false, genuineBuilder = buildGenuineCorpusMember } = {}) {
   const spec = row.artifact;
   if (spec.kind === 'genuine') {
     const cached = corpusMembers.get(spec.plan.id);
     if (cached) return cached;
-    const built = await buildGenuineCorpusMember(spec.plan, { protocolKind: smoke ? 'smoke' : 'full' });
+    const built = await genuineBuilder(spec.plan, { protocolKind: smoke ? 'smoke' : 'full' });
+    // The campaign-shape gate (corpus.js): a run that terminated EARLY is
+    // refused here, before it can become an artifact record — no Node row,
+    // batch draw, or budget can ever publish it at its planned dimensions.
+    assertGenuineMemberShape(spec.plan, built.provenance);
     const record = {
       id: spec.plan.id,
       kind: 'genuine',
       bytes: built.bytes,
       provenance: built.provenance,
-      // MEASURED by the run, never asserted from the plan (the corpus
-      // builder counts advances and reports the actual terminal verdict).
+      // MEASURED by the run, never asserted from the plan.
       recordCount: built.provenance.advanceCount,
       terminalReason: built.provenance.terminalReason,
       populationSize: built.provenance.populationSize,
@@ -841,7 +869,7 @@ async function runNodeRow(row, artifact, config, emit) {
   const noopBaseline = config.isolation === 'in-process'
     ? null
     : await forkChild('one', { id: `${row.id}-noop`, mode: 'noop-baseline', artifactPath }, { timeoutMs: 120000 });
-  return assembleRow(row, samples, noopBaseline, config);
+  return assembleRow(row, samples, noopBaseline, config, artifact.recordCount);
 }
 
 async function runPairedResumeRows(row, artifact, config, emit) {
@@ -871,7 +899,7 @@ async function runPairedResumeRows(row, artifact, config, emit) {
     }
   }
   const noopBaseline = await forkChild('one', { id: `${row.id}-noop`, mode: 'noop-baseline', artifactPath }, { timeoutMs: 120000 });
-  const resumeRow = assembleRow(row, armB, noopBaseline, config);
+  const resumeRow = assembleRow(row, armB, noopBaseline, config, artifact.recordCount);
   const productionMs = armA.map((s) => roundMs(s.elapsedMs));
   const resumeMs = resumeRow.samplesMs;
   return Object.freeze({
@@ -1052,12 +1080,7 @@ export async function runBenchmark(config) {
   }
   // A single-row population/records override appends a custom synthetic row.
   if (working.population !== null && working.records !== null) {
-    const row = {
-      id: `custom-${working.population}-${working.records}`, mode: 'extraction',
-      reader: 'extractHistoryObservations',
-      artifact: { kind: 'synthetic', populationSize: working.population, recordCount: working.records, maxGenerations: working.records + 1 },
-      samples: working.samples, warmups: working.warmups,
-    };
+    const row = customSyntheticRow(working.population, working.records, working.samples, working.warmups);
     const artifact = await constructRowArtifact(row, runtime, tmpDir, corpusMembers, working);
     emit({ type: 'artifact-built', row: row.id, artifact: artifact.sha256Hex });
     artifacts.set(row.id, artifact);
@@ -1092,7 +1115,11 @@ export async function runBenchmark(config) {
   // The batch row (long-lived process, campaign proportions).
   if ((working.mode === 'matrix' || working.mode === 'batch') && !working.smoke) {
     const memberEnvelopes = GENUINE_CORPUS_PLANS.map((plan) => ({
-      id: plan.id, path: join(tmpDir, `batch-${plan.id}.bin`), recordCount: plan.generations,
+      // The batch draw classes ride the CONSTRUCTED member's measured record
+      // count, never the plan's requested generations (external review
+      // finding 1); the shape gate upstream guarantees they agree.
+      id: plan.id, path: join(tmpDir, `batch-${plan.id}.bin`),
+      recordCount: corpusMembers.get(plan.id).recordCount,
     }));
     for (const envelope of memberEnvelopes) {
       writeFileSync(envelope.path, corpusMembers.get(envelope.id).bytes);

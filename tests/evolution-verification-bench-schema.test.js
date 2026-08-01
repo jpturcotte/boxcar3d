@@ -37,9 +37,9 @@ import { URL } from 'node:url';
 import { clearInterval, setInterval } from 'node:timers';
 import {
   BENCH_SCHEMA, BUDGETS, CAMPAIGN_PRODUCTION_MS, assembleBatchReport, assembleRow,
-  buildNodeRows, busyBlock, configFromArgs, defaultConfig, evaluateBudgets,
-  measureOperationWithEventLoop, median, percentile, responsivenessBand,
-  runBatchSample, runBenchmark, smokeConfig, validateCorpusMembers,
+  buildNodeRows, busyBlock, configFromArgs, constructRowArtifact, customSyntheticRow,
+  defaultConfig, evaluateBudgets, measureOperationWithEventLoop, median, percentile,
+  responsivenessBand, runBatchSample, runBenchmark, smokeConfig, validateCorpusMembers,
 } from '../scripts/bench-evolution-verification.js';
 import {
   BENCH_CAPACITY_POPULATION_SEED, BENCH_CAPACITY_TERRAIN_SEED,
@@ -47,8 +47,14 @@ import {
   deriveCapacityMaximumGenerations, readBenchRuntimeIdentity,
   withContradictionAtPair, withForeignRuntimeIdentity,
 } from '../scripts/bench-evolution-verification-artifacts.js';
-import { GENUINE_CORPUS_PLANS, buildGenuineCorpusMember } from '../scripts/bench-evolution-verification-corpus.js';
-import { assembleBrowserRow } from '../scripts/bench-evolution-verification-browser.js';
+import {
+  GENUINE_CORPUS_PLANS, assertGenuineMemberShape, buildGenuineCorpusMember,
+} from '../scripts/bench-evolution-verification-corpus.js';
+import {
+  assembleB5Outcome, assembleBrowserRow, buildRowArtifact,
+} from '../scripts/bench-evolution-verification-browser.js';
+import { sha256 } from '../src/platform/sha256.js';
+import { bytesToHex } from '../src/sim/bytes.js';
 import {
   CAPACITY_POPULATION_SEED, CAPACITY_TERRAIN_SEED, createCapacityEvaluationSpec,
 } from './helpers/evolution-capacity-config.js';
@@ -519,6 +525,7 @@ describe('the corpus guard', () => {
     provenance: {
       construction: 'production-run-genuine', populationSeed: 1, terrainSeed: 2,
       generations: 30, probability: 0.05, magnitude: 0.05,
+      advanceCount: 30, terminalReason: 'generationLimitReached',
     },
   });
 
@@ -768,5 +775,131 @@ describe('the corpus and the matrix are pinned', () => {
       'S1-extraction', 'S1-resume-gate', 'S1-hostile-k0-extraction', 'S1-hostile-k0-resume', 'S1-resume-full',
     ]);
     expect(smoke.find((r) => r.id === 'S1-resume-full').mode).toBe('resume-full');
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// EXTERNAL-REVIEW PINS (PR #37, 2026-07-31). Five findings, five teeth —
+// each test names the finding it pins. See the evidence doc's §12.
+// ---------------------------------------------------------------------------
+
+describe('finding 1 — genuine provenance is campaign-shaped on every reporting path', () => {
+  const goodProvenance = {
+    construction: 'production-run-genuine', id: 'G2', label: 'defaults-30',
+    protocolKind: 'full', populationSize: 20, generations: 30,
+    probability: 0.05, magnitude: 0.05, populationSeed: 20260801, terrainSeed: 20260809,
+    advanceCount: 30, terminalReason: 'generationLimitReached', evolveMs: 1,
+  };
+  // The reviewer's exact stub shape: planned 30, measured 7 + early stop.
+  const earlyProvenance = {
+    ...goodProvenance, advanceCount: 7, terminalReason: 'noSelectableParents',
+  };
+  const plan = { id: 'G2', generations: 30 };
+
+  test('the shape gate refuses a mis-shaped run with its measured values', () => {
+    expect(assertGenuineMemberShape(plan, goodProvenance)).toBe(true);
+    expect(() => assertGenuineMemberShape(plan, earlyProvenance))
+      .toThrow(/did not reach its planned campaign shape/);
+  });
+
+  test('Node: constructRowArtifact cannot publish a mis-shaped genuine run (injected stub)', async () => {
+    const runtime = await readBenchRuntimeIdentity();
+    const row = { id: 'stub-row', artifact: { kind: 'genuine', plan } };
+    const stub = async () => {
+      const honest = await buildScaleArtifact(runtime, { populationSize: 4, recordCount: 3, maxGenerations: 4 });
+      return { bytes: honest.bytes, provenance: earlyProvenance };
+    };
+    const cache = new Map();
+    await expect(() => constructRowArtifact(row, runtime, freshTmpDir('stub'), cache, { genuineBuilder: stub }))
+      .rejects.toThrow(/did not reach its planned campaign shape/);
+    expect(cache.size).toBe(0); // nothing was ever published from it
+  });
+
+  test('browser: buildRowArtifact cannot publish it either (injected stub)', async () => {
+    const runtime = await readBenchRuntimeIdentity();
+    const stub = async () => ({ bytes: new Uint8Array(8), provenance: earlyProvenance });
+    await expect(() => buildRowArtifact('B-genuine-G2', runtime, { genuineBuilder: stub }))
+      .rejects.toThrow(/did not reach its planned campaign shape/);
+  });
+
+  test('corpus validation refuses the mis-shaped member', () => {
+    expect(() => validateCorpusMembers([{ id: 'G2', sha256Hex: 'ab'.repeat(32), provenance: earlyProvenance }]))
+      .toThrow(/campaign-shaped/);
+  });
+
+  test('row assembly derives kernel calls from the ACTUAL record count, not the plan', () => {
+    const genuineRow = {
+      id: 'g-row', mode: 'extraction', reader: 'extractHistoryObservations',
+      artifact: { kind: 'genuine', plan: { generations: 30 } }, samples: 2,
+    };
+    const s = () => ({
+      elapsedMs: 5,
+      verdict: { success: true, historyDigestHex: 'ab'.repeat(32) },
+      eventLoop: { method: 'm', primed: true, drained: true, maxMs: 1, meanMs: 0, p99Ms: 1 },
+      memory: { before: {}, after: {}, processMaxRssKb: 10 },
+    });
+    const assembled = assembleRow(
+      genuineRow, [s(), s()], { processMaxRssKb: 5 },
+      { isolation: 'fresh-child-per-sample' }, 7,
+    );
+    expect(assembled.verifierKernelCalls).toBe(6); // 7 actual records − 1, never the planned 29
+  });
+});
+
+describe('finding 2 — B5 follows the predeclared budget, never a literal', () => {
+  const perRow = [
+    { id: 'B-synthetic-20-30', medianMaxGapMs: 138 },
+    { id: 'B-synthetic-20-60', medianMaxGapMs: 233 },
+    { id: 'B-genuine-G2', medianMaxGapMs: 116 },
+  ];
+
+  test('the outcome tracks the SUPPLIED budget object', () => {
+    expect(assembleB5Outcome(perRow, { selfCheck: false }).pass).toBe(true); // committed budget: 1000 ms
+    const strictBudgets = BUDGETS.map((b) => (b.id === 'B5' ? { ...b, threshold: { maxGapMs: 100 } } : b));
+    expect(assembleB5Outcome(perRow, { selfCheck: false, budgets: strictBudgets }).pass).toBe(false);
+    expect(assembleB5Outcome(perRow, { selfCheck: true }).pass).toBeNull();
+    expect(() => assembleB5Outcome(perRow, { budgets: [] })).toThrow(/B5/);
+  });
+});
+
+describe('finding 3 — the custom-row boundary builds exactly what the parser accepts', () => {
+  test('1023 keeps a partial last record; 1024 is terminal at the cap; 1025 refuses at parse', () => {
+    expect(customSyntheticRow(4, 1023, 3, 0).artifact.maxGenerations).toBe(1024);
+    expect(customSyntheticRow(4, 1024, 3, 0).artifact.maxGenerations).toBe(1024); // never 1025
+    expect(() => configFromArgs(['--population', '4', '--records', '1025'])).toThrow(/MAX_EVOLUTION_GENERATIONS/);
+    // …and the 1024 shape really builds and verifies (small population, so
+    // the boundary is exercisable, not just computed).
+  }, 120000);
+
+  test('a 1024-record custom-shape artifact passes the production verifier', { timeout: 240000 }, async () => {
+    const runtime = await readBenchRuntimeIdentity();
+    const spec = customSyntheticRow(4, 1024, 3, 0).artifact;
+    const built = await buildScaleArtifact(runtime, spec);
+    expect(built.terminalReason).toBe('generationLimitReached'); // terminal at the cap
+    await extractHistoryObservations(built.bytes);
+  });
+});
+
+describe('finding 4 — cross-environment byte identity is claimed exactly where it is proven', () => {
+  test('the two browser-only synthetic artifacts are byte-reproduced by the Node builder', async () => {
+    // The committed browser evidence carries four artifacts; only G2 and the
+    // legal maximum have Node-evidence counterparts. Construction is
+    // deterministic, so the Node builder must reproduce the two
+    // browser-only rows' committed SHA-256 exactly — the cross-environment
+    // leg, pinned in CI (page↔driver identity is the driver's own per-row
+    // assertion and stays the driver's claim).
+    const evidence = JSON.parse(readFileSync(
+      new URL('../docs/evolution-transition-verifier-scale-evidence-browser-2026-07.json', import.meta.url), 'utf8',
+    ));
+    const runtime = await readBenchRuntimeIdentity();
+    for (const [id, recordCount] of [['B-synthetic-20-30', 30], ['B-synthetic-20-60', 60]]) {
+      const recorded = evidence.artifacts.find((a) => a.id === id);
+      expect(recorded, `committed browser evidence carries ${id}`).toBeDefined();
+      const rebuilt = await buildScaleArtifact(runtime, {
+        populationSize: 20, recordCount, maxGenerations: recordCount + 1,
+      });
+      expect(bytesToHex(await sha256(rebuilt.bytes))).toBe(recorded.sha256Hex);
+    }
   });
 });

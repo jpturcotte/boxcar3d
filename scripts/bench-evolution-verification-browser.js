@@ -65,7 +65,7 @@ import {
   deriveCapacityMaximumGenerations, readBenchRuntimeIdentity,
 } from './bench-evolution-verification-artifacts.js';
 import {
-  GENUINE_CORPUS_PLANS, buildGenuineCorpusMember,
+  GENUINE_CORPUS_PLANS, assertGenuineMemberShape, buildGenuineCorpusMember,
 } from './bench-evolution-verification-corpus.js';
 
 // THE BROWSER ROW SET, in measurement order. The two synthetic shapes pair
@@ -128,8 +128,9 @@ export function configFromArgs(argv) {
 // Build ONE browser-row artifact Node-side, timed. Mirrors the Node
 // instrument's constructRowArtifact shapes so a browser row and its Node
 // sibling measure byte-comparable inputs (same builder, same seeds, same
-// capacity derivation).
-async function buildRowArtifact(rowId, runtime) {
+// capacity derivation). The genuine builder is injectable so the browser
+// leg's campaign-shape gate can be proven against a mis-shaped stub.
+export async function buildRowArtifact(rowId, runtime, { genuineBuilder = buildGenuineCorpusMember } = {}) {
   const startedAt = performance.now();
   if (rowId === 'B-synthetic-20-30' || rowId === 'B-synthetic-20-60') {
     const recordCount = rowId === 'B-synthetic-20-30' ? 30 : 60;
@@ -149,15 +150,20 @@ async function buildRowArtifact(rowId, runtime) {
   }
   if (rowId === 'B-genuine-G2') {
     const plan = GENUINE_CORPUS_PLANS.find((p) => p.id === 'G2');
-    const built = await buildGenuineCorpusMember(plan, { protocolKind: 'full' });
+    const built = await genuineBuilder(plan, { protocolKind: 'full' });
+    // The campaign-shape gate: an early-terminated run is never published as
+    // its planned 30-record generationLimitReached shape (external review
+    // finding 1) — and the metadata below is the MEASURED provenance.
+    assertGenuineMemberShape(plan, built.provenance);
     return {
       id: rowId,
       kind: 'genuine',
       bytes: built.bytes,
       populationSize: built.provenance.populationSize,
-      recordCount: plan.generations,
+      recordCount: built.provenance.advanceCount,
       maxGenerations: null,
-      terminalReason: 'generationLimitReached',
+      terminalReason: built.provenance.terminalReason,
+      provenance: built.provenance,
       constructionMs: built.provenance.evolveMs,
     };
   }
@@ -378,6 +384,29 @@ export function assembleBrowserRow(artifact, samples, browserVersion) {
 // REPORT ASSEMBLY
 // ---------------------------------------------------------------------------
 
+// The B5 outcome, evaluated against the SAME frozen BUDGETS the report
+// echoes — never a literal (external review finding 2: a future budget edit
+// must change display and verdict together). `budgets` is injectable so the
+// test can prove the outcome follows the SUPPLIED budget.
+export function assembleB5Outcome(budgetPerRow, { selfCheck = false, budgets = BUDGETS } = {}) {
+  const b5 = budgets.find((b) => b.id === 'B5');
+  if (!b5) throw new Error("browser-bench: no budget with id 'B5' in the supplied budgets");
+  return Object.freeze({
+    id: 'B5',
+    gating: false,
+    perRow: budgetPerRow,
+    // B5 passes iff the three representative rows all sit at or below the
+    // budget's band edge. --self-check measures one row, so the budget is
+    // not evaluated there (null), matching the Node instrument's
+    // not-measured-in-this-configuration convention.
+    pass: selfCheck
+      ? null
+      : budgetPerRow
+        .filter((r) => B5_REPRESENTATIVE_IDS.includes(r.id))
+        .every((r) => r.medianMaxGapMs <= b5.threshold.maxGapMs),
+  });
+}
+
 function collectMeta(config, browserVersion) {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   const identity = readSourceIdentity();
@@ -486,23 +515,11 @@ export async function runBrowserBenchmark(config) {
         sha256Hex: artifact.sha256Hex,
         historyDigestHex: browserRows.find((r) => r.id === artifact.id).verdict.historyDigestHex,
         terminalReason: artifact.terminalReason,
+        provenance: artifact.provenance ?? null,
         constructionMs: roundMs(artifact.constructionMs),
       })),
       browserRows,
-      budgetOutcomes: [Object.freeze({
-        id: 'B5',
-        gating: false,
-        perRow: budgetPerRow,
-        // B5 passes iff the three representative rows all sit at or below the
-        // 1000 ms band edge. --self-check measures one row, so the budget is
-        // not evaluated there (null), matching the Node instrument's
-        // not-measured-in-this-configuration convention.
-        pass: config.selfCheck
-          ? null
-          : budgetPerRow
-            .filter((r) => B5_REPRESENTATIVE_IDS.includes(r.id))
-            .every((r) => r.medianMaxGapMs <= 1000),
-      })],
+      budgetOutcomes: [assembleB5Outcome(budgetPerRow, { selfCheck: config.selfCheck })],
     };
     const json = `${JSON.stringify(report, null, 2)}\n`;
     if (config.json) {

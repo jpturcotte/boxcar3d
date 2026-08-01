@@ -3187,7 +3187,7 @@ all gating budgets pass on the landed code (representative extraction p90 ≤
 430 ms against 2000/3000 ms; one verification pass over the campaign's 204
 histories ≈ 0.75 % of the 70-minute production wall against 5 %; high-water
 deltas ≤ 65 MiB against 128 MiB), the legal envelope completes as a ~20 s,
-one-synchronous-block batch read with a ~380 MiB high-water delta, full
+one-synchronous-block batch read with a ~363 MiB high-water delta, full
 genuine resume costs ≈ the production physics it replays (ratio ≈ 1.00-1.02),
 and one restriction is named — the browser legal envelope is
 batch/non-interactive (a ~13.9 s synchronous main-thread block in Chromium
@@ -3199,14 +3199,23 @@ terminal-policy guard one declared reference, each BY DECISION with its own
 comment; the capacity-test input is mirrored, never imported (the schema
 test pins it). A six-round adversarial audit of the branch (21 parallel
 review/skeptic/critic agents) independently re-proved the evidence's core
-mechanics — Node↔browser byte-identity, the 227-call foreign-runtime path,
+mechanics — driver-to-page byte-identity on every browser row plus
+cross-report identity for G2 and the legal maximum, the 227-call
+foreign-runtime path,
 the digest chain-of-custody, the frozen budgets — and found zero hard spec
 violations; its defect findings (a broken construction-order test tooth, a
 dead browser prime tooth now riding the 4 ms tick channel, an overclaimed
 in-page memory leg, budget evaluation desync risk, and CI-presence gaps for
 the batch path, the driver guards, the corpus plan and the row matrix) are
 fixed in the review-hardening commit and enumerated in the evidence doc's
-§11. **Final unblocking remains contingent on merge and
+§11. The external review of PR #37 upheld the GO WITH RESTRICTIONS result
+and required five reporting-layer corrections — campaign-shaped genuine
+provenance on every reporting path (one shared loud shape gate),
+budget-source-driven B5 evaluation, the --records 1024 CLI boundary,
+cross-environment byte-identity claimed exactly where proven, and
+consistent memory units — all fixed with failing-on-removal tests and
+enumerated in the evidence doc's §12. **Final unblocking remains contingent
+on merge and
 independent review: the breeding-pool, false-negative and mutation-default
 measurements remain blocked pending PR 4D and independent review.**
 - **Seeds allocated:** bench corpus population seeds 20260800-20260807,

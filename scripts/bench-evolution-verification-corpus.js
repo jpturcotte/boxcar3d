@@ -86,3 +86,25 @@ export async function buildGenuineCorpusMember(plan, { protocolKind = 'full' } =
     }),
   });
 }
+
+/**
+ * THE CAMPAIGN-SHAPE GATE for genuine corpus members (external review, PR
+ * #37 finding 1). B1/B2 claim to measure exact 30/60-record campaign shapes,
+ * so a genuine run that TERMINATED EARLY (e.g. noSelectableParents) must
+ * never be published as its planned shape — not by the Node artifact record,
+ * not by row assembly's kernel-call count, not by the batch draw classes,
+ * and not by the browser driver's artifact metadata. This is the one shared
+ * loud refusal every one of those paths calls. A member that legitimately
+ * terminates early is a fine artifact for other purposes; it is not a
+ * campaign-shaped corpus member.
+ */
+export function assertGenuineMemberShape(plan, provenance) {
+  if (!provenance || !Number.isInteger(provenance.advanceCount)
+    || provenance.advanceCount !== plan.generations
+    || provenance.terminalReason !== 'generationLimitReached') {
+    throw new Error(
+      `bench: genuine corpus member '${plan.id}' did not reach its planned campaign shape — planned ${plan.generations} generations, measured advanceCount ${provenance?.advanceCount}, terminalReason '${provenance?.terminalReason}' (expected ${plan.generations} + generationLimitReached). B1/B2 cannot measure it as a planned-shape artifact`,
+    );
+  }
+  return true;
+}

@@ -83,8 +83,12 @@ Instruments (manual evidence commands, never CI jobs):
   IPC; stdout reserved for diagnostics), discarded warm-ups inside the child.
   Browser: one fresh page per sample; artifacts built Node-side, served by a
   benchmark-only endpoint, digest-verified by the page — never built in the
-  measured page. Node-vs-browser byte-identity is asserted by SHA-256 per row
-  (all `matchesDriverArtifact: true`).
+  measured page. Every browser row asserts DRIVER-TO-PAGE byte-identity (the
+  page proves it received exactly the bytes the driver built; all
+  `matchesDriverArtifact: true`). Cross-report identity holds for the two
+  artifacts that exist in both evidence inventories (G2 and the legal
+  maximum — identical SHA-256); the two browser-only synthetic rows' digests
+  are byte-reproduced by the Node builder, pinned in CI.
 - **Event loop.** Node: `monitorEventLoopDelay` (1 ms resolution) PRIMED two
   timer turns before t0 and DRAINED two turns after t1 — the histogram is
   timer-based, so without the turns it records nothing about the block
@@ -209,7 +213,7 @@ extractions (762 between-operation sampler readings).
 
 Budget: ≤ 60 s and ≤ 512 MiB. The legal envelope is a **batch operation**:
 ~20 s in one synchronous stage-11 block (event-loop max ≈ wall time) with a
-~380 MiB resident high-water delta. This is a documented envelope
+~363 MiB resident high-water delta. This is a documented envelope
 classification, not a failure; it matches the PR-4C review's starting
 observations (~20 s, ~53.1 MiB) on the same machine class.
 
@@ -326,7 +330,7 @@ verification pass ≈ 0.75 % of the campaign wall vs 5 %), B6 (≤ 65 MiB vs
 
 Documented classifications that are NOT restrictions (they passed their
 budgets): the legal-max Node read is a ~20 s, one-synchronous-block batch
-operation with ~380 MiB high-water delta; full genuine resume costs ≈ the
+operation with ~363 MiB high-water delta; full genuine resume costs ≈ the
 production physics it replays (ratio ≈ 1.00–1.02).
 
 **What this means for the deferred measurements:** the PR-4C verifier is
@@ -389,8 +393,10 @@ load-bearing claims:
   execution, documentation-truth wording clean, budgets provably frozen before
   measurement (byte-identical echo in both evidence JSONs), and the red-first
   claims verified against the PR-4C merge commit.
-- **The evidence's core mechanics were independently re-proven:** Node↔browser
-  artifact byte-identity (matching SHA-256s), the foreign-runtime artifact
+- **The evidence's core mechanics were independently re-proven:** driver-to-page
+  byte-identity on every browser row plus cross-report identity for the two
+  artifacts existing in both inventories (G2, legal maximum — matching
+  SHA-256s), the foreign-runtime artifact
   executing all 227 kernel calls before `runtimeVersionMismatch`, the digest
   chain-of-custody (recomputed with `node:crypto`, bypassing the repo codecs),
   and every spot-checked headline number (0.75 %, 20,080 ms, 363 MiB, 0.996,
@@ -438,3 +444,49 @@ captured inside the child processes and pages), so the committed evidence
 JSONs remain valid as measured. The schema test now byte-pins the smoke
 artifact's SHA-256, so any construction drift these fixes might have caused
 would have failed loudly; it did not.
+
+## 12. External-review corrections (PR #37, 2026-07-31)
+
+The external review of PR #37 found **zero production-simulation or PR-4C
+correctness regressions** and upheld the substantive GO WITH RESTRICTIONS
+result, but required changes to the benchmark/reporting layer before merge.
+All five findings were verified against the code and fixed in a follow-up
+commit; none enters a measured t0–t1 interval, so the committed evidence
+above stands. Each fix carries a failing-on-removal test in
+`tests/evolution-verification-bench-schema.test.js`.
+
+1. **Genuine-history provenance now flows through every reporting path.** The
+   latent defect: `assembleRow` derived `verifierKernelCalls` from the plan's
+   *requested* generations, batch draw classes used planned record counts, and
+   the browser driver's genuine artifact hardcoded `30` /
+   `generationLimitReached`. A shared campaign-shape gate
+   (`assertGenuineMemberShape`, corpus module) now refuses any genuine run
+   that terminates early — planned vs measured values in the message — at
+   construction time on both the Node and browser legs; row assembly and
+   batch envelopes consume the *measured* `advanceCount`; corpus validation
+   requires complete campaign-shaped provenance. The committed G2 evidence
+   genuinely is 30 records + `generationLimitReached`, so this was latent,
+   not a wrong headline — and the schema test proves a 30-planned /
+   7-advanced / `noSelectableParents` stub cannot be published as a
+   30-record artifact on any of the three paths.
+2. **B5 follows the predeclared budget object.** The browser driver evaluated
+   its outcome against a literal `1000` while echoing `BUDGETS`; it now
+   resolves the threshold from the same frozen `BUDGETS` by id
+   (`assembleB5Outcome`, injectable — a test proves the verdict tracks the
+   supplied budget, not a literal).
+3. **The `--records 1024` CLI boundary now builds.** Custom rows used
+   `maxGenerations = records + 1`, which became the illegal 1025 at the
+   policy cap; at the cap the artifact is terminal (`maxGenerations: 1024`).
+   Boundary-tested at 1023 (partial last record), 1024 (terminal), and 1025
+   (refused at parse), including a real 1024-record build through the
+   production verifier.
+4. **Cross-environment byte-identity is claimed exactly where it is proven.**
+   The earlier wording implied Node↔browser identity for all four browser
+   artifacts, but only G2 and the legal maximum have Node-evidence
+   counterparts. The claim is now: driver-to-page identity on every browser
+   row (the driver's per-row assertion), cross-report identity for those two
+   artifacts — and, pinned in CI, the Node builder byte-reproduces the two
+   browser-only synthetic rows' committed SHA-256s.
+5. **Memory units are consistent.** The legal-envelope high-water delta
+   (380,157,952 bytes = 362.5 MiB) is now reported as **363 MiB** everywhere
+   (the "~380 MiB" phrasing is gone from this document and CLAUDE.md).

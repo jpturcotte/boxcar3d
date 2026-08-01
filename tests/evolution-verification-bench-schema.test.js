@@ -38,7 +38,7 @@ import { clearInterval, setInterval } from 'node:timers';
 import {
   BENCH_SCHEMA, BUDGETS, CAMPAIGN_PRODUCTION_MS, assembleBatchReport, assemblePairedResume, assembleRow,
   buildNodeRows, busyBlock, configFromArgs, constructRowArtifact, customSyntheticRow,
-  defaultConfig, evaluateBudgets, measureOperationWithEventLoop, median, percentile,
+  decideChildExit, defaultConfig, evaluateBudgets, measureOperationWithEventLoop, median, percentile,
   responsivenessBand, runBatchSample, runBenchmark, smokeConfig, validateCorpusMembers,
 } from '../scripts/bench-evolution-verification.js';
 import {
@@ -985,5 +985,70 @@ describe('round-2 finding 2 — a mis-shaped arm A production run emits no B4 ra
     expect(assembled.pairedResume.armB_resumeMs).toEqual([10, 11, 12]);
     expect(assembled.pairedResume.medianRatio).toBe(1.1);
     expect(assembled.pairedResume.interleaving).toContain('altern');
+  });
+});
+
+describe('round-3 finding 1 — an abnormal child exit discards its reported result', () => {
+  const base = { kind: 'one', id: 'R-stub-0' };
+  const goodResult = { ok: true, elapsedMs: 12 };
+
+  test('a result followed by a clean exit (code 0, no signal) is accepted', () => {
+    expect(decideChildExit({ ...base, result: goodResult, code: 0, signal: null })).toBe(goodResult);
+  });
+
+  test('a result followed by exit code 1 is rejected (failed exit hook / teardown crash)', () => {
+    expect(() => decideChildExit({ ...base, result: goodResult, code: 1, signal: null }))
+      .toThrow(/exited abnormally/);
+  });
+
+  test('a result followed by a signal is rejected (killed after reporting)', () => {
+    expect(() => decideChildExit({ ...base, result: goodResult, code: null, signal: 'SIGKILL' }))
+      .toThrow(/exited abnormally/);
+  });
+
+  test('a clean exit with no result is rejected', () => {
+    expect(() => decideChildExit({ ...base, result: null, code: 0, signal: null }))
+      .toThrow(/exited before reporting/);
+  });
+
+  test('a malformed result envelope is rejected even on a clean exit', () => {
+    expect(() => decideChildExit({ ...base, result: { elapsedMs: 12 }, code: 0, signal: null }))
+      .toThrow(/malformed result envelope/);
+  });
+});
+
+describe('round-3 hardening — assemblePairedResume refuses partial arms and unusable timings', () => {
+  const plan = { id: 'G2', generations: 30 };
+  const row = {
+    id: 'R4-stub', mode: 'resume-full', reader: 'resumeEvolutionRun',
+    artifact: { kind: 'genuine', plan }, samples: 3, warmups: 0,
+  };
+  const artifact = { recordCount: 30, terminalReason: 'generationLimitReached' };
+  const good = (ms) => ({
+    elapsedMs: ms,
+    provenance: {
+      construction: 'production-run-genuine', id: 'G2', generations: 30,
+      probability: 0.05, magnitude: 0.05, populationSeed: 20260801, terrainSeed: 20260809,
+      advanceCount: 30, terminalReason: 'generationLimitReached',
+    },
+  });
+  const resumeRow = { id: 'R4-stub', samplesMs: [10, 11, 12] };
+  const config = { isolation: 'fresh-child-per-sample' };
+
+  test('fewer arm A results than declared samples throws before any ratio', () => {
+    expect(() => assemblePairedResume(row, artifact, [good(9), good(10)], resumeRow, config))
+      .toThrow(/expected 3 arm A results, got 2/);
+  });
+
+  test('a non-finite arm A timing throws before any ratio', () => {
+    expect(() => assemblePairedResume(row, artifact, [good(9), good(Number.NaN), good(11)], resumeRow, config))
+      .toThrow(/unusable elapsedMs/);
+    expect(() => assemblePairedResume(row, artifact, [good(9), good(Infinity), good(11)], resumeRow, config))
+      .toThrow(/unusable elapsedMs/);
+  });
+
+  test('a negative arm A timing throws before any ratio', () => {
+    expect(() => assemblePairedResume(row, artifact, [good(9), good(-1), good(11)], resumeRow, config))
+      .toThrow(/unusable elapsedMs/);
   });
 });

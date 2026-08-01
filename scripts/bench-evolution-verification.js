@@ -595,18 +595,42 @@ export function assembleBatchReport(batchResult) {
 
 const MODULE_PATH = fileURLToPath(import.meta.url);
 
+// FAIL CLOSED on the child's whole lifecycle (external review, PR #37 round
+// 3): the child deliberately disconnects and exits NATURALLY after sending
+// its result, so exit-hook work (e.g. --cpu-prof's flush) runs between the
+// message and the exit. The parent therefore resolves on EXIT, not on the
+// message — and a reported result is acceptable only when the exit that
+// followed it was clean. A nonzero code or a signal afterwards (failed
+// flush, teardown crash, kill) invalidates the sample the result rode in
+// on. Pure and exported so the schema test drives it without forking.
+export function decideChildExit({ kind, id, result, code, signal }) {
+  const label = `${kind} ${id ?? ''}`;
+  if (result === null || result === undefined) {
+    throw new Error(`bench: child exited before reporting (code ${String(code)}, signal ${String(signal)}) — ${label}`);
+  }
+  if (code !== 0 || signal !== null) {
+    throw new Error(`bench: child reported but then exited abnormally (code ${String(code)}, signal ${String(signal)}) — ${label}; discarding the sample rather than recording it`);
+  }
+  if (result.ok !== true) {
+    throw new Error(`bench: child reported a malformed result envelope (ok !== true) — ${label}`);
+  }
+  return result;
+}
+
 function forkChild(kind, envelope, { execArgv = [], timeoutMs = 600000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = fork(MODULE_PATH, [kind === 'batch' ? '--run-batch' : '--run-one'], {
       stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
       execArgv,
     });
+    let settled = false;
+    let result = null;
     const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       child.kill('SIGKILL');
       reject(new Error(`bench: child timed out after ${timeoutMs} ms (${kind} ${envelope.id ?? ''})`));
     }, timeoutMs);
-    let settled = false;
-    let result = null;
     // Resolve on EXIT, not on the message: the child flushes exit-hook work
     // (e.g. --cpu-prof's file write) only as it actually exits — a parent
     // that proceeds at the message races that flush.
@@ -621,10 +645,10 @@ function forkChild(kind, envelope, { execArgv = [], timeoutMs = 600000 } = {}) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (result !== null) {
-        resolve(result);
-      } else {
-        reject(new Error(`bench: child exited before reporting (code ${String(code)}, signal ${String(signal)}) — ${kind} ${envelope.id ?? ''}`));
+      try {
+        resolve(decideChildExit({ kind, id: envelope.id, result, code, signal }));
+      } catch (err) {
+        reject(err);
       }
     });
     child.send(envelope);
@@ -908,10 +932,18 @@ async function runPairedResumeRows(row, artifact, config, emit) {
 // be campaign-shaped against its plan AND match the preconstructed arm B
 // artifact's measured shape — otherwise the ratio could compare a 7-record
 // production against a 30-record resume, which is not B4's same-shape
-// pairing. Arm A's provenance is therefore used, never discarded. Exported
+// pairing. Arm A's provenance is therefore used, never discarded. It also
+// refuses partial arms and unusable timings (round 3): a missing or
+// non-finite sample must not silently shrink the denominator. Exported
 // so the schema test can drive it without forking processes.
 export function assemblePairedResume(row, artifact, armAResults, resumeRow, config) {
+  if (armAResults.length !== row.samples) {
+    throw new Error(`bench: paired-resume row '${row.id}' expected ${row.samples} arm A results, got ${armAResults.length} — no ratio is emitted from a partial arm`);
+  }
   for (const [index, sample] of armAResults.entries()) {
+    if (!Number.isFinite(sample.elapsedMs) || sample.elapsedMs < 0) {
+      throw new Error(`bench: paired-resume row '${row.id}' arm A sample ${index} reported an unusable elapsedMs ${String(sample.elapsedMs)} — no ratio is emitted`);
+    }
     assertGenuineMemberShape(row.artifact.plan, sample.provenance);
     if (sample.provenance.advanceCount !== artifact.recordCount
       || sample.provenance.terminalReason !== artifact.terminalReason) {

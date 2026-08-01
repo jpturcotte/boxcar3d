@@ -518,3 +518,37 @@ fail-closed. All three are fixed with failing-on-removal tests:
    emitted. Tested with a 7-advanced / `noSelectableParents` arm A sample.
 8. **The last `~380 MiB` is gone** — the solver-divergence addendum now
    reads ~363 MiB like every other active surface (repo-wide sweep clean).
+
+### Round 3 (re-review, 2026-08-01)
+
+The third pass confirmed all round-2 corrections and found one more P2 in
+the child-process boundary, plus one non-blocking hardening. Both are fixed
+with failing-on-removal tests:
+
+9. **A child result is accepted only when the child's whole lifecycle was
+   clean.** `forkChild` resolves on the child's `exit` event (not the IPC
+   message) so exit-hook work such as `--cpu-prof`'s flush is observed —
+   but it previously resolved whenever a result had arrived, ignoring the
+   exit code and signal. A child that reported and THEN failed (exit code
+   1, a signal, a failed profiler flush) would have contributed timings,
+   memory values, verdicts, or an entire B2 batch result to a passing
+   report. The exit decision is now an exported pure function,
+   `decideChildExit`: accept iff a result arrived AND `code === 0` AND
+   `signal === null` AND `result.ok === true`; otherwise reject with the
+   child kind, row id, code and signal. The timeout path now also marks the
+   attempt settled before killing, so the later `exit` event cannot attempt
+   the opposite settlement. Tested in-process (no forking): clean exit
+   resolves; code 1, a signal, a missing result, and a malformed
+   (`ok !== true`) envelope all reject.
+10. **Paired-resume assembly refuses partial arms and unusable timings**
+    (non-blocking hardening named in the same review): `assemblePairedResume`
+    now also requires exactly `row.samples` arm A results and a finite,
+    nonnegative `elapsedMs` for each, before any ratio is computed — a
+    missing or garbage sample cannot silently shrink the B4 denominator.
+    Tested: 2-of-3 arm results, `NaN`, `Infinity`, and `-1` timings all
+    throw before any ratio is emitted.
+
+Neither finding demonstrates that any committed child actually exited
+abnormally; they close the harness's ability to accept such a failure
+silently. No measured t0–t1 interval changed, so the committed evidence
+stands.
